@@ -44,7 +44,7 @@ import {
   noCaptures,
 } from '../wasm-module.zena';
 import {
-  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, inlineRecordParamOf, inlineRecordResultOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, nestedInlineRecord, flattenInlineTuple, recordFieldsTuple, recordFieldNames, inlineRecordFieldsLayout, boxedRecordWithFields, boxedFieldType, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
+  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, inlineRecordParamOf, inlineRecordResultOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, nestedInlineRecord, nestedInlineUnion, flattenInlineTuple, recordFieldsTuple, recordFieldNames, inlineRecordFieldsLayout, boxedRecordWithFields, boxedFieldType, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
 } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -3624,6 +3624,10 @@ export final class FunctionLowerer {
         let el = entry.node as Expression;
         let nested = entry.nested;
         let record = entry.record;
+        if (nested != null && shape.isUnionAt(entry.path)) {
+          this.#writeNestedUnion(el, entry.path, shape, candidates, values);
+          continue;
+        }
         if (record != null) {
           this.#writeRecordLeaves(el, record, entry.path, shape, candidates, values);
           continue;
@@ -3796,12 +3800,20 @@ export final class FunctionLowerer {
   #convertInlineSlots(values: GrowableArray<i32>, from: InlineLayout,
       to: InlineLayout): GrowableArray<i32> {
     let target = new Array<i32>();
+    // A destination slot filled from a boxed union `from` holds where
+    // `to` distributes one: the value, read out below.
+    let direct = new Array<i32>();
+    let pendingSlots = new Array<i32>();
+    let pendingPaths = new Array<String>();
+    let pendingTypes = new Array<Type>();
+    let pendingCandidates = new Array<GrowableArray<boolean>>();
     // A destination leaf of a nested inline tuple that `from` holds
     // boxed: the source slot, and the path on into its fields.
     let deepSource = new Array<i32>();
     let deepPath = new Array<String>();
     for (var d = 0; d < to.slots.length; d += 1) {
       target.push(-1);
+      direct.push(NO_VALUE);
       deepSource.push(-1);
       deepPath.push('');
     }
@@ -3818,6 +3830,14 @@ export final class FunctionLowerer {
         let d = to.pathSlot(paths[i], candidates);
         if (d == -2) {
           this.#bail('inline union conversion needs a branch');
+        }
+        if (d < 0 && to.isUnionAt(paths[i])) {
+          // A boxed union where `to` distributes it: unboxed below.
+          pendingSlots.push(s);
+          pendingPaths.push(paths[i]);
+          pendingTypes.push(from.members[m].elementTypes[i]);
+          pendingCandidates.push(candidates);
+          continue;
         }
         if (d < 0) {
           // `to` may hold this position inline where `from` boxes it.
@@ -3843,10 +3863,38 @@ export final class FunctionLowerer {
         }
       }
     }
+    for (var q = 0; q < pendingSlots.length; q += 1) {
+      let unboxed = this.#unboxTuples(values[pendingSlots[q]], pendingTypes[q]);
+      if (unboxed == null) {
+        this.#bail('nested inline union from a boxed value');
+      }
+      let subSource = unboxed;
+      let sub = subSource.layout as InlineLayout;
+      // Each of the boxed union's members against the shape `to` puts
+      // there with the same literals.
+      let shapes = new Array<InlineTupleType>();
+      let toShapes = shapesAt(to, pendingPaths[q], pendingCandidates[q]);
+      for (let member in sub.originals) {
+        var match: InlineTupleType | null = null;
+        for (let candidate in toShapes) {
+          if (match == null && literalsAgree(member, candidate)) {
+            match = candidate;
+          }
+        }
+        if (match == null) {
+          this.#bail('nested inline union member without a place');
+        }
+        shapes.push(match);
+      }
+      this.#moveNestedSlots(subSource.values, sub, shapes, pendingPaths[q], to,
+          pendingCandidates[q], direct);
+    }
     let out = new Array<i32>();
     for (var d = 0; d < to.slots.length; d += 1) {
       let s = target[d];
-      if (s >= 0) {
+      if (direct[d] != NO_VALUE) {
+        out.push(direct[d]);
+      } else if (s >= 0) {
         out.push(values[s]);
       } else if (deepSource[d] >= 0) {
         out.push(this.#boxedLeaf(values[deepSource[d]], deepPath[d].split('.'),
@@ -5327,38 +5375,35 @@ export final class FunctionLowerer {
       return this.#bailValue('boxing a value with no slots');
     }
     let layout = layoutOpt as InlineLayout;
+    // Each member boxes as the member it was written as, a nested union
+    // position holding the boxed union.
     let boxedMembers = new Array<Type>();
     let tuples = new Array<TupleType>();
-    for (let member in layout.originals) {
-      let tuple = boxedTupleOf(member);
-      tuples.push(tuple);
-      boxedMembers.push(tuple);
+    for (var m = 0; m < layout.originals.length; m += 1) {
+      tuples.push(boxedTupleOf(layout.written[m]));
+      var seen = false;
+      for (var w = 0; w < m; w += 1) {
+        if (layout.written[w] === layout.written[m]) {
+          seen = true;
+        }
+      }
+      if (!seen) {
+        boxedMembers.push(tuples[m]);
+      }
     }
     if (tuples.length == 1) {
       return this.#buildTupleFromSlots(source.values, layout, 0, tuples[0]);
     }
-    let resultVt = typeToValTypeWithSub(this.wasm, new UnionType(boxedMembers),
+    let resultVt = typeToValTypeWithSub(this.wasm,
+        if (boxedMembers.length == 1) boxedMembers[0] else new UnionType(boxedMembers),
         this.func);
     let join = this.b.newBlock();
     let result = this.b.blockParam(join, resultVt);
-    let tag = source.values[layout.slotOf(0, 0)];
-    let i32Vt = new ValTypeI32() as ValType;
     for (var m = 0; m < tuples.length; m += 1) {
       if (m < tuples.length - 1) {
         let hit = this.b.newBlock();
         let next = this.b.newBlock();
-        let cond = match (layout.members[m].elementTypes[0]) {
-          case BoolLiteralType {value}:
-              if (value) tag else this.b.emit(IrOp.i32_eqz, i32Vt, tag, -1)
-          case NumLiteralType {raw}: {
-            if (let (true, parsed) = parseI64OrU64Literal(raw)) {
-              this.b.binary(IrOp.i32_eq, i32Vt, tag, this.b.constI32(parsed as i32, i32Vt))
-            } else {
-              this.#bailValue('unparseable tuple tag')
-            }
-          }
-          case _: this.#bailValue('tuple tag type')
-        };
+        let cond = memberTest(this.#cx(), layout, source.values, m);
         this.b.brIf(cond, hit, this.#noArgs(), next, this.#noArgs());
         this.b.switchTo(hit);
         this.b.br(join, growable<i32>([
@@ -5413,6 +5458,107 @@ export final class FunctionLowerer {
     let cx = this.#cx();
     return this.#buildBoxedAt(inner, `${path}.`, boxedTupleOf(inner),
         (leaf) => source.valueAt(cx, leaf, allowed));
+  }
+
+  hostBoxInlineUnionAt(source: MultiValues, path: String,
+      allowed: GrowableArray<boolean> | null): i32 {
+    let layout = source.layout as InlineLayout;
+    let shapes = shapesAt(layout, path, allowed);
+    let sub = this.#nestedUnionLayout(shapes);
+    let values = new Array<i32>();
+    let from = new Array<i32>();
+    for (var t = 0; t < sub.slots.length; t += 1) {
+      values.push(NO_VALUE);
+      from.push(-1);
+    }
+    for (var m = 0; m < shapes.length; m += 1) {
+      let candidates = membersWithShapeAt(layout, path, shapes[m], allowed);
+      let paths = sub.memberPaths[m];
+      for (var i = 0; i < paths.length; i += 1) {
+        let subSlot = sub.memberSlots[m][i];
+        let outer = layout.pathSlot(`${path}.${paths[i]}`, candidates);
+        if (subSlot < 0 || outer < 0) {
+          continue;
+        }
+        if (from[subSlot] == -1) {
+          from[subSlot] = outer;
+          values[subSlot] = this.#conformToSlot(source.values[outer], sub.slots[subSlot],
+              'nested inline union slot');
+        } else if (from[subSlot] != outer) {
+          return this.#bailValue('nested inline union slot needs a branch');
+        }
+      }
+    }
+    for (var t = 0; t < values.length; t += 1) {
+      if (values[t] == NO_VALUE) {
+        values[t] = this.#defaultValueOf(sub.slots[t]);
+      }
+    }
+    return this.#boxInline(new MultiValues(values, sub));
+  }
+
+  /** The layout of a nested inline union whose members are `shapes`. */
+  #nestedUnionLayout(shapes: GrowableArray<InlineTupleType>): InlineLayout {
+    let members = new Array<Type>();
+    for (let shape in shapes) {
+      members.push(shape);
+    }
+    let t: Type = if (members.length == 1) members[0] else new UnionType(members);
+    return inlineLayoutOf(this.wasm, t) ?? this.#bailLayout('nested inline union layout');
+  }
+
+  #bailLayout(reason: String): InlineLayout {
+    this.#bail(reason);
+  }
+
+  /**
+   * The value of `el`, a nested inline union at `path`, written into its
+   * slots of `shape`: lowered into the union's own slots, which then move
+   * to the outer slots of the members that put the same member there.
+   */
+  #writeNestedUnion(el: Expression, path: String, shape: InlineLayout,
+      candidates: GrowableArray<boolean>, values: GrowableArray<i32>): void {
+    let shapes = shapesAt(shape, path, candidates);
+    let sub = this.#nestedUnionLayout(shapes);
+    let subValues = this.#lowerIntoSlots(el, sub, sub.slots);
+    this.#moveNestedSlots(subValues, sub, shapes, path, shape, candidates, values);
+  }
+
+  /**
+   * Moves `subValues`, a nested union's slots in `sub` (whose members are
+   * `shapes`, in order), to the slots of `shape` at `path`.
+   */
+  #moveNestedSlots(subValues: GrowableArray<i32>, sub: InlineLayout,
+      shapes: GrowableArray<InlineTupleType>, path: String, shape: InlineLayout,
+      candidates: GrowableArray<boolean>, values: GrowableArray<i32>): void {
+    let from = new Array<i32>();
+    for (var t = 0; t < values.length; t += 1) {
+      from.push(-1);
+    }
+    for (var m = 0; m < shapes.length && m < sub.memberPaths.length; m += 1) {
+      let members = membersWithShapeAt(shape, path, shapes[m], candidates);
+      let paths = sub.memberPaths[m];
+      for (var i = 0; i < paths.length; i += 1) {
+        let subSlot = sub.memberSlots[m][i];
+        if (subSlot < 0) {
+          continue;
+        }
+        let outer = shape.pathSlot(`${path}.${paths[i]}`, members);
+        if (outer == -2) {
+          this.#bail('inline union member of a returned tuple');
+        }
+        if (outer < 0) {
+          continue;
+        }
+        if (from[outer] == -1) {
+          from[outer] = subSlot;
+          values[outer] = this.#conformToSlot(subValues[subSlot], shape.slots[outer],
+              'nested inline union slot');
+        } else if (from[outer] != subSlot) {
+          this.#bail('nested inline union slot needs a branch');
+        }
+      }
+    }
   }
 
   hostBoxInlineRecordAt(source: MultiValues, path: String, record: RecordType,
@@ -5619,10 +5765,13 @@ export final class FunctionLowerer {
       let inner = if (k < shape.elementTypes.length) nestedInlineTuple(shape.elementTypes[k]) else null;
       let element = if (k < shape.elementTypes.length) shape.elementTypes[k] else null;
       let record = if (element != null) nestedInlineRecord(element) else null;
+      let boxedElement = tuple.elementTypes[k];
       let v = if (record != null) {
         this.#heldRecordFromLeaves(record, `${prefix}${k}.`, leaf)
       } else if (inner != null) {
-        this.#buildBoxedAt(inner, `${prefix}${k}.`, tuple.elementTypes[k] as TupleType, leaf)
+        // Where the written tuple holds a union, `shape` holds the member.
+        this.#buildBoxedAt(inner, `${prefix}${k}.`,
+            if (boxedElement is TupleType) boxedElement else boxedTupleOf(inner), leaf)
       } else if (element is HoleType) {
         // A `_` holds nothing; its slot, if it has one, is a `nullref`
         // shared with the other members.
@@ -9291,6 +9440,10 @@ export final class FunctionLowerer {
       return this.#bailValue('inline tuple index literal');
     }
     let path = i32ToString(k);
+    let sourceLayout = source.layout;
+    if (sourceLayout != null && sourceLayout.isUnionAt(path)) {
+      return boxInlineUnionAt(this.#cx(), source, path, null);
+    }
     let record = nestedInlineRecord(shape.elementTypes[k]);
     if (record != null) {
       return boxInlineRecordAt(this.#cx(), source, path, record, null);
@@ -12133,7 +12286,9 @@ export final class MultiValues {
       nodes.push(entry.node);
       let nested = entry.nested;
       let record = entry.record;
-      out.push(if (record != null) {
+      out.push(if (nested != null && layout.isUnionAt(entry.path)) {
+        boxInlineUnionAt(cx, this, entry.path, allowed)
+      } else if (record != null) {
         boxInlineRecordAt(cx, this, entry.path, record, allowed)
       } else if (nested != null) {
         boxInlineAt(cx, this, entry.path, nested, allowed)
@@ -12239,7 +12394,10 @@ function boxedTupleOf(t: InlineTupleType): TupleType {
   for (let el in t.elementTypes) {
     let record = nestedInlineRecord(el);
     let inner = nestedInlineTuple(el);
-    elements.push(if (record != null) {
+    let union = nestedInlineUnion(el);
+    elements.push(if (union != null) {
+      boxedUnionOf(union)
+    } else if (record != null) {
       record as Type
     } else if (inner != null) {
       boxedTupleOf(inner) as Type
@@ -12248,6 +12406,112 @@ function boxedTupleOf(t: InlineTupleType): TupleType {
     });
   }
   return new TupleType(elements, null, 0);
+}
+
+/** The boxed form of an inline union's members: a union of boxed tuples. */
+function boxedUnionOf(members: GrowableArray<InlineTupleType>): Type {
+  let boxed = new Array<Type>();
+  for (let member in members) {
+    boxed.push(boxedTupleOf(member));
+  }
+  return if (boxed.length == 1) boxed[0] else new UnionType(boxed);
+}
+
+/**
+ * The element at `path` of `t`, through its nested inline tuples, or null.
+ * "1.0" is element 0 of the tuple at position 1.
+ */
+function elementAtPath(t: InlineTupleType, path: String): Type | null {
+  var current: InlineTupleType | null = t;
+  var found: Type | null = null;
+  for (let segment in path.split('.')) {
+    let tuple = current;
+    if (tuple == null) {
+      return null;
+    }
+    let k = if (let (true, n) = parseI32(segment)) n else -1;
+    if (k < 0 || k >= tuple.elementTypes.length) {
+      return null;
+    }
+    found = tuple.elementTypes[k];
+    current = nestedInlineTuple(tuple.elementTypes[k]);
+  }
+  return found;
+}
+
+/**
+ * The members of `layout` that `allowed` keeps (every one when null) and
+ * that put `shape` at `path`.
+ */
+function membersWithShapeAt(layout: InlineLayout, path: String, shape: Type,
+    allowed: GrowableArray<boolean> | null): GrowableArray<boolean> {
+  let out = new Array<boolean>();
+  for (var m = 0; m < layout.originals.length; m += 1) {
+    out.push((allowed == null || allowed[m]) &&
+        elementAtPath(layout.originals[m], path) === shape);
+  }
+  return out;
+}
+
+/**
+ * The distinct tuples the members `allowed` keeps put at `path`, a
+ * position where a nested inline union is distributed.
+ */
+function shapesAt(layout: InlineLayout, path: String,
+    allowed: GrowableArray<boolean> | null): GrowableArray<InlineTupleType> {
+  let shapes = new Array<InlineTupleType>();
+  for (var m = 0; m < layout.originals.length; m += 1) {
+    if (allowed != null && !allowed[m]) {
+      continue;
+    }
+    let el = elementAtPath(layout.originals[m], path);
+    let tuple = if (el != null) nestedInlineTuple(el) else null;
+    if (el != null && tuple != null) {
+      var seen = false;
+      for (let s in shapes) {
+        if ((s as Type) === el) {
+          seen = true;
+        }
+      }
+      if (!seen) {
+        shapes.push(el as InlineTupleType);
+      }
+    }
+  }
+  return shapes;
+}
+
+/**
+ * Whether the value in `values` is member `m` of `layout`: its literal at
+ * each discriminant path compared with the member's, the results anded.
+ * 1 when the layout has no discriminant.
+ */
+export function memberTest(cx: LoweringContext, layout: InlineLayout,
+    values: GrowableArray<i32>, m: i32): i32 {
+  let i32Vt = new ValTypeI32() as ValType;
+  var cond = -1;
+  for (let path in layout.discriminantPaths) {
+    let slot = layout.slotAt(m, path);
+    let i = pathIndex(layout.memberPaths[m], path);
+    if (slot < 0 || i < 0) {
+      continue;
+    }
+    let tag = values[slot];
+    let test = match (layout.members[m].elementTypes[i]) {
+      case BoolLiteralType {value}:
+          if (value) tag else cx.b.emit(IrOp.i32_eqz, i32Vt, tag, -1)
+      case NumLiteralType {raw}: {
+        if (let (true, parsed) = parseI64OrU64Literal(raw)) {
+          cx.b.binary(IrOp.i32_eq, i32Vt, tag, cx.b.constI32(parsed as i32, i32Vt))
+        } else {
+          bail(cx, 'unparseable discriminant literal')
+        }
+      }
+      case _: bail(cx, 'inline union discriminant type')
+    };
+    cond = if (cond == -1) test else cx.b.binary(IrOp.i32_and, i32Vt, cond, test);
+  }
+  return if (cond == -1) cx.b.constI32(1, i32Vt) else cond;
 }
 
 /** The paths of an inline tuple's leaves, relative to it: "0", "1.0"... */
@@ -12319,6 +12583,15 @@ export function boxInlineAt(cx: LoweringContext, source: MultiValues, path: Stri
 }
 
 /**
+ * The nested inline union at `path` of `source`, boxed: which member it
+ * holds is told by its own literal, as for a whole inline union.
+ */
+export function boxInlineUnionAt(cx: LoweringContext, source: MultiValues, path: String,
+    allowed: GrowableArray<boolean> | null): i32 {
+  return hostOf(cx).hostBoxInlineUnionAt(source, path, allowed);
+}
+
+/**
  * The nested inline record at `path` of `source`: a record built from its
  * leaves and held as them, so reads take the leaves and it dies unless a
  * use needs it whole.
@@ -12344,14 +12617,8 @@ function bail(cx: LoweringContext, reason: String): never {
 function joinInlinePosition(cx: LoweringContext, layout: InlineLayout,
     values: GrowableArray<i32>, path: String,
     allowed: GrowableArray<boolean> | null): i32 {
-  let d = layout.discriminant;
-  let tagSlot = if (d >= 0) layout.positionSlot(d, null) else -1;
-  if (tagSlot < 0) {
+  if (layout.discriminantPaths.length == 0) {
     bail(cx, 'inline union without a discriminant');
-  }
-  let tag = values[tagSlot];
-  if (!(cx.valueTypeOf(tag) is ValTypeI32)) {
-    bail(cx, 'inline union discriminant type');
   }
   let slots = new Array<i32>();
   let elementTypes = new Array<Type>();
@@ -12387,22 +12654,10 @@ function joinInlinePosition(cx: LoweringContext, layout: InlineLayout,
     // Whether the discriminant names a member that uses this slot.
     var cond = -1;
     for (var m = 0; m < layout.members.length; m += 1) {
-      if (layout.slotAt(m, path) != slots[i]) {
+      if ((allowed != null && !allowed[m]) || layout.slotAt(m, path) != slots[i]) {
         continue;
       }
-      let lit = layout.members[m].elementTypes[d];
-      let test = match (lit) {
-        case BoolLiteralType {value}:
-            if (value) tag else cx.b.emit(IrOp.i32_eqz, i32Vt, tag, -1)
-        case NumLiteralType {raw}: {
-          if (let (true, parsed) = parseI64OrU64Literal(raw)) {
-            cx.b.binary(IrOp.i32_eq, i32Vt, tag, cx.b.constI32(parsed as i32, i32Vt))
-          } else {
-            bail(cx, 'unparseable discriminant literal')
-          }
-        }
-        case _: bail(cx, 'inline union discriminant type')
-      };
+      let test = memberTest(cx, layout, values, m);
       cond = if (cond == -1) test else cx.b.binary(IrOp.i32_or, i32Vt, cond, test);
     }
     let next = cx.b.newBlock();
@@ -12422,34 +12677,45 @@ function joinInlinePosition(cx: LoweringContext, layout: InlineLayout,
 export function inlineMembersMatching(layout: InlineLayout,
     elements: GrowableArray<Node | null>): GrowableArray<boolean> {
   let allowed = new Array<boolean>();
-  // Literals stand at top-level positions, which are the members' as
-  // written, nested inline tuples and all.
+  // Literals stand at positions of the members with their nested inline
+  // tuples, a nested tuple pattern or literal reaching into one, so a
+  // nested union's literal picks its members too.
   for (let member in layout.originals) {
-    var ok = true;
-    for (var p = 0; p < elements.length && p < member.elementTypes.length; p += 1) {
-      var el = elements[p];
-      if (el is LiteralPattern) {
-        el = el.value;
-      }
-      let memberType = member.elementTypes[p];
-      if (el is BooleanLiteral) {
-        if (memberType is HoleType) {
-          ok = false;
-        } else if (memberType is BoolLiteralType && memberType.value != el.value) {
-          ok = false;
-        }
-      } else if (el is NumberLiteral) {
-        if (memberType is HoleType) {
-          ok = false;
-        } else if (memberType is NumLiteralType &&
-            !sameNumberLiteral(memberType.raw, el.raw)) {
-          ok = false;
-        }
-      }
-    }
-    allowed.push(ok);
+    allowed.push(elementsMatch(member, elements));
   }
   return allowed;
+}
+
+function elementsMatch(member: InlineTupleType, elements: GrowableArray<Node | null>): boolean {
+  for (var p = 0; p < elements.length && p < member.elementTypes.length; p += 1) {
+    var el = elements[p];
+    if (el is LiteralPattern) {
+      el = el.value;
+    }
+    let memberType = member.elementTypes[p];
+    if (el is BooleanLiteral) {
+      if (memberType is HoleType) {
+        return false;
+      } else if (memberType is BoolLiteralType && memberType.value != el.value) {
+        return false;
+      }
+    } else if (el is NumberLiteral) {
+      if (memberType is HoleType) {
+        return false;
+      } else if (memberType is NumLiteralType &&
+          !sameNumberLiteral(memberType.raw, el.raw)) {
+        return false;
+      }
+    } else {
+      let inner = nestedInlineTuple(memberType);
+      let parts = tupleParts(el);
+      if (inner != null && parts != null && nestedInlineRecord(memberType) == null &&
+          !elementsMatch(inner, parts)) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 /**
@@ -12460,25 +12726,34 @@ export function inlineMembersLike(layout: InlineLayout,
     member: InlineTupleType): GrowableArray<boolean> {
   let allowed = new Array<boolean>();
   for (let other in layout.originals) {
-    var ok = true;
-    let n = if (member.elementTypes.length < other.elementTypes.length) {
-      member.elementTypes.length
-    } else {
-      other.elementTypes.length
-    };
-    for (var p = 0; p < n; p += 1) {
-      let a = member.elementTypes[p];
-      let b = other.elementTypes[p];
-      if (a is BoolLiteralType && b is BoolLiteralType && a.value != b.value) {
-        ok = false;
-      } else if (a is NumLiteralType && b is NumLiteralType &&
-          !sameNumberLiteral(a.raw, b.raw)) {
-        ok = false;
-      }
-    }
-    allowed.push(ok);
+    allowed.push(literalsAgree(member, other));
   }
   return allowed;
+}
+
+/** Whether two tuples' literal elements agree, nested inline tuples too. */
+function literalsAgree(a: InlineTupleType, b: InlineTupleType): boolean {
+  let n = if (a.elementTypes.length < b.elementTypes.length) {
+    a.elementTypes.length
+  } else {
+    b.elementTypes.length
+  };
+  for (var p = 0; p < n; p += 1) {
+    let x = a.elementTypes[p];
+    let y = b.elementTypes[p];
+    if (x is BoolLiteralType && y is BoolLiteralType && x.value != y.value) {
+      return false;
+    } else if (x is NumLiteralType && y is NumLiteralType &&
+        !sameNumberLiteral(x.raw, y.raw)) {
+      return false;
+    }
+    let ix = if (nestedInlineRecord(x) == null) nestedInlineTuple(x) else null;
+    let iy = if (nestedInlineRecord(y) == null) nestedInlineTuple(y) else null;
+    if (ix != null && iy != null && !literalsAgree(ix, iy)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function sameNumberLiteral(a: String, b: String): boolean {

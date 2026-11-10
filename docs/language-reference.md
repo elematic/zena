@@ -5174,8 +5174,9 @@ let (_, span) = spans(3);            // span holds the boxed (i32, i32)
 A nested tuple pattern reads the inner values one by one, and a name binding
 the inner tuple whole holds it boxed. An element may be an inline record too:
 `inline (i32, inline Point)` holds the point's fields, and a name bound to it
-reads them without building the record. The element may not be an inline union
-yet.
+reads them without building the record. The element may be an inline union
+too: `inline (i32, inline (true, i32) | (false, String))` holds the union's slots
+beside the `i32`, and a pattern reaches into it, as in `case (n, (true, v))`.
 
 The members of an inline union may put different types at the same position.
 Each position is returned as one WebAssembly value per type its members put
