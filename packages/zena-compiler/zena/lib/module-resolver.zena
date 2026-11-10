@@ -19,10 +19,10 @@ import { HashMap } from 'zena:collections';
 
 // Configuration for a single module export within a package.
 // For simple modules, `virtual` and `path` are null and the module resolves
-// to `<name>.zena` in the package root.
-// `path` overrides the entry file (relative to the package root).
+// to `<name>.zena` in the package's source directory.
+// `path` overrides the entry file (relative to the source directory).
 // For target-conditional modules, `virtual` maps target names to entry file
-// paths (relative to the package root).
+// paths (relative to the source directory).
 export final class ModuleExport {
   virtual: HashMap<String, String> | null;
   path: String | null;
@@ -74,10 +74,23 @@ export final class PackageConfig {
   // stands for. An alias has no root of its own.
   var aliasOf: String | null = null;
 
+  // The directory, relative to `root`, that library names and export
+  // entry files are measured from: a manifest's `source`, `src` when it
+  // has none (package-manifest.md, "source"). `.` for the libraries at
+  // the root, as the standard library's are.
+  var source = ".";
+
   new(
     root: String,
     exports: HashMap<String, ModuleExport> | null
   ) : root = root, exports = exports;
+
+  // The directory libraries are in: `root` joined with `source`.
+  libraryRoot: String {
+    get {
+      return if (this.source == ".") this.root else `${this.root}/${this.source}`;
+    }
+  }
 }
 
 // ============================================================================
@@ -400,12 +413,13 @@ function makeCanonicalPath(
   if (packageName == "zena") {
     return new ResolvedModule("zena:" + moduleName, "zena");
   }
-  let filePath = `${config.root}/${moduleName}.zena`;
+  let filePath = `${config.libraryRoot}/${moduleName}.zena`;
   return new ResolvedModule(filePath, packageName);
 }
 
 // Create a canonical path for a module with an explicit entry file
-// (from `path` or a `virtual` mapping), given relative to the package root.
+// (from `path` or a `virtual` mapping), given relative to the package's
+// source directory.
 // Stdlib entries become path ids ("zena:console/host.zena").
 function makeCanonicalFilePath(
   packageName: String,
@@ -415,7 +429,7 @@ function makeCanonicalFilePath(
   if (packageName == "zena") {
     return new ResolvedModule("zena:" + entryPath, "zena");
   }
-  return new ResolvedModule(`${config.root}/${entryPath}`, packageName);
+  return new ResolvedModule(`${config.libraryRoot}/${entryPath}`, packageName);
 }
 
 // Find the byte position of the first occurrence of a byte in a string.

@@ -89,12 +89,13 @@ async function manifestPackage(
     exports = manifest['modules'];
   }
   let name = override ?? manifestName(manifest, root);
-  // The manifest may sit above the sources it describes: the stdlib's
-  // is `packages/stdlib/stdlib-manifest.json` for sources under
-  // `packages/stdlib/zena`. Every entry file is relative to the source
-  // root, not to the manifest.
-  let declaredRoot = manifest['root'];
-  let sourceRoot = if (declaredRoot is String) {
+  // The manifest may sit above the sources it describes: a package's
+  // libraries are in its `source` directory, `src` by default
+  // (package-manifest.md, "source"), and the stdlib's manifest,
+  // `packages/stdlib/stdlib-manifest.json`, names `zena` as its `root`.
+  // Every entry file is relative to that directory, not to the manifest.
+  let declaredRoot = if (manifestPath.endsWith(PACKAGE_MANIFEST)) manifest['source'] ?? 'src' else manifest['root'];
+  let sourceRoot = if (declaredRoot is String && declaredRoot != '.') {
     join2(root, declaredRoot)
   } else {
     root

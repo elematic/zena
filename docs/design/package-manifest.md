@@ -55,6 +55,7 @@ else moved.
 | `description`  | `string`                        | any package    | What the package is for, in a sentence; required to publish            |
 | `license`      | `string`                        | any package    | An SPDX license expression, such as `MIT`; required to publish         |
 | `version`      | `string`                        | any package    | The version `zena pkg publish` publishes next                          |
+| `source`       | `string`                        | any package    | The directory the package's libraries are in; `src` by default         |
 | `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                |
 | `files`        | `string[]`                      | any package    | The files a published release holds, as patterns                       |
 | `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name            |
@@ -108,11 +109,25 @@ a release publishes, so it shows in review, and the source archive says
 which version it is. A version that has been published cannot be published
 again. The compiler does not read it.
 
+### `source`
+
+The directory, relative to the manifest, that holds the package's
+libraries: `src` when the manifest has no `source`. A library's name is
+its path from there, without `.zena`, so in a package named `router`,
+`src/match.zena` is `router:match` and `src/url/parse.zena` is
+`router:url/parse`. The manifest, the README and the license sit at the
+package's root, beside `src`, and tests and documentation can sit there
+too, outside the libraries' names.
+
+A package whose libraries are at its root says `"source": "."`. The
+directory must be inside the package: a relative path without `..`.
+
 ### `exports`
 
 Each key under `exports` names a library other packages may import, as
 `<package>:<library>`. The value is an empty object, for the library
-`<name>.zena`, or an object with a `path` or `virtual` field.
+`<name>.zena`, or an object with a `path` or `virtual` field. Every entry
+file is relative to the `source` directory.
 
 ```json
 {
@@ -129,8 +144,8 @@ Each key under `exports` names a library other packages may import, as
 }
 ```
 
-- **`{}`**: the library is `<root>/<name>.zena`.
-- **`path`**: the library's entry file, relative to the package root. A
+- **`{}`**: the library is `<source>/<name>.zena`.
+- **`path`**: the library's entry file, relative to `source`. A
   library implemented in several files exposes one entry file, which
   re-exports its public API and reaches the other files with relative
   imports (`./encoding.zena`). Those files cannot be imported by name.
@@ -139,7 +154,7 @@ Each key under `exports` names a library other packages may import, as
   for the `zena` command's host, `freestanding` for a core module with no
   imports). Compiling with `--target component`,
   `import { log } from 'pkg:console'` resolves to
-  `<root>/console/component.zena`. A library with no entry for the target
+  `<source>/console/component.zena`. A library with no entry for the target
   does not resolve there.
 
 | Field     | Type                     | Description              |
@@ -148,7 +163,7 @@ Each key under `exports` names a library other packages may import, as
 | `virtual` | `Record<string, string>` | Target name → entry file |
 
 Without `exports`, the package is **open**: every `.zena` file under its
-root can be imported. With `exports`, it is **closed**: only the listed
+`source` directory can be imported. With `exports`, it is **closed**: only the listed
 libraries can. A file a closed package does not list is private to it,
 reachable only through relative imports from the package's own files.
 

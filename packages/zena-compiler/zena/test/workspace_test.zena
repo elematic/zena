@@ -7,16 +7,19 @@
  * workspace package `lib` by path and on the published package `router`.
  * `lib` depends on `router` too, under a name of its own, `paths`, and
  * `router` depends on `json`. Both published packages are pinned in
- * `zena-lock.json` and unpacked in the package cache. What the `zena`
- * command adds, the cache's directory and the workspace's absolute path,
- * is tested with the command (packages/zena-cli/tests/package_map.rs).
+ * `zena-lock.json` and unpacked in the package cache. A package's libraries
+ * are in its `source` directory, `src` by default: `lib`'s and `router`'s
+ * are, and `json` says `"source": "."`. What the `zena` command adds, the
+ * cache's directory and the workspace's absolute path, is tested with the
+ * command (packages/zena-cli/tests/package_map.rs).
  */
 
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { checkCompilation } from '../lib/compiler.zena';
 import { Diagnostic } from '../lib/diagnostics.zena';
-import { loadWorkspace } from '../lib/package-manifest.zena';
+import { loadWorkspace, parseSource } from '../lib/package-manifest.zena';
+import { JsonObject, parseJson } from 'zena:json';
 import { MockHost, makeCompiler, errorDiagnostics } from './test-utils.zena';
 
 function workspace(): MockHost {
@@ -44,10 +47,12 @@ function workspace(): MockHost {
     "name": "lib",
     "dependencies": {"paths": {"did": "did:plc:router", "version": "1.0.0"}}
   }`);
-  host.addFile("/ws/packages/lib/lib.zena",
+  host.addFile("/ws/packages/lib/src/lib.zena",
       "import { route } from 'paths:match';\nexport let two = (): i32 => route() - 38;\n");
-  host.addFile("/cache/sources/bafkreirouter/match.zena",
+  host.addFile("/cache/sources/bafkreirouter/zena-package.json", `{"name": "router"}`);
+  host.addFile("/cache/sources/bafkreirouter/src/match.zena",
       "import { parse } from 'json:parse';\nexport let route = (): i32 => parse() - 1;\n");
+  host.addFile("/cache/sources/bafkreijson/zena-package.json", `{"name": "json", "source": "."}`);
   host.addFile("/cache/sources/bafkreijson/parse.zena",
       "export let parse = (): i32 => 41;\n");
   host.addFile("/ws/prog.zena",
@@ -92,7 +97,7 @@ export let tests = suite('Workspace', () => {
   test("a workspace package does not see another package's names", async () => {
     let host = workspace();
     // `router` is app's name for the package, not lib's.
-    host.addFile("/ws/packages/lib/lib.zena",
+    host.addFile("/ws/packages/lib/src/lib.zena",
         "import { route } from 'router:match';\nexport let two = (): i32 => route() - 38;\n");
     isTrue(await failsNaming(host, "/ws/prog.zena", "router"));
   });
@@ -102,5 +107,45 @@ export let tests = suite('Workspace', () => {
     host.addFile("/ws/direct.zena",
         "import { parse } from 'json:parse';\nexport let run = (): i32 => parse() - 41;\n");
     isTrue(await failsNaming(host, "/ws/direct.zena", "json"));
+  });
+
+  test("a closed package's exports are in its source directory, by name and by path", async () => {
+    let host = workspace();
+    host.addFile("/ws/packages/lib/zena-package.json", `{
+      "name": "lib",
+      "source": "lib",
+      "exports": {"lib": {}, "extra": {"path": "more/extra.zena"}},
+      "dependencies": {"paths": {"did": "did:plc:router", "version": "1.0.0"}}
+    }`);
+    host.addFile("/ws/packages/lib/lib/lib.zena",
+        "import { route } from 'paths:match';\nexport let two = (): i32 => route() - 38;\n");
+    host.addFile("/ws/packages/lib/lib/more/extra.zena", "export let three = (): i32 => 3;\n");
+    host.addFile("/ws/both.zena",
+        "import { two } from 'lib:lib';\nimport { three } from 'lib:extra';\n" +
+        "export let run = (): i32 => two() + three() - 6;\n");
+    equal((await compileErrors(host, "/ws/both.zena")).length, 0);
+  });
+
+  test('a library at the root of a package that keeps them in src/ is not found', async () => {
+    let host = workspace();
+    host.addFile("/ws/packages/lib/root.zena", "export let one = (): i32 => 1;\n");
+    host.addFile("/ws/root.zena", "import { one } from 'lib:root';\nexport let run = (): i32 => one() - 1;\n");
+    isTrue(await failsNaming(host, "/ws/root.zena", "root"));
+  });
+
+  test('takes a source inside the package, and refuses one outside it', async () => {
+    let source = (text: String) => parseSource(parseJson(text) as JsonObject, 'zena-package.json');
+    equal(source('{}'), 'src');
+    equal(source('{"source": "./lib/"}'), 'lib');
+    equal(source('{"source": "."}'), '.');
+    for (let outside in ['{"source": "../shared"}', '{"source": "/abs"}', '{"source": "a/../.."}', '{"source": 3}']) {
+      var refused = '';
+      try {
+        source(outside);
+      } catch (e) {
+        refused = e.message;
+      }
+      isTrue(refused.contains('zena-package.json: source'), `${outside}: ${refused}`);
+    }
   });
 });

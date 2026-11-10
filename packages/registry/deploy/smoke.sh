@@ -46,7 +46,8 @@ setup() {
   cat > "$CANARY/zena-package.json" << EOF
 {"name": "smoke", "description": "What the registry's smoke test adds and runs", "license": "MIT", "scope": "$SMOKE_SCOPE", "version": "1.0.0"}
 EOF
-  cat > "$CANARY/smoke.zena" << 'EOF'
+  mkdir -p "$CANARY/src"
+  cat > "$CANARY/src/smoke.zena" << 'EOF'
 /** The answer the smoke test's program checks for. */
 export function answer(): i32 {
   return 42;

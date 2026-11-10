@@ -41,6 +41,7 @@ A package is defined by the `zena-package.json` manifest at its root: its name, 
 | `version`      | `string`                     | Any package    | Semantic version (`1.4.2`, `2.0.0-rc.1`) published by the next `zena pkg publish`                    |
 | `description`  | `string`                     | Any package    | One-sentence summary of the package; required to publish                                             |
 | `license`      | `string`                     | Any package    | SPDX license expression (`MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`); required to publish            |
+| `source`       | `string`                     | Any package    | The directory the package's libraries are in; `src` by default                                       |
 | `exports`      | `Record<string, Export>`     | Any package    | Libraries other packages may import as `<local-name>:<library>`                                      |
 | `dependencies` | `Record<string, Dependency>` | Any package    | Packages imported by this package's libraries, keyed by local name                                   |
 | `workspace`    | `{packages: string[]}`       | Workspace root | Directories or `/*` globs of workspace member packages                                               |
@@ -58,9 +59,27 @@ A package `name` must be a valid lowercase DNS label:
 - At most 63 characters.
 - `zena` is reserved for the Zena standard library.
 
+## Where the libraries are (`source`)
+
+A package's libraries are in its `src` directory, and the manifest, README and license sit at its root:
+
+```
+router/
+  zena-package.json
+  README.md
+  src/
+    server.zena          # router:server
+    middleware/
+      index.zena         # router:middleware/index
+  test/
+    server_test.zena
+```
+
+A library's name is its path from `src`, without `.zena`. Set `source` to keep them elsewhere, such as `"source": "."` for libraries at the package's root.
+
 ## Exporting libraries (`exports`)
 
-Each key under `exports` declares a library that dependents can import as `<package>:<library>`.
+Each key under `exports` declares a library that dependents can import as `<package>:<library>`. Entry files are relative to the `source` directory.
 
 ```json
 {
@@ -78,14 +97,14 @@ Each key under `exports` declares a library that dependents can import as `<pack
 }
 ```
 
-- **`{}` (empty object)**: Resolves to `<package-root>/<library-name>.zena`.
-- **`{"path": "..."}`**: Resolves to the specified entry file relative to the package root. Other files in the package reached via relative imports (`import {helper} from './internal.zena'`) remain private and cannot be imported directly by dependents.
+- **`{}` (empty object)**: Resolves to `<source>/<library-name>.zena`, such as `src/array.zena`.
+- **`{"path": "..."}`**: Resolves to the specified entry file relative to the `source` directory. Other files in the package reached via relative imports (`import {helper} from './internal.zena'`) remain private and cannot be imported directly by dependents.
 - **`{"virtual": {...}}`**: Maps compilation targets (`js`, `component`, `zena-cli`, `freestanding`) to target-specific entry files. When compiling with `--target component`, an import of `pkg:console` resolves to `console/component.zena`.
 
 ### Open vs. closed packages
 
 - **With `exports` (closed)**: Only the libraries listed in `exports` can be imported by other packages.
-- **Without `exports` (open)**: Every `.zena` file under the package root can be imported by its relative path (without `.zena`). Open packages are convenient for small internal workspace packages; published packages should declare `exports`.
+- **Without `exports` (open)**: Every `.zena` file under the `source` directory can be imported by its path from there (without `.zena`). Open packages are convenient for small internal workspace packages; published packages should declare `exports`.
 
 ## Dependencies (`dependencies`)
 

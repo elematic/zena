@@ -24,6 +24,7 @@
  */
 
 import {HashSet, OrderedHashMap} from 'zena:collections';
+import {join} from 'zena:core';
 import {globToRegex} from 'zena:glob';
 import {JsonArray, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {isValidDid} from 'atproto:syntax';
@@ -79,9 +80,14 @@ export final class Manifest {
    */
   var files: Array<String> | null = null;
   /**
+   * The directory its libraries are in, relative to the manifest's: its
+   * `source`, or `src` when it has none (package-manifest.md, "source").
+   */
+  var source = 'src';
+  /**
    * The entry files of the libraries `exports` names, relative to the
-   * manifest's directory: none for an open package, which exports every
-   * file. A published archive must hold each.
+   * manifest's directory, under `source`: none for an open package, which
+   * exports every file. A published archive must hold each.
    */
   var exportFiles = new GrowableArray<String>();
 
@@ -198,8 +204,34 @@ export function readManifest(text: String | null): Manifest {
   manifest.description = optionalString(root, 'description');
   manifest.license = optionalString(root, 'license');
   manifest.files = filePatterns(root);
-  manifest.exportFiles = exportedFiles(root);
+  manifest.source = sourceDirectory(root);
+  manifest.exportFiles = exportedFiles(root, manifest.source);
   return manifest;
+}
+
+/**
+ * The `source` directory, normalized, or `src` when there is none. It must
+ * be a directory inside the package: relative, and without `..`.
+ */
+function sourceDirectory(root: JsonObject): String {
+  if (!root.has('source')) {
+    return 'src';
+  }
+  let value = root['source'];
+  if (!(value is String)) {
+    throw new ManifestError('zena-package.json: source is not a path');
+  }
+  let text = value;
+  let parts = new GrowableArray<String>();
+  for (let part in text.split('/')) {
+    if (part == '..' || (parts.length == 0 && part == '' && text.startsWith('/'))) {
+      throw new ManifestError(`zena-package.json: source '${text}' is not a directory inside the package`);
+    }
+    if (part != '' && part != '.') {
+      parts.push(part);
+    }
+  }
+  return if (parts.length == 0) '.' else join(parts, '/');
 }
 
 /**
@@ -242,8 +274,11 @@ function filePatterns(root: JsonObject): Array<String> | null {
   return patterns;
 }
 
-/** The entry files of the libraries `exports` names (package-manifest.md, "exports"). */
-function exportedFiles(root: JsonObject): GrowableArray<String> {
+/**
+ * The entry files of the libraries `exports` names, in the `source`
+ * directory (package-manifest.md, "exports").
+ */
+function exportedFiles(root: JsonObject, source: String): GrowableArray<String> {
   let files = new GrowableArray<String>();
   let exports = root['exports'];
   if (!(exports is JsonObject)) {
@@ -257,18 +292,24 @@ function exportedFiles(root: JsonObject): GrowableArray<String> {
     let path = entry['path'];
     let virtual = entry['virtual'];
     if (path is String) {
-      files.push(path as String);
+      files.push(underSource(source, path));
     } else if (virtual is JsonObject) {
       (virtual as JsonObject).forEach((target, file) => {
         if (file is String) {
-          files.push(file as String);
+          files.push(underSource(source, file));
         }
       });
     } else {
-      files.push(`${name}.zena`);
+      files.push(underSource(source, `${name}.zena`));
     }
   });
   return files;
+}
+
+/** `file`, a path relative to the `source` directory, relative to the manifest's. */
+function underSource(source: String, file: String): String {
+  let relative = if (file.startsWith('./')) file.sliceBytes(2, file.length) else file;
+  return if (source == '.') relative else `${source}/${relative}`;
 }
 
 /**

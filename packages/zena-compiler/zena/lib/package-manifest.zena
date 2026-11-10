@@ -193,7 +193,9 @@ final class WorkspaceLoader {
         let config = this.#result[key];
         let manifest = joinPath(config.root, "zena-package.json");
         if (await fileExists(this.#host, manifest)) {
-          config.exports = parseExports(await this.#readJson(manifest));
+          let json = await this.#readJson(manifest);
+          config.exports = parseExports(json);
+          config.source = parseSource(json, manifest);
         }
       }
     }
@@ -267,6 +269,7 @@ final class WorkspaceLoader {
       throw new Error(`${path}/zena-package.json: '${key}' is also the root's name for another package`);
     }
     let config = new PackageConfig(path, parseExports(manifest));
+    config.source = parseSource(manifest, `${path}/zena-package.json`);
     let names = new Map<String, String>();
     config.dependencies = names;
     this.#result[key] = config;
@@ -424,6 +427,26 @@ function majorOf(version: String): String {
     }
   }
   return version;
+}
+
+// The directory a manifest's libraries are in, relative to the manifest:
+// its `source`, or `src` when it has none (package-manifest.md, "source").
+// `manifestPath` names the manifest in an error.
+export function parseSource(obj: JsonObject, manifestPath: String): String {
+  let value = obj["source"];
+  if (value == null) {
+    return "src";
+  }
+  if (!(value is String)) {
+    throw new Error(`${manifestPath}: source is not a string`);
+  }
+  let text = value;
+  // `normalizePath` makes `./src/` `src`, and `` or `./` `.`.
+  let source = normalizePath(text);
+  if (text.startsWith("/") || source == ".." || source.startsWith("../")) {
+    throw new Error(`${manifestPath}: source '${text}' is not a directory inside the package`);
+  }
+  return source;
 }
 
 // The `exports` of a manifest, or null when it has none: an open package.
