@@ -1,0 +1,89 @@
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue } from 'zena:assert';
+import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { MockHost, errorDiagnostics } from './test-utils.zena';
+import { checkCompilation, createCompiler } from '../lib/compiler.zena';
+import { PackageConfig } from '../lib/module-resolver.zena';
+
+/**
+ * `source` compiled for `freestanding` against a standard library of
+ * stubs, in which nothing names an array of strings. It may import
+ * `./things.zena`, which declares two module variables.
+ */
+async function compileToBinary(source: String) {
+  let host = new MockHost();
+  // The prelude names `zena:core`, so its entry has to exist and
+  // re-export the stubs behind it.
+  host.addFile("zena:core/index.zena",
+      "export * from './string.zena';" +
+      "export * from './array.zena';" +
+      "export * from './iterator.zena';" +
+      "export * from './ownership.zena';" +
+      "export * from './hashable.zena';");
+  host.addFile("zena:core/string.zena",
+      "export enum Encoding { WTF8, WTF16 } " +
+      "export class ByteArray {} " +
+      "export class String { " +
+      "  #data: ByteArray = new ByteArray(); " +
+      "  #start: i32 = 0; " +
+      "  #end: i32 = 0; " +
+      "  #encoding: Encoding = Encoding.WTF8; " +
+      "}");
+  host.addFile("zena:core/array.zena", "export class Array {} export class FixedArray<T> {} export class GrowableArray<T> {}");
+  host.addFile("zena:core/iterator.zena", "export interface Iterator<T> {} export interface Iterable<T> {}");
+  host.addFile("zena:core/ownership.zena", "export class Resource {}");
+  host.addFile("zena:core/hashable.zena", "export interface Hashable {}");
+  host.addFile("zena:async", "export class Future<T> {}");
+  host.addFile("zena:console", "export let console = null;");
+  host.addFile("things.zena",
+      "export final class Thing { n: i32; new(this.n); } " +
+      "export let first = new Thing(1); " +
+      "export let second = new Thing(2);");
+  host.addFile("test.zena", source);
+
+  let packages = new Map<String, PackageConfig>();
+  let compiler = createCompiler(host, {stdlibRoot: "/stdlib", packages});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'freestanding'});
+  let checkRes = checkCompilation(compResult);
+  let errs = errorDiagnostics(checkRes.diagnostics);
+  isTrue(errs.length == 0, if (errs.length > 0) errs[0].message else "");
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    let res = checkRes.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) {
+        entryUnit = unit;
+      }
+    }
+  }
+  return new BinaryGenerator("freestanding").generate(new Program(units, entryUnit));
+}
+
+export let tests = suite('string literal types', () => {
+  test('the literals array type is emitted when nothing else names it', async (ctx) => {
+    let binary = await compileToBinary("export let main = (): i32 => { let s = 'a'; return 0; };");
+    isTrue(binary.length > 0);
+  });
+
+  // The literals are held in globals that reachability makes after it
+  // has dropped the module variables only unused code reads. The walk
+  // that roots a new global's type kept its place in the longer list
+  // of globals, so it skipped as many new globals as were dropped, and
+  // the literals array's type was in the module only when some other
+  // code named an array of strings.
+  test('the literals array type is emitted after module variables are dropped', async (ctx) => {
+    for (let read in ['first.n', 'first.n + second.n']) {
+      let binary = await compileToBinary(
+          "import { first, second } from './things.zena'; " +
+          `function unused(): i32 { return ${read}; } ` +
+          "export let main = (): i32 => { let s = 'a'; return 0; };");
+      isTrue(binary.length > 0, read);
+    }
+  });
+});
