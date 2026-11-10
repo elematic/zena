@@ -182,9 +182,43 @@ A tuple literal passes an inline binding on when its element's position
 is inline (`tupleElementUse`), for a nested inline tuple too.
 
 A nested inline record with optional fields is an error, since its
-presence words have no position in a tuple of the fields' types. An
-inline union inside an inline tuple is not supported yet: its slots
-and discriminant do not fit one list of positions.
+presence words have no position in a tuple of the fields' types.
+
+## Nested inline unions
+
+An inline union inside an inline tuple is distributed (#811):
+`inline (A, B | C)` lays out as `inline (A, B) | (A, C)`. `inlineLayoutOf`
+expands each member as written (`distributeInlineUnions`) and lays out
+the expanded members as before, so slots stay keyed by path and wasm
+type and the members share them. `InlineLayout.written` keeps, for each
+member, the member as written, which is what its boxed form is built
+as: `(A, B | C)` boxes to a tuple holding the boxed union.
+
+A nested union keeps its own literal, at `p.0`, so a layout tells its
+members apart by every path where they all have a literal and do not
+all agree (`discriminantPaths`). `memberTest` compares the slots there
+with a member's literals; boxing (`#boxInline`) and reading a position
+whose slot depends on the member (`joinInlinePosition`) branch on it.
+Matching a pattern or literal against the members
+(`inlineMembersMatching`, `inlineMembersLike`) reaches into nested
+tuples, so `(n, (true, v))` picks the members whose nested union is
+`(true, _)`.
+
+A position where the members put different tuples is a union position
+(`isUnionAt`). Reading it whole gathers its slots into the nested
+union's own layout and boxes that (`boxInlineUnionAt`). Writing a value
+there lowers it into the nested union's slots and moves each to the
+outer slot of the members that put the same member there
+(`#writeNestedUnion`, `#moveNestedSlots`). Converting a boxed tuple
+whose element is a boxed union unboxes the union and moves its slots
+the same way (`#convertInlineSlots`).
+
+Two nested unions of `n` and `m` members give `n * m` members. That
+costs compile time only: the slots are shared.
+
+An inline union as an inline field of an inline record is still an
+error: the record's leaves are built per field, with no member to
+choose between.
 
 ## Inline fields of inline records
 

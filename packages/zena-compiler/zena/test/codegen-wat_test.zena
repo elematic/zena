@@ -665,6 +665,32 @@ export let tests = suite('WatGenerator', () => {
     assertNoAllocation(result, '$main', 'a literal with an inline field is passed as leaves');
   });
 
+  // An inline union inside an inline tuple is distributed over the outer
+  // tuple (#811), so writing, matching and forwarding it move slots and
+  // test its literal, and box nothing.
+  test('nested inline unions allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Reply = (true, i32) | (false, i32);
+      function make(n: i32, ok: boolean): inline (i32, inline Reply) {
+        return if (ok) (n, (true, n * 2)) else (n, (false, -n));
+      }
+      function score(t: inline (i32, inline Reply)): i32 {
+        return match (t) {
+          case (let n, (true, let v)): n + v
+          case (let n, (false, let w)): n * 100 + w
+        };
+      }
+      function relabel(n: i32, r: inline Reply): inline (i32, inline Reply) {
+        return (n + 1, r);
+      }
+      export let main = (): i32 => score(make(3, true)) + score(relabel(1, (false, 5)));
+    `);
+    assertNoAllocation(result, '$make', 'nested union members written into slots');
+    assertNoAllocation(result, '$score', 'a match reads the nested literal and slots');
+    assertNoAllocation(result, '$relabel', 'a nested union forwarded as its slots');
+    assertNoAllocation(result, '$main', 'nested literals passed as slots');
+  });
+
   // The shaped vector types (`I32x4` and friends in `zena:simd`) are
   // extension classes over `v128`, and their whole value proposition is
   // that the shape is a compile-time view: no wrapper object, so no

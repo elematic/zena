@@ -157,9 +157,8 @@ function resolveInlineOperand(ctx: CheckerContext, ann: TypeAnnotation): Type {
         for (let element in elementTypes) {
           let elType = resolveTypeAnnotation(ctx, element, true);
           // An inline tuple nests: its slots become the outer one's. A
-          // union cannot be spliced into one list of positions, so a
-          // nested inline union is not supported yet.
-          let unwrapped = unwrapAliases(elType);
+          // nested inline union is distributed over the outer tuple's
+          // members (#811).
           // An inline record nests the same way, its fields in order; a
           // field's presence word has no position to go in yet.
           let nestedRecord = inlineRecordOf(elType);
@@ -172,13 +171,6 @@ function resolveInlineOperand(ctx: CheckerContext, ann: TypeAnnotation): Type {
                 element.loc,
               );
             }
-          } else if (isInlineType(elType) && !(unwrapped is InlineTupleT) &&
-              !(unwrapped is InlineParamType)) {
-            ctx.error(
-              "An inline union inside an inline tuple is not supported yet.",
-              DiagnosticCode.TypeMismatch,
-              element.loc,
-            );
           }
           elTypes.push(elType);
         }

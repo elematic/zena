@@ -4,7 +4,7 @@ import {
   U8Type, U16Type, I8Type, I16Type, V128Type,
   UnknownType, ErrorType, AnyRefType, EqRefType, ExternRefType, NeverType, HoleType,
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
-  UnionType, InlineTupleType, InlineParamType, InlineRecordType, inlineOf, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
+  UnionType, InlineTupleType, InlineParamType, InlineRecordType, inlineOf, baseType, BoolLiteralType, NumLiteralType, StringLiteralType, sameNumericLiteralRaw,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
   countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType, mergeRow, mergeTupleRow,
   scopedFieldNames } from '../types.zena';
@@ -1976,8 +1976,23 @@ export final class InlineLayout {
    * positions of these.
    */
   members: GrowableArray<InlineTupleType>;
-  /** The members as written, nested inline tuples and all. */
+  /**
+   * The members with their nested inline tuples, a nested inline union
+   * distributed: `inline (A, B | C)` has the members `(A, B)` and
+   * `(A, C)`, so each position of a member is one tuple or one leaf.
+   */
   originals: GrowableArray<InlineTupleType>;
+  /**
+   * For each member, the member as written that it came from, its nested
+   * inline unions undistributed: what its boxed form is built as.
+   */
+  written: GrowableArray<InlineTupleType>;
+  /**
+   * The paths of the literals that tell the members apart: "0" for a
+   * union's own discriminant, "p.0" for that of a union nested at p. A
+   * member is the one whose literals the values there match.
+   */
+  discriminantPaths: GrowableArray<String>;
   /** The path each slot belongs to, parallel to `slots`. */
   slotPaths: GrowableArray<String>;
   /**
@@ -2002,8 +2017,18 @@ export final class InlineLayout {
    */
   memberPaths: GrowableArray<GrowableArray<String>>;
 
-  new(this.slots, this.members, this.originals, this.slotPaths, this.memberSlots,
-      this.memberPaths, this.arity, this.discriminant);
+  new(this.slots, this.members, this.originals, this.written, this.slotPaths,
+      this.memberSlots, this.memberPaths, this.arity, this.discriminant,
+      this.discriminantPaths);
+
+  /**
+   * Whether the members put different tuples at `path`, which a nested
+   * inline union does: reading or writing the position whole then
+   * depends on which member the value is.
+   */
+  isUnionAt(path: String): boolean {
+    return this.discriminantPaths.contains(`${path}.0`);
+  }
 
   /** The slot member `m`'s leaf at `path` occupies, or -1. */
   slotAt(m: i32, path: String): i32 {
@@ -2093,18 +2118,28 @@ export final class InlineLayout {
  * `type` is neither. See `InlineLayout`.
  */
 export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | null {
-  let originals = new Array<InlineTupleType>();
+  let writtenMembers = new Array<InlineTupleType>();
   if (type is InlineTupleType) {
-    originals.push(type);
+    writtenMembers.push(type);
   } else if (type is UnionType) {
     for (let t in type.types) {
       if (t is InlineTupleType) {
-        originals.push(t);
+        writtenMembers.push(t);
       }
     }
   }
-  if (originals.length == 0) {
+  if (writtenMembers.length == 0) {
     return null;
+  }
+  // A nested inline union is distributed: one member per choice of its
+  // members (#811).
+  let originals = new Array<InlineTupleType>();
+  let written = new Array<InlineTupleType>();
+  for (let w in writtenMembers) {
+    for (let d in distributeInlineUnions(w)) {
+      originals.push(d);
+      written.push(w);
+    }
   }
   // Each member's leaves, with the path of each: "p" for a top-level
   // position, "p.k" for the k-th leaf of a nested inline tuple at p.
@@ -2250,9 +2285,127 @@ export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | nul
     }
   }
   // The checker requires a union of several to start each member with
-  // a distinct literal (`checkTupleUnionMembers`).
-  return new InlineLayout(slots, members, originals, slotPaths, memberSlots,
-      memberPaths, arity, if (members.length < 2) -1 else 0);
+  // a distinct literal (`checkTupleUnionMembers`), a nested one too, so a
+  // path every member has a literal at, not all the same, tells them
+  // apart.
+  let discriminantPaths = new Array<String>();
+  if (members.length > 1) {
+    for (let path in order) {
+      var first: Type | null = null;
+      var allLiteral = true;
+      var differ = false;
+      for (var m = 0; m < members.length; m += 1) {
+        let i = pathIndex(memberPaths[m], path);
+        let el = if (i >= 0) members[m].elementTypes[i] else null;
+        if (!(el is BoolLiteralType) && !(el is NumLiteralType)) {
+          allLiteral = false;
+          break;
+        }
+        let f = first;
+        if (f == null) {
+          first = el;
+        } else if (!sameLiteralType(f, el as Type)) {
+          differ = true;
+        }
+      }
+      if (allLiteral && differ) {
+        discriminantPaths.push(path);
+      }
+    }
+  }
+  return new InlineLayout(slots, members, originals, written, slotPaths, memberSlots,
+      memberPaths, arity, if (discriminantPaths.contains('0')) 0 else -1,
+      discriminantPaths);
+}
+
+/** Whether two literal types are the same literal. */
+function sameLiteralType(a: Type, b: Type): boolean {
+  if (let BoolLiteralType {value} = a) {
+    return if (let BoolLiteralType {value as other} = b) value == other else false;
+  }
+  if (let NumLiteralType {raw} = a) {
+    return if (let NumLiteralType {raw as other} = b) sameNumericLiteralRaw(raw, other) else false;
+  }
+  return false;
+}
+
+/** The members of a nested inline union, as inline tuples, or null. */
+export function nestedInlineUnion(t: Type): GrowableArray<InlineTupleType> | null {
+  var u = t;
+  while (u is TypeAliasType) {
+    u = u.target;
+  }
+  if (!(u is UnionType)) {
+    return null;
+  }
+  let members = new Array<InlineTupleType>();
+  for (let member in u.types) {
+    var m = member;
+    while (m is TypeAliasType) {
+      m = m.target;
+    }
+    if (!(m is InlineTupleType)) {
+      return null;
+    }
+    members.push(m);
+  }
+  return members;
+}
+
+/**
+ * `t` with each nested inline union replaced by one of its members, in
+ * every combination: `(A, B | C)` gives `(A, B)` and `(A, C)`. A nested
+ * inline tuple is distributed inside too.
+ */
+export function distributeInlineUnions(t: InlineTupleType): GrowableArray<InlineTupleType> {
+  var combos = growable<GrowableArray<Type>>([new Array<Type>()]);
+  var changed = false;
+  for (let el in t.elementTypes) {
+    let choices = new Array<Type>();
+    let union = nestedInlineUnion(el);
+    let tuple = if (union == null && nestedInlineRecord(el) == null) nestedInlineTuple(el) else null;
+    if (union != null) {
+      for (let member in union) {
+        for (let d in distributeInlineUnions(member)) {
+          choices.push(d);
+        }
+      }
+      changed = true;
+    } else if (tuple != null) {
+      let inner = distributeInlineUnions(tuple);
+      if (inner.length == 1 && inner[0] === tuple) {
+        choices.push(el);
+      } else {
+        for (let d in inner) {
+          choices.push(d);
+        }
+        changed = true;
+      }
+    } else {
+      choices.push(el);
+    }
+    let next = new Array<GrowableArray<Type>>();
+    for (let combo in combos) {
+      for (let choice in choices) {
+        let extended = new Array<Type>();
+        for (let c in combo) {
+          extended.push(c);
+        }
+        extended.push(choice);
+        next.push(extended);
+      }
+    }
+    combos = next;
+  }
+  let out = new Array<InlineTupleType>();
+  if (!changed) {
+    out.push(t);
+    return out;
+  }
+  for (let combo in combos) {
+    out.push(new InlineTupleType(combo));
+  }
+  return out;
 }
 
 /** Where `path` is in `paths`, or -1. */
@@ -2586,6 +2739,15 @@ export function mapReturnTypeToWasmResults(wasm: WasmModule, type: Type, returns
     return;
   }
   if (type is InlineTupleType) {
+    // A nested inline union makes it a union of members (#811): its
+    // results are the layout's slots.
+    if (distributeInlineUnions(type).length > 1) {
+      let layout = inlineLayoutOf(wasm, type) as InlineLayout;
+      for (let vt in layout.slots) {
+        returns.push(vt);
+      }
+      return;
+    }
     for (let el in flattenInlineTuple(type).elementTypes) {
       let vt = typeToValType(wasm, el);
       if (!(vt is ValTypeVoid)) {
