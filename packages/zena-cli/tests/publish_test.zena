@@ -116,6 +116,15 @@ export let tests = suite('zena pkg publish', () => {
       // A version is published once.
       let again = await lib.run(['pkg', 'publish']);
       isTrue(!again.succeeded() && again.stderr.contains('VersionExists'), described(again));
+      // A manifest that lost its DID, as when it was never committed, is
+      // told the DID of the package its name already is.
+      await write(scratch.at('forgot/zena-package.json'),
+          '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.1"}\n');
+      await write(scratch.at('forgot/greet.zena'), 'export function answer(): i32 { return 42; }\n');
+      let forgot = await zenaIn('forgot').run(['pkg', 'publish', '--yes']);
+      isTrue(!forgot.succeeded() && forgot.stderr.contains(`greet.acme.pkg.test already exists, as ${did}`) &&
+          forgot.stderr.contains(`"did": "${did}"`), described(forgot));
+      isTrue(!(await read(scratch.at('forgot/zena-package.json'))).contains('"did"'), 'nothing was written');
       // A manifest whose scope is not the package's is refused, and so is a
       // --scope that disagrees with the manifest.
       await write(scratch.at('lib/zena-package.json'),
