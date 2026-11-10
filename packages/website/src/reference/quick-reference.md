@@ -2259,7 +2259,11 @@ let nums = fixed([1, 2, 3]); // FixedArray<i32>
 let arr = new Array<i32>.fixed(10, 0); // Size 10, initialized to 0
 arr[0] = 42;
 let len = arr.length; // 10
+nums.sort((a, b) => b - a); // [3, 2, 1], in place
 ```
+
+`sort(compare)` works on a `GrowableArray` too. It is stable: equal elements
+keep their order.
 
 ### GrowableArray
 
