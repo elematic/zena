@@ -223,6 +223,10 @@ export let tests = suite('atproto:xrpc, atproto:identity and atproto:sync', () =
     equal(await resolver.resolveHandle('ATPROTO.com') as String, DID);
     world.wellKnownDid = null;
     isNull(await resolver.resolveHandle('atproto.com'));
+    // Most handles have no web server: one that cannot be reached, after DNS
+    // had nothing, is a handle with no DID, not a failure.
+    resolver.originOf = (host) => 'http://127.0.0.1:2';
+    isNull(await resolver.resolveHandle('atproto.com'));
     server.close();
   });
 
@@ -243,6 +247,14 @@ export let tests = suite('atproto:xrpc, atproto:identity and atproto:sync', () =
       return 'resolved';
     });
     isTrue(failure.contains('127.0.0.1:1/dns-query'), failure);
+    // So it is when the handle's own host cannot be reached either, as a
+    // name with no web server cannot.
+    resolver.originOf = (host) => 'http://127.0.0.1:2';
+    let unreachable = await message(async (): Future<String> => {
+      await resolver.resolveHandle('atproto.com');
+      return 'resolved';
+    });
+    isTrue(unreachable.contains('127.0.0.1:1/dns-query'), unreachable);
     server.close();
   });
 

@@ -54,7 +54,7 @@ import { Version } from 'package-manager:version';
 import { DiskFiles, WorkspacePackage, readWorkspace } from 'package-manager:workspace';
 import { Options, workspaceRoot, userCwd } from './env.zena';
 import { packageResolver } from './fetch.zena';
-import { didWebHost } from 'atproto:identity';
+import { IdentityError, didWebHost } from 'atproto:identity';
 import { URL } from 'zena:url';
 import { configDir, currentSession, saveSession } from './login.zena';
 import { REPO_GET_RECORD, REPO_PUT_RECORD } from 'atproto:methods';
@@ -498,17 +498,25 @@ export async function createOrganization(session: Session, registry: Registry, s
 
 /**
  * The account the handle of a scope names, when the handle resolves to a
- * DID whose document claims it back; null otherwise, as for a scope that
- * does not exist yet, or a record left behind by one that is gone. The
- * registry refuses to create a scope that does exist (`NameTaken`), so a
- * lookup that fails for another reason does no harm.
+ * DID whose document claims it back; null when it does not, as for a
+ * scope that does not exist yet, or a record left behind by one that is
+ * gone. A lookup that gets no answer, from a DNS-over-HTTPS resolver or a
+ * PLC directory that cannot be reached, is a `PublishError` naming them,
+ * and not a scope that is not there.
  */
 export async function scopeOrganization(handle: String): Future<String | null> {
+  let resolver = packageResolver();
   try {
-    let resolved = await packageResolver().resolve(handle);
+    let resolved = await resolver.resolve(handle);
     return resolved.did;
   } catch (e) {
-    return null;
+    // The answer: the handle resolves to no DID, or to one that does not
+    // claim it.
+    if (e is IdentityError) {
+      return null;
+    }
+    // No answer, as when a variable still names a server that has stopped.
+    throw new PublishError(`could not look up ${handle}: ${e.message}. Handles are looked up through ${resolver.dnsOverHttps} (ZENA_DNS_OVER_HTTPS), and DIDs through ${resolver.plcDirectory} (ZENA_PLC_DIRECTORY).`);
   }
 }
 
