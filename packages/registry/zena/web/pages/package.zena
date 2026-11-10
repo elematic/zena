@@ -23,7 +23,7 @@ import {chip, count, each, externalLink, when} from '../partials/common.zena';
 import {Shown, describe, shownWith, visibleEntries} from '../partials/members.zena';
 import {PendingRow, pendingOf, pendingTable} from '../partials/pending.zena';
 import {personLink} from '../partials/person.zena';
-import {formatBytes, readmeHtml} from '../partials/readme.zena';
+import {PackageUrls, fileUrl, formatBytes, readmeHtml} from '../partials/readme.zena';
 import {notFound} from './not-found.zena';
 
 /** How many of a package's newest releases its page shows the approvers of. */
@@ -34,6 +34,23 @@ let APPROVALS_SHOWN = 10;
  * `/packages/<handle>/versions/<version>`, to `router`.
  */
 export function packagePage(router: Router, appView: AppView, people: People, approvals: Approvals): void {
+  router.get('/packages/:handle/versions/:version/files/*', async (req, res, next, params) => {
+    let handle = percentDecode(params['handle'] ?? '');
+    let version = percentDecode(params['version'] ?? '');
+    let detail = await appView.getPackage(handle);
+    let files = if (detail != null) await appView.releaseFiles(detail.did, version) else null;
+    let path = percentDecode(params['*'] ?? '');
+    if (files != null) {
+      for (let file in files.files) {
+        if (file.path == path) {
+          serveFile(res, path, file.contents);
+          return;
+        }
+      }
+    }
+    let context = await contextOf(req, appView, people);
+    notFound(res, context, `${handle} ${version} has no file ${path}.`);
+  });
   router.get('/packages/:handle/versions/:version', async (req, res, next, params) => {
     let context = await contextOf(req, appView, people);
     await packageView(context, res, appView, approvals, percentDecode(params['handle'] ?? ''),
@@ -183,11 +200,11 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
           <rad-tab-panel name="readme" active>
             ${if (release == null) html`<p class="muted">Nothing is published yet.</p>`
                 else if (readme == null) html`<p class="muted">This release has no README.</p>`
-                else readmeHtml(readme)}
+                else readmeHtml(readme, new PackageUrls(detail.handle, version as String, files as ReleaseFiles))}
           </rad-tab-panel>
           <rad-tab-panel name="files">
             ${if (files == null) html`<p class="muted">${if (release == null) 'Nothing is published yet.' else 'The source archive could not be read.'}</p>`
-                else fileList(files)}
+                else fileList(detail.handle, version as String, files)}
           </rad-tab-panel>
           <rad-tab-panel name="dependencies">
             ${if (release == null) html`<p class="muted">Nothing is published yet.</p>` else dependencies(release, handles)}
@@ -222,6 +239,35 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
       </aside>
     </div>
   `;
+}
+
+/** The image types a package's file is served as, by its extension; any other file is plain text. */
+let IMAGE_TYPES: HashMap<String, String> = {
+  'png' => 'image/png',
+  'jpg' => 'image/jpeg',
+  'jpeg' => 'image/jpeg',
+  'gif' => 'image/gif',
+  'webp' => 'image/webp',
+  'avif' => 'image/avif',
+  'svg' => 'image/svg+xml',
+  'ico' => 'image/x-icon',
+};
+
+/**
+ * Answers with `contents`, the file at `path` in a release's archive: an
+ * image as its type, so a README can show it, and anything else as plain
+ * text. The publisher chose the bytes, so the answer may not be sniffed and
+ * runs nothing (an SVG's script included); it never changes, since a
+ * release never does.
+ */
+function serveFile(res: Response, path: String, contents: FixedArray<u8>): void {
+  let dot = path.split('.');
+  let extension = if (dot.length > 1) dot[dot.length - 1].asciiLowerCase() else '';
+  res.type = IMAGE_TYPES.getOr(extension, 'text/plain; charset=utf-8');
+  res.setHeader('cache-control', 'public, max-age=31536000, immutable');
+  res.setHeader('x-content-type-options', 'nosniff');
+  res.setHeader('content-security-policy', "default-src 'none'; sandbox");
+  res.body = contents;
 }
 
 /** The README of `files`, or null without files. */
@@ -326,12 +372,15 @@ function maintainers(record: Maintainers, shown: Shown): HTMLPartial {
   `;
 }
 
-function fileList(files: ReleaseFiles): HTMLPartial {
+function fileList(handle: String, version: String, files: ReleaseFiles): HTMLPartial {
   return html`
     <table>
       <thead><tr><th>File</th><th>Size</th></tr></thead>
       <tbody>${each(files.files, (file) => html`
-        <tr><td class="mono">${file.path}</td><td class="muted">${formatBytes(file.contents.length as i64)}</td></tr>`)}
+        <tr>
+          <td class="mono"><a href="${fileUrl(handle, version, file.path)}">${file.path}</a></td>
+          <td class="muted">${formatBytes(file.contents.length as i64)}</td>
+        </tr>`)}
       </tbody>
     </table>
     <p class="muted">${count(files.files.length, 'file')}, ${formatBytes(files.archiveBytes)} as an archive.</p>

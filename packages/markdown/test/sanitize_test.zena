@@ -5,7 +5,7 @@
 
 import {suite, test, TestContext} from 'zena:test';
 import {equal} from 'zena:assert';
-import {markdownToHtml, isSafeUrl, gfmExtensions} from 'markdown:index';
+import {UrlResolver, markdownToHtml, isSafeUrl, gfmExtensions} from 'markdown:index';
 
 export let tests = suite(
   'Sanitization and Safe Mode',
@@ -109,5 +109,37 @@ export let tests = suite(
         );
       }
     );
+
+    test(
+      'rewrites link and image URLs with a resolver, which can remove them',
+      (ctx) => {
+        let resolver = new UnderDocs();
+        // A link keeps its text when its URL is removed; an image goes.
+        equal(
+          markdownToHtml('[a](a.md) [b](../b.md) ![c](c.png) ![d](../d.png) <https://e.example>', { resolver: resolver }),
+          '<p><a href="/docs/a.md">a</a> b <img src="/docs/c.png" alt="c" />  <a href="https://e.example">https://e.example</a></p>\n'
+        );
+        // Links in a table, which an extension renders, are resolved too,
+        // and safe mode checks what the resolver gives.
+        equal(
+          markdownToHtml('| x |\n| - |\n| [t](t.md) |\n\n[j](javascript:alert(1))\n',
+              { resolver: resolver, safe: true, extensions: gfmExtensions() }),
+          '<table>\n<thead>\n<tr>\n<th>x</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td><a href="/docs/t.md">t</a></td>\n</tr>\n</tbody>\n</table>\n<p><a href="">j</a></p>\n'
+        );
+      }
+    );
   }
 );
+
+/** Puts relative URLs under `/docs/`, and removes those that start with `..`. */
+final class UnderDocs implements UrlResolver {
+  resolve(url: String, isImage: boolean): String | null {
+    if (url.startsWith('../')) {
+      return null;
+    }
+    if (url.contains(':')) {
+      return url;
+    }
+    return `/docs/${url}`;
+  }
+}

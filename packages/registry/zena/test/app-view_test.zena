@@ -1574,11 +1574,15 @@ export let tests = suite('registry:app-view', () => {
           .toBytes(),
         'router.zena' => 'export let route = 1;\n'.toBytes(),
         'README.md' => readme.toBytes(),
+        'docs/guide.md' => '# Guide\n'.toBytes(),
+        'logo.png' => new FixedArray<u8>(4, 137 as u8),
       };
       return packSource(files);
     };
+    let links = '[guide](docs/guide.md#start) [up](../outside.md) [gone](nope.md) [source](/router.zena) ' +
+        '![logo](./logo.png) ![badge](https://img.example/badge.svg) [top](#router)';
     await release(fixture, ALICE, router, '1.0.0', await upload(fixture, router,
-        withReadme('1.0.0', '# Router\n\nRoutes **requests**.\n\n<script>alert(1)</script>\n')));
+        withReadme('1.0.0', `# Router\n\nRoutes **requests**.\n\n<script>alert(1)</script>\n\n${links}\n`)));
     await release(fixture, ALICE, router, '1.1.0', await upload(fixture, router,
         withReadme('1.1.0', '# Router\n\nNow with ~~fewer~~ more routes.\n')));
     ok(await fixture.call(ALICE, 'retract', `{"package": "${router}", "version": "1.1.0", "reason": "broken"}`));
@@ -1590,13 +1594,34 @@ export let tests = suite('registry:app-view', () => {
         !packageHtml.contains('fewer'), packageHtml);
     isTrue(packageHtml.contains('href="/packages/router.acme.pkg.test/versions/1.1.0"'), 'a link to 1.1.0');
 
+    // The README's relative links and images point to the release's files,
+    // from the package's root; one that leaves the root, or names no file,
+    // is left out, with its text. An image from another site stays.
+    let files = '/packages/router.acme.pkg.test/versions/1.0.0/files';
+    for (let expected in [`<a href="${files}/docs/guide.md#start">guide</a>`, ' up ', ' gone ',
+        `<a href="${files}/router.zena">source</a>`, `<img src="${files}/logo.png" alt="logo" />`,
+        '<img src="https://img.example/badge.svg"', '<a href="#router">top</a>']) {
+      isTrue(packageHtml.contains(expected), `${expected} in the README`);
+    }
+    isTrue(!packageHtml.contains('outside.md') && !packageHtml.contains('nope.md'), 'no link out of the package');
+    // The App View serves those files: an image as its type, anything else as
+    // text, and neither runs on its origin.
+    let logo = await fixture.get(`${files}/logo.png`);
+    equal(logo.statusCode, 200);
+    equal(logo.type ?? '', 'image/png');
+    equal(logo.getHeader('content-security-policy') ?? '', "default-src 'none'; sandbox");
+    equal(logo.getHeader('x-content-type-options') ?? '', 'nosniff');
+    let guide = await fixture.get(`${files}/docs/guide.md`);
+    equal(guide.type ?? '', 'text/plain; charset=utf-8');
+    equal((await fixture.get(`${files}/nope.md`)).statusCode, 404);
+
     // A version's page has its own README, its files with their sizes, and
     // the command that adds it.
     let versionResponse = await fixture.get('/packages/router.acme.pkg.test/versions/1.1.0');
     equal(versionResponse.statusCode, 200);
     let versionHtml = pageOf(versionResponse);
-    for (let expected in ['<del>fewer</del>', 'README.md', 'router.zena', 'zena-package.json', '3 files', 'retracted',
-        'broken', 'bytes', 'zena pkg add router.acme.pkg.test@1.1.0']) {
+    for (let expected in ['<del>fewer</del>', 'README.md', 'router.zena', 'zena-package.json', '5 files', 'retracted',
+        'broken', 'bytes', 'zena pkg add router.acme.pkg.test@1.1.0', 'href="/packages/router.acme.pkg.test/versions/1.1.0/files/docs/guide.md"']) {
       isTrue(versionHtml.contains(expected), `${expected} in the version page`);
     }
     equal((await fixture.get('/packages/router.acme.pkg.test/versions/9.9.9')).statusCode, 404);
