@@ -450,14 +450,33 @@ export function lowerBinary(cx: LoweringContext, bin: BinaryExpression): i32 {
     if (leftBase is ClassType) {
       let opMember = if (bin.operator == "!=") "==" else bin.operator;
       let leftCt = eraseTypeParameters(cx.wasm, leftBase) as ClassType;
+      let chosenFt = cx.func.model.getResolvedOverload(bin);
       if (leftCt.members.has(opMember)) {
         let left = lowerExpr(cx, bin.left, null);
         let right = lowerExpr(cx, bin.right, null);
-        let raw = cx.operatorMemberOn(opMember, left, right, leftCt);
+        let raw = cx.operatorMemberOn(opMember, left, right, leftCt, chosenFt);
         if (bin.operator == "!=") {
           return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), raw, -1);
         }
         return raw;
+      }
+      if ((bin.operator == "<" || bin.operator == "<=" ||
+           bin.operator == ">" || bin.operator == ">=") &&
+          leftCt.members.has("compareTo")) {
+        let left = lowerExpr(cx, bin.left, null);
+        let right = lowerExpr(cx, bin.right, null);
+        let cmp = cx.operatorMemberOn("compareTo", left, right, leftCt, chosenFt);
+        let zero = cx.b.constI32(0, new ValTypeI32());
+        let cmpOp = if (bin.operator == "<") {
+          IrOp.i32_lt_s
+        } else if (bin.operator == "<=") {
+          IrOp.i32_le_s
+        } else if (bin.operator == ">") {
+          IrOp.i32_gt_s
+        } else {
+          IrOp.i32_ge_s
+        };
+        return cx.b.binary(cmpOp, new ValTypeI32(), cmp, zero);
       }
     }
   }
@@ -770,6 +789,15 @@ export function lowerUnary(cx: LoweringContext, un: UnaryExpression): i32 {
   if (un.operator == "-" && un.argument is NumberLiteral &&
       isRefValType(cx.exprVt(un))) {
     return lowerBigIntLiteral(cx, (un.argument as NumberLiteral).raw, true);
+  }
+  let argBase = substitutedBaseType(cx, un.argument);
+  if (un.operator == "-" && argBase != null && argBase is ClassType) {
+    let argCt = eraseTypeParameters(cx.wasm, argBase) as ClassType;
+    if (argCt.members.has("-")) {
+      let operand = lowerExpr(cx, un.argument, null);
+      let chosenFt = cx.func.model.getResolvedOverload(un);
+      return cx.unaryOperatorMemberOn("-", operand, argCt, chosenFt);
+    }
   }
   let value = lowerExpr(cx, un.argument, null);
   let vt = cx.valueTypeOf(value);

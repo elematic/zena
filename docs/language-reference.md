@@ -319,8 +319,8 @@ Appending `n` (or `_n`) to any decimal, `0x`, `0b`, or `0o` integer literal
 produces a `BigInt` (`zena:bigint`) of arbitrary magnitude with no import
 required. Unsuffixed integer literals of any magnitude also adapt when the
 expected type is `BigInt` (including nullable `BigInt?` and unions such as
-`BigInt | String`), and in `BigInt` arithmetic, bitwise, equality, and `match`
-expressions:
+`BigInt | String`), and in `BigInt` arithmetic, bitwise, relational, equality,
+and `match` expressions:
 
 ```zena
 let big = 100_000_000_000_000_000_000_000n; // BigInt (no import needed)
@@ -4019,9 +4019,12 @@ class Calculator {
 
 #### Operator Overloading
 
-Classes can define custom behavior for arithmetic (`+`, `-`, `*`, `/`, `%`,
-`**`), bitwise and shift (`&`, `|`, `^`, `<<`, `>>`, `>>>`), equality (`==`),
-and subscript (`[]`, `[]=`) operators.
+Classes can define custom behavior for unary `-`, binary arithmetic (`+`, `-`,
+`*`, `/`, `%`, `**`), bitwise and shift (`&`, `|`, `^`, `<<`, `>>`, `>>>`),
+relational (`<`, `<=`, `>`, `>=`), equality (`==`), and subscript (`[]`, `[]=`)
+operators. Operator methods may be overloaded by parameter count or parameter
+type, and compound assignments (`+=`, `-=`, and so on) resolve through the
+corresponding binary operator.
 
 ##### Binary Operators
 
@@ -4041,12 +4044,73 @@ class Vector {
   operator +(other: Vector): Vector {
     return new Vector(this.x + other.x, this.y + other.y);
   }
+
+  operator *(scale: i32): Vector {
+    return new Vector(this.x * scale, this.y * scale);
+  }
 }
 
 let v1 = new Vector(1, 2);
 let v2 = new Vector(3, 4);
 let v3 = v1 + v2; // Vector(4, 6)
 ```
+
+An operator may declare multiple overloads with distinct parameter types (for
+example, `Instant` in `zena:time` defines `operator -(other: Instant): Duration`
+and `operator -(d: Duration): Instant`). Overload selection uses the same
+most-specific rule and literal adaptation as ordinary method calls.
+
+##### Unary Negation
+
+Zero-parameter `operator -()` defines unary negation (`-a`), and can coexist on
+the same class with binary `operator -(other)`:
+
+```zena
+class Vector {
+  x: i32;
+  y: i32;
+  new(this.x, this.y);
+
+  operator -(): Vector {
+    return new Vector(-this.x, -this.y);
+  }
+
+  operator -(other: Vector): Vector {
+    return new Vector(this.x - other.x, this.y - other.y);
+  }
+}
+
+let neg = -v1;
+let diff = v2 - v1;
+```
+
+##### Relational Operators
+
+`<`, `<=`, `>`, and `>=` check first for a direct `operator <`, `operator <=`,
+`operator >`, or `operator >=` method on the left operand's class. When that
+operator is not declared, the compiler falls back to `compareTo(other): i32` and
+compares the returned `i32` against `0` (`< 0`, `<= 0`, `> 0`, `>= 0`).
+
+Types with a total order (`BigInt`, `String`, `Instant`, `Duration`) get all
+four relational operators from a single `compareTo`:
+
+```zena
+class Version(major: i32, minor: i32) {
+  compareTo(other: Version): i32 {
+    if (this.major != other.major) {
+      return if (this.major < other.major) -1 else 1;
+    }
+    return if (this.minor < other.minor) -1 else if (this.minor > other.minor) 1 else 0;
+  }
+}
+
+let ok = new Version(1, 2) < new Version(2, 0); // true
+```
+
+Types with a partial order (such as IEEE 754 floating-point or decimal types
+where `NaN` is unordered) declare `operator <`, `operator <=`, `operator >`, and
+`operator >=` directly so unordered pairs return `false` on every relational
+operator.
 
 The `operator ==` method enables custom equality comparison:
 
@@ -4116,28 +4180,6 @@ a == b; // true: Point's operator answers
 A hierarchy where no class declares `operator ==` compiles `==` to an
 identity test, so the virtual call costs nothing until some class asks for
 it.
-
-##### Unary Operators
-
-Only binary operators dispatch to operator methods. Unary `-` requires a
-numeric type, and `-value` on a class is an error however the class is
-declared:
-
-```zena
-class Vector {
-  x: i32;
-  new(this.x);
-  operator -(other: Vector): Vector {
-    return new Vector(this.x - other.x);
-  }
-}
-
-let d = a - b; // OK: the binary operator method
-let n = -a;    // Error: Unary '-' requires a numeric type, got 'Vector'
-```
-
-A type that wants negation gives it a name — `a.neg()`. This is why the
-vector types in `zena:simd` spell negation as a method.
 
 ##### Operators on Extension Classes
 

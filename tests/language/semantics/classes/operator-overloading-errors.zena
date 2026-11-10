@@ -1,0 +1,75 @@
+// @mode: check
+// Error cases for unary `-`, overloaded binary operators, generic receiver
+// substitution (#232), and relational operators / `compareTo` fallback (#253).
+
+class OnlyBinaryMinus {
+  v: i32;
+  new(this.v);
+
+  operator -(other: OnlyBinaryMinus): OnlyBinaryMinus {
+    return new OnlyBinaryMinus(this.v - other.v);
+  }
+}
+
+let testMissingUnary = (x: OnlyBinaryMinus): OnlyBinaryMinus => {
+  return -x; // @error: Unary '-'
+};
+
+class Unordered {
+  v: i32;
+  new(this.v);
+}
+
+let testMissingRel = (a: Unordered, b: Unordered): boolean => {
+  return a < b; // @error: cannot apply operator '<'
+};
+
+class BadCompareTo {
+  v: i32;
+  new(this.v);
+
+  compareTo(other: BadCompareTo): String {
+    return "bad";
+  }
+}
+
+let testBadCompareToReturn = (a: BadCompareTo, b: BadCompareTo): boolean => {
+  return a <= b; // @error: compareTo
+};
+
+class Meters {}
+class Seconds {}
+
+class Qty<D> {
+  v: f64;
+  new(this.v);
+
+  operator +(other: Qty<D>): Qty<D> {
+    return new Qty<D>(this.v + other.v);
+  }
+
+  compareTo(other: Qty<D>): i32 {
+    return 0;
+  }
+}
+
+let testWrongUnitAdd = (m: Qty<Meters>, s: Qty<Seconds>): Qty<Meters> => {
+  return m + s; // @error: Type mismatch
+};
+
+let testWrongUnitRel = (m: Qty<Meters>, s: Qty<Seconds>): boolean => {
+  return m < s; // @error: Type mismatch
+};
+
+interface Left {}
+interface Right {}
+class Both implements Left, Right {}
+
+class Amb {
+  operator +(a: Left): i32 { return 1; }
+  operator +(b: Right): i32 { return 2; }
+}
+
+let testAmbiguousOp = (x: Amb, b: Both): i32 => {
+  return x + b; // @error: Ambiguous overload
+};

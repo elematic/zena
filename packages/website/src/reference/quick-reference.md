@@ -1895,10 +1895,13 @@ class Rectangle(width: f64, height: f64) extends Shape
 
 Classes can overload operators to provide custom behavior for built-in syntax.
 
-#### Binary arithmetic and bitwise operators
+#### Unary, binary, and relational operators
 
-Classes and extension classes can overload `+`, `-`, `*`, `/`, `%`, `**`, `&`,
-`|`, `^`, `<<`, `>>`, and `>>>`:
+Classes and extension classes can overload unary `-` (`operator -()`), binary
+`+`, `-`, `*`, `/`, `%`, `**`, `&`, `|`, `^`, `<<`, `>>`, `>>>`, and relational
+`<`, `<=`, `>`, `>=` (either directly or by implementing `compareTo(other): i32`,
+which supplies any relational operator not declared directly). Operator methods
+support multiple overloads by parameter count or parameter type:
 
 ```zena
 class Mask {

@@ -154,25 +154,26 @@ let maybe = BigInt.parse('not-a-number'); // null
 
 ### Arithmetic, bitwise, and number-theoretic operations
 
-`BigInt` overloads the binary arithmetic, equality, and bitwise operators:
+`BigInt` overloads unary negation, binary arithmetic, relational, equality, and bitwise
+operators:
 
-- **Arithmetic**: `+`, `-`, `*`, `%` (truncating remainder with the dividend's sign),
-  and `**` (non-negative `i32` exponent; `a.pow(exp)` accepts non-negative `i64`).
-- **Equality**: `==` and `!=` compare values structurally.
+- **Arithmetic**: unary `-` (`a.neg()` is also available), binary `+`, `-`, `*`, `%`
+  (truncating remainder with the dividend's sign), and `**` (non-negative `i32`
+  exponent; `a.pow(exp)` accepts non-negative `i64`).
+- **Ordering and equality**: `<`, `<=`, `>`, and `>=` compare values (backed by
+  `a.compareTo(b)`, which returns `-1`, `0`, or `1`); `==` and `!=` test structural
+  equality; `a.min(b)` and `a.max(b)` select the smaller or larger value.
 - **Bitwise**: `&`, `|`, `^`, `<<`, and `>>` (non-negative `i32` shift counts; negative
   counts throw `Error`). Bitwise operations on negative values follow infinite
   two's-complement semantics, matching Python and JavaScript `BigInt`, and `>>`
   sign-extends (`floor(a / 2^bits)`).
 
-Operations whose operator syntax is reserved or not yet overloadable on classes are
-exposed as methods:
+Additional integer and number-theoretic operations are provided as methods:
 
 - **Truncating division**: `a.div(b)` returns the quotient truncated toward zero, and
   `a.divRem(b)` returns `inline (quotient, remainder)` (`/` in Zena always performs
   floating-point division).
-- **Unary operations**: `a.neg()`, `a.abs()`, and `a.bitNot()` (`-(a + 1)`).
-- **Ordering**: `a.compareTo(b)` returns `-1`, `0`, or `1`; `a.min(b)` and `a.max(b)`
-  select the smaller or larger value.
+- **Magnitude and bitwise NOT**: `a.abs()` and `a.bitNot()` (`-(a + 1)`).
 - **Number theory**: `a.gcd(b)` returns the non-negative greatest common divisor, and
   `a.modPow(exp, mod)` computes `(a ** exp) % mod` with a non-negative residue in
   `0 .. mod - 1`.
