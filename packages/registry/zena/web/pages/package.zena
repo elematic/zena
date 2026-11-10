@@ -1,26 +1,29 @@
 /**
- * A package's page: its profile and scope, the command that adds it, the
- * releases waiting for approval, for its maintainers, its versions with
- * their dependencies, approvers and retractions, its maintainers, and the
- * README of its latest release. And a page for each version: what the
- * release depends on, who approved it, its files, and its README.
+ * A package's page, `/packages/<handle>`, and a page for each of its
+ * versions, `/packages/<handle>/versions/<version>`, laid out alike: the
+ * package page shows its latest release that is not retracted, and a
+ * version's page that release. Under the name, the releases waiting for
+ * approval, for its maintainers; then tabs (a Radica tab group) for the
+ * release's README, its files, its dependencies, and every version; and
+ * beside them a side bar with the command that adds it, when it was
+ * published, who approved it, its size, its links and its maintainers.
  */
 
 import {HashMap} from 'zena:collections';
 import {GrowableArray} from 'zena:core';
-import {HTMLPartial, Router, TemplateValue, html} from 'zena:http';
+import {HTMLPartial, Response, Router, TemplateValue, html} from 'zena:http';
 import {percentDecode} from 'zena:url';
 import {Dependency, Maintainer, Maintainers, RELEASE_TYPE, Release} from 'package-manager:records';
 import {PackageDetail, AppView, ReleaseFiles} from '../../app-view.zena';
 import {Approvals} from '../approvals.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
-import {contextOf} from '../session.zena';
+import {PageContext, contextOf} from '../session.zena';
 import {chip, count, each, externalLink, when} from '../partials/common.zena';
 import {Shown, describe, shownWith, visibleEntries} from '../partials/members.zena';
 import {PendingRow, pendingOf, pendingTable} from '../partials/pending.zena';
 import {personLink} from '../partials/person.zena';
-import {formatBytes, readmeSection} from '../partials/readme.zena';
+import {formatBytes, readmeHtml} from '../partials/readme.zena';
 import {notFound} from './not-found.zena';
 
 /** How many of a package's newest releases its page shows the approvers of. */
@@ -31,138 +34,193 @@ let APPROVALS_SHOWN = 10;
  * `/packages/<handle>/versions/<version>`, to `router`.
  */
 export function packagePage(router: Router, appView: AppView, people: People, approvals: Approvals): void {
-  versionPage(router, appView, people, approvals);
+  router.get('/packages/:handle/versions/:version', async (req, res, next, params) => {
+    let context = await contextOf(req, appView, people);
+    await packageView(context, res, appView, approvals, percentDecode(params['handle'] ?? ''),
+        percentDecode(params['version'] ?? ''));
+  });
   router.get('/packages/:handle', async (req, res, next, params) => {
     let context = await contextOf(req, appView, people);
-    let handle = percentDecode(params['handle'] ?? '');
-    let detail = await appView.getPackage(handle);
-    if (detail == null) {
-      notFound(res, context, `No package here has the handle ${handle}.`);
-      return;
-    }
-    let found = detail;
-    // The handles of the dependencies this App View holds, to link to them.
-    let handles = new HashMap<String, String>();
-    for (let release in found.releases) {
-      for (let dependency in release.dependencies) {
-        let account = await appView.accountOf(dependency.did);
-        if (account != null) {
-          handles[dependency.did] = account.handle;
-        }
-      }
-    }
-    res.type = 'text/html; charset=utf-8';
-    let profile = found.profile;
-    let name = profile?.name ?? found.handle;
-    let entries = await visibleEntries(context, found.did, null);
-    let named = new GrowableArray<String>();
-    let record = found.maintainers;
-    if (record != null) {
-      for (let maintainer in record.maintainers) {
-        if (maintainer.did != null) {
-          named.push(maintainer.did as String);
-        }
-      }
-    }
-    // Who approved the newest releases: each attester's repository is
-    // asked once per release, so the oldest are left out.
-    let attesters = await appView.attesters(found.did);
-    let approvedBy = new HashMap<String, Array<String>>();
-    var checked = 0;
-    for (let release in found.releases) {
-      let version = release.version.toString();
-      if (checked < APPROVALS_SHOWN) {
-        if (let (true, cid) = found.releaseCids.get(version)) {
-          let approvers = await approvals.of(`at://${found.did}/${RELEASE_TYPE}/${version}`, cid, attesters);
-          approvedBy[version] = approvers;
-          for (let did in approvers) {
-            named.push(did);
-          }
-        }
-      }
-      checked += 1;
-    }
-    let shown = await shownWith(context, entries, named);
-    if (record != null) {
-      for (let maintainer in record.maintainers) {
-        let org = maintainer.org;
-        if (org != null) {
-          let account = await appView.accountOf(org);
-          if (account != null) {
-            shown.scopes[org] = account.scope;
-          }
-        }
-      }
-    }
-    // A maintainer sees the releases waiting for approval.
-    var waiting: HTMLPartial | null = null;
-    let who = context.who;
-    if (who != null) {
-      let rows = new GrowableArray<PendingRow>();
-      for (let held in await pendingOf(appView, who.did, found.did)) {
-        rows.push(new PendingRow(found.handle, name, held));
-      }
-      if (rows.length > 0) {
-        waiting = await pendingTable(context, rows, false);
-      }
-    }
-    // The README of the latest release that is not retracted.
-    let latest = latestVersion(found);
-    let files = if (latest != null) await appView.releaseFiles(found.did, latest) else null;
-    res.body = page(`${name} · Zena packages`, context,
-        packageBody(found, handles, shown, approvedBy, waiting, readmeOf(files)));
+    await packageView(context, res, appView, approvals, percentDecode(params['handle'] ?? ''), null);
   });
 }
 
-/** A package's page: its profile, the command that adds it, its versions and its maintainers. */
-function packageBody(detail: PackageDetail, handles: HashMap<String, String>, shown: Shown,
-    approvedBy: HashMap<String, Array<String>>, waiting: HTMLPartial | null, readme: String | null): HTMLPartial {
-  let profile = detail.profile;
-  var name = detail.handle;
-  var description: String | null = null;
-  var license: String | null = null;
-  var homepage: String | null = null;
-  var source: String | null = null;
-  if (profile != null) {
-    name = profile.name;
-    description = profile.description;
-    license = profile.license;
-    homepage = profile.homepage;
-    source = profile.source;
+/**
+ * Answers with the page of the package `handle` at `version`, or at its
+ * latest release that is not retracted for null; or not found.
+ */
+async function packageView(context: PageContext, res: Response, appView: AppView, approvals: Approvals,
+    handle: String, version: String | null): Future<void> {
+  let detail = await appView.getPackage(handle);
+  if (detail == null) {
+    notFound(res, context, `No package here has the handle ${handle}.`);
+    return;
   }
-  let latest = latestVersion(detail);
+  let found = detail;
+  var release: Release | null = null;
+  let wanted = version ?? latestVersion(found);
+  for (let candidate in found.releases) {
+    if (candidate.version.toString() == wanted) {
+      release = candidate;
+    }
+  }
+  if (version != null && release == null) {
+    notFound(res, context, `${handle} has no release ${version}.`);
+    return;
+  }
+  // The handles of the dependencies this App View holds, to link to them.
+  let handles = new HashMap<String, String>();
+  for (let listed in found.releases) {
+    for (let dependency in listed.dependencies) {
+      let account = await appView.accountOf(dependency.did);
+      if (account != null) {
+        handles[dependency.did] = account.handle;
+      }
+    }
+  }
+  let name = found.profile?.name ?? found.handle;
+  let named = new GrowableArray<String>();
+  let record = found.maintainers;
+  if (record != null) {
+    for (let maintainer in record.maintainers) {
+      if (maintainer.did != null) {
+        named.push(maintainer.did as String);
+      }
+    }
+  }
+  // Who approved the newest releases, and the one shown: each attester's
+  // repository is asked once per release, so the oldest are left out.
+  let attesters = await appView.attesters(found.did);
+  let approvedBy = new HashMap<String, Array<String>>();
+  var checked = 0;
+  for (let candidate in found.releases) {
+    let candidateVersion = candidate.version.toString();
+    if (checked < APPROVALS_SHOWN || candidateVersion == wanted) {
+      if (let (true, cid) = found.releaseCids.get(candidateVersion)) {
+        let approvers = await approvals.of(`at://${found.did}/${RELEASE_TYPE}/${candidateVersion}`, cid, attesters);
+        approvedBy[candidateVersion] = approvers;
+        for (let did in approvers) {
+          named.push(did);
+        }
+      }
+    }
+    checked += 1;
+  }
+  let shown = await shownWith(context, await visibleEntries(context, found.did, null), named);
+  if (record != null) {
+    for (let maintainer in record.maintainers) {
+      let org = maintainer.org;
+      if (org != null) {
+        let account = await appView.accountOf(org);
+        if (account != null) {
+          shown.scopes[org] = account.scope;
+        }
+      }
+    }
+  }
+  // A maintainer sees the releases waiting for approval.
+  var waiting: HTMLPartial | null = null;
+  let who = context.who;
+  if (who != null) {
+    let rows = new GrowableArray<PendingRow>();
+    for (let held in await pendingOf(appView, who.did, found.did)) {
+      rows.push(new PendingRow(found.handle, name, held));
+    }
+    if (rows.length > 0) {
+      waiting = await pendingTable(context, rows, false);
+    }
+  }
+  let files = if (wanted != null) await appView.releaseFiles(found.did, wanted) else null;
+  let title = if (version != null) `${name} ${version}` else name;
+  res.type = 'text/html; charset=utf-8';
+  res.body = page(`${title} · Zena packages`, context,
+      packageBody(found, release, version != null, files, handles, shown, approvedBy, waiting));
+}
+
+/**
+ * The page of `detail` showing `release`, or no release when it has none
+ * that is not retracted; `pinned` when the page is the release's own, whose
+ * command adds that version.
+ */
+function packageBody(detail: PackageDetail, release: Release | null, pinned: boolean, files: ReleaseFiles | null,
+    handles: HashMap<String, String>, shown: Shown, approvedBy: HashMap<String, Array<String>>,
+    waiting: HTMLPartial | null): HTMLPartial {
+  let profile = detail.profile;
+  let name = profile?.name ?? detail.handle;
+  let version = if (release != null) release.version.toString() else null;
+  var reason: String | null = null;
+  var retracted = false;
+  if (version != null) {
+    if (let (true, retraction) = detail.retractions.get(version)) {
+      retracted = true;
+      reason = retraction.reason;
+    }
+  }
+  let readme = readmeOf(files);
+  let dependencyCount = if (release != null) release.dependencies.length else 0;
   return html`
-    <div>
+    <div class="package-header">
       <h1 class="with-chips">
-        ${name}
-        ${when(latest != null, () => chip(latest as String, 'primary'))}
-        ${when(license != null, () => chip(license as String, 'success'))}
+        ${if (pinned) html`<a href="/packages/${detail.handle}">${name}</a>` else name}
+        ${when(version != null, () => chip(version as String, if (retracted) 'danger' else 'primary'))}
+        ${when(retracted, () => chip('retracted', 'danger'))}
       </h1>
-      ${when(description != null, () => html`<p>${description as String}</p>`)}
-      <div class="meta mono muted">
-        <span>in <a href="/scopes/${detail.scope}">@${detail.scope}</a></span>
-        <span>${detail.handle}</span>
-        <span>${detail.did}</span>
-        ${externalLink(homepage, 'Homepage')}
-        ${externalLink(source, 'Source')}
-      </div>
+      ${when(profile?.description != null, () => html`<p>${profile?.description as String}</p>`)}
+      ${when(reason != null, () => html`<p>Retracted: ${reason as String}</p>`)}
     </div>
-    <pre class="mono">zena pkg add ${detail.handle}</pre>
     ${when(waiting != null, () => html`
     <section>
       <h2>Waiting for approval</h2>
       ${waiting}
     </section>`)}
-    ${readmeSection(readme)}
-    <section>
-      <h2>Versions</h2>
-      ${if (detail.releases.length == 0) html`<p class="muted">Nothing is published yet.</p>` else versions(detail, handles, shown, approvedBy)}
-    </section>
-    <section>
-      <h2>Maintainers</h2>
-      ${if (detail.maintainers == null) html`<p class="muted">No maintainers record.</p>`
-          else maintainers(detail.maintainers as Maintainers, shown)}
-    </section>
+    <div class="package-layout">
+      <div class="package-main">
+        <rad-tab-group>
+          <rad-tab slot="tabs" panel="readme" active>Readme</rad-tab>
+          <rad-tab slot="tabs" panel="files">Files${when(files != null, () => html` (${`${(files as ReleaseFiles).files.length}`})`)}</rad-tab>
+          <rad-tab slot="tabs" panel="dependencies">Dependencies (${`${dependencyCount}`})</rad-tab>
+          <rad-tab slot="tabs" panel="versions">Versions (${`${detail.releases.length}`})</rad-tab>
+          <rad-tab-panel name="readme" active>
+            ${if (release == null) html`<p class="muted">Nothing is published yet.</p>`
+                else if (readme == null) html`<p class="muted">This release has no README.</p>`
+                else readmeHtml(readme)}
+          </rad-tab-panel>
+          <rad-tab-panel name="files">
+            ${if (files == null) html`<p class="muted">${if (release == null) 'Nothing is published yet.' else 'The source archive could not be read.'}</p>`
+                else fileList(files)}
+          </rad-tab-panel>
+          <rad-tab-panel name="dependencies">
+            ${if (release == null) html`<p class="muted">Nothing is published yet.</p>` else dependencies(release, handles)}
+          </rad-tab-panel>
+          <rad-tab-panel name="versions">
+            ${if (detail.releases.length == 0) html`<p class="muted">Nothing is published yet.</p>`
+                else versions(detail, handles, shown, approvedBy)}
+          </rad-tab-panel>
+        </rad-tab-group>
+      </div>
+      <aside class="package-sidebar">
+        <h3>Install</h3>
+        <pre class="mono">zena pkg add ${detail.handle}${if (pinned && version != null) `@${version}` else ''}</pre>
+        <dl>
+          ${when(version != null, () => html`
+          <dt>Version</dt><dd class="mono">${version as String}</dd>
+          <dt>Published</dt><dd>${(release as Release).createdAt.sliceBytes(0, 10)}</dd>
+          <dt>Approved by</dt><dd>${approvers(version as String, shown, approvedBy)}</dd>`)}
+          ${when(profile?.license != null, () => html`<dt>License</dt><dd>${profile?.license as String}</dd>`)}
+          ${when(files != null, () => html`
+          <dt>Size</dt><dd>${formatBytes((files as ReleaseFiles).archiveBytes)},
+            ${count((files as ReleaseFiles).files.length, 'file')}</dd>`)}
+          <dt>Scope</dt><dd><a href="/scopes/${detail.scope}">@${detail.scope}</a></dd>
+          ${when(profile?.homepage != null || profile?.source != null, () => html`
+          <dt>Links</dt><dd>${externalLink(profile?.homepage, 'Homepage')} ${externalLink(profile?.source, 'Source')}</dd>`)}
+          <dt>Handle</dt><dd class="mono">${detail.handle}</dd>
+          <dt>DID</dt><dd class="mono">${detail.did}</dd>
+        </dl>
+        <h3>Maintainers</h3>
+        ${if (detail.maintainers == null) html`<p class="muted">No maintainers record.</p>`
+            else maintainers(detail.maintainers as Maintainers, shown)}
+      </aside>
+    </div>
   `;
 }
 
@@ -265,99 +323,6 @@ function maintainers(record: Maintainers, shown: Shown): HTMLPartial {
       ${if (record.threshold == 1 as i64) 'approves' else 'approve'} it, and a change of maintainers once
       ${count(record.ownerThreshold as i32, 'owner')} ${if (record.ownerThreshold == 1 as i64) 'does' else 'do'}.
     </p>
-  `;
-}
-
-/**
- * Adds a version's page, `/packages/<handle>/versions/<version>`: when it
- * was published and whether it is retracted, the command that adds it,
- * what it depends on, who approved it, the files of its source archive,
- * and its README.
- */
-function versionPage(router: Router, appView: AppView, people: People, approvals: Approvals): void {
-  router.get('/packages/:handle/versions/:version', async (req, res, next, params) => {
-    let context = await contextOf(req, appView, people);
-    let handle = percentDecode(params['handle'] ?? '');
-    let version = percentDecode(params['version'] ?? '');
-    let detail = await appView.getPackage(handle);
-    if (detail == null) {
-      notFound(res, context, `No package here has the handle ${handle}.`);
-      return;
-    }
-    let found = detail;
-    var release: Release | null = null;
-    for (let candidate in found.releases) {
-      if (candidate.version.toString() == version) {
-        release = candidate;
-      }
-    }
-    if (release == null) {
-      notFound(res, context, `${handle} has no release ${version}.`);
-      return;
-    }
-    let shownRelease = release;
-    let handles = new HashMap<String, String>();
-    for (let dependency in shownRelease.dependencies) {
-      let account = await appView.accountOf(dependency.did);
-      if (account != null) {
-        handles[dependency.did] = account.handle;
-      }
-    }
-    let approvedBy = new HashMap<String, Array<String>>();
-    var named: Array<String> = [];
-    if (let (true, cid) = found.releaseCids.get(version)) {
-      named = await approvals.of(`at://${found.did}/${RELEASE_TYPE}/${version}`, cid,
-          await appView.attesters(found.did));
-      approvedBy[version] = named;
-    }
-    let shown = await shownWith(context, await visibleEntries(context, found.did, null), named);
-    let files = await appView.releaseFiles(found.did, version);
-    let name = found.profile?.name ?? found.handle;
-    res.type = 'text/html; charset=utf-8';
-    res.body = page(`${name} ${version} · Zena packages`, context,
-        versionBody(found, shownRelease, handles, shown, approvedBy, files));
-  });
-}
-
-function versionBody(detail: PackageDetail, release: Release, handles: HashMap<String, String>, shown: Shown,
-    approvedBy: HashMap<String, Array<String>>, files: ReleaseFiles | null): HTMLPartial {
-  let version = release.version.toString();
-  let name = detail.profile?.name ?? detail.handle;
-  var retracted = false;
-  var reason: String | null = null;
-  if (let (true, retraction) = detail.retractions.get(version)) {
-    retracted = true;
-    reason = retraction.reason;
-  }
-  return html`
-    <div>
-      <h1 class="with-chips">
-        <a href="/packages/${detail.handle}">${name}</a>
-        ${chip(version, if (retracted) 'danger' else 'primary')}
-        ${when(retracted, () => chip('retracted', 'danger'))}
-      </h1>
-      ${when(reason != null, () => html`<p>Retracted: ${reason as String}</p>`)}
-      <div class="meta mono muted">
-        <span>published ${release.createdAt.sliceBytes(0, 10)}</span>
-        <span>${detail.handle}</span>
-        ${when(files != null, () => html`<span>${formatBytes((files as ReleaseFiles).archiveBytes)}</span>`)}
-      </div>
-    </div>
-    <pre class="mono">zena pkg add ${detail.handle}@${version}</pre>
-    <section>
-      <h2>Dependencies</h2>
-      ${dependencies(release, handles)}
-    </section>
-    <section>
-      <h2>Approved by</h2>
-      ${approvers(version, shown, approvedBy)}
-    </section>
-    <section>
-      <h2>Files</h2>
-      ${if (files == null) html`<p class="muted">The source archive could not be read.</p>`
-          else fileList(files)}
-    </section>
-    ${readmeSection(readmeOf(files))}
   `;
 }
 

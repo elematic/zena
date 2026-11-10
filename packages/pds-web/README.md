@@ -10,16 +10,16 @@ using its `html` tag:
 - `/docs/`: static documentation for the package manager, built with
   Eleventy (`site/docs/` → `out/docs/`);
 - `/scopes/<name>`: a scope's profile and packages;
-- `/packages/<handle>`: a package's profile and scope, the command that
-  adds it, the releases waiting for approval, for its maintainers, the
-  README of its latest release that is not retracted, its versions with
-  their dependencies and the versions they accept, who approved each, its
-  retractions, and its maintainers;
-- `/packages/<handle>/versions/<version>`: one release: when it was
-  published and whether it is retracted, the command that adds it, its
-  dependencies, who approved it, the files of its source archive with
-  their sizes, and its README. A README is rendered with
-  `packages/markdown`, in its safe mode, which leaves out raw HTML;
+- `/packages/<handle>`: a package, at its latest release that is not
+  retracted, and `/packages/<handle>/versions/<version>`, at that
+  release, laid out alike. Under its name, the releases waiting for
+  approval, for its maintainers. Then tabs (Radica's tab group): the
+  release's README, rendered with `packages/markdown` in its safe mode,
+  which leaves out raw HTML; its files and their sizes; its dependencies
+  and the versions they accept; and every version, with who approved it
+  and its retraction. Beside them, a side bar: the command that adds it,
+  the version, when it was published, who approved it, its license, size,
+  scope and links, and its maintainers;
 - `/people/<handle or DID>`: a person's profile, and the packages that
   name them as a maintainer publicly;
 - `/me`: once signed in, the scopes, teams and packages you have a role in,

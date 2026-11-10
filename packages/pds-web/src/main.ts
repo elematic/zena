@@ -13,6 +13,10 @@ import '../../website-client/src/zena-layout.js';
 import '../../website-client/src/zena-local-outline.js';
 import '../../website-client/src/zena-outline.js';
 import '../../website-client/src/zena-sidebar.js';
+// The tabs of a package's page.
+import '@radica/ui/components/tab-group/tab-group.js';
+import '@radica/ui/components/tab/tab.js';
+import '@radica/ui/components/tab-panel/tab-panel.js';
 
 /**
  * The DID the browser last signed in as, kept so that a page with no web
