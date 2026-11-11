@@ -16,9 +16,9 @@ and handles.
 ## The form
 
 ```zena
-import {parseWit} from 'zena-lang:wit-parser/wit';  // a package in a scope
-import {Lexer} from 'zena-lang:wit-parser/wit/lexer'; // a library under it
-import {route} from 'acme:router';                    // its main library
+import {Lexer} from 'zena-lang:wit-parser/lexer';     // a package in a scope
+import {parse} from 'zena-lang:wit-parser';           // its main library
+import {route} from 'acme:router';                    // another package's
 import {Router} from 'router/server';                 // a package without a scope
 import {HashMap} from 'zena:map';                     // the standard library
 import {now} from 'wasi:clocks/system-clock';         // a WIT interface
@@ -117,7 +117,7 @@ its published dependents will use, and its README's examples run as they
 are.
 
 In this repository, `packages/wit-parser` gets `"scope": "zena-lang"`,
-and the compiler imports it as `zena-lang:wit-parser/wit`.
+and the compiler imports it as `zena-lang:wit-parser`.
 
 ## The `zena-lang` scope
 

@@ -15,7 +15,7 @@ the `zena` command. The design is in
      `zena:bench`'s `runSuite` with a function that compiles its `zena`
      variants, `lsp.zena`, which connects the language server
      (`language-service/server`) to stdin and stdout, `lint.zena`,
-     which runs zena-lint's rules (`zena-lint/lint`) over files and
+     which runs zena-lint's rules (`zena-lint`) over files and
      prints the findings or, with `--fix`, applies them, `fetch.zena`,
      which fetches the packages `zena-lock.json` pins into the package
      cache with `package-manager/fetch`, and `add.zena`, for `zena pkg add`
