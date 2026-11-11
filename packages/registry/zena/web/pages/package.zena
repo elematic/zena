@@ -71,17 +71,19 @@ export function packagePage(router: Router, appView: AppView, people: People, ap
   });
   router.get('/packages/:handle/versions/:version/files/*', async (req, res, next, params) => {
     let context = await contextOf(req, appView, people);
+    // A Markdown file's page shows its source, numbered by line, with `?view=source`.
     await packageView(context, res, appView, approvals, percentDecode(params['handle'] ?? ''),
-        percentDecode(params['version'] ?? ''), percentDecode(params['*'] ?? ''));
+        percentDecode(params['version'] ?? ''), percentDecode(params['*'] ?? ''),
+        req.url.searchParams().get('view') == 'source');
   });
   router.get('/packages/:handle/versions/:version', async (req, res, next, params) => {
     let context = await contextOf(req, appView, people);
     await packageView(context, res, appView, approvals, percentDecode(params['handle'] ?? ''),
-        percentDecode(params['version'] ?? ''), null);
+        percentDecode(params['version'] ?? ''), null, false);
   });
   router.get('/packages/:handle', async (req, res, next, params) => {
     let context = await contextOf(req, appView, people);
-    await packageView(context, res, appView, approvals, percentDecode(params['handle'] ?? ''), null, null);
+    await packageView(context, res, appView, approvals, percentDecode(params['handle'] ?? ''), null, null, false);
   });
 }
 
@@ -92,7 +94,7 @@ export function packagePage(router: Router, appView: AppView, people: People, ap
  * found.
  */
 async function packageView(context: PageContext, res: Response, appView: AppView, approvals: Approvals,
-    handle: String, version: String | null, path: String | null): Future<void> {
+    handle: String, version: String | null, path: String | null, source: boolean): Future<void> {
   let detail = await appView.getPackage(handle);
   if (detail == null) {
     notFound(res, context, `No package here has the handle ${handle}.`);
@@ -193,7 +195,7 @@ async function packageView(context: PageContext, res: Response, appView: AppView
       // An image is shown from its bytes' URL, and a file too large to show is linked to; only text is read.
       let read = !IMAGE_TYPES.has(extensionOf(trimmed)) && listed.size <= MAX_FILE_SHOWN as i64;
       let bytes = if (read) await appView.releaseFile(found.did, wanted as String, trimmed) else null;
-      opened = fileView(found.handle, found.did, name, wanted as String, contents as ReleaseContents, listed, bytes);
+      opened = fileView(found.handle, found.did, name, wanted as String, contents as ReleaseContents, listed, bytes, source);
       shownPath = trimmed;
     } else if (directory) {
       opened = html`
@@ -342,14 +344,16 @@ function extensionOf(path: String): String {
 /**
  * The Files tab's panel for `file` of release `version`, with `contents`,
  * of the package `handle`, whose DID is `did`: an image shown, Markdown up
- * to `MAX_README_BYTES` rendered as the README is, other text numbered by
- * line, and a link to anything else. `bytes` are the file's when they were
+ * to `MAX_README_BYTES` rendered as the README is, or numbered by line for
+ * its `source`, other text numbered by line, and a link to anything else. `bytes` are the file's when they were
  * read, which they are not for an image or a file larger than
  * `MAX_FILE_SHOWN`.
  */
 function fileView(handle: String, did: String, name: String, version: String, contents: ReleaseContents,
-    file: ReleaseFile, bytes: FixedArray<u8> | null): HTMLPartial {
+    file: ReleaseFile, bytes: FixedArray<u8> | null, source: boolean): HTMLPartial {
   let raw = rawUrl(handle, version, file.path);
+  // A link between a Markdown file's rendering and its source, for one that can be rendered.
+  var view: TemplateValue = null;
   var body: TemplateValue = html`<p class="muted">This file is too large to show here: <a href="${raw}">download it</a>.</p>`;
   if (IMAGE_TYPES.has(extensionOf(file.path))) {
     body = html`<img class="file-image" src="${raw}" alt="${file.path}">`;
@@ -358,7 +362,14 @@ function fileView(handle: String, did: String, name: String, version: String, co
     if (!isText(bytes)) {
       body = html`<p class="muted">This file is not text: <a href="${raw}">download it</a>.</p>`;
     } else if ((extension == 'md' || extension == 'markdown') && bytes.length <= MAX_README_BYTES) {
-      body = html`<div class="prose markdown-file">${unsafeHTML(markdownFile(did, version, contents, file.path, bytes))}</div>`;
+      let page = fileUrl(handle, version, file.path);
+      if (source) {
+        view = html`<a href="${page}">Rendered</a>`;
+        body = sourceLines(String.fromBytes(bytes));
+      } else {
+        view = html`<a href="${page}?view=source">Source</a>`;
+        body = html`<div class="prose markdown-file">${unsafeHTML(markdownFile(did, version, contents, file.path, bytes))}</div>`;
+      }
     } else {
       body = sourceLines(String.fromBytes(bytes));
     }
@@ -369,6 +380,7 @@ function fileView(handle: String, did: String, name: String, version: String, co
     <div class="file-header">
       ${breadcrumb(handle, version, name, file.path)}
       <span class="muted">${formatBytes(file.size)}</span>
+      ${view}
       <a href="${raw}">Raw</a>
     </div>
     ${body}
