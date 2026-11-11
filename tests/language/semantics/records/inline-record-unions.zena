@@ -1,0 +1,25 @@
+// @mode: check
+// A union of inline records: every member a record told apart by a
+// boolean or integer literal field (#811).
+
+type Outcome = inline {kind: 0, ok: i32} | {kind: 1, err: String};
+
+function reads(o: Outcome): i32 {
+  if (o.kind == 0) {
+    let e = o.err; // @error: Property 'err' does not exist on record type.
+    return o.ok;
+  }
+  return 0;
+}
+
+// The use rule holds for it as for any inline binding.
+function escapes(o: Outcome): Outcome {
+  let all = [o]; // @error: 'o' is inline, so it is only read or passed on: putting it in an array would box it.
+  return o;
+}
+
+type NoTag = inline {a: i32} | {b: String}; // @error: A union of inline records needs a boolean or integer literal field with a different literal in each member, to tell them apart.
+type Strings = inline {tag: 'a', x: i32} | {tag: 'b', y: i32}; // @error: A union of inline records needs a boolean or integer literal field with a different literal in each member, to tell them apart.
+type Same = inline {kind: 0, x: i32} | {kind: 0, y: i32}; // @error: A union of inline records needs a boolean or integer literal field with a different literal in each member, to tell them apart.
+type Optional = inline {kind: 0, x?: i32} | {kind: 1}; // @error: A member of a union of inline records cannot have optional fields yet.
+type Mixed = inline {kind: 0} | (true, i32); // @error: An inline union cannot mix records with tuples.

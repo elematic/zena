@@ -16,7 +16,7 @@ import {
   BindingPattern, BindingProperty, BlockStatement, BooleanLiteral, CatchClause, ClassDeclaration, ClassPattern, Expression, FieldDefinition, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, RecordPattern, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression, RangeExpression,
 } from '../../ast.zena';
 import {
-  ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType, TupleType, NumLiteralType, NullType, I32Type, RecordType, Type, UnionType, VoidType, baseType, isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType, isOwnershipWrapper, ownershipHandleInner, ownershipHandleOf, soleNonNullMember, UnionType, isScopedType, scopedInner, releaseMemberOf, releasableContainer, representsRestricted, hasReleaseMember, scopedFieldNames, OwnershipHandle
+  ArrayType, BoolLiteralType, ClassType, HoleType, InlineTupleType, sameNumericLiteralRaw, InterfaceType, TupleType, NumLiteralType, NullType, I32Type, RecordType, Type, UnionType, VoidType, baseType, isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType, isOwnershipWrapper, ownershipHandleInner, ownershipHandleOf, soleNonNullMember, UnionType, isScopedType, scopedInner, releaseMemberOf, releasableContainer, representsRestricted, hasReleaseMember, scopedFieldNames, OwnershipHandle
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
@@ -30,13 +30,13 @@ import {
 import {
   eraseTypeParameters, findExtendedWellKnownInterface,
   findImplementedWellKnownInterface, getNonNullableType,
-  typeToValTypeWithSub, InlineLayout, inlineLayoutOf, iteratorInterfaceOf,
+  typeToValTypeWithSub, InlineLayout, inlineLayoutOf, inlineRecordUnionMembers, iteratorInterfaceOf,
   stepInlineValue, scopedFieldTypesAt, getCellStruct,
 } from '../type-mapping.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { lowerContractClauses } from './contracts.zena';
 import { emitGeneratorDispose } from './generators.zena';
-import { boxInline, lowerIntoSlots, returnInlineTail, coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, pathElements, representativeMember, tupleRestIndexOf, unboxTuples, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
+import { boxInline, heldInline, lowerIntoSlots, memberTest, returnInlineTail, coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, pathElements, representativeMember, tupleRestIndexOf, unboxTuples, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
 import {
   FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ResultSlots, ZirUnsupported, noValues,
 } from './lowering-context.zena';
@@ -68,6 +68,30 @@ export function lowerLetCondition(cx: LoweringContext, lpc: LetPatternCondition)
   var pat = lpc.pattern;
   if (pat is BindingPattern) {
     pat = pat.pattern;
+  }
+  // A record pattern against a union of inline records in slots: the
+  // members it can match are tested for, and each field it names is
+  // read from its slot, its pattern deferring into the taken block.
+  if (pat is RecordPattern) {
+    // Narrowing can leave the binding's type one record, while the binding
+    // still holds the union's slots.
+    let initType = cx.substitutedNodeType(lpc.init);
+    let held = heldInline(cx, lpc.init);
+    let heldRecords = held != null && held.layout != null &&
+        (held.layout as InlineLayout).records != null;
+    if (heldRecords || (initType != null && inlineRecordUnionMembers(initType) != null)) {
+      let source = held ?? multiSource(cx, lpc.init);
+      let sourceLayout = source.layout;
+      if (sourceLayout != null && sourceLayout.records != null) {
+        let lanesOf = inlineRecordPatternLanes(cx, pat, source);
+        let patterns = new Array<Node>();
+        for (let prop in pat.properties) {
+          patterns.push(prop.value);
+        }
+        return new LetCondBinds(lanesOf.cond, new Array<Symbol>(), new Array<i32>(),
+            new Array<ValType>(), patterns, lanesOf.values);
+      }
+    }
   }
   if (!(pat is TuplePattern)) {
     // A non-tuple let-condition (a record presence pattern): the whole
@@ -534,6 +558,76 @@ function lowerValueRegionRestVar(cx: LoweringContext, plan: VarDropPlan,
  * the checker proves exhaustiveness, mirroring streaming's trailing
  * unreachable.
  */
+/** What a record pattern against a union of inline records reads. */
+final class InlineRecordLanes {
+  /** Whether the value is a member the pattern can match. */
+  cond: i32;
+  /** Each named field's value, in the pattern's order. */
+  values: GrowableArray<i32>;
+  new(this.cond, this.values);
+}
+
+/**
+ * A record pattern read against a union of inline records held in slots:
+ * the members it can match (each field it names present, and its literals
+ * agreeing), a test for them, and each field's value for them.
+ */
+function inlineRecordPatternLanes(cx: LoweringContext, pattern: RecordPattern,
+    source: MultiValues): InlineRecordLanes {
+  let layout = source.layout as InlineLayout;
+  let allowed = new Array<boolean>();
+  var all = true;
+  for (let member in layout.originals) {
+    var ok = true;
+    for (let prop in pattern.properties) {
+      let position = layout.fieldPosition(prop.name.name);
+      if (position < 0 || position >= member.elementTypes.length ||
+          member.elementTypes[position] is HoleType) {
+        ok = false;
+        continue;
+      }
+      var written = prop.value;
+      if (written is LiteralPattern) {
+        written = written.value;
+      }
+      let memberType = member.elementTypes[position];
+      if (memberType is BoolLiteralType && written is BooleanLiteral &&
+          memberType.value != written.value) {
+        ok = false;
+      } else if (memberType is NumLiteralType && written is NumberLiteral &&
+          !sameNumericLiteralRaw(memberType.raw, written.raw)) {
+        ok = false;
+      }
+    }
+    allowed.push(ok);
+    all = all && ok;
+  }
+  let i32Vt = new ValTypeI32() as ValType;
+  var cond = -1;
+  if (all) {
+    cond = cx.b.constI32(1, i32Vt);
+  } else {
+    for (var m = 0; m < allowed.length; m += 1) {
+      if (!allowed[m]) {
+        continue;
+      }
+      let test = memberTest(cx, layout, source.values, m);
+      cond = if (cond == -1) test else cx.b.binary(IrOp.i32_or, i32Vt, cond, test);
+    }
+    if (cond == -1) {
+      cond = cx.b.constI32(0, i32Vt);
+    }
+  }
+  let values = new Array<i32>();
+  for (let prop in pattern.properties) {
+    let position = layout.fieldPosition(prop.name.name);
+    // -1 is `NO_VALUE`, which cannot be imported across the cycle.
+    let v = if (position >= 0) source.valueAt(cx, i32ToString(position), allowed) else -1;
+    values.push(v);
+  }
+  return new InlineRecordLanes(cond, values);
+}
+
 /**
  * A multi-value source's value at each position, as `pattern` reads it:
  * its literal elements rule out the union's other members, so it can
@@ -560,6 +654,8 @@ function multiPositions(cx: LoweringContext, source: MultiValues,
  * (`#unboxTuples`).
  */
 function isTupleUnionSource(t: Type): boolean {
+  // A union of inline records is held in slots too.
+  if (inlineRecordUnionMembers(t) != null) { return true; }
   let resolved = unwrapAliases(t);
   if (resolved is InlineTupleType) { return true; }
   if (!(resolved is UnionType)) { return false; }
@@ -622,7 +718,14 @@ export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
   };
 
   let discType = cx.substitutedNodeType(expr.discriminant);
-  let lanes = if (discType != null && isTupleUnionSource(discType)) {
+  // A binding of a union of inline records holds its slots even where
+  // narrowing has left its type one record.
+  let heldDisc = heldInline(cx, expr.discriminant);
+  let heldRecordUnion = heldDisc != null && heldDisc.layout != null &&
+      (heldDisc.layout as InlineLayout).records != null;
+  let lanes = if (heldRecordUnion) {
+    heldDisc
+  } else if (discType != null && isTupleUnionSource(discType)) {
     multiSource(cx, expr.discriminant)
   } else {
     null
@@ -661,8 +764,28 @@ export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
     }
     if (lanes != null) {
       let laneVals = lanes as MultiValues;
+      var armPattern = mc.pattern;
+      if (armPattern is BindingPattern) {
+        armPattern = armPattern.pattern;
+      }
       if (mc.pattern is TuplePattern) {
         lowerInlineTupleArm(cx, mc.pattern as TuplePattern, laneVals, failB);
+      } else if (armPattern is RecordPattern && laneVals.layout != null &&
+          (laneVals.layout as InlineLayout).records != null) {
+        let lanesOf = inlineRecordPatternLanes(cx, armPattern, laneVals);
+        branchUnless(cx, lanesOf.cond, failB);
+        for (var k = 0; k < armPattern.properties.length; k += 1) {
+          let sub = armPattern.properties[k].value;
+          if (patternRefutable(cx, sub)) {
+            lowerPatternTest(cx, sub, lanesOf.values[k], failB);
+          }
+        }
+        for (var k = 0; k < armPattern.properties.length; k += 1) {
+          let sub = armPattern.properties[k].value;
+          if (patternBinds(cx, sub)) {
+            lowerPatternBindings(cx, sub, lanesOf.values[k]);
+          }
+        }
       } else if (patternBinds(cx, mc.pattern) || patternRefutable(cx, mc.pattern)) {
         // An inline multi-value has no single value to bind or test
         // against; only a wildcard (`case _`) is admissible here.

@@ -2022,6 +2022,29 @@ export final class InlineLayout {
       this.discriminantPaths);
 
   /**
+   * For a union of inline records, the field at each top-level position,
+   * in name order, and the record each member is: the members are laid
+   * out as tuples over every field, with holes where a member has none.
+   * Null for a union of tuples.
+   */
+  var fieldNames: GrowableArray<String> | null = null;
+  var records: GrowableArray<RecordType> | null = null;
+
+  /** The position of field `name` in a union of inline records, or -1. */
+  fieldPosition(name: String): i32 {
+    let names = this.fieldNames;
+    if (names == null) {
+      return -1;
+    }
+    for (var i = 0; i < names.length; i += 1) {
+      if (names[i] == name) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /**
    * Whether the members put different tuples at `path`, which a nested
    * inline union does: reading or writing the position whole then
    * depends on which member the value is.
@@ -2118,6 +2141,33 @@ export final class InlineLayout {
  * `type` is neither. See `InlineLayout`.
  */
 export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | null {
+  // A union of inline records lays out as tuples over all its fields.
+  let records = inlineRecordUnionMembers(type);
+  if (records != null) {
+    let names = new Array<String>();
+    for (let rec in records) {
+      for (let name in recordFieldNames(rec)) {
+        if (!names.contains(name)) {
+          names.push(name);
+        }
+      }
+    }
+    sortStrings(names);
+    let tuples = new Array<Type>();
+    for (let rec in records) {
+      let elements = new Array<Type>();
+      for (let name in names) {
+        elements.push(if (rec.properties.has(name)) rec.properties[name] else new HoleType());
+      }
+      tuples.push(new InlineTupleType(elements));
+    }
+    let layout = inlineLayoutOf(wasm, new UnionType(tuples));
+    if (layout != null) {
+      layout.fieldNames = names;
+      layout.records = records;
+    }
+    return layout;
+  }
   let writtenMembers = new Array<InlineTupleType>();
   if (type is InlineTupleType) {
     writtenMembers.push(type);
@@ -2327,6 +2377,40 @@ function sameLiteralType(a: Type, b: Type): boolean {
     return if (let NumLiteralType {raw as other} = b) sameNumericLiteralRaw(raw, other) else false;
   }
   return false;
+}
+
+/** The records of a union of inline records, through aliases, or null. */
+export function inlineRecordUnionMembers(t: Type): GrowableArray<RecordType> | null {
+  var u = t;
+  while (u is TypeAliasType) {
+    u = u.target;
+  }
+  if (!(u is UnionType)) {
+    return null;
+  }
+  let records = new Array<RecordType>();
+  for (let member in u.types) {
+    let record = inlineRecordParamOf(member);
+    if (record == null) {
+      return null;
+    }
+    records.push(record);
+  }
+  return records;
+}
+
+/** Sorts names in place, in the order record fields are kept in. */
+function sortStrings(names: GrowableArray<String>): void {
+  let len = names.length;
+  for (var i = 1; i < len; i += 1) {
+    let key = names[i];
+    var j = i - 1;
+    while (j >= 0 && compareStrings(names[j], key) > 0) {
+      names[j + 1] = names[j];
+      j -= 1;
+    }
+    names[j + 1] = key;
+  }
 }
 
 /** The members of a nested inline union, as inline tuples, or null. */

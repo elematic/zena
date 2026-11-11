@@ -251,3 +251,38 @@ so its slots are its leaves:
 An inline field cannot be optional, since an inline value has no absent
 form, nor a union, nor a record with optional fields, for the reasons a
 nested one cannot.
+
+## Unions of inline records
+
+A union of inline records, `inline {kind: 0, ok: i32} | {kind: 1, err:
+String}`, is told apart by a boolean or integer literal field every
+member has with a different literal (#811), as a boxed discriminated
+union is by any literal field. A string literal cannot tell inline
+members apart, since a member test compares integer slots.
+
+`inlineLayoutOf` lays each member out as a tuple over all the union's
+fields in name order, with a hole where a member has no field:
+`(_, 0, i32) | (String, 1, _)` for the fields `err`, `kind`, `ok`. The
+union of tuples is laid out as any other, so members share slots by
+field and type, and the literal field is a discriminant path.
+`InlineLayout.fieldNames` gives a field's position, and
+`InlineLayout.records` the record each member is.
+
+- **Reading:** a field read off a binding that holds the slots, or off a
+  call that returns them, reads the field's slot for the members the
+  object's type leaves (`#inlineRecordUnionField`). Narrowing by the
+  literal leaves one.
+- **Patterns:** a record pattern in a `match` or `if let` tests for the
+  members whose fields it names and whose literals it agrees with, then
+  reads each field's slot (`inlineRecordPatternLanes`). A binding that
+  holds the slots is read this way even where narrowing has left its
+  type one record.
+- **Writing:** a record literal writes the slots of the member its
+  literals name (`#recordLiteralIntoSlots`). A boxed union of records
+  is tested for each member by its fat pointer, and by its literal where
+  members share one (`#unboxRecordUnion`).
+- **Boxing** builds the member's record from its slots
+  (`#boxRecordUnion`).
+
+A member cannot have optional fields, whose presence words have no
+position here, or inline fields, yet.

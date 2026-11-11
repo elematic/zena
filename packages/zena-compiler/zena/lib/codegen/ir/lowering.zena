@@ -44,7 +44,7 @@ import {
   noCaptures,
 } from '../wasm-module.zena';
 import {
-  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, inlineRecordParamOf, inlineRecordResultOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, nestedInlineRecord, nestedInlineUnion, flattenInlineTuple, recordFieldsTuple, recordFieldNames, inlineRecordFieldsLayout, boxedRecordWithFields, boxedFieldType, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
+  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, inlineParamLayoutOf, inlineRecordParamOf, inlineRecordResultOf, getInterfaceTypeParameters, substituteTypeParamsInCodegen, nestedInlineTuple, nestedInlineRecord, nestedInlineUnion, inlineRecordUnionMembers, flattenInlineTuple, recordFieldsTuple, recordFieldNames, inlineRecordFieldsLayout, boxedRecordWithFields, boxedFieldType, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
 } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -3576,6 +3576,15 @@ export final class FunctionLowerer {
       }
       return flat;
     }
+    let unionRecords = layout?.records;
+    if (unionRecords != null) {
+      let recordLayout = layout as InlineLayout;
+      if (arg is RecordLiteral) {
+        return this.#recordLiteralIntoSlots(arg, recordLayout, slotVts);
+      }
+      // A boxed union of records: read the member it holds.
+      return this.#unboxRecordUnion(this.#lowerExpression(arg), recordLayout);
+    }
     if (!(arg is TupleLiteral)) {
       // A boxed tuple returned as an inline one: read its fields into
       // slots, and move them into this function's.
@@ -5375,6 +5384,10 @@ export final class FunctionLowerer {
       return this.#bailValue('boxing a value with no slots');
     }
     let layout = layoutOpt as InlineLayout;
+    let unionRecords = layout.records;
+    if (unionRecords != null) {
+      return this.#boxRecordUnion(source, layout, unionRecords);
+    }
     // Each member boxes as the member it was written as, a nested union
     // position holding the boxed union.
     let boxedMembers = new Array<Type>();
@@ -5416,6 +5429,234 @@ export final class FunctionLowerer {
     }
     this.b.switchTo(join);
     return result;
+  }
+
+  /**
+   * The field `member` reads off a union of inline records held in slots:
+   * its slot for the members the object's type allows, which narrowing
+   * may have cut down to one.
+   */
+  #inlineRecordUnionField(source: MultiValues, layout: InlineLayout,
+      member: MemberExpression): i32 {
+    let position = layout.fieldPosition(member.property.name);
+    if (position < 0) {
+      return this.#bailValue('field of an inline record union');
+    }
+    let allowed = this.#recordMembersAllowed(layout, member.object);
+    let value = source.valueAt(this.#cx(), i32ToString(position), allowed);
+    if (value == NO_VALUE) {
+      return this.#bailValue('field of an inline record union without a value');
+    }
+    return value;
+  }
+
+  /**
+   * The members of a union of inline records an expression's type leaves:
+   * the records its narrowed type names, or every member (null).
+   */
+  #recordMembersAllowed(layout: InlineLayout, e: Expression): GrowableArray<boolean> | null {
+    let records = layout.records as GrowableArray<RecordType>;
+    let t = this.#substitutedNodeType(e);
+    if (t == null) {
+      return null;
+    }
+    let named = new Array<RecordType>();
+    let base = unwrapAliases(t);
+    if (base is RecordType) {
+      named.push(base);
+    } else if (base is UnionType) {
+      for (let m in base.types) {
+        let rec = inlineRecordParamOf(m) ?? (if (unwrapAliases(m) is RecordType) unwrapAliases(m) as RecordType else null);
+        if (rec == null) {
+          return null;
+        }
+        named.push(rec);
+      }
+    } else {
+      let rec = inlineRecordParamOf(t);
+      if (rec == null) {
+        return null;
+      }
+      named.push(rec);
+    }
+    let allowed = new Array<boolean>();
+    var any = false;
+    for (let rec in records) {
+      var found = false;
+      for (let n in named) {
+        if (n === rec || sameRecordShape(n, rec)) {
+          found = true;
+        }
+      }
+      allowed.push(found);
+      any = any || found;
+    }
+    return if (any) allowed else null;
+  }
+
+  /**
+   * A union of inline records boxed: the record of the member it holds,
+   * built from that member's slots and held as them, the member told by
+   * its literal field.
+   */
+  #boxRecordUnion(source: MultiValues, layout: InlineLayout,
+      records: GrowableArray<RecordType>): i32 {
+    let boxedMembers = new Array<Type>();
+    for (let rec in records) {
+      boxedMembers.push(rec);
+    }
+    if (records.length == 1) {
+      return this.#recordFromSlots(source.values, layout, 0, records[0]);
+    }
+    let resultVt = typeToValTypeWithSub(this.wasm, new UnionType(boxedMembers), this.func);
+    let join = this.b.newBlock();
+    let result = this.b.blockParam(join, resultVt);
+    for (var m = 0; m < records.length; m += 1) {
+      if (m < records.length - 1) {
+        let hit = this.b.newBlock();
+        let next = this.b.newBlock();
+        let cond = memberTest(this.#cx(), layout, source.values, m);
+        this.b.brIf(cond, hit, this.#noArgs(), next, this.#noArgs());
+        this.b.switchTo(hit);
+        let record = this.#recordFromSlots(source.values, layout, m, records[m]);
+        this.b.br(join, growable<i32>([this.#conformToSlot(record, resultVt, 'boxing an inline record union')]));
+        this.b.switchTo(next);
+      } else {
+        let record = this.#recordFromSlots(source.values, layout, m, records[m]);
+        this.b.br(join, growable<i32>([this.#conformToSlot(record, resultVt, 'boxing an inline record union')]));
+      }
+    }
+    this.b.switchTo(join);
+    return result;
+  }
+
+  /** Member `m`'s record, built from its slots and held as them. */
+  #recordFromSlots(values: GrowableArray<i32>, layout: InlineLayout, m: i32,
+      record: RecordType): i32 {
+    let d = this.#recordDispatchFor(record);
+    let fields = new Array<i32>();
+    for (let field in d.fields) {
+      let position = layout.fieldPosition(field.name as String);
+      let slot = if (position >= 0) layout.slotAt(m, i32ToString(position)) else -1;
+      fields.push(if (slot >= 0) {
+        this.#conformToSlot(values[slot], field.type, 'inline record union field')
+      } else {
+        this.#defaultValueOf(field.type)
+      });
+    }
+    let value = this.#packRecord(d, fields);
+    this.#cx().explodedRecords[value] = new ExplodedRecord(d, fields);
+    return value;
+  }
+
+  /**
+   * A record literal for a union of inline records, written into the slots
+   * of the member its literals name, properties in written order.
+   */
+  #recordLiteralIntoSlots(literal: RecordLiteral, layout: InlineLayout,
+      slotVts: GrowableArray<ValType>): GrowableArray<i32> {
+    for (let prop in literal.properties) {
+      if (!(prop is PropertyAssignment)) {
+        return this.#bailSlots('inline record union literal with a spread');
+      }
+    }
+    let candidates = recordMembersMatching(layout, literal);
+    let values = new Array<i32>();
+    for (var t = 0; t < slotVts.length; t += 1) {
+      values.push(NO_VALUE);
+    }
+    for (let prop in literal.properties) {
+      let assignment = prop as PropertyAssignment;
+      let position = layout.fieldPosition(assignment.name.name);
+      let slot = layout.pathSlot(i32ToString(position), candidates);
+      if (slot == -2) {
+        return this.#bailSlots('inline record union literal names no one member');
+      }
+      if (slot < 0) {
+        this.#lowerExpression(assignment.value);
+        continue;
+      }
+      values[slot] = this.#conformToSlot(this.#lowerExpressionCtx(assignment.value, slotVts[slot]),
+          slotVts[slot], 'inline record union field');
+    }
+    for (var t = 0; t < values.length; t += 1) {
+      if (values[t] == NO_VALUE) {
+        values[t] = this.#defaultValueOf(slotVts[t]);
+      }
+    }
+    return values;
+  }
+
+  #bailSlots(reason: String): GrowableArray<i32> {
+    this.#bail(reason);
+  }
+
+  /**
+   * A boxed union of records read into the slots of a union of inline
+   * records: each member's record tested for, by its fat pointer and, where
+   * members share one, by its literal field, and its fields read into the
+   * member's slots.
+   */
+  #unboxRecordUnion(value: i32, layout: InlineLayout): GrowableArray<i32> {
+    let records = layout.records as GrowableArray<RecordType>;
+    let join = this.b.newBlock();
+    let params = new Array<i32>();
+    for (let vt in layout.slots) {
+      params.push(this.b.blockParam(join, vt));
+    }
+    let i32Vt = new ValTypeI32() as ValType;
+    for (var m = 0; m < records.length; m += 1) {
+      let d = this.#recordDispatchFor(records[m]);
+      let fatVt = new ValTypeRef(d.fatPtrType) as ValType;
+      let isLast = m == records.length - 1;
+      var next = -1;
+      if (!isLast) {
+        let test = this.b.emit(IrOp.ref_test, i32Vt, value, this.b.internType(fatVt));
+        let cast = this.b.newBlock();
+        next = this.b.newBlock();
+        this.b.brIf(test, cast, this.#noArgs(), next, this.#noArgs());
+        this.b.switchTo(cast);
+      }
+      let record = this.b.emit(IrOp.ref_cast, fatVt, value, this.b.internType(fatVt));
+      let fields = this.#cx().recordFieldsOf(d, record);
+      let slots = new Array<i32>();
+      for (var t = 0; t < layout.slots.length; t += 1) {
+        slots.push(NO_VALUE);
+      }
+      for (var k = 0; k < d.fields.length; k += 1) {
+        let position = layout.fieldPosition(d.fields[k].name as String);
+        let slot = if (position >= 0) layout.slotAt(m, i32ToString(position)) else -1;
+        if (slot >= 0) {
+          slots[slot] = this.#conformToSlot(fields[k], layout.slots[slot], 'inline record union field');
+        }
+      }
+      for (var t = 0; t < slots.length; t += 1) {
+        if (slots[t] == NO_VALUE) {
+          slots[t] = this.#defaultValueOf(layout.slots[t]);
+        }
+      }
+      if (!isLast && sharesFatPointer(this, records, m)) {
+        // Another member has this fat pointer: its literal field decides.
+        let hit = this.b.newBlock();
+        let cond = memberTest(this.#cx(), layout, slots, m);
+        this.b.brIf(cond, hit, this.#noArgs(), next, this.#noArgs());
+        this.b.switchTo(hit);
+      }
+      this.b.br(join, slots);
+      if (!isLast) {
+        this.b.switchTo(next);
+      }
+    }
+    this.b.switchTo(join);
+    return params;
+  }
+
+  hostHeldInline(e: Expression): MultiValues | null {
+    return this.#heldInline(e);
+  }
+
+  hostRecordDispatchFor(record: RecordType): RecordDispatchInfo {
+    return this.#recordDispatchFor(record);
   }
 
   /** Member `m`'s boxed tuple, built from its slots. */
@@ -8261,6 +8502,25 @@ export final class FunctionLowerer {
   #lowerMemberRead(member: MemberExpression): i32 {
     if (member.optional) {
       return this.#lowerOptionalChainExpr(member as Expression);
+    }
+    // A field of a union of inline records, read from its slot: off a
+    // binding that holds the slots, or a call that returns them.
+    let heldUnion = this.#heldInline(member.object);
+    if (heldUnion != null) {
+      let unionLayout = heldUnion.layout;
+      if (unionLayout != null && unionLayout.records != null) {
+        return this.#inlineRecordUnionField(heldUnion, unionLayout, member);
+      }
+    }
+    if (member.object is CallExpression) {
+      let objectType = this.#substitutedNodeType(member.object);
+      if (objectType != null && inlineRecordUnionMembers(objectType) != null) {
+        let source = this.#lowerMultiSource(member.object);
+        let unionLayout = source.layout;
+        if (unionLayout != null && unionLayout.records != null) {
+          return this.#inlineRecordUnionField(source, unionLayout, member);
+        }
+      }
     }
     // Field defaults evaluate before the object exists
     // (non-nullable-refs.md): `this.f` inside one resolves to the
@@ -12415,6 +12675,70 @@ function boxedTupleOf(t: InlineTupleType): TupleType {
     });
   }
   return new TupleType(elements, null, 0);
+}
+
+/**
+ * The members of a union of inline records a record literal can be: those
+ * whose literal-typed fields its literal values agree with.
+ */
+function recordMembersMatching(layout: InlineLayout, literal: RecordLiteral): GrowableArray<boolean> {
+  let allowed = new Array<boolean>();
+  for (let member in layout.originals) {
+    var ok = true;
+    for (let prop in literal.properties) {
+      if (let PropertyAssignment {name, value} = prop) {
+        let position = layout.fieldPosition(name.name);
+        if (position < 0 || position >= member.elementTypes.length) {
+          continue;
+        }
+        let memberType = member.elementTypes[position];
+        if (memberType is HoleType) {
+          ok = false;
+        } else if (memberType is BoolLiteralType && value is BooleanLiteral &&
+            memberType.value != value.value) {
+          ok = false;
+        } else if (memberType is NumLiteralType && value is NumberLiteral &&
+            !sameNumberLiteral(memberType.raw, value.raw)) {
+          ok = false;
+        }
+      }
+    }
+    allowed.push(ok);
+  }
+  return allowed;
+}
+
+/**
+ * The slots of the inline parameter or `let` `e` names, or null
+ * (`FunctionLowerer.#heldInline`).
+ */
+export function heldInline(cx: LoweringContext, e: Expression): MultiValues | null {
+  return hostOf(cx).hostHeldInline(e);
+}
+
+/** Whether two record types have the same fields, at the same types. */
+function sameRecordShape(a: RecordType, b: RecordType): boolean {
+  if (a.properties.size != b.properties.size) {
+    return false;
+  }
+  for (let pair in a.properties) {
+    if (!b.properties.has(pair.key) ||
+        typeToString(b.properties[pair.key]) != typeToString(pair.value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Whether another member of `records` has member `m`'s fat pointer. */
+function sharesFatPointer(host: FunctionLowerer, records: GrowableArray<RecordType>, m: i32): boolean {
+  let mine = host.hostRecordDispatchFor(records[m]).fatPtrType;
+  for (var other = 0; other < records.length; other += 1) {
+    if (other != m && host.hostRecordDispatchFor(records[other]).fatPtrType === mine) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** The boxed form of an inline union's members: a union of boxed tuples. */

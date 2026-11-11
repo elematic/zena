@@ -1,0 +1,72 @@
+// @mode: run
+// @result: 0
+// A union of inline records, told apart by a literal field (#811). Each
+// member lays out as a tuple over all the union's fields in name order,
+// with holes where it has no field, so the members share slots by field
+// and type and the literal field is the discriminant.
+
+type Outcome = inline {kind: 0, ok: i32} | {kind: 1, err: String};
+
+function make(good: boolean): Outcome {
+  return if (good) ({kind: 0, ok: 5}) else ({kind: 1, err: 'bad'});
+}
+
+function score(o: Outcome): i32 {
+  return match (o) {
+    case {kind: 0, ok}: ok
+    case {kind: 1, err}: err.length * 10
+  };
+}
+
+function viaIf(o: Outcome): i32 {
+  if (o.kind == 0) {
+    return o.ok;
+  }
+  return o.err.length;
+}
+
+function forward(o: Outcome): i32 {
+  let kept = o;
+  return score(kept) + viaIf(o);
+}
+
+function pick(c: boolean, a: Outcome, b: Outcome): Outcome {
+  return if (c) a else b;
+}
+
+// `if let`, a boolean discriminant, and a member with no other field.
+type Found = inline {found: true, value: i32} | {found: false};
+
+function look(f: Found): i32 {
+  if (let {found: true, value} = f) {
+    return value;
+  }
+  return -1;
+}
+
+// Members with the same fields, told apart by the literal alone, so a
+// boxed one is read by its literal, not its fat pointer.
+type Sized = inline {kind: 0, n: i32} | {kind: 1, n: i32};
+
+function sized(s: Sized): i32 {
+  return match (s) {
+    case {kind: 0, n}: n
+    case {kind: 1, n}: n * 2
+  };
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (score(make(true)) != 5 || score(make(false)) != 30) { failures += 1; }
+  if (viaIf(make(true)) != 5 || viaIf(make(false)) != 3) { failures += 2; }
+  if (forward({kind: 0, ok: 2}) != 4) { failures += 4; }
+  if (score(pick(false, make(true), {kind: 1, err: 'xy'})) != 20) { failures += 8; }
+  // Stored, it is the boxed union.
+  let stored: {kind: 0, ok: i32} | {kind: 1, err: String} = make(false);
+  if (score(stored) != 30) { failures += 16; }
+  if (make(true).kind != 0) { failures += 32; }
+  if (look({found: true, value: 9}) != 9 || look({found: false}) != -1) { failures += 64; }
+  let boxedSized: {kind: 0, n: i32} | {kind: 1, n: i32} = {kind: 1, n: 4};
+  if (sized(boxedSized) != 8 || sized({kind: 0, n: 4}) != 4) { failures += 128; }
+  return failures;
+};
