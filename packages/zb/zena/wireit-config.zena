@@ -79,16 +79,27 @@ export class ScriptConfig {
    * omitted; `[]` disables lockfile tracking).
    */
   packageLocks: Array<String>;
+  /**
+   * Explicit opt-out from freshness and caching (`"cache": false` in
+   * `zebra.json` or `zena-package.json`). Defaults to `true`.
+   */
+  cacheEnabled: boolean;
+  /**
+   * True when this step is a pure fileset rule (`"filesets"` or the
+   * synthesized `"source"` fileset of a `zena-package.json`) rather than
+   * a runnable script.
+   */
+  isFileset: boolean;
 
   /**
    * True when freshness and caching apply to this script at all. A
-   * command-less script is a dependency group and always tracks; a
-   * service tracks when `files` is declared; a command task needs both
-   * `files` and `output` declared.
+   * command-less script or fileset always tracks (unless `cacheEnabled`
+   * is false); a service tracks when `files` (or a fileset dependency) is
+   * declared; a command task needs both `files` and `output` declared.
    */
   fingerprintable: boolean {
     get {
-      if (!this.isWireit) {
+      if (!this.isWireit || !this.cacheEnabled) {
         return false;
       }
       if (this.service != null) {
@@ -114,10 +125,12 @@ export class ScriptConfig {
     this.service,
     this.env,
     this.packageLocks,
+    this.cacheEnabled = true,
+    this.isFileset = false,
   );
 }
 
-function isCommentKey(key: String) {
+export function isCommentKey(key: String): boolean {
   return key == '//' || key.startsWith('#');
 }
 
@@ -127,7 +140,7 @@ function isRecognizedKey(key: String) {
     key == 'env' || key == 'packageLocks' || isCommentKey(key);
 }
 
-function stringList(value: JsonValue, what: String): Array<String> {
+export function stringList(value: JsonValue, what: String): Array<String> {
   if (value == null) {
     return new GrowableArray<String>();
   }
@@ -177,7 +190,7 @@ export function resolveDependency(from: String, dep: String): ScriptRef {
   return new ScriptRef(from, dep);
 }
 
-function parseDependency(
+export function parseDependency(
   packageDir: String,
   where: String,
   dep: JsonValue,
@@ -217,7 +230,7 @@ function parseDependency(
   );
 }
 
-function parseService(where: String, rawService: JsonValue): ServiceConfig? {
+export function parseService(where: String, rawService: JsonValue): ServiceConfig? {
   if (rawService == null) {
     return null;
   }
@@ -261,7 +274,7 @@ function parseService(where: String, rawService: JsonValue): ServiceConfig? {
   );
 }
 
-function parseEnv(
+export function parseEnv(
   where: String,
   rawEnv: JsonValue,
 ): Array<(String, EnvBinding)> {
@@ -317,6 +330,170 @@ function parseEnv(
   return out;
 }
 
+export function parseClean(where: String, rawClean: JsonValue): String {
+  if (rawClean == null) {
+    return 'true';
+  }
+  if (rawClean is Box<boolean>) {
+    return if (rawClean.value) 'true' else 'false';
+  }
+  if (rawClean is String) {
+    if (rawClean != 'if-file-deleted') {
+      throw new ConfigError(
+        `script "${where}": unsupported clean value "${rawClean}"`,
+      );
+    }
+    return rawClean;
+  }
+  throw new ConfigError(`script "${where}": invalid clean value`);
+}
+
+export function validateLockFilenames(
+  where: String,
+  fieldName: String,
+  locks: Array<String>,
+): void {
+  for (let lock in locks) {
+    if (lock == '' || lock.contains('/')) {
+      throw new ConfigError(
+        `${where}: ${fieldName} entries must be filenames, got "${lock}"`,
+      );
+    }
+  }
+}
+
+export function parseJsonObject(path: String, content: String): JsonObject {
+  var parsed: JsonValue = null;
+  try {
+    parsed = parseJson(content, {allowComments: true, trackLocations: false});
+  } catch (e) {
+    throw new ConfigError(`${path}: ${e.message}`);
+  }
+  if (!(parsed is JsonObject)) {
+    throw new ConfigError(`${path} is not a JSON object`);
+  }
+  return parsed;
+}
+
+/**
+ * Extracts one `ScriptConfig` from a parsed `package.json` object using
+ * Wireit's rules (`wireit[script]` or bare `scripts[script]`).
+ */
+export function parseWireitScriptFromPackage(
+  ref: ScriptRef,
+  pkg: JsonObject,
+): ScriptConfig {
+  let where = refKey(ref);
+
+  var wireitEntry: JsonValue = null;
+  let wireit = pkg['wireit'];
+  if (wireit is JsonObject) {
+    wireitEntry = wireit[ref.script];
+  }
+  var scriptsEntry: JsonValue = null;
+  let scripts = pkg['scripts'];
+  if (scripts is JsonObject) {
+    scriptsEntry = scripts[ref.script];
+  }
+
+  if (wireitEntry is JsonObject) {
+    // A script run via npm needs a "wireit" scripts entry; one that
+    // exists only as a dependency of other wireit scripts has none.
+    if (scriptsEntry != null && (!(scriptsEntry is String) || scriptsEntry != 'wireit')) {
+      throw new ConfigError(
+        `script "${where}" has a wireit config but its scripts entry is not "wireit"`,
+      );
+    }
+    wireitEntry.forEach((key, value) => {
+      if (!isRecognizedKey(key)) {
+        throw new ConfigError(
+          `script "${where}" has unsupported wireit key "${key}"`,
+        );
+      }
+    });
+
+    var command: String? = null;
+    let rawCommand = wireitEntry['command'];
+    if (rawCommand != null) {
+      if (rawCommand is String) {
+        command = rawCommand;
+      } else {
+        throw new ConfigError(`script "${where}": command must be a string`);
+      }
+    }
+
+    let deps = new GrowableArray<DependencySpec>();
+    let rawDeps = wireitEntry['dependencies'];
+    if (rawDeps != null) {
+      if (!(rawDeps is JsonArray)) {
+        throw new ConfigError(`script "${where}": dependencies must be an array`);
+      }
+      for (var i = 0; i < rawDeps.length; i += 1) {
+        deps.push(parseDependency(ref.packageDir, where, rawDeps[i]));
+      }
+    }
+
+    let clean = parseClean(where, wireitEntry['clean']);
+
+    let service = parseService(where, wireitEntry['service']);
+    if (command == null && service != null) {
+      throw new ConfigError(`script "${where}": a service needs a command`);
+    }
+    if (service != null && wireitEntry['output'] != null) {
+      throw new ConfigError(`script "${where}": a service cannot declare output`);
+    }
+
+    let rawLocks = wireitEntry['packageLocks'];
+    var packageLocks: Array<String> = ['package-lock.json'];
+    if (rawLocks != null) {
+      packageLocks = stringList(rawLocks, `script "${where}": packageLocks`);
+      validateLockFilenames(`script "${where}"`, 'packageLocks', packageLocks);
+    }
+
+    return new ScriptConfig(
+      ref,
+      true,
+      command,
+      stringList(wireitEntry['files'], `script "${where}": files`),
+      stringList(wireitEntry['output'], `script "${where}": output`),
+      wireitEntry['files'] != null,
+      wireitEntry['output'] != null,
+      deps,
+      clean,
+      service,
+      parseEnv(where, wireitEntry['env']),
+      packageLocks,
+    );
+  }
+
+  if (scriptsEntry is String) {
+    if (scriptsEntry == 'wireit') {
+      throw new ConfigError(
+        `script "${where}" says "wireit" but has no wireit config`,
+      );
+    }
+    // A bare npm script: always runs, produces nothing cacheable.
+    return new ScriptConfig(
+      ref,
+      false,
+      scriptsEntry,
+      new GrowableArray<String>(),
+      new GrowableArray<String>(),
+      false,
+      false,
+      new GrowableArray<DependencySpec>(),
+      'false',
+      null,
+      new GrowableArray<(String, EnvBinding)>(),
+      new GrowableArray<String>(),
+      false,
+    );
+  }
+
+  let pkgLabel = if (ref.packageDir == '') 'the root package' else ref.packageDir;
+  throw new ConfigError(`no script "${ref.script}" in ${pkgLabel}`);
+}
+
 /**
  * Reads wireit build configuration from package.json files, resolving
  * cross-package references. File access goes through the callback
@@ -339,145 +516,14 @@ export class WireitWorkspace {
     if (content == null) {
       throw new ConfigError('no package.json at ' + path);
     }
-    let parsed = parseJson(content);
-    if (!(parsed is JsonObject)) {
-      throw new ConfigError(path + ' is not a JSON object');
-    }
+    let parsed = parseJsonObject(path, content);
     this.#packages[packageDir] = parsed;
     return parsed;
   }
 
   async scriptConfig(ref: ScriptRef): Future<ScriptConfig> {
     let pkg = await this.#packageJson(ref.packageDir);
-    let where = refKey(ref);
-
-    var wireitEntry: JsonValue = null;
-    let wireit = pkg['wireit'];
-    if (wireit is JsonObject) {
-      wireitEntry = wireit[ref.script];
-    }
-    var scriptsEntry: JsonValue = null;
-    let scripts = pkg['scripts'];
-    if (scripts is JsonObject) {
-      scriptsEntry = scripts[ref.script];
-    }
-
-    if (wireitEntry is JsonObject) {
-      // A script run via npm needs a "wireit" scripts entry; one that
-      // exists only as a dependency of other wireit scripts has none.
-      if (scriptsEntry != null && (!(scriptsEntry is String) || scriptsEntry != 'wireit')) {
-        throw new ConfigError(
-          `script "${where}" has a wireit config but its scripts entry is not "wireit"`,
-        );
-      }
-      wireitEntry.forEach((key, value) => {
-        if (!isRecognizedKey(key)) {
-          throw new ConfigError(
-            `script "${where}" has unsupported wireit key "${key}"`,
-          );
-        }
-      });
-
-      var command: String? = null;
-      let rawCommand = wireitEntry['command'];
-      if (rawCommand != null) {
-        if (rawCommand is String) {
-          command = rawCommand;
-        } else {
-          throw new ConfigError(`script "${where}": command must be a string`);
-        }
-      }
-
-      let deps = new GrowableArray<DependencySpec>();
-      let rawDeps = wireitEntry['dependencies'];
-      if (rawDeps != null) {
-        if (!(rawDeps is JsonArray)) {
-          throw new ConfigError(`script "${where}": dependencies must be an array`);
-        }
-        for (var i = 0; i < rawDeps.length; i += 1) {
-          deps.push(parseDependency(ref.packageDir, where, rawDeps[i]));
-        }
-      }
-
-      var clean = 'true';
-      let rawClean = wireitEntry['clean'];
-      if (rawClean != null) {
-        if (rawClean is Box<boolean>) {
-          clean = if (rawClean.value) 'true' else 'false';
-        } else if (rawClean is String) {
-          if (rawClean != 'if-file-deleted') {
-            throw new ConfigError(
-              `script "${where}": unsupported clean value "${rawClean}"`,
-            );
-          }
-          clean = rawClean;
-        } else {
-          throw new ConfigError(`script "${where}": invalid clean value`);
-        }
-      }
-
-      let service = parseService(where, wireitEntry['service']);
-      if (command == null && service != null) {
-        throw new ConfigError(`script "${where}": a service needs a command`);
-      }
-      if (service != null && wireitEntry['output'] != null) {
-        throw new ConfigError(`script "${where}": a service cannot declare output`);
-      }
-
-      let rawLocks = wireitEntry['packageLocks'];
-      var packageLocks: Array<String> = ['package-lock.json'];
-      if (rawLocks != null) {
-        packageLocks = stringList(rawLocks, `script "${where}": packageLocks`);
-        for (let lock in packageLocks) {
-          if (lock == '' || lock.contains('/')) {
-            throw new ConfigError(
-              `script "${where}": packageLocks entries must be filenames, got "${lock}"`,
-            );
-          }
-        }
-      }
-
-      return new ScriptConfig(
-        ref,
-        true,
-        command,
-        stringList(wireitEntry['files'], `script "${where}": files`),
-        stringList(wireitEntry['output'], `script "${where}": output`),
-        wireitEntry['files'] != null,
-        wireitEntry['output'] != null,
-        deps,
-        clean,
-        service,
-        parseEnv(where, wireitEntry['env']),
-        packageLocks,
-      );
-    }
-
-    if (scriptsEntry is String) {
-      if (scriptsEntry == 'wireit') {
-        throw new ConfigError(
-          `script "${where}" says "wireit" but has no wireit config`,
-        );
-      }
-      // A bare npm script: always runs, produces nothing cacheable.
-      return new ScriptConfig(
-        ref,
-        false,
-        scriptsEntry,
-        new GrowableArray<String>(),
-        new GrowableArray<String>(),
-        false,
-        false,
-        new GrowableArray<DependencySpec>(),
-        'false',
-        null,
-        new GrowableArray<(String, EnvBinding)>(),
-        new GrowableArray<String>(),
-      );
-    }
-
-    throw new ConfigError(`no script "${ref.script}" in ` +
-      (if (ref.packageDir == '') 'the root package' else ref.packageDir));
+    return parseWireitScriptFromPackage(ref, pkg);
   }
 
   /** The transitive dependency closure, in discovery (BFS) order. */

@@ -1,0 +1,500 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isNotNull, isNull, isTrue, rejects, throws} from 'zena:assert';
+import {
+  ConfigProbe,
+  planSnapshotFromText,
+  planSnapshotToText,
+} from '../plan-cache.zena';
+import {
+  DependencySpec,
+  EnvBinding,
+  EnvExternal,
+  EnvLiteral,
+  ScriptConfig,
+  ScriptRef,
+  ServiceConfig,
+  refKey,
+} from '../wireit-config.zena';
+import {
+  ZebraWorkspace,
+  convertPackageJsonToZebraJson,
+  mergeWireitIntoZenaPackageJson,
+} from '../zebra-config.zena';
+
+function hasStr(items: Array<String>, target: String): boolean {
+  for (let item in items) {
+    if (item == target) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export let tests = suite('zebra-config and plan-cache', () => {
+  test('zebra.json parses comments, defaults output to [] and locks to zena-lock.json, and honors cache: false', async () => {
+    let files = {
+      'zebra.json' => `{
+        // Standalone Zebra build configuration
+        "workspace": {"packages": ["packages/*"]},
+        "scripts": {
+          "test": {
+            "command": "zena test",
+            "files": ["src/**/*.zena", "test/**/*_test.zena"]
+          },
+          "build": {
+            "command": "zena build src/main.zena -o out/app.wasm",
+            "output": ["out/app.wasm"],
+            "dependencies": ["sources"]
+          },
+          "check:always": {
+            "command": "zena lint src",
+            "files": ["src/**/*.zena"],
+            "cache": false
+          },
+          "cargo": {
+            /* No files, output, or fileset dep -> always runs */
+            "command": "cargo build --release"
+          },
+          "fmt": "zena fmt --check",
+          "all": {
+            "dependencies": ["test", "cargo"]
+          }
+        },
+        "filesets": {
+          "sources": ["src/**/*.zena"]
+        }
+      }`,
+    };
+    let ws = new ZebraWorkspace(async (path: String): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    let testCfg = await ws.scriptConfig(new ScriptRef('', 'test'));
+    isTrue(testCfg.fingerprintable, 'task with files is tracked without output: []');
+    isFalse(testCfg.isFileset);
+    equal(testCfg.output.length, 0);
+    isTrue(testCfg.outputDeclared);
+    equal(testCfg.packageLocks.length, 1);
+    equal(testCfg.packageLocks[0], 'zena-lock.json');
+
+    let buildCfg = await ws.scriptConfig(new ScriptRef('', 'build'));
+    isTrue(buildCfg.fingerprintable, 'task with output + fileset dep caches without files: []');
+    equal(buildCfg.files.length, 0);
+    equal(buildCfg.output.length, 1);
+
+    let fsCfg = await ws.scriptConfig(new ScriptRef('', 'sources'));
+    isTrue(fsCfg.isFileset);
+    isNull(fsCfg.command);
+    isTrue(fsCfg.fingerprintable);
+    equal(fsCfg.files.length, 1);
+    equal(fsCfg.files[0], 'src/**/*.zena');
+
+    let uncached = await ws.scriptConfig(new ScriptRef('', 'check:always'));
+    isFalse(uncached.cacheEnabled);
+    isFalse(uncached.fingerprintable);
+    equal(uncached.files.length, 1);
+
+    let cargo = await ws.scriptConfig(new ScriptRef('', 'cargo'));
+    isFalse(cargo.filesDeclared);
+    isFalse(cargo.fingerprintable);
+
+    let fmt = await ws.scriptConfig(new ScriptRef('', 'fmt'));
+    isFalse(fmt.isWireit);
+    isFalse(fmt.fingerprintable);
+    equal(fmt.command, 'zena fmt --check');
+
+    let group = await ws.scriptConfig(new ScriptRef('', 'all'));
+    isNull(group.command);
+    isTrue(group.fingerprintable);
+    isFalse(group.isFileset);
+  });
+
+  test('zena-package.json synthesizes transitive source filesets and supports explicit filesets and scripts', async () => {
+    let files = {
+      'zena-package.json' => `{
+        "workspace": {"packages": ["packages/*"]},
+        "scopes": {"demo": "pkg.example.test"},
+        "scopedNames": true
+      }`,
+      'packages/core/zena-package.json' => `{
+        "name": "core",
+        "source": ".",
+        "dependencies": {
+          "host": {"wit": "./wit"}
+        }
+      }`,
+      'packages/app/zena-package.json' => `{
+        "name": "app",
+        "dependencies": {
+          "core": {"path": "../core"}
+        },
+        "filesets": {
+          "assets": {
+            "files": ["assets/**"],
+            "dependencies": ["source"]
+          }
+        },
+        "scripts": {
+          "build": {
+            "command": "zena build src/main.zena -o out/app.wasm",
+            "output": ["out/app.wasm"],
+            "dependencies": ["assets"]
+          }
+        }
+      }`,
+    };
+    let ws = new ZebraWorkspace(async (path: String): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    // Workspace root has no `name` or `source`, so `:source` tracks only zena-package.json.
+    let rootSource = await ws.scriptConfig(new ScriptRef('', 'source'));
+    isTrue(rootSource.isFileset);
+    equal(rootSource.files.length, 1);
+    equal(rootSource.files[0], 'zena-package.json');
+
+    // `packages/core` has `"source": "."` + `"wit": "./wit"`.
+    let coreSource = await ws.scriptConfig(new ScriptRef('packages/core', 'source'));
+    isTrue(coreSource.isFileset);
+    isTrue(hasStr(coreSource.files, 'zena-package.json'));
+    isTrue(hasStr(coreSource.files, '../../zena-package.json'));
+    isTrue(hasStr(coreSource.files, '**/*.zena'));
+    isTrue(hasStr(coreSource.files, '!**/*_test.zena'));
+    isTrue(hasStr(coreSource.files, '!**/test/**'));
+    isTrue(hasStr(coreSource.files, '!**/tests/**'));
+    isTrue(hasStr(coreSource.files, './wit/**/*.wit'));
+
+    // `packages/app` defaults `source` to `src` and depends on `packages/core:source`.
+    let closure = await ws.collect([new ScriptRef('packages/app', 'build')]);
+    equal(closure.length, 4);
+    equal(refKey(closure[0].ref), 'packages/app:build');
+    equal(refKey(closure[1].ref), 'packages/app:assets');
+    equal(refKey(closure[2].ref), 'packages/app:source');
+    equal(refKey(closure[3].ref), 'packages/core:source');
+    isTrue(closure[0].fingerprintable);
+    isFalse(closure[0].isFileset);
+    isTrue(closure[1].isFileset);
+    isTrue(closure[2].isFileset);
+    isTrue(hasStr(closure[2].files, 'src/**/*.zena'));
+    isTrue(hasStr(closure[2].files, '!src/**/*_test.zena'));
+  });
+
+  test('coexistence: zena-package.json without scripts falls back to package.json wireit while still serving :source', async () => {
+    let reads = new GrowableArray<String>();
+    let files = {
+      'zena-package.json' => `{"workspace": {"packages": ["packages/*"]}}`,
+      'packages/hybrid/zena-package.json' => `{"name": "hybrid"}`,
+      'packages/hybrid/package.json' => `{
+        "scripts": {"build": "wireit"},
+        "wireit": {
+          "build": {
+            "command": "zena build src/lib.zena -o dist/lib.wasm",
+            "files": [],
+            "output": ["dist/lib.wasm"],
+            "dependencies": ["source"]
+          }
+        }
+      }`,
+      'packages/native/zena-package.json' => `{
+        "name": "native",
+        "scripts": {
+          "build": {
+            "command": "zena build src/main.zena -o out/main.wasm",
+            "output": ["out/main.wasm"],
+            "dependencies": ["source", "../hybrid:build"]
+          }
+        }
+      }`,
+      'packages/native/package.json' => `{"NotValidJsonIfRead": `,
+      'packages/split/zena-package.json' => `{"name": "split"}`,
+      'packages/split/zebra.json' => `{
+        "scripts": {
+          "check": {
+            "command": "zena lint src",
+            "dependencies": ["source"]
+          }
+        }
+      }`,
+    };
+    let ws = new ZebraWorkspace(async (path: String): Future<String?> => {
+      reads.push(path);
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    let closure = await ws.collect([new ScriptRef('packages/native', 'build')]);
+    equal(closure.length, 4);
+    equal(refKey(closure[0].ref), 'packages/native:build');
+    equal(refKey(closure[1].ref), 'packages/native:source');
+    equal(refKey(closure[2].ref), 'packages/hybrid:build');
+    equal(refKey(closure[3].ref), 'packages/hybrid:source');
+    for (let path in reads) {
+      isTrue(
+        path != 'packages/native/package.json',
+        'package.json ignored when zena-package.json defines scripts',
+      );
+    }
+
+    let splitCheck = await ws.scriptConfig(new ScriptRef('packages/split', 'check'));
+    isTrue(splitCheck.fingerprintable, 'zebra.json script depending on zena-package.json :source is tracked');
+  });
+
+  test('package-level locks apply to scripts unless overridden per script', async () => {
+    let ws = new ZebraWorkspace(async (path: String): Future<String?> => {
+      if (path == 'zebra.json') {
+        return `{
+          "locks": ["zena-lock.json", "Cargo.lock"],
+          "scripts": {
+            "a": {"command": "true", "files": []},
+            "b": {"command": "true", "files": [], "locks": []}
+          }
+        }`;
+      }
+      return null;
+    });
+    let a = await ws.scriptConfig(new ScriptRef('', 'a'));
+    equal(a.packageLocks.length, 2);
+    equal(a.packageLocks[0], 'zena-lock.json');
+    equal(a.packageLocks[1], 'Cargo.lock');
+
+    let b = await ws.scriptConfig(new ScriptRef('', 'b'));
+    equal(b.packageLocks.length, 0);
+  });
+
+  test('invalid zebra.json / zena-package.json shapes fail with ConfigError', async () => {
+    let checkZebraThrows = async (json: String) => {
+      let ws = new ZebraWorkspace(async (path: String): Future<String?> => {
+        return if (path == 'zebra.json') json else null;
+      });
+      await rejects(async () => {
+        await ws.scriptConfig(new ScriptRef('', 'x'));
+      });
+    };
+
+    // Unknown top-level key in zebra.json.
+    await checkZebraThrows(`{"unknown": 1, "scripts": {"x": {"command": "true"}}}`);
+    // Duplicate name across filesets and scripts.
+    await checkZebraThrows(`{"filesets": {"x": ["a"]}, "scripts": {"x": {"command": "true"}}}`);
+    // Unknown script key.
+    await checkZebraThrows(`{"scripts": {"x": {"command": "true", "packageLocks": []}}}`);
+    // Explicit cache: true without files, output, or fileset dep.
+    await checkZebraThrows(`{"scripts": {"x": {"command": "true", "cache": true}}}`);
+    // Invalid lock path.
+    await checkZebraThrows(`{"locks": ["sub/lock.json"], "scripts": {"x": {"command": "true"}}}`);
+    // Service declaring output.
+    await checkZebraThrows(`{"scripts": {"x": {"command": "true", "service": true, "output": ["a"]}}}`);
+
+    // Wireit block pasted into zena-package.json.
+    let wsZena = new ZebraWorkspace(async (path: String): Future<String?> => {
+      return if (path == 'zena-package.json') `{"name": "p", "wireit": {}}` else null;
+    });
+    await rejects(async () => {
+      await wsZena.scriptConfig(new ScriptRef('', 'source'));
+    });
+  });
+
+  test('convertPackageJsonToZebraJson and mergeWireitIntoZenaPackageJson migrate wireit configs cleanly', async () => {
+    let noWireit = convertPackageJsonToZebraJson(`{"name": "plain", "scripts": {"test": "node test.js"}}`);
+    isNull(noWireit);
+
+    let wireitPkg = `{
+      "name": "@demo/pkg",
+      "scripts": {
+        "build": "wireit",
+        "test": "wireit",
+        "untracked-watch": "wireit",
+        "lint": "eslint ."
+      },
+      "wireit": {
+        "build": {
+          "#": "Main compile step",
+          "command": "tsc",
+          "files": ["src/**/*.ts"],
+          "output": ["dist/**"],
+          "clean": "if-file-deleted",
+          "env": {"NODE_ENV": "production"},
+          "dependencies": [{"script": "codegen", "cascade": false}]
+        },
+        "test": {
+          "command": "node --test",
+          "files": ["src/**/*.ts", "test/**/*.ts"],
+          "output": []
+        },
+        "untracked-watch": {
+          "command": "node check.js",
+          "files": ["src/**/*.ts"]
+        },
+        "codegen": {
+          "command": "node gen.js",
+          "files": ["schema.json"],
+          "output": ["src/gen.ts"],
+          "packageLocks": []
+        }
+      }
+    }`;
+
+    let converted = convertPackageJsonToZebraJson(wireitPkg, true);
+    isNotNull(converted);
+    let zebraText = converted ?? '';
+    isFalse(zebraText.contains('"output": []'), zebraText);
+    isTrue(zebraText.contains('"cache": false'), zebraText);
+
+    let merged = mergeWireitIntoZenaPackageJson(
+      `{\n  "name": "demo-pkg",\n  "source": "src"\n}`,
+      wireitPkg,
+      true,
+    );
+    isNotNull(merged);
+    let mergedText = merged ?? '';
+    isTrue(mergedText.contains('"name": "demo-pkg"'), mergedText);
+    isTrue(mergedText.contains('"source": "src"'), mergedText);
+
+    let ws = new ZebraWorkspace(async (path: String): Future<String?> => {
+      return if (path == 'zena-package.json') mergedText else null;
+    });
+    let buildCfg = await ws.scriptConfig(new ScriptRef('', 'build'));
+    isTrue(buildCfg.fingerprintable);
+    equal(buildCfg.clean, 'if-file-deleted');
+    equal(buildCfg.packageLocks.length, 2);
+    equal(buildCfg.packageLocks[0], 'zena-lock.json');
+    equal(buildCfg.packageLocks[1], 'package-lock.json');
+
+    let testCfg = await ws.scriptConfig(new ScriptRef('', 'test'));
+    isTrue(testCfg.fingerprintable);
+    equal(testCfg.output.length, 0);
+
+    let untracked = await ws.scriptConfig(new ScriptRef('', 'untracked-watch'));
+    isFalse(untracked.fingerprintable);
+    equal(untracked.files.length, 1);
+
+    let codegen = await ws.scriptConfig(new ScriptRef('', 'codegen'));
+    isTrue(codegen.fingerprintable);
+    equal(codegen.packageLocks.length, 0);
+
+    let lint = await ws.scriptConfig(new ScriptRef('', 'lint'));
+    isFalse(lint.fingerprintable);
+    equal(lint.command, 'eslint .');
+
+    let sourceFs = await ws.scriptConfig(new ScriptRef('', 'source'));
+    isTrue(sourceFs.isFileset);
+  });
+
+  test('planSnapshotToText and planSnapshotFromText round-trip probes, filesets, and configs', () => {
+    let probes = [
+      new ConfigProbe(false, 'packages/legacy/zebra.json'),
+      new ConfigProbe(true, 'packages/legacy/package.json', 1700000000123456789 as i64, 512 as i64, 'deadbeef'),
+    ];
+    let c0Env = new GrowableArray<(String, EnvBinding)>();
+    c0Env.push(('A_LIT', new EnvLiteral('val:with\nnewline')));
+    c0Env.push(('B_EXT', new EnvExternal('fallback')));
+    c0Env.push(('C_EXT_NONE', new EnvExternal(null)));
+    let configs = [
+      new ScriptConfig(
+        new ScriptRef('packages/app', 'build:all'),
+        true,
+        'printf "line1\nline2:ok\n" > out.txt',
+        ['src/**/*.zena', '!src/ignore.zena'],
+        ['out.txt'],
+        true,
+        true,
+        [new DependencySpec(new ScriptRef('packages/legacy', 'serve'), false)],
+        'if-file-deleted',
+        null,
+        c0Env,
+        ['zena-lock.json'],
+        false,
+        false,
+      ),
+      new ScriptConfig(
+        new ScriptRef('packages/app', 'source'),
+        true,
+        null,
+        ['zena-package.json', 'src/**/*.zena'],
+        new GrowableArray<String>(),
+        true,
+        true,
+        new GrowableArray<DependencySpec>(),
+        'false',
+        null,
+        new GrowableArray<(String, EnvBinding)>(),
+        new GrowableArray<String>(),
+        true,
+        true,
+      ),
+      new ScriptConfig(
+        new ScriptRef('packages/legacy', 'serve'),
+        true,
+        'node server.js',
+        ['server.js'],
+        new GrowableArray<String>(),
+        true,
+        false,
+        new GrowableArray<DependencySpec>(),
+        'true',
+        new ServiceConfig('Ready: [0-9]+'),
+        new GrowableArray<(String, EnvBinding)>(),
+        new GrowableArray<String>(),
+        true,
+        false,
+      ),
+    ];
+
+    let encoded = planSnapshotToText(probes, configs);
+    let snapshot = planSnapshotFromText(encoded);
+    let decProbes = snapshot.probes;
+    let decConfigs = snapshot.configs;
+
+    equal(decProbes.length, 2);
+    isFalse(decProbes[0].exists);
+    equal(decProbes[0].path, 'packages/legacy/zebra.json');
+    isTrue(decProbes[1].exists);
+    equal(decProbes[1].path, 'packages/legacy/package.json');
+    equal(decProbes[1].modified, 1700000000123456789 as i64);
+    equal(decProbes[1].size, 512 as i64);
+    equal(decProbes[1].sha256, 'deadbeef');
+
+    equal(decConfigs.length, 3);
+    let c0 = decConfigs[0];
+    equal(refKey(c0.ref), 'packages/app:build:all');
+    equal(c0.command, 'printf "line1\nline2:ok\n" > out.txt');
+    isFalse(c0.cacheEnabled);
+    isFalse(c0.isFileset);
+    isFalse(c0.fingerprintable);
+    equal(c0.dependencies.length, 1);
+    isFalse(c0.dependencies[0].cascade);
+    equal(c0.env.length, 3);
+    let e0 = c0.env[0][1];
+    if (e0 is EnvLiteral) {
+      equal(e0.value, 'val:with\nnewline');
+    } else {
+      throws(() => { throw new Error('expected EnvLiteral'); });
+    }
+
+    let c1 = decConfigs[1];
+    isTrue(c1.isFileset);
+    isNull(c1.command);
+
+    let c2 = decConfigs[2];
+    isFalse(c2.isFileset);
+    let svc = c2.service;
+    isNotNull(svc);
+    if (svc != null) {
+      equal(svc.readyWhenLineMatches, 'Ready: [0-9]+');
+    }
+
+    throws(() => {
+      planSnapshotFromText('wrong-header\n');
+    });
+    throws(() => {
+      planSnapshotFromText(`${encoded}extra`);
+    });
+  });
+});

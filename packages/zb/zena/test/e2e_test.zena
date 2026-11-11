@@ -14,6 +14,7 @@ import {StepKey} from 'workflow/step';
 import {Colors} from '../colors.zena';
 import {ensureDir, ensureParentDir, withRoot} from '../fs-util.zena';
 import {FileHasher} from '../fs-walk.zena';
+import {PlanLoadStats} from '../plan-cache.zena';
 import {BuildOutcome, buildTarget, formatBuildReport, watchTarget} from '../runner.zena';
 import {ScriptRef} from '../wireit-config.zena';
 
@@ -1062,5 +1063,164 @@ export let tests = suite('zb end to end', () => {
 
     let failedVerbose = formatBuildReport(failed, true, plain);
     isTrue(failedVerbose.contains('▲  :build: skipped'), failedVerbose);
+  });
+
+  test('zebra.json builds, tracks zena-lock.json by default, and reuses cached plan snapshots with zero config parses', async () => {
+    let root = `/tmp/zb-native-plan-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    await write(root, 'zena-lock.json', '{"resolved": {}}\n');
+    await write(root, 'zebra.json', `{
+      // Root standalone Zebra config
+      "scripts": {
+        "build": {
+          "dependencies": ["./packages/app:check", "./packages/legacy:build"]
+        }
+      }
+    }`);
+    await write(root, 'packages/app/src.zena', 'export let v = 1;\n');
+    await write(root, 'packages/app/zebra.json', `{
+      "scripts": {
+        "check": {
+          "command": "cat src.zena ../legacy/out.txt > checked.log && rm checked.log",
+          "files": ["src.zena"],
+          "dependencies": ["../legacy:build"]
+        }
+      }
+    }`);
+    await write(root, 'packages/legacy/in.txt', 'legacy-v1\n');
+    await write(root, 'packages/legacy/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "printf 'legacy-1\\n' > out.txt",
+          "files": ["in.txt"],
+          "output": ["out.txt"]
+        }
+      }
+    }`);
+
+    let entry = new ScriptRef('', 'build');
+
+    // 1. Cold build parses the 3 reachable config files and writes the plan snapshot.
+    let stats1 = new PlanLoadStats();
+    let r1 = await buildTarget(root, entry, 0, false, true, null, stats1);
+    isTrue(r1.result.allSucceeded, 'cold build succeeds');
+    isFalse(stats1.fromSnapshot, 'first run resolves configs fresh');
+    equal(stats1.filesParsed, 3);
+    isTrue(sourceOf(r1.result, 'packages/legacy:build') == StepSource.Ran);
+    isTrue(sourceOf(r1.result, 'packages/app:check') == StepSource.Ran);
+
+    // 2. Warm build reuses the plan snapshot with zero config files parsed.
+    let stats2 = new PlanLoadStats();
+    let r2 = await buildTarget(root, entry, 0, false, true, null, stats2);
+    isTrue(r2.result.allSucceeded, 'warm build succeeds');
+    isTrue(stats2.fromSnapshot, 'warm build loads plan snapshot');
+    equal(stats2.filesParsed, 0);
+    isTrue(sourceOf(r2.result, 'packages/legacy:build') == StepSource.Fresh);
+    isTrue(sourceOf(r2.result, 'packages/app:check') == StepSource.Fresh);
+
+    // 3. Editing zena-lock.json invalidates the zebra.json step (without changing zebra.json).
+    await write(root, 'zena-lock.json', '{"resolved": {"pkg": "v2"}}\n');
+    let stats3 = new PlanLoadStats();
+    let r3 = await buildTarget(root, entry, 0, false, true, null, stats3);
+    isTrue(r3.result.allSucceeded);
+    isTrue(stats3.fromSnapshot, 'lockfile change keeps plan snapshot valid');
+    isTrue(sourceOf(r3.result, 'packages/legacy:build') == StepSource.Fresh);
+    isTrue(sourceOf(r3.result, 'packages/app:check') == StepSource.Ran);
+
+    // 4. Same-byte-length edit to legacy/package.json invalidates the plan snapshot.
+    await write(root, 'packages/legacy/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "printf 'legacy-2\\n' > out.txt",
+          "files": ["in.txt"],
+          "output": ["out.txt"]
+        }
+      }
+    }`);
+    let stats4 = new PlanLoadStats();
+    let r4 = await buildTarget(root, entry, 0, false, true, null, stats4);
+    isTrue(r4.result.allSucceeded);
+    isFalse(stats4.fromSnapshot, 'config edit invalidates plan snapshot');
+    equal(await readFile(withRoot(root, 'packages/legacy/out.txt')), 'legacy-2\n');
+
+    // 5. Adding zebra.json to packages/legacy (without touching package.json)
+    // invalidates the plan snapshot because the missing zebra.json probe flips.
+    await write(root, 'packages/legacy/zebra.json', `{
+      "scripts": {
+        "build": {
+          "command": "printf 'native-zb\\n' > out.txt",
+          "files": ["in.txt"],
+          "output": ["out.txt"]
+        }
+      }
+    }`);
+    let stats5 = new PlanLoadStats();
+    let r5 = await buildTarget(root, entry, 0, false, true, null, stats5);
+    isTrue(r5.result.allSucceeded);
+    isFalse(stats5.fromSnapshot, 'new zebra.json invalidates plan snapshot');
+    equal(await readFile(withRoot(root, 'packages/legacy/out.txt')), 'native-zb\n');
+  });
+
+  test('zena-package.json scripts track transitive path-dependency :source filesets while ignoring upstream test edits', async () => {
+    let root = `/tmp/zb-zena-pkg-fileset-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    let plain = Colors.plain();
+
+    await write(root, 'zena-package.json', `{
+      "workspace": {"packages": ["packages/*"]}
+    }`);
+    await write(root, 'packages/lib/zena-package.json', `{
+      "name": "lib",
+      "source": "."
+    }`);
+    await write(root, 'packages/lib/answer.zena', 'export let answer = 41;\n');
+    await write(root, 'packages/lib/test/answer_test.zena', '// test v1\n');
+
+    await write(root, 'packages/app/zena-package.json', `{
+      "name": "app",
+      "dependencies": {
+        "lib": {"path": "../lib"}
+      },
+      "scripts": {
+        "build": {
+          "command": "mkdir -p out && cat ../lib/answer.zena src/app.zena > out/bundle.txt",
+          "output": ["out/bundle.txt"],
+          "dependencies": ["source"]
+        }
+      }
+    }`);
+    await write(root, 'packages/app/src/app.zena', 'export let appVal = 1;\n');
+
+    let entry = new ScriptRef('packages/app', 'build');
+
+    // 1. Cold build runs `packages/app:build` and omits `:source` filesets from the rail report.
+    let r1 = await buildTarget(root, entry);
+    isTrue(r1.result.allSucceeded);
+    let report1 = formatBuildReport(r1, false, plain);
+    isTrue(report1.contains('◇  packages/app:build: ran'), report1);
+    isFalse(report1.contains(':source'), report1);
+    isTrue(report1.contains('(1 ran)'), report1);
+
+    // 2. Warm build hits plan snapshot and stays fresh.
+    let stats2 = new PlanLoadStats();
+    let r2 = await buildTarget(root, entry, 0, false, true, null, stats2);
+    isTrue(stats2.fromSnapshot);
+    equal(stats2.filesParsed, 0);
+    isTrue(sourceOf(r2.result, 'packages/app:build') == StepSource.Fresh);
+
+    // 3. Editing a test file inside `packages/lib` (`"source": "."`) does NOT invalidate `:source`.
+    await write(root, 'packages/lib/test/answer_test.zena', '// test v2 edited\n');
+    let r3 = await buildTarget(root, entry);
+    isTrue(sourceOf(r3.result, 'packages/app:build') == StepSource.Fresh);
+
+    // 4. Editing a library source file in `packages/lib` invalidates `packages/lib:source` -> `packages/app:source` -> `packages/app:build`.
+    await write(root, 'packages/lib/answer.zena', 'export let answer = 42;\n');
+    let r4 = await buildTarget(root, entry);
+    isTrue(sourceOf(r4.result, 'packages/app:build') == StepSource.Ran);
+    isTrue(
+      (await readFile(withRoot(root, 'packages/app/out/bundle.txt'))).contains('answer = 42'),
+    );
   });
 });

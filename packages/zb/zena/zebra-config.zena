@@ -1,0 +1,1133 @@
+// Zena-native (`zena-package.json`) and standalone (`zebra.json`) build
+// configuration, fileset rules (including the automatic `"source"` fileset
+// synthesized from `zena-package.json`), per-package coexistence with
+// `package.json` Wireit configs, and a Wireit migration converter.
+
+import {Future} from 'zena:async';
+import {HashSet} from 'zena:collections';
+import {Box, StringBuilder, join} from 'zena:core';
+import {FileType, isDirectory, isFile, listDir, readFile, writeFile} from 'zena:fs';
+import {JsonArray, JsonObject, JsonValue, stringify} from 'zena:json';
+import {compareStrings, sortBy} from 'workflow/canonical';
+import {ensureParentDir, joinWorkspace, withRoot} from './fs-util.zena';
+import {
+  ConfigError,
+  DependencySpec,
+  EnvBinding,
+  ScriptConfig,
+  ScriptRef,
+  isCommentKey,
+  parseClean,
+  parseDependency,
+  parseEnv,
+  parseJsonObject,
+  parseService,
+  parseWireitScriptFromPackage,
+  refKey,
+  resolveDependency,
+  stringList,
+  validateLockFilenames,
+} from './wireit-config.zena';
+
+/** File name of standalone Zebra per-package build configuration. */
+export let ZEBRA_CONFIG_FILE = 'zebra.json';
+
+/** File name of a Zena package manifest. */
+export let ZENA_PACKAGE_FILE = 'zena-package.json';
+
+function isZebraTopKey(key: String) {
+  return key == 'scripts' || key == 'filesets' || key == 'locks' ||
+    key == 'workspace' || isCommentKey(key);
+}
+
+function isRecognizedScriptKey(key: String) {
+  return key == 'command' || key == 'files' || key == 'output' ||
+    key == 'dependencies' || key == 'cache' || key == 'clean' ||
+    key == 'service' || key == 'env' || key == 'locks' || isCommentKey(key);
+}
+
+function isRecognizedFilesetKey(key: String) {
+  return key == 'files' || key == 'dependencies' || isCommentKey(key);
+}
+
+function validateBuildSections(path: String, root: JsonObject) {
+  let rawScripts = root['scripts'];
+  if (rawScripts != null && !(rawScripts is JsonObject)) {
+    throw new ConfigError(`${path}: "scripts" must be an object`);
+  }
+  let rawFilesets = root['filesets'];
+  if (rawFilesets != null && !(rawFilesets is JsonObject)) {
+    throw new ConfigError(`${path}: "filesets" must be an object`);
+  }
+  if (rawScripts is JsonObject && rawFilesets is JsonObject) {
+    let scriptsObj = rawScripts;
+    rawFilesets.forEach((name, value) => {
+      if (!isCommentKey(name) && scriptsObj[name] != null) {
+        throw new ConfigError(
+          `${path}: "${name}" cannot be defined in both "filesets" and "scripts"`,
+        );
+      }
+    });
+  }
+}
+
+function validateZebraRoot(path: String, root: JsonObject) {
+  root.forEach((key, value) => {
+    if (!isZebraTopKey(key)) {
+      throw new ConfigError(`${path}: unsupported top-level key "${key}"`);
+    }
+  });
+  let rawWorkspace = root['workspace'];
+  if (rawWorkspace != null) {
+    if (!(rawWorkspace is JsonObject)) {
+      throw new ConfigError(`${path}: "workspace" must be an object`);
+    }
+    let packages = rawWorkspace['packages'];
+    if (packages != null) {
+      stringList(packages, `${path}: workspace.packages`);
+    }
+  }
+  validateBuildSections(path, root);
+}
+
+function validateZenaPackageRoot(path: String, root: JsonObject) {
+  if (root['wireit'] != null) {
+    throw new ConfigError(`${path}: unsupported top-level key "wireit" (use "scripts")`);
+  }
+  if (root['packageLocks'] != null) {
+    throw new ConfigError(`${path}: unsupported top-level key "packageLocks" (use "locks")`);
+  }
+  validateBuildSections(path, root);
+}
+
+function resolveDefaultLocks(path: String, root: JsonObject): Array<String> {
+  let rawLocks = root['locks'];
+  if (rawLocks == null) {
+    return ['zena-lock.json'];
+  }
+  let locks = stringList(rawLocks, `${path}: locks`);
+  validateLockFilenames(path, 'locks', locks);
+  return locks;
+}
+
+/**
+ * Parses one named fileset from a `"filesets"` entry (`Array<String>`
+ * shorthand or `{files?, dependencies?}` object).
+ */
+export function parseZebraFileset(
+  ref: ScriptRef,
+  path: String,
+  entry: JsonValue,
+): ScriptConfig {
+  let where = refKey(ref);
+  if (entry is JsonArray) {
+    let files = stringList(entry, `fileset "${where}" in ${path}`);
+    return new ScriptConfig(
+      ref,
+      true,
+      null,
+      files,
+      new GrowableArray<String>(),
+      true,
+      true,
+      new GrowableArray<DependencySpec>(),
+      'false',
+      null,
+      new GrowableArray<(String, EnvBinding)>(),
+      new GrowableArray<String>(),
+      true,
+      true,
+    );
+  }
+  if (!(entry is JsonObject)) {
+    throw new ConfigError(
+      `fileset "${where}" in ${path} must be an array of globs or {files, dependencies} object`,
+    );
+  }
+  entry.forEach((key, value) => {
+    if (!isRecognizedFilesetKey(key)) {
+      throw new ConfigError(
+        `fileset "${where}" in ${path} has unsupported key "${key}"`,
+      );
+    }
+  });
+  let files = stringList(entry['files'], `fileset "${where}": files`);
+  let deps = new GrowableArray<DependencySpec>();
+  let rawDeps = entry['dependencies'];
+  if (rawDeps != null) {
+    if (!(rawDeps is JsonArray)) {
+      throw new ConfigError(`fileset "${where}": dependencies must be an array`);
+    }
+    for (var i = 0; i < rawDeps.length; i += 1) {
+      deps.push(parseDependency(ref.packageDir, where, rawDeps[i]));
+    }
+  }
+  return new ScriptConfig(
+    ref,
+    true,
+    null,
+    files,
+    new GrowableArray<String>(),
+    true,
+    true,
+    deps,
+    'false',
+    null,
+    new GrowableArray<(String, EnvBinding)>(),
+    new GrowableArray<String>(),
+    true,
+    true,
+  );
+}
+
+/**
+ * Extracts one `ScriptConfig` from a parsed `zebra.json` or
+ * `zena-package.json` `"scripts"` entry.
+ */
+export function parseZebraScript(
+  ref: ScriptRef,
+  path: String,
+  entry: JsonValue,
+  defaultLocks: Array<String>,
+  hasFilesetDep: boolean = false,
+): ScriptConfig {
+  let where = refKey(ref);
+
+  if (entry is String) {
+    // String shorthand (`"fmt": "zena fmt --check"`): always runs, uncached.
+    return new ScriptConfig(
+      ref,
+      false,
+      entry,
+      new GrowableArray<String>(),
+      new GrowableArray<String>(),
+      false,
+      false,
+      new GrowableArray<DependencySpec>(),
+      'false',
+      null,
+      new GrowableArray<(String, EnvBinding)>(),
+      new GrowableArray<String>(),
+      false,
+      false,
+    );
+  }
+
+  if (!(entry is JsonObject)) {
+    throw new ConfigError(
+      `script "${where}" in ${path} must be an object or command string`,
+    );
+  }
+
+  entry.forEach((key, value) => {
+    if (!isRecognizedScriptKey(key)) {
+      throw new ConfigError(
+        `script "${where}" in ${path} has unsupported key "${key}"`,
+      );
+    }
+  });
+
+  var command: String? = null;
+  let rawCommand = entry['command'];
+  if (rawCommand != null) {
+    if (rawCommand is String) {
+      command = rawCommand;
+    } else {
+      throw new ConfigError(`script "${where}": command must be a string`);
+    }
+  }
+
+  let deps = new GrowableArray<DependencySpec>();
+  let rawDeps = entry['dependencies'];
+  if (rawDeps != null) {
+    if (!(rawDeps is JsonArray)) {
+      throw new ConfigError(`script "${where}": dependencies must be an array`);
+    }
+    for (var i = 0; i < rawDeps.length; i += 1) {
+      deps.push(parseDependency(ref.packageDir, where, rawDeps[i]));
+    }
+  }
+
+  let clean = parseClean(where, entry['clean']);
+
+  let service = parseService(where, entry['service']);
+  if (command == null && service != null) {
+    throw new ConfigError(`script "${where}": a service needs a command`);
+  }
+  if (service != null && entry['output'] != null) {
+    throw new ConfigError(`script "${where}": a service cannot declare output`);
+  }
+
+  let hasExplicitFiles = entry['files'] != null;
+  let hasExplicitOutput = entry['output'] != null;
+  let files = stringList(entry['files'], `script "${where}": files`);
+  let output = stringList(entry['output'], `script "${where}": output`);
+
+  let trackedByInputs = if (service != null)
+    hasExplicitFiles || hasFilesetDep
+  else if (command != null)
+    hasExplicitFiles || hasExplicitOutput || hasFilesetDep
+  else
+    true;
+
+  var cacheEnabled = true;
+  let rawCache = entry['cache'];
+  if (rawCache != null) {
+    if (!(rawCache is Box<boolean>)) {
+      throw new ConfigError(`script "${where}": cache must be a boolean`);
+    }
+    cacheEnabled = rawCache.value;
+    if (cacheEnabled && !trackedByInputs) {
+      throw new ConfigError(
+        `script "${where}": cache: true requires "files", "output", or a fileset dependency (use "files": [] if the command reads no files)`,
+      );
+    }
+  }
+
+  var locks = defaultLocks;
+  let rawLocks = entry['locks'];
+  if (rawLocks != null) {
+    locks = stringList(rawLocks, `script "${where}": locks`);
+    validateLockFilenames(`script "${where}"`, 'locks', locks);
+  }
+
+  let filesDeclared = if (command == null && service == null)
+    hasExplicitFiles
+  else
+    trackedByInputs;
+  let outputDeclared = if (service != null) false else trackedByInputs;
+
+  return new ScriptConfig(
+    ref,
+    true,
+    command,
+    files,
+    output,
+    filesDeclared,
+    outputDeclared,
+    deps,
+    clean,
+    service,
+    parseEnv(where, entry['env']),
+    locks,
+    cacheEnabled,
+    false,
+  );
+}
+
+function upToWorkspaceRoot(packageDir: String) {
+  if (packageDir == '') {
+    return '';
+  }
+  let sb = new StringBuilder();
+  for (let seg in packageDir.split('/')) {
+    if (seg != '') {
+      sb.append('../');
+    }
+  }
+  return sb.toString();
+}
+
+function normalizeSourceDir(path: String, raw: JsonValue) {
+  if (!(raw is String)) {
+    throw new ConfigError(`${path}: "source" must be a string`);
+  }
+  let parts = new GrowableArray<String>();
+  for (let part in raw.split('/')) {
+    if (part == '..' || (parts.length == 0 && part == '' && raw.startsWith('/'))) {
+      throw new ConfigError(
+        `${path}: source "${raw}" is not a directory inside the package`,
+      );
+    }
+    if (part != '' && part != '.') {
+      parts.push(part);
+    }
+  }
+  return if (parts.length == 0) '.' else join(parts, '/');
+}
+
+function stripTrailingSlashes(raw: String) {
+  var out = raw;
+  while (out.length > 1 && out.endsWith('/')) {
+    out = out.sliceBytes(0, out.length - 1);
+  }
+  return out;
+}
+
+/**
+ * Synthesizes the automatic `"source"` fileset for a `zena-package.json`
+ * manifest: its library `.zena` files (excluding tests per package-manager
+ * defaults), `zena-package.json`, any `wit` files, and the `"source"`
+ * filesets of all path `dependencies`.
+ */
+export function synthesizeZenaSourceFileset(
+  packageDir: String,
+  path: String,
+  manifest: JsonObject,
+): ScriptConfig {
+  let ref = new ScriptRef(packageDir, 'source');
+  let files = new GrowableArray<String>();
+  files.push(ZENA_PACKAGE_FILE);
+  if (packageDir != '') {
+    files.push(`${upToWorkspaceRoot(packageDir)}${ZENA_PACKAGE_FILE}`);
+  }
+
+  let sourceDir: String? = if (manifest['source'] != null) {
+    normalizeSourceDir(path, manifest['source'])
+  } else if (
+    manifest['name'] != null ||
+    manifest['exports'] != null ||
+    manifest['main'] != null
+  ) {
+    'src'
+  } else {
+    null
+  };
+  if (sourceDir != null) {
+    if (sourceDir == '.') {
+      files.push('**/*.zena');
+      files.push('!**/*_test.zena');
+      files.push('!**/test/**');
+      files.push('!**/tests/**');
+    } else {
+      files.push(`${sourceDir}/**/*.zena`);
+      files.push(`!${sourceDir}/**/*_test.zena`);
+      files.push(`!${sourceDir}/**/test/**`);
+      files.push(`!${sourceDir}/**/tests/**`);
+    }
+  }
+
+  let deps = new GrowableArray<DependencySpec>();
+  let rawDeps = manifest['dependencies'];
+  if (rawDeps != null) {
+    if (!(rawDeps is JsonObject)) {
+      throw new ConfigError(`${path}: "dependencies" must be an object`);
+    }
+    rawDeps.forEach((localName, value) => {
+      if (isCommentKey(localName)) {
+        return;
+      }
+      if (!(value is JsonObject)) {
+        throw new ConfigError(
+          `${path}: dependency "${localName}" must be an object`,
+        );
+      }
+      let depPath = value['path'];
+      if (depPath != null) {
+        if (!(depPath is String)) {
+          throw new ConfigError(
+            `${path}: dependency "${localName}".path must be a string`,
+          );
+        }
+        let cleaned = stripTrailingSlashes(depPath);
+        let prefix = if (cleaned == '' || cleaned == '.')
+          '.'
+        else if (cleaned.startsWith('.'))
+          cleaned
+        else
+          `./${cleaned}`;
+        deps.push(
+          new DependencySpec(resolveDependency(packageDir, `${prefix}:source`), true),
+        );
+      }
+      let witPath = value['wit'];
+      if (witPath != null) {
+        if (!(witPath is String)) {
+          throw new ConfigError(
+            `${path}: dependency "${localName}".wit must be a string`,
+          );
+        }
+        let cleanedWit = stripTrailingSlashes(witPath);
+        let wsWit = joinWorkspace(packageDir, cleanedWit);
+        if (wsWit.startsWith('..') || cleanedWit.startsWith('/')) {
+          throw new ConfigError(
+            `${path}: dependency "${localName}".wit "${witPath}" escapes the workspace`,
+          );
+        }
+        if (cleanedWit.endsWith('.wit')) {
+          files.push(cleanedWit);
+        } else if (cleanedWit == '' || cleanedWit == '.') {
+          files.push('**/*.wit');
+        } else {
+          files.push(`${cleanedWit}/**/*.wit`);
+        }
+      }
+    });
+  }
+
+  return new ScriptConfig(
+    ref,
+    true,
+    null,
+    files,
+    new GrowableArray<String>(),
+    true,
+    true,
+    deps,
+    'false',
+    null,
+    new GrowableArray<(String, EnvBinding)>(),
+    new GrowableArray<String>(),
+    true,
+    true,
+  );
+}
+
+class LoadedPackage {
+  nativePath: String?;
+  nativeJson: JsonObject?;
+  zenaPath: String?;
+  zenaJson: JsonObject?;
+  fallbackPkgJson: JsonObject?;
+
+  new(
+    this.nativePath,
+    this.nativeJson,
+    this.zenaPath,
+    this.zenaJson,
+    this.fallbackPkgJson,
+  );
+}
+
+/**
+ * Loads build configurations across a workspace, supporting `zebra.json`,
+ * `zena-package.json` (with `"scripts"`, `"filesets"`, and synthesized
+ * `"source"` filesets), and per-package fallback to `package.json`
+ * (`wireit` / bare npm `scripts`).
+ */
+export class ZebraWorkspace {
+  #readFile: (path: String) => Future<String?>;
+  #packages = new HashMap<String, LoadedPackage>();
+
+  new(readFile: (path: String) => Future<String?>) : #readFile = readFile;
+
+  async #loadPackage(packageDir: String): Future<LoadedPackage> {
+    if (let (true, cached) = this.#packages.get(packageDir)) {
+      return cached;
+    }
+    let readFile = this.#readFile;
+    let zebraPath = joinWorkspace(packageDir, ZEBRA_CONFIG_FILE);
+    let zebraContent = await readFile(zebraPath);
+
+    let zenaPath = joinWorkspace(packageDir, ZENA_PACKAGE_FILE);
+    let zenaContent = await readFile(zenaPath);
+
+    var nativePath: String? = null;
+    var nativeJson: JsonObject? = null;
+    var zenaJson: JsonObject? = null;
+
+    if (zenaContent != null) {
+      let parsedZena = parseJsonObject(zenaPath, zenaContent);
+      validateZenaPackageRoot(zenaPath, parsedZena);
+      zenaJson = parsedZena;
+    }
+
+    if (zebraContent != null) {
+      let parsedZebra = parseJsonObject(zebraPath, zebraContent);
+      validateZebraRoot(zebraPath, parsedZebra);
+      nativePath = zebraPath;
+      nativeJson = parsedZebra;
+    } else if (zenaJson != null) {
+      nativePath = zenaPath;
+      nativeJson = zenaJson;
+    }
+
+    // Consult `package.json` only when there is no `zebra.json` AND
+    // `zena-package.json` (if present) has not declared its own `"scripts"`.
+    var fallbackPkgJson: JsonObject? = null;
+    let needsFallback = zebraContent == null &&
+      (zenaJson == null || zenaJson['scripts'] == null);
+    if (needsFallback) {
+      let pkgPath = joinWorkspace(packageDir, 'package.json');
+      let pkgContent = await readFile(pkgPath);
+      if (pkgContent != null) {
+        fallbackPkgJson = parseJsonObject(pkgPath, pkgContent);
+      }
+    }
+
+    if (nativeJson == null && fallbackPkgJson == null) {
+      let label = if (packageDir == '') 'the root package' else packageDir;
+      throw new ConfigError(
+        `no zebra.json, zena-package.json, or package.json in ${label}`,
+      );
+    }
+
+    let loaded = new LoadedPackage(
+      nativePath,
+      nativeJson,
+      if (zenaJson != null) zenaPath else null,
+      zenaJson,
+      fallbackPkgJson,
+    );
+    this.#packages[packageDir] = loaded;
+    return loaded;
+  }
+
+  async #targetIsFileset(ref: ScriptRef): Future<boolean> {
+    if (isCommentKey(ref.script)) {
+      return false;
+    }
+    let loaded = await this.#loadPackage(ref.packageDir);
+    let nativeJson = loaded.nativeJson;
+    if (nativeJson != null) {
+      let filesets = nativeJson['filesets'];
+      if (filesets is JsonObject && filesets[ref.script] != null) {
+        return true;
+      }
+      let scripts = nativeJson['scripts'];
+      if (scripts is JsonObject && scripts[ref.script] != null) {
+        return false;
+      }
+    }
+    let zenaJson = loaded.zenaJson;
+    if (zenaJson != null && !isCommentKey(ref.script)) {
+      let zenaFilesets = zenaJson['filesets'];
+      if (zenaFilesets is JsonObject && zenaFilesets[ref.script] != null) {
+        return true;
+      }
+      if (ref.script == 'source') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async scriptConfig(ref: ScriptRef): Future<ScriptConfig> {
+    let loaded = await this.#loadPackage(ref.packageDir);
+    let nativeJson = loaded.nativeJson;
+    let nativePath = loaded.nativePath ?? ZEBRA_CONFIG_FILE;
+
+    if (nativeJson != null && !isCommentKey(ref.script)) {
+      let filesets = nativeJson['filesets'];
+      if (filesets is JsonObject) {
+        let fsEntry = filesets[ref.script];
+        if (fsEntry != null) {
+          return parseZebraFileset(ref, nativePath, fsEntry);
+        }
+      }
+      let scripts = nativeJson['scripts'];
+      if (scripts is JsonObject) {
+        let scriptEntry = scripts[ref.script];
+        if (scriptEntry != null) {
+          let defaultLocks = resolveDefaultLocks(nativePath, nativeJson);
+          var hasFilesetDep = false;
+          if (scriptEntry is JsonObject) {
+            let rawDeps = scriptEntry['dependencies'];
+            if (rawDeps is JsonArray) {
+              let where = refKey(ref);
+              for (var i = 0; i < rawDeps.length; i += 1) {
+                let spec = parseDependency(ref.packageDir, where, rawDeps[i]);
+                if (await this.#targetIsFileset(spec.ref)) {
+                  hasFilesetDep = true;
+                  break;
+                }
+              }
+            }
+          }
+          return parseZebraScript(
+            ref,
+            nativePath,
+            scriptEntry,
+            defaultLocks,
+            hasFilesetDep,
+          );
+        }
+      }
+    }
+
+    let zenaJson = loaded.zenaJson;
+    if (zenaJson != null && !isCommentKey(ref.script)) {
+      let zenaPath = loaded.zenaPath ?? ZENA_PACKAGE_FILE;
+      let zenaFilesets = zenaJson['filesets'];
+      if (zenaFilesets is JsonObject) {
+        let fsEntry = zenaFilesets[ref.script];
+        if (fsEntry != null) {
+          return parseZebraFileset(ref, zenaPath, fsEntry);
+        }
+      }
+      if (ref.script == 'source') {
+        return synthesizeZenaSourceFileset(ref.packageDir, zenaPath, zenaJson);
+      }
+    }
+
+    let fallback = loaded.fallbackPkgJson;
+    if (fallback != null) {
+      return parseWireitScriptFromPackage(ref, fallback);
+    }
+
+    throw new ConfigError(`no script or fileset "${ref.script}" in ${nativePath}`);
+  }
+
+  /** The transitive dependency closure, in discovery (BFS) order. */
+  async collect(entries: Array<ScriptRef>): Future<Array<ScriptConfig>> {
+    let seen = new HashSet<String>();
+    let queue = new GrowableArray<ScriptRef>();
+    let out = new GrowableArray<ScriptConfig>();
+    for (let entry in entries) {
+      queue.push(entry);
+    }
+    var next = 0;
+    while (next < queue.length) {
+      let ref = queue[next];
+      next += 1;
+      if (!seen.add(refKey(ref))) {
+        continue;
+      }
+      let config = await this.scriptConfig(ref);
+      out.push(config);
+      for (let dep in config.dependencies) {
+        queue.push(dep.ref);
+      }
+    }
+    return out;
+  }
+}
+
+class MigratedZebraSections {
+  locks: JsonArray?;
+  scripts: JsonObject;
+
+  new(this.locks, this.scripts);
+}
+
+function buildMigratedZebraSections(
+  pkg: JsonObject,
+  includePackageLock: boolean,
+  packageDir: String,
+): MigratedZebraSections? {
+  let rawWireit = pkg['wireit'];
+  if (!(rawWireit is JsonObject)) {
+    return null;
+  }
+  let wireit = rawWireit;
+  var hasWireitScript = false;
+  wireit.forEach((key, value) => {
+    if (!isCommentKey(key)) {
+      hasWireitScript = true;
+    }
+  });
+  if (!hasWireitScript) {
+    return null;
+  }
+
+  let rawScripts = pkg['scripts'];
+  let orderedNames = new GrowableArray<String>();
+  let seenNames = new HashSet<String>();
+  if (rawScripts is JsonObject) {
+    rawScripts.forEach((name, value) => {
+      if (!isCommentKey(name) && seenNames.add(name)) {
+        orderedNames.push(name);
+      }
+    });
+  }
+  wireit.forEach((name, value) => {
+    if (!isCommentKey(name) && seenNames.add(name)) {
+      orderedNames.push(name);
+    }
+  });
+
+  // Validate all scripts up front so malformed Wireit stanzas fail cleanly.
+  var usesDefaultPackageLock = false;
+  for (let name in orderedNames) {
+    parseWireitScriptFromPackage(new ScriptRef(packageDir, name), pkg);
+    let w = wireit[name];
+    if (w is JsonObject && w['packageLocks'] == null && w['command'] != null) {
+      usesDefaultPackageLock = true;
+    }
+  }
+
+  var locks: JsonArray? = null;
+  if (includePackageLock && usesDefaultPackageLock) {
+    let arr = new JsonArray();
+    arr.push('zena-lock.json');
+    arr.push('package-lock.json');
+    locks = arr;
+  }
+
+  let outScripts = new JsonObject();
+  for (let name in orderedNames) {
+    let w = wireit[name];
+    if (w is JsonObject) {
+      let stanza = new JsonObject();
+      w.forEach((k, v) => {
+        if (isCommentKey(k)) {
+          stanza[k] = v;
+        }
+      });
+      if (w['command'] != null) {
+        stanza['command'] = w['command'];
+      }
+      if (w['service'] != null) {
+        stanza['service'] = w['service'];
+      }
+      if (w['files'] != null) {
+        stanza['files'] = w['files'];
+      }
+      let rawOut = w['output'];
+      if (rawOut is JsonArray) {
+        if (rawOut.length > 0) {
+          stanza['output'] = rawOut;
+        }
+      } else if (
+        w['command'] != null &&
+        w['files'] != null &&
+        w['service'] == null
+      ) {
+        // Wireit treats a task with `files` but omitted `output` as
+        // untracked; preserve that explicitly since Zebra defaults
+        // `output` to `[]` when `files` is declared.
+        stanza['cache'] = new Box(false as boolean);
+      }
+      let clean = parseClean(name, w['clean']);
+      if (clean == 'false') {
+        stanza['clean'] = new Box(false as boolean);
+      } else if (clean == 'if-file-deleted') {
+        stanza['clean'] = 'if-file-deleted';
+      }
+      if (w['env'] != null) {
+        stanza['env'] = w['env'];
+      }
+      if (w['packageLocks'] != null) {
+        stanza['locks'] = w['packageLocks'];
+      }
+      let rawDeps = w['dependencies'];
+      if (rawDeps is JsonArray && rawDeps.length > 0) {
+        stanza['dependencies'] = rawDeps;
+      }
+      outScripts[name] = stanza;
+    } else if (rawScripts is JsonObject) {
+      let bare = rawScripts[name];
+      if (bare is String) {
+        outScripts[name] = bare;
+      }
+    }
+  }
+  return new MigratedZebraSections(locks, outScripts);
+}
+
+/**
+ * Converts a `package.json` containing a `"wireit"` block into formatted
+ * `zebra.json` text, or returns `null` when the `package.json` defines no
+ * Wireit scripts.
+ */
+export function convertPackageJsonToZebraJson(
+  packageJsonText: String,
+  includePackageLock: boolean = false,
+  sourcePath: String = 'package.json',
+  packageDir: String = '',
+): String? {
+  let pkg = parseJsonObject(sourcePath, packageJsonText);
+  let sections = buildMigratedZebraSections(pkg, includePackageLock, packageDir);
+  if (sections == null) {
+    return null;
+  }
+  let locks = sections.locks;
+  let outScripts = sections.scripts;
+  let out = new JsonObject();
+  if (locks != null) {
+    out['locks'] = locks;
+  }
+  out['scripts'] = outScripts;
+  return stringify(out, '  ');
+}
+
+/**
+ * Merges migrated Wireit `"scripts"` (and `"locks"` when needed) into an
+ * existing `zena-package.json`, preserving existing manifest keys in place.
+ */
+export function mergeWireitIntoZenaPackageJson(
+  zenaPackageText: String,
+  packageJsonText: String,
+  includePackageLock: boolean = false,
+  zenaPath: String = 'zena-package.json',
+  sourcePath: String = 'package.json',
+  packageDir: String = '',
+): String? {
+  let zenaRoot = parseJsonObject(zenaPath, zenaPackageText);
+  validateZenaPackageRoot(zenaPath, zenaRoot);
+  let pkg = parseJsonObject(sourcePath, packageJsonText);
+  let sections = buildMigratedZebraSections(pkg, includePackageLock, packageDir);
+  if (sections == null) {
+    return null;
+  }
+  let locks = sections.locks;
+  let outScripts = sections.scripts;
+  let merged = new JsonObject();
+  zenaRoot.forEach((key, value) => {
+    if (key == 'locks' && locks != null) {
+      merged['locks'] = locks;
+    } else if (key == 'scripts') {
+      merged['scripts'] = outScripts;
+    } else {
+      merged[key] = value;
+    }
+  });
+  if (locks != null && !merged.has('locks')) {
+    merged['locks'] = locks;
+  }
+  if (!merged.has('scripts')) {
+    merged['scripts'] = outScripts;
+  }
+  return stringify(merged, '  ');
+}
+
+/** One configuration file written or previewed by `migrateWorkspaceToZebra`. */
+export class MigratedPackage(path: String, content: String)
+
+/** Outcome of migrating Wireit `package.json` files to `zena-package.json` / `zebra.json`. */
+export class MigrationResult {
+  written: Array<MigratedPackage>;
+  skippedExisting: Array<String>;
+
+  new(this.written, this.skippedExisting);
+}
+
+function workspacePatternsFromPackageJson(pkg: JsonObject): Array<String> {
+  let raw = pkg['workspaces'];
+  if (raw is JsonArray) {
+    return stringList(raw, 'package.json: workspaces');
+  }
+  if (raw is JsonObject) {
+    let packages = raw['packages'];
+    if (packages != null) {
+      return stringList(packages, 'package.json: workspaces.packages');
+    }
+  }
+  return new GrowableArray<String>();
+}
+
+function workspacePatternsFromZenaManifest(manifest: JsonObject): Array<String> {
+  let raw = manifest['workspace'];
+  if (raw is JsonObject) {
+    let packages = raw['packages'];
+    if (packages != null) {
+      return stringList(packages, 'workspace.packages');
+    }
+  }
+  return new GrowableArray<String>();
+}
+
+async function expandWorkspacePatterns(
+  root: String,
+  patterns: Array<String>,
+  seen: HashSet<String>,
+  out: GrowableArray<String>,
+) {
+  for (let pattern in patterns) {
+    let trimmed = if (pattern.endsWith('/*'))
+      pattern.sliceBytes(0, pattern.length - 2)
+    else if (pattern.endsWith('/**'))
+      pattern.sliceBytes(0, pattern.length - 3)
+    else
+      null;
+    if (trimmed != null) {
+      let parentRel = joinWorkspace('', trimmed);
+      let parentFull = withRoot(root, parentRel);
+      if (await isDirectory(parentFull)) {
+        for (let entry in await listDir(parentFull)) {
+          if (entry.name == '.' || entry.name == '..' || entry.fileType != FileType.Directory) {
+            continue;
+          }
+          let candidate = joinWorkspace(parentRel, entry.name);
+          if (seen.add(candidate)) {
+            out.push(candidate);
+          }
+        }
+      }
+    } else {
+      let candidate = joinWorkspace('', pattern);
+      if (seen.add(candidate)) {
+        out.push(candidate);
+      }
+    }
+  }
+}
+
+function collectWireitPackageDirs(
+  packageDir: String,
+  pkg: JsonObject,
+  seen: HashSet<String>,
+  queue: GrowableArray<String>,
+) {
+  let rawWireit = pkg['wireit'];
+  if (!(rawWireit is JsonObject)) {
+    return;
+  }
+  rawWireit.forEach((scriptName, stanza) => {
+    if (isCommentKey(scriptName) || !(stanza is JsonObject)) {
+      return;
+    }
+    let rawDeps = stanza['dependencies'];
+    if (!(rawDeps is JsonArray)) {
+      return;
+    }
+    let where = refKey(new ScriptRef(packageDir, scriptName));
+    for (var i = 0; i < rawDeps.length; i += 1) {
+      let spec = parseDependency(packageDir, where, rawDeps[i]);
+      if (seen.add(spec.ref.packageDir)) {
+        queue.push(spec.ref.packageDir);
+      }
+    }
+  });
+}
+
+async function discoverCandidateDirs(
+  root: String,
+  targetDirs: Array<String>,
+): Future<Array<String>> {
+  let out = new GrowableArray<String>();
+  let seen = new HashSet<String>();
+  if (targetDirs.length > 0) {
+    for (let raw in targetDirs) {
+      let norm = joinWorkspace('', raw);
+      if (seen.add(norm)) {
+        out.push(norm);
+      }
+    }
+    return out;
+  }
+  let queue = new GrowableArray<String>();
+  seen.add('');
+  queue.push('');
+  let rootPkgPath = withRoot(root, 'package.json');
+  if (await isFile(rootPkgPath)) {
+    let rootPkg = parseJsonObject('package.json', await readFile(rootPkgPath));
+    await expandWorkspacePatterns(
+      root,
+      workspacePatternsFromPackageJson(rootPkg),
+      seen,
+      queue,
+    );
+  }
+  let rootZenaPath = withRoot(root, ZENA_PACKAGE_FILE);
+  if (await isFile(rootZenaPath)) {
+    let rootZena = parseJsonObject(ZENA_PACKAGE_FILE, await readFile(rootZenaPath));
+    await expandWorkspacePatterns(
+      root,
+      workspacePatternsFromZenaManifest(rootZena),
+      seen,
+      queue,
+    );
+  }
+  let rootZebraPath = withRoot(root, ZEBRA_CONFIG_FILE);
+  if (await isFile(rootZebraPath)) {
+    let rootZebra = parseJsonObject(ZEBRA_CONFIG_FILE, await readFile(rootZebraPath));
+    await expandWorkspacePatterns(
+      root,
+      workspacePatternsFromZenaManifest(rootZebra),
+      seen,
+      queue,
+    );
+  }
+  var next = 0;
+  while (next < queue.length) {
+    let dir = queue[next];
+    next += 1;
+    let pkgRel = joinWorkspace(dir, 'package.json');
+    let pkgFull = withRoot(root, pkgRel);
+    if (await isFile(pkgFull)) {
+      let pkg = parseJsonObject(pkgRel, await readFile(pkgFull));
+      collectWireitPackageDirs(dir, pkg, seen, queue);
+    }
+  }
+  out.push('');
+  let childDirs = new GrowableArray<String>();
+  for (let dir in queue) {
+    if (dir != '') {
+      childDirs.push(dir);
+    }
+  }
+  sortBy(childDirs, compareStrings);
+  for (let dir in childDirs) {
+    out.push(dir);
+  }
+  return out;
+}
+
+/**
+ * Converts Wireit `package.json` configurations under `root` into
+ * `zena-package.json` (when a Zena manifest already exists in that
+ * directory) or standalone `zebra.json`.
+ *
+ * Existing `zebra.json` files or `zena-package.json` `"scripts"` sections
+ * are left untouched unless `force` is true; when `dryRun` is true, no
+ * files are written to disk.
+ */
+export async function migrateWorkspaceToZebra(
+  root: String,
+  targetDirs: Array<String> = new GrowableArray<String>(),
+  force: boolean = false,
+  dryRun: boolean = false,
+): Future<MigrationResult> {
+  let dirs = await discoverCandidateDirs(root, targetDirs);
+  let rootHasPkgLock = await isFile(withRoot(root, 'package-lock.json'));
+  let written = new GrowableArray<MigratedPackage>();
+  let skipped = new GrowableArray<String>();
+
+  for (let dir in dirs) {
+    let pkgRel = joinWorkspace(dir, 'package.json');
+    let pkgFull = withRoot(root, pkgRel);
+    if (!(await isFile(pkgFull))) {
+      if (targetDirs.length > 0) {
+        throw new ConfigError(`no package.json at ${pkgRel}`);
+      }
+      continue;
+    }
+    let pkgText = await readFile(pkgFull);
+    let includePkgLock =
+      rootHasPkgLock || (await isFile(withRoot(root, joinWorkspace(dir, 'package-lock.json'))));
+
+    let zebraRel = joinWorkspace(dir, ZEBRA_CONFIG_FILE);
+    let zebraFull = withRoot(root, zebraRel);
+    let hasZebra = await isFile(zebraFull);
+
+    let zenaRel = joinWorkspace(dir, ZENA_PACKAGE_FILE);
+    let zenaFull = withRoot(root, zenaRel);
+    let hasZena = await isFile(zenaFull);
+
+    if (hasZena && !hasZebra) {
+      let zenaText = await readFile(zenaFull);
+      let zenaObj = parseJsonObject(zenaRel, zenaText);
+      let merged = mergeWireitIntoZenaPackageJson(
+        zenaText,
+        pkgText,
+        includePkgLock,
+        zenaRel,
+        pkgRel,
+        dir,
+      );
+      if (merged == null) {
+        continue;
+      }
+      if (!force && zenaObj['scripts'] != null) {
+        skipped.push(zenaRel);
+        continue;
+      }
+      if (!dryRun) {
+        await writeFile(zenaFull, merged);
+      }
+      written.push(new MigratedPackage(zenaRel, merged));
+      continue;
+    }
+
+    let converted = convertPackageJsonToZebraJson(
+      pkgText,
+      includePkgLock,
+      pkgRel,
+      dir,
+    );
+    if (converted == null) {
+      continue;
+    }
+    if (!force && hasZebra) {
+      skipped.push(zebraRel);
+      continue;
+    }
+    if (!dryRun) {
+      await ensureParentDir(zebraFull);
+      await writeFile(zebraFull, converted);
+    }
+    written.push(new MigratedPackage(zebraRel, converted));
+  }
+  return new MigrationResult(written, skipped);
+}
