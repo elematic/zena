@@ -97,6 +97,12 @@ export final class Manifest {
    * exports every file. A published archive must hold each.
    */
   var exportFiles = new GrowableArray<String>();
+  /**
+   * The library an import of the package's name alone imports, when the
+   * manifest names one: `main` when it does not (import-names.md, "The main
+   * library").
+   */
+  var main: String | null = null;
 
   new(name: String | null, did: String | null, requirements: OrderedHashMap<String, Requirement>,
       paths: OrderedHashMap<String, String>, workspacePackages: GrowableArray<String>,
@@ -220,7 +226,33 @@ export function readManifest(text: String | null): Manifest {
   manifest.files = filePatterns(root);
   manifest.source = sourceDirectory(root);
   manifest.exportFiles = exportedFiles(root, manifest.source);
+  manifest.main = mainLibrary(root);
   return manifest;
+}
+
+/**
+ * The manifest's `main`, or null when it has none: a library's name, and
+ * one of the `exports` when it lists them, as the compiler requires.
+ */
+function mainLibrary(root: JsonObject): String | null {
+  let value = root['main'];
+  if (value == null) {
+    return null;
+  }
+  if (!(value is String)) {
+    throw new ManifestError('zena-package.json: main is not a string');
+  }
+  let main = value;
+  if (main == '' || main.startsWith('/') || main.endsWith('/') || main.endsWith('.zena')) {
+    throw new ManifestError(`zena-package.json: main '${main}' is not a library's name`);
+  }
+  let exports = root['exports'];
+  if (exports is JsonObject) {
+    if (!exports.has(main)) {
+      throw new ManifestError(`zena-package.json: main '${main}' is not one of its exports`);
+    }
+  }
+  return main;
 }
 
 /**

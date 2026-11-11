@@ -42,7 +42,7 @@ for the architecture.
   - `heading-anchors.zena`: heading `id` slug generation and deduplication
     (`AstTransformer`).
   - `gfm.zena`: bundles the GFM extensions, alerts, and heading anchors.
-- `src/index.zena`: public facade re-exporting the AST, plugin interfaces,
+- `src/main.zena`: the package's main library, a facade re-exporting the AST, plugin interfaces,
   `parse`, `renderHtml`, `markdownToHtml`, and the built-in extensions.
 - `test/`: test suites (`commonmark_test.zena`, `plugins_test.zena`,
   `sanitize_test.zena`).

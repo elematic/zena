@@ -5586,7 +5586,8 @@ A specifier names a library (docs/design/import-names.md):
   `router/server` or `acme:markdown/plugins/gfm`. A `:` before any `/`
   ends the scope, the first `/` after it ends the package's name, and the
   library's name is the rest, its path in the package.
-- `<package>` or `<scope>:<package>` alone: the package's `index` library.
+- `<package>` or `<scope>:<package>` alone: the package's main library,
+  `main.zena` or the one its manifest's `main` names.
 - `<namespace>:<interface>`, where the namespace is a WIT dependency's
   name: a WIT interface, such as `wasi:clocks/system-clock`.
 

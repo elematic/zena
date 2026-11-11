@@ -18,7 +18,7 @@ and handles.
 ```zena
 import {parseWit} from 'zena-lang:wit-parser/wit';  // a package in a scope
 import {Lexer} from 'zena-lang:wit-parser/wit/lexer'; // a library under it
-import {route} from 'acme:router';                    // its index library
+import {route} from 'acme:router';                    // its main library
 import {Router} from 'router/server';                 // a package without a scope
 import {HashMap} from 'zena:map';                     // the standard library
 import {now} from 'wasi:clocks/system-clock';         // a WIT interface
@@ -31,8 +31,7 @@ A specifier is `[<scope>:]<package>[/<library>]`:
 - **`<package>`** ends at the first `/`.
 - **`/<library>`** is the library's path from the package's `source`
   directory, without `.zena`, and may hold more `/`s. Without it, the
-  import names the package's `index` library: the `index` entry of its
-  `exports`, or `index.zena` in an open package.
+  import names the package's main library (below).
 
 A package without a scope is one added with `--name`, one with a handle
 on its own domain, or a workspace package with no scope.
@@ -57,6 +56,29 @@ import of the standard library changes.
 `<namespace>:<package>/<interface>`, which is this form, so a
 `{"wit": ...}` dependency's key is a WIT namespace (`wasi`, `gfx`), and
 everything after its `:` is the package and interface the WIT declares.
+
+## The main library
+
+An import of a package's name alone, `'acme:router'`, imports its main
+library: the library its manifest's `main` names, or `main`, the
+library `main.zena`, when it names none. A `main` must be one of the
+package's `exports` when it lists them.
+
+```json
+{"name": "router", "main": "server", "exports": {"server": {}, "match": {}}}
+```
+
+`main` is the name an application's entry point already has, so a
+package reads the same whether it is run or imported: its front door is
+`main.zena`. A package that is both, a tool with a library, can keep
+its `main()` in `main.zena` and point `main` at the library, so that
+importers do not load the tool.
+
+There is no default library for a directory. Since a library is named
+without `.zena`, `router/middleware` can be `middleware.zena` beside a
+`middleware/` directory, and a directory needs no `index.zena` to be
+importable by its name. An `exports` entry with a `path` can still name
+any file.
 
 ## Names are still local
 

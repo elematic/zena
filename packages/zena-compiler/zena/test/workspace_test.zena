@@ -18,7 +18,7 @@ import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { checkCompilation } from '../lib/compiler.zena';
 import { Diagnostic } from '../lib/diagnostics.zena';
-import { loadWorkspace, parseSource } from '../lib/package-manifest.zena';
+import { loadWorkspace, parseExports, parseMain, parseSource } from '../lib/package-manifest.zena';
 import { JsonObject, parseJson } from 'zena:json';
 import { MockHost, makeCompiler, errorDiagnostics } from './test-utils.zena';
 
@@ -146,6 +146,36 @@ export let tests = suite('Workspace', () => {
         refused = e.message;
       }
       isTrue(refused.contains('zena-package.json: source'), `${outside}: ${refused}`);
+    }
+  });
+
+  test("a package's name alone imports its main library, main.zena or the one main names", async () => {
+    let host = workspace();
+    host.addFile("/ws/packages/lib/src/main.zena", "export let four = (): i32 => 4;\n");
+    host.addFile("/cache/sources/bafkreirouter/zena-package.json", `{"name": "router", "main": "match"}`);
+    host.addFile("/ws/bare.zena",
+        "import { four } from 'lib';\nimport { route } from 'router';\n" +
+        "export let run = (): i32 => route() + four() - 44;\n");
+    equal((await compileErrors(host, "/ws/bare.zena")).length, 0);
+  });
+
+  test('refuses a main that is not a library, or not one of the exports', async () => {
+    let main = (text: String) => {
+      let json = parseJson(text) as JsonObject;
+      return parseMain(json, parseExports(json), 'zena-package.json');
+    };
+    equal(main('{}'), 'main');
+    equal(main('{"main": "server"}'), 'server');
+    equal(main('{"main": "server", "exports": {"server": {}}}'), 'server');
+    for (let bad in ['{"main": 3}', '{"main": ""}', '{"main": "server.zena"}', '{"main": "/server"}',
+        '{"main": "client", "exports": {"server": {}}}']) {
+      var refused = '';
+      try {
+        main(bad);
+      } catch (e) {
+        refused = e.message;
+      }
+      isTrue(refused.contains('zena-package.json: main'), `${bad}: ${refused}`);
     }
   });
 });

@@ -80,6 +80,11 @@ export final class PackageConfig {
   // the root, as the standard library's are.
   var source = ".";
 
+  // The library an import of the package's name alone imports: the
+  // manifest's `main`, `main` when it has none (import-names.md, "The
+  // main library").
+  var main = "main";
+
   new(
     root: String,
     exports: HashMap<String, ModuleExport> | null
@@ -141,7 +146,7 @@ export final class ModuleResolver {
   // Specifier formats (docs/design/import-names.md):
   // - Relative: "./foo.zena", "../bar.zena"
   // - Package:  "[scope:]package[/library]", such as "acme:router/server"
-  //   or "router/server"; without a library, the package's `index`
+  //   or "router/server"; without a library, the package's main library
   // - The standard library, the scope `zena`: "zena:regex"
   // - A WIT interface, whose namespace is a WIT dependency's name:
   //   "wasi:clocks/monotonic-clock"
@@ -171,9 +176,28 @@ export final class ModuleResolver {
     }
     let restSlash = indexOfByte(rest, 47);
     let packageName = if (restSlash < 0) rest else rest.sliceBytes(0, restSlash);
-    let moduleName = if (restSlash < 0) "index" else rest.sliceBytes(restSlash + 1, rest.length);
     let name = if (scope != null) `${scope}:${packageName}` else packageName;
-    return this.resolvePackage(this.#packageKey(name, referrer), moduleName, referrer);
+    let key = this.#packageKey(name, referrer);
+    let moduleName = if (restSlash < 0) this.#mainLibrary(key) else rest.sliceBytes(restSlash + 1, rest.length);
+    return this.resolvePackage(key, moduleName, referrer);
+  }
+
+  // The main library of the package `key` names, through its alias if it
+  // is one: the library an import of its name alone imports.
+  #mainLibrary(key: String): String {
+    var current = key;
+    while (true) {
+      if (let (true, config) = this.#packages.get(current)) {
+        let aliasOf = config.aliasOf;
+        if (aliasOf == null) {
+          return config.main;
+        }
+        current = aliasOf;
+      } else {
+        return "main";
+      }
+    }
+    return "main";
   }
 
   // The key of the WIT-backed package the scope `scope` names in an import
