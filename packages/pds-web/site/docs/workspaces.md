@@ -15,7 +15,7 @@ my-workspace/
   packages/
     core/
       zena-package.json    # name: "core"
-      index.zena
+      main.zena
     server/
       zena-package.json    # name: "server", depends on "core" via path
       server.zena

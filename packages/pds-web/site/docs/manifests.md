@@ -14,6 +14,7 @@ A package is defined by the `zena-package.json` manifest at its root: its name, 
   "version": "1.4.2",
   "description": "HTTP router for WebAssembly services",
   "license": "MIT",
+  "main": "server",
   "exports": {
     "server": {},
     "middleware": {"path": "middleware/index.zena"},
@@ -43,6 +44,7 @@ A package is defined by the `zena-package.json` manifest at its root: its name, 
 | `license`      | `string`                     | Any package    | SPDX license expression (`MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`); required to publish            |
 | `source`       | `string`                     | Any package    | The directory the package's libraries are in; `src` by default                                       |
 | `exports`      | `Record<string, Export>`     | Any package    | Libraries other packages may import as `<local-name>/<library>`                                      |
+| `main`         | `string`                     | Any package    | The library an import of the package's name alone imports; `main` by default                         |
 | `dependencies` | `Record<string, Dependency>` | Any package    | Packages imported by this package's libraries, keyed by local name                                   |
 | `workspace`    | `{packages: string[]}`       | Workspace root | Directories or `/*` globs of workspace member packages                                               |
 | `scopes`       | `Record<string, string>`     | Workspace root | Custom handle domains for `scope:name` lookups                                                       |
@@ -69,9 +71,9 @@ router/
   zena-package.json
   README.md
   src/
-    server.zena          # router:server
+    server.zena          # router/server, and router, as main names it
     middleware/
-      index.zena         # router:middleware/index
+      index.zena         # router/middleware, as exports names it
   test/
     server_test.zena
 ```

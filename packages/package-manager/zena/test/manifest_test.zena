@@ -67,6 +67,15 @@ export let tests = suite('package-manager/manifest', () => {
     isTrue(!readManifest('{"scopedNames": false}').scopedNames, 'turned off');
   });
 
+  test('reads main, the library an import of the name alone imports', (ctx) => {
+    isNull(readManifest('{}').main);
+    equal(readManifest('{"main": "server"}').main as String, 'server');
+    equal(readManifest('{"main": "server", "exports": {"server": {}}}').main as String, 'server');
+    rejects('{"main": 3}');
+    rejects('{"main": "server.zena"}');
+    rejects('{"main": "client", "exports": {"server": {}}}');
+  });
+
   test("measures exports' files from the source directory, src by default", (ctx) => {
     let named = readManifest(`{"exports": {"server": {}, "client": {"path": "./web/client.zena"},
         "console": {"virtual": {"js": "console/js.zena"}}}}`);

@@ -199,6 +199,7 @@ final class WorkspaceLoader {
           let json = await this.#readJson(manifest);
           config.exports = parseExports(json);
           config.source = parseSource(json, manifest);
+          config.main = parseMain(json, config.exports, manifest);
         }
       }
     }
@@ -286,6 +287,7 @@ final class WorkspaceLoader {
     }
     let config = new PackageConfig(path, parseExports(manifest));
     config.source = parseSource(manifest, `${path}/zena-package.json`);
+    config.main = parseMain(manifest, config.exports, `${path}/zena-package.json`);
     let names = new Map<String, String>();
     config.dependencies = names;
     this.#result[key] = config;
@@ -515,8 +517,30 @@ export function parseSource(obj: JsonObject, manifestPath: String): String {
   return source;
 }
 
+// A manifest's `main`, the library an import of the package's name alone
+// imports: `main` when it has none. One it names must be among its
+// `exports` when it lists them.
+export function parseMain(obj: JsonObject, exports: HashMap<String, ModuleExport> | null,
+    manifestPath: String): String {
+  let value = obj["main"];
+  if (value == null) {
+    return "main";
+  }
+  if (!(value is String)) {
+    throw new Error(`${manifestPath}: main is not a string`);
+  }
+  let main = value;
+  if (main == "" || main.startsWith("/") || main.endsWith("/") || main.endsWith(".zena")) {
+    throw new Error(`${manifestPath}: main '${main}' is not a library's name`);
+  }
+  if (exports != null && !exports.has(main)) {
+    throw new Error(`${manifestPath}: main '${main}' is not one of its exports`);
+  }
+  return main;
+}
+
 // The `exports` of a manifest, or null when it has none: an open package.
-function parseExports(obj: JsonObject): HashMap<String, ModuleExport> | null {
+export function parseExports(obj: JsonObject): HashMap<String, ModuleExport> | null {
   if (!obj.has("exports")) {
     return null;
   }

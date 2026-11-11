@@ -289,7 +289,8 @@ three formats:
    the importing package's dependencies, which its `zena-package.json`
    lists. A `:` before any `/` ends the scope, and the first `/` after it
    ends the package's name. A package's name alone, such as `acme:ui`,
-   imports its `index` library.
+   imports its main library: `main.zena`, or the library the package's
+   manifest names in `main`.
 
 The resolver normalizes all paths to a canonical identity. Every library is
 loaded, parsed, and checked exactly once, ensuring that types originating from

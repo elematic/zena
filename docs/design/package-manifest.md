@@ -57,6 +57,7 @@ else moved.
 | `version`      | `string`                        | any package    | The version `zena pkg publish` publishes next                                   |
 | `source`       | `string`                        | any package    | The directory the package's libraries are in; `src` by default                  |
 | `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                         |
+| `main`         | `string`                        | any package    | The library an import of the package's name alone imports; `main` by default    |
 | `files`        | `string[]`                      | any package    | The files a published release holds, as patterns                                |
 | `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name                     |
 | `workspace`    | `{packages: string[]}`          | workspace root | The directories of the workspace's other packages                               |
@@ -127,11 +128,18 @@ too, outside the libraries' names.
 A package whose libraries are at its root says `"source": "."`. The
 directory must be inside the package: a relative path without `..`.
 
+### `main`
+
+The library an import of the package's name alone imports, `'router'`:
+`main`, the library `main.zena`, when the manifest has no `main`. It
+must be one of `exports` when the manifest lists them, which the
+compiler and `zena pkg publish` check (import-names.md, "The main
+library").
+
 ### `exports`
 
 Each key under `exports` names a library other packages may import, as
-`<package>/<library>`. The key `index` is the library an import of the
-package's name alone imports. The value is an empty object, for the library
+`<package>/<library>`. The value is an empty object, for the library
 `<name>.zena`, or an object with a `path` or `virtual` field. Every entry
 file is relative to the `source` directory.
 
@@ -320,7 +328,7 @@ entry `<did>@<major>`.
    ones it reaches.
 2. It reads the pins from `zena-lock.json`.
 3. For an import `<name>/<library>` in a library of package P, or `<name>`
-   alone for its `index` library, it looks `<name>` up among P's
+   alone for its main library, it looks `<name>` up among P's
    dependencies, where `<name>` is a plain name or `<scope>:<name>`
    ([import-names.md](import-names.md)):
    - a path dependency is the package in that directory, whose manifest

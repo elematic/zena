@@ -79,7 +79,7 @@ export function main(): void {
 }
 ```
 
-The package's name alone, `'acme:router'`, imports its `index` library.
+The package's name alone, `'acme:router'`, imports its main library: `main.zena`, or the library its manifest's `main` names.
 
 ### Choosing a custom local name
 

@@ -9,7 +9,7 @@ system, and HTML renderer written in Zena (`markdown/<library>`). See
 ```zena
 import {
   parse, renderHtml, markdownToHtml, gfmExtensions
-} from 'markdown/index';
+} from 'markdown';
 
 // Render CommonMark + GFM to safe HTML (raw HTML stripped, unsafe URLs blocked)
 let html = markdownToHtml('# Hello\n\nSome ~~old~~ **new** text.', {

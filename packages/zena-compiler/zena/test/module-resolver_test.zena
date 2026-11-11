@@ -331,13 +331,29 @@ export let tests = suite("Module Resolver", () => {
 
   // --- Specifier validation ---
 
-  test("a specifier without a library names the package's index library", (t) => {
+  test("a specifier without a library names the package's main library", (t) => {
     let resolver = makeResolver("js");
-    equal(resolver.resolve("mylib", "/my/file.zena").path, "/project/packages/mylib/zena/lib/index.zena");
+    equal(resolver.resolve("mylib", "/my/file.zena").path, "/project/packages/mylib/zena/lib/main.zena");
     // Still only a package's name.
     throws(() => {
       resolver.resolve("bare-specifier", "/my/file.zena");
     });
+  });
+
+  test("a manifest's main names another library, through an alias too", (t) => {
+    let exports: HashMap<String, ModuleExport> = {"server" => new ModuleExport(null)};
+    let router = new PackageConfig("/project/router", exports);
+    router.main = "server";
+    let alias = new PackageConfig("", null);
+    alias.aliasOf = "acme:router";
+    let packages: HashMap<String, PackageConfig> = {
+      "zena" => makeStdlibConfig(),
+      "acme:router" => router,
+      "http" => alias,
+    };
+    let resolver = new ModuleResolver(packages, "js");
+    equal(resolver.resolve("acme:router", "/my/file.zena").path, "/project/router/server.zena");
+    equal(resolver.resolve("http", "/my/file.zena").path, "/project/router/server.zena");
   });
 
   test("resolves a package by its name in a scope", (t) => {
@@ -349,7 +365,7 @@ export let tests = suite("Module Resolver", () => {
     let gfm = resolver.resolve("acme:markdown/plugins/gfm", "/my/file.zena");
     equal(gfm.path, "/project/packages/markdown/plugins/gfm.zena");
     equal(gfm.packageName, "acme:markdown");
-    equal(resolver.resolve("acme:markdown", "/my/file.zena").path, "/project/packages/markdown/index.zena");
+    equal(resolver.resolve("acme:markdown", "/my/file.zena").path, "/project/packages/markdown/main.zena");
   });
 
   test("ends a package without a scope at its first slash", (t) => {

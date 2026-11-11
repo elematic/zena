@@ -110,7 +110,7 @@ from 'zena:core' import {String};
 // A package's library, by the name the manifest gives the package
 import {parse} from 'json/parse';
 import {Router} from 'acme:router/server';  // a package in a scope
-import {route} from 'acme:router';           // its index library
+import {route} from 'acme:router';           // its main library
 ```
 
 Namespace imports (`import * as x`) define a read-only variable `x` whose type is a structural **`RecordType`** containing all of the value exports of the imported library as properties. They behave as standard record values and can be passed to functions, returned, stored, or destructured.
