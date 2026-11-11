@@ -1,24 +1,22 @@
-# Google Cloud for Zena
+# google-cloud
 
-Clients for Google Cloud APIs, for servers on Cloud Run and other Google
-compute. The modules make requests through `wasi:http`, so they compile
-for component targets.
+Google Cloud client libraries for Zena, built on `wasi:http` and `@zena/protobuf` so they compile for WebAssembly component targets as well as the `zena` CLI host.
 
-- `google-cloud/firestore`: a Firestore client.
-- `google-cloud/storage`: a Cloud Storage client, for writing, reading
-  and deleting objects.
-- `google-cloud/dns`: a Cloud DNS client for one managed zone's record
-  sets.
-- `google-cloud/auth`: access tokens and the project id, from the
-  metadata server or the environment.
-- `google-cloud/firestore-v1` and `google-cloud/storage-v2`: the protobuf
-  generator's output for `google.firestore.v1` and `google.storage.v2`,
-  which the clients are built on. They are generated, not edited; see
-  [Regenerating](#regenerating).
+## Installation
 
-The design is in [docs/design/protobuf.md](../../docs/design/protobuf.md).
-The package map needs `"google-cloud": "./packages/google-cloud/zena"`
-and `"protobuf": "./packages/protobuf/zena"`.
+```sh
+zena pkg add @zena/google-cloud
+```
+
+## Libraries
+
+- `google-cloud/firestore` — Firestore document, collection, query, batch, and transaction client.
+- `google-cloud/storage` — Cloud Storage client for reading, writing, stating, and deleting objects.
+- `google-cloud/dns` — Cloud DNS client for managing record sets in a managed zone.
+- `google-cloud/kms` — Cloud KMS client for asymmetric signing and symmetric encryption/decryption.
+- `google-cloud/auth` — Default credentials and project ID discovery from the GCE metadata server or environment variables.
+- `google-cloud/firestore-v1` and `google-cloud/storage-v2` — Generated protobuf messages and low-level service clients for `google.firestore.v1` and `google.storage.v2`.
+- `google-cloud/testing/fake-kms` and `google-cloud/testing/firestore-emulator` — Test helpers for in-process fake Cloud KMS and the Firestore emulator.
 
 ## Firestore
 
@@ -45,47 +43,17 @@ for (let p in popular) {
 }
 ```
 
-`Firestore.connect()` finds the project and credentials as described
-under [Credentials](#credentials), and talks gRPC to the API.
-`new Firestore({projectId, databaseId?, transport})` names them instead.
+`Firestore.connect()` discovers the project and credentials as described under [Credentials](#credentials) and talks gRPC to the API. `new Firestore({projectId, databaseId?, transport})` accepts explicit configuration instead.
 
-- References: `db.collection(path)`, `db.doc(path)`,
-  `collection.doc(id)`, `doc.collection(id)`. `collection.add(fields)`
-  creates a document with a random id.
-- Writes: `set` replaces a document, `create` fails with ALREADY_EXISTS
-  when it exists, `update` sets the named top-level fields and fails with
-  NOT_FOUND when it does not exist, and `delete` removes it. Errors are
-  `RpcError`s carrying the `google.rpc.Code`.
-- Transforms, which the server applies when the write commits:
-  `Fields.serverTimestamp`, `increment`, `incrementDouble`, `maximum`,
-  `minimum`, `arrayUnion` and `arrayRemove`. In an `update`,
-  `deleteField` removes a field. They apply to top-level fields, and work
-  in batches and transactions too:
+- **References**: `db.collection(path)`, `db.doc(path)`, `collection.doc(id)`, `doc.collection(id)`. `collection.add(fields)` creates a document with a random ID.
+- **Writes**: `set` replaces a document, `create` fails with `ALREADY_EXISTS` when it exists, `update` sets the named top-level fields and fails with `NOT_FOUND` when it does not exist, and `delete` removes it. Errors are `RpcError`s carrying the `google.rpc.Code`.
+- **Transforms** (applied by the server when the write commits): `Fields.serverTimestamp`, `increment`, `incrementDouble`, `maximum`, `minimum`, `arrayUnion`, and `arrayRemove`. In an `update`, `deleteField` removes a field. They apply to top-level fields and work in batches and transactions as well:
   `post.update(new Fields().increment('views', 1).serverTimestamp('seen'))`.
-  A transform or deletion replaces an earlier value of the same field; a
-  value set after a transform leaves both, which the server rejects.
-- Reads: `get()` answers a `DocumentSnapshot`, whose `exists` is false
-  for a missing document. `getString`, `getInteger`, `getDouble` and
-  `getBoolean` take a field path such as `author.name` and answer
-  `(true, value)`, or `(false, _)` when the field is absent or of
-  another type. `get(path)` answers the raw `Value`. `db.getAll(refs)`
-  reads several documents in one call, in the order given.
-- Queries: `where`, `orderBy`, `limit`, `offset` and `select` each
-  return a new query. `get()` collects the results; `stream()` hands out
-  each one as it arrives, for `for await`; `count()` counts them on the
-  server.
-- Cursors: `startAt`, `startAfter`, `endAt` and `endBefore` take values
-  for the orderings, or a snapshot. To page, order the query and pass
-  the last snapshot of a page to `startAfter`; documents tied on every
-  ordering are ordered by name, so none is skipped or repeated.
-- `db.batch()` collects writes and commits them in one call.
-- `db.runTransaction(body)` runs `body` with a `Transaction`, whose
-  reads (`get`, `getAll`, `query`) happen in the transaction and whose
-  writes commit when `body` returns. A transaction aborted by contention
-  is retried, up to five attempts; when `body` throws, the transaction is
-  rolled back.
-- `Firestore.connect({timeout: milliseconds(10000)})` gives each call a deadline;
-  a call still running then fails with DEADLINE_EXCEEDED.
+- **Reads**: `get()` returns a `DocumentSnapshot`, whose `exists` is `false` for a missing document. `getString`, `getInteger`, `getDouble`, and `getBoolean` take a field path such as `author.name` and return `(true, value)` or `(false, _)` when the field is absent or of another type. `get(path)` returns the raw `Value`. `db.getAll(refs)` reads several documents in one call in the order given.
+- **Queries**: `where`, `orderBy`, `limit`, `offset`, and `select` each return a new query. `get()` collects the results; `stream()` yields each document as it arrives (`for await`); `count()` counts them on the server.
+- **Cursors**: `startAt`, `startAfter`, `endAt`, and `endBefore` take values for the orderings or a `DocumentSnapshot`.
+- **Batches & Transactions**: `db.batch()` collects writes and commits them in one call. `db.runTransaction(body)` runs `body` with a `Transaction`, retrying up to five times on contention and rolling back if `body` throws.
+- **Deadlines**: `Firestore.connect({timeout: milliseconds(10000)})` gives each call a deadline, failing with `DEADLINE_EXCEEDED` if exceeded.
 
 ```zena
 let total = await db.runTransaction<i64>(async (tx: Transaction): Future<i64> => {
@@ -100,35 +68,11 @@ let total = await db.runTransaction<i64>(async (tx: Transaction): Future<i64> =>
 });
 ```
 
-### Transports
+### Transports & Emulator
 
-- `Firestore.connect()` uses gRPC (`protobuf/grpc`). gRPC needs HTTP/2,
-  which `zena-cli` and `zena-run` provide, with pooled connections.
-- `Firestore.connectFallback()` uses Google's gRPC fallback protocol
-  (`protobuf/fallback`), which works on any `wasi:http` host, stock
-  `wasmtime serve` among them.
-- `new Firestore({projectId, transport})` takes any `ProtoTransport`:
-  `new GrpcTransport(FIRESTORE_ORIGIN, credentials)`,
-  `new FallbackTransport(FIRESTORE_ORIGIN, credentials)`, or a test's
-  own.
-
-A program carries only the transports it names: about 29 KB at `-O2`
-for gRPC beside the fallback transport.
-
-### The emulator
-
-When `FIRESTORE_EMULATOR_HOST` is set to the Firestore emulator's
-`host:port`, `Firestore.connect()` talks gRPC to it, as Google's client
-libraries do, with the token `owner`, which bypasses security rules. The
-project id is `GOOGLE_CLOUD_PROJECT` or `GCLOUD_PROJECT`, or `demo-zena`.
-The emulator speaks gRPC and REST but not the fallback protocol, so this
-needs `zena-cli` or `zena-run`.
-
-A program can use the emulator in development and the real API in
-production with no change: a development script sets
-`FIRESTORE_EMULATOR_HOST` and depends on the repository's
-`emulators:start` service, as `test:emulator` does, and production
-leaves it unset.
+- `Firestore.connect()` uses gRPC (`protobuf/grpc`) over HTTP/2. When `FIRESTORE_EMULATOR_HOST` is set to `host:port`, `Firestore.connect()` connects to the Firestore emulator over cleartext HTTP/2 with the `owner` token.
+- `Firestore.connectFallback()` uses Google's gRPC fallback protocol (`protobuf/fallback`), which works on HTTP/1.1-only `wasi:http` hosts such as stock `wasmtime serve`.
+- `new Firestore({projectId, transport})` accepts any `ProtoTransport`.
 
 ## Cloud Storage
 
@@ -137,23 +81,12 @@ import { Storage } from 'google-cloud/storage';
 
 let bucket = Storage.connect().bucket('my-bucket');
 await bucket.write('notes/hello.txt', bytes, 'text/plain');
-let read = await bucket.read('notes/hello.txt'); // null when there is none
-let object = await bucket.stat('notes/hello.txt'); // its metadata, or null
-await bucket.delete('notes/hello.txt'); // whether there was one
+let read = await bucket.read('notes/hello.txt'); // null when absent
+let object = await bucket.stat('notes/hello.txt'); // metadata, or null
+await bucket.delete('notes/hello.txt'); // true if deleted
 ```
 
-`Storage.connect()` uses the default credentials (see
-[Credentials](#credentials)) and talks gRPC to the API, so it needs
-`zena-cli` or `zena-run`. An upload is a client-streaming call, which
-Google's fallback protocol cannot carry. `write` sends the data in
-chunks of at most 2 MiB, in one call, and replaces any object of the
-same name. Writes send no CRC32C checksums, and reads do not check the
-ones the server sends. `new Storage(transport)` takes any
-`ProtoTransport`, and `storage.client` is the generated `StorageClient`,
-for the calls the client does not wrap.
-
-There is no emulator for Cloud Storage's gRPC API here, so the tests run
-the client against an in-memory transport only.
+`Storage.connect()` uses the default credentials and talks gRPC to the Cloud Storage API (`write` streams data in chunks of at most 2 MiB). `new Storage(transport)` accepts any `ProtoTransport`, and `storage.client` exposes the generated `StorageClient`.
 
 ## Cloud DNS
 
@@ -162,59 +95,41 @@ import { CloudDns, RecordSet } from 'google-cloud/dns';
 
 let zone = CloudDns.connect('my-project', 'my-zone');
 await zone.put(new RecordSet('_atproto.alice.example.com.', 'TXT', 300, ['"did=did:plc:..."']));
-let set = await zone.get('_atproto.alice.example.com.', 'TXT'); // null when there is none
-await zone.delete('_atproto.alice.example.com.', 'TXT'); // whether there was one
+let set = await zone.get('_atproto.alice.example.com.', 'TXT'); // null when absent
+await zone.delete('_atproto.alice.example.com.', 'TXT'); // true if deleted
 ```
 
-Cloud DNS has no gRPC API, so this client uses the REST one
-(`https://dns.googleapis.com/dns/v1`), with the default credentials, which
-need the `cloud-platform` or `ndev.clouddns.readwrite` scope. `put` creates
-the record set, or replaces the one of that name and type. Names are fully
-qualified, ending in a dot, and a TXT record's data is a quoted string. Its
-tests run it against a local server that answers like the API.
+`CloudDns` uses the Cloud DNS REST API (`https://dns.googleapis.com/dns/v1`) with default credentials. Names are fully qualified (ending in a `.`), and `put` creates or replaces the record set of that name and type.
+
+## Cloud KMS
+
+```zena
+import { sha256 } from 'zena:crypto';
+import { CloudKms, ecPointFromPem } from 'google-cloud/kms';
+
+// Asymmetric signing
+let signingKey = CloudKms.connect(
+  'projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1'
+);
+let derSignature = await signingKey.asymmetricSign(sha256(message));
+let pubKey = await signingKey.publicKey();
+let uncompressedPoint = ecPointFromPem(pubKey.pem);
+
+// Symmetric encryption (AEAD)
+let symmetricKey = CloudKms.connect('projects/p/locations/l/keyRings/r/cryptoKeys/s');
+let ciphertext = await symmetricKey.encrypt(plaintext, additionalData);
+let decrypted = await symmetricKey.decrypt(ciphertext, additionalData);
+```
 
 ## Credentials
 
-`defaultCredentials()`:
+`defaultCredentials()` (`google-cloud/auth`):
 
-- `GOOGLE_OAUTH_ACCESS_TOKEN`, when set, is sent as is. For local runs:
-  `GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token)`.
-- Otherwise the metadata server, at `GCE_METADATA_HOST` when set,
-  supplies tokens for the service account. A token is kept until a
-  minute before it expires.
+- `GOOGLE_OAUTH_ACCESS_TOKEN`, when set in the environment, is used directly (for local runs: `GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token)`).
+- Otherwise, the GCE metadata server (at `GCE_METADATA_HOST` when set, or `metadata.google.internal`) supplies tokens for the default service account, caching each token until a minute before it expires.
 
-`defaultProjectId()` is `GOOGLE_CLOUD_PROJECT` or `GCLOUD_PROJECT` when
-set, and the metadata server's answer otherwise.
+`defaultProjectId()` reads `GOOGLE_CLOUD_PROJECT` or `GCLOUD_PROJECT` when set, falling back to the metadata server.
 
-## Regenerating
+## License
 
-```sh
-npm run generate -w @zena-lang/google-cloud
-```
-
-The test fails when `firestore-v1.zena` or `storage-v2.zena` differs
-from the generator's output.
-
-## Testing
-
-```sh
-npm test -w @zena-lang/google-cloud
-```
-
-The Firestore and Cloud Storage tests run the clients against in-memory
-transports; the credential tests run a local server that answers like
-the metadata server.
-
-```sh
-npm run test:emulator -w @zena-lang/google-cloud
-```
-
-runs the client against the Firestore emulator over gRPC
-(`zena/test/emulator/`). It depends on the repository's `emulators:start`
-script, a wireit service that starts the emulator on `127.0.0.1:8180`
-(`firebase.json`) before the tests and stops it after. The service
-enters the flake's `emulators` shell for firebase-tools and Java, which
-are about 2 GB and so not in the default shell; firebase-tools downloads
-the emulator itself on first use. That is also why this suite is not
-part of `npm test`. Each test uses a project of its own, which the
-emulator keeps apart.
+MIT
