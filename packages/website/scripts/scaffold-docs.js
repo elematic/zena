@@ -23,11 +23,13 @@ const SRC = fileURLToPath(new URL('../src/', import.meta.url));
 const dryRun = process.argv.includes('--dry-run');
 
 /**
- * Maps a URL to its source file. A link that is a prefix of another link owns a
- * directory, so it becomes that directory's `index.md`.
+ * Maps a URL to its source file. A link that owns a sidebar prefix or is a
+ * prefix of another link owns a directory, so it becomes that directory's
+ * `index.md`.
  */
-const sourcePathFor = (link, allLinks) => {
-  const isDirectory = allLinks.some((l) => l !== link && l.startsWith(link));
+const sourcePathFor = (link, allLinks, prefix) => {
+  const isDirectory =
+    link === prefix || allLinks.some((l) => l !== link && l.startsWith(link));
   const segments = link.split('/').filter(Boolean);
   return join(
     SRC,
@@ -74,7 +76,7 @@ for (const [prefix, tree] of Object.entries(sidebar)) {
     // rather than from a source file. Writing a placeholder for it would
     // claim the same permalink.
     if (item.generated) continue;
-    const path = sourcePathFor(item.link, links);
+    const path = sourcePathFor(item.link, links, prefix);
 
     // A page may be a template rather than markdown — the stdlib overview
     // renders the extracted module list — and that still counts as

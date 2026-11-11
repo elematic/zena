@@ -715,6 +715,70 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Memory management and runtime footprint
     - Host interoperability and component model
 
+## Projects — Zebra
+
+- **Zebra**
+  - ✅ [Overview](src/projects/zebra/index.md) — `/projects/zebra/`
+    - Build and run model
+    - Task graphs, caching, and dev services
+    - Custom build rules as WebAssembly components
+    - Incremental steps, resident workers, and graph queries
+    - Current status and roadmap
+
+## Projects — ZenaFX
+
+- **ZenaFX**
+  - ✅ [Overview](src/projects/zenafx/index.md) — `/projects/zenafx/`
+    - Isolation and the shared scene graph
+    - Architecture: Rust host and Zena engine
+    - Target platforms and use cases
+    - Current status and roadmap
+
+## Projects — AT Protocol PDS
+
+- **AT Protocol PDS**
+  - ✅ [Overview](src/projects/pds/index.md) — `/projects/pds/`
+    - Accounts for objects and documents
+    - Account creation, delegation, and content policies
+    - WebAssembly extensions
+    - Current status and roadmap
+
+## Projects — Wasm Web UI
+
+- **Wasm Web UI**
+  - ✅ [Overview](src/projects/wasm-web-ui/index.md) — `/projects/wasm-web-ui/`
+    - Capability isolation and zero DOM access
+    - Declarative templates across the boundary
+    - Multi-language components and server-side rendering
+    - Current status and roadmap
+
+## Projects — WebAssembly Playground
+
+- **WebAssembly Playground**
+  - ✅ [Overview](src/projects/playground/index.md) — `/projects/playground/`
+    - Current browser architecture
+    - Sandboxed multi-file preview
+    - Pluggable compiler, LSP, and console protocol
+    - Current status and roadmap
+
+## Projects — Zena CLI & Host Runtime
+
+- **Zena CLI & Host Runtime**
+  - ✅ [Overview](src/projects/runtime/index.md) — `/projects/runtime/`
+    - Extending WASI with zena:host
+    - Layered host crates
+    - Sandboxed Wasm extensions
+    - Generalizing beyond Zena
+
+## Projects — Static Site Generator
+
+- **Static Site Generator**
+  - ✅ [Overview](src/projects/ssg/index.md) — `/projects/ssg/`
+    - Static site generators as build systems
+    - Workflows, Zebra, and Markdown
+    - WebAssembly pipeline plugins
+    - Current status
+
 ---
 
-82 of 103 pages written; 21 still placeholders.
+89 of 110 pages written; 21 still placeholders.

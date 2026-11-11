@@ -6,16 +6,22 @@ export const sidebarFor = (sidebar, url) => {
   return prefix ? sidebar[prefix] : null;
 };
 
-/** Flattens a sidebar tree into the ordered list of pages it links to. */
+/**
+ * Flattens a sidebar tree into the ordered list of pages it links to.
+ *
+ * Entries marked `back: true` (such as a micro-site's link back to `/projects/`)
+ * are navigation chrome outside the section's reading order.
+ */
 export const flattenSidebar = (items) =>
   items.flatMap((item) => [
-    ...(item.link ? [item] : []),
+    ...(item.link && !item.back ? [item] : []),
     ...flattenSidebar(item.items ?? []),
   ]);
 
 /** True when `item` or any descendant links to `url`. */
 export const containsActive = (item, url) =>
-  item.link === url || (item.items ?? []).some((c) => containsActive(c, url));
+  Boolean(item.link && item.link === url) ||
+  (item.items ?? []).some((c) => containsActive(c, url));
 
 /**
  * The previous and next pages in reading order, used by the doc footer pager.
