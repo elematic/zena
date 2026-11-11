@@ -799,7 +799,11 @@ export function describeMaintainer(maintainer: Maintainer, entries: Array<Member
   return maintainerDid(maintainer, entries) ?? `${(maintainer.commitment as Cid).toString()} (private)`;
 }
 
-/** Prints each entry's DID, its handle when it has one, and its role. */
+/**
+ * Prints each entry's DID, its handle when the handle resolves back to it,
+ * and its role. A DID document can claim any handle, so a claim alone is
+ * not shown.
+ */
 async function printEntries(entries: Array<MemberEntry>): Future<void> {
   if (entries.length == 0) {
     console.log('(none you can see)');
@@ -807,9 +811,9 @@ async function printEntries(entries: Array<MemberEntry>): Future<void> {
   for (let entry in entries) {
     var handle = '';
     try {
-      let document = await packageResolver().resolveDid(entry.did);
-      if (document.handle != null) {
-        handle = ` (${document.handle as String})`;
+      let identity = await packageResolver().resolve(entry.did);
+      if (identity.handle != null) {
+        handle = ` (${identity.handle as String})`;
       }
     } catch (e) {
       // A DID that does not resolve is still listed.

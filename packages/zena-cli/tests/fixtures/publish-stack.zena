@@ -5,7 +5,10 @@
  *   and as the PDS of the maintainers
  *   `did:plc:alicealicealicealicealic`, whose app password is
  *   `app-password`, and `did:plc:bobbobbobbobbobbobbobbob`, whose app
- *   password is `bob-password`;
+ *   password is `bob-password`, and of `did:plc:mallorymallorymallorymal`,
+ *   whose document claims the handle `acme.pkg.test` that the tests give
+ *   the scope acme, and whose repository holds a members record, so she
+ *   passes for that scope wherever a handle is shown unchecked;
  * - the PDS written in Zena with its App View, for the domain
  *   `pkg.test`, as `registry:service` serves it, sending the operations of the
  *   accounts it creates to that PLC directory;
@@ -26,8 +29,10 @@ import {getEnv} from 'zena:cli';
 import {writeFile} from 'zena:fs';
 import {Server} from 'zena:http';
 import {JsonObject, stringify} from 'zena:json';
+import {Cid} from 'atproto:cid';
 import {MemoryHandleRecords, dnsOverHttpsApp} from 'registry:handles';
-import {FakePds} from 'package-manager:testing/fake-pds';
+import {MEMBERS_TYPE, MemberEntry, Members} from 'package-manager:records';
+import {FakePds, KEY, didDocument} from 'package-manager:testing/fake-pds';
 import {InMemory, PdsConfig} from 'pds:service';
 import {AppViewSettings, RecordsInMemory, ServiceConfig, serve} from 'registry:service';
 
@@ -38,6 +43,12 @@ export async function main(): Future<i32> {
   alice.password = 'app-password';
   let bob = world.account('did:plc:bobbobbobbobbobbobbobbob', null);
   bob.password = 'bob-password';
+  // Only her document claims the handle, so `world`'s resolver does not
+  // answer for it.
+  let mallory = world.account('did:plc:mallorymallorymallorymal', null);
+  mallory.didDocument = didDocument(world.origin, KEY, mallory.did, 'acme.pkg.test');
+  let entry = new MemberEntry(mallory.did, 'owner', new FixedArray<u8>(32, 0 as u8));
+  mallory.put(MEMBERS_TYPE, 'self', new Members(new FixedArray<Cid>(1, entry.commitment())).toValue());
 
   // The server `main.zena` runs, configured as the environment would,
   // with its own origin as the registry's endpoint and a rotation key made
