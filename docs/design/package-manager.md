@@ -2012,7 +2012,9 @@ checked against the file's CID. A file's page,
 `/packages/<handle>/versions/<version>/files/<path>`, is its release's
 page with the file in the Files tab: Markdown up to 256 KiB rendered as
 the README is, with its links resolved from its own directory; other text
-up to 1 MiB, numbered by line; or an image; its bytes are served at `.../raw/<path>`, as plain text or
+up to 1 MiB, numbered by line; or an image. The same path names a
+directory's page, which lists what it holds, and a breadcrumb leads back
+up; its bytes are served at `.../raw/<path>`, as plain text or
 an image type, with a policy that runs nothing.
 
 Documenting a package means compiling it with its dependencies, at the
