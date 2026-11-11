@@ -25,11 +25,11 @@ import {
 /**
  * The scope the page asks for: service-auth tokens for `createWebSession`,
  * and no access to the person's repository or other apps' data. The
- * App View's metadata document says the same (`pds:server`, `OAUTH_SCOPE`).
+ * App View's metadata document says the same (`pds/server`, `OAUTH_SCOPE`).
  */
 const SCOPE = 'atproto rpc:dev.zena-lang.registry.createWebSession?aud=*';
 
-/** Where the person's PDS sends them back; a page of the App View's (`registry:web/pages/sign-in`). */
+/** Where the person's PDS sends them back; a page of the App View's (`registry/web/pages/sign-in`). */
 export const CALLBACK_PATH = '/oauth/callback';
 
 /** The registry method that trades a service-auth token for a web session. */

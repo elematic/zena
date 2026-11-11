@@ -30,7 +30,7 @@ fi
 
 # The did:key of the App View's online rotation key, which signs the
 # genesis operations of the accounts padstone creates for it, read by the
-# App View's own module (registry:main's did-key).
+# App View's own module (registry/main's did-key).
 if [ "$ROTATION_KMS" = 1 ]; then
   ROTATION_DID_KEY="$(GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)" \
     "$ZENA_RUN" registry.wasm did-key --kms "$KMS_KEY_VERSION")"

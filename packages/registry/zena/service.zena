@@ -2,13 +2,13 @@
  * The App View as a server: its configuration, read from the environment
  * by `configFromEnv`, and `serve`, which builds the App View's stores, the
  * App View, and the PDS it keeps its accounts on when that runs in the
- * same process (`pds:service`), and listens. `main.zena` is the two
+ * same process (`pds/service`), and listens. `main.zena` is the two
  * together.
  *
  * The App View keeps its accounts on a PDS in the same process, by
  * default, or on one elsewhere, which it reaches with its own tokens
- * (`APP_VIEW_PDS_URL`, `pds:pds-client`'s `XrpcPds`). A PDS in the same
- * process reads its own variables, `PDS_*` (see `pds:service`): its
+ * (`APP_VIEW_PDS_URL`, `pds/pds-client`'s `XrpcPds`). A PDS in the same
+ * process reads its own variables, `PDS_*` (see `pds/service`): its
  * storage, which the App View keeps its stores beside, under the same
  * tenant; its origin, which the accounts' DID documents name and where
  * the App View's methods are served too (`PDS_PUBLIC_URL`,
@@ -28,21 +28,21 @@
  *     are served, `https://<APP_VIEW_DOMAIN>` by default.
  *   - `APP_VIEW_STORAGE`: `memory` (the default) or `firestore`, where the
  *     App View keeps its stores; with `firestore`, `APP_VIEW_TENANT` and
- *     `APP_VIEW_FIRESTORE_DATABASE`, as `pds:service`'s `PDS_TENANT` and
+ *     `APP_VIEW_FIRESTORE_DATABASE`, as `pds/service`'s `PDS_TENANT` and
  *     `PDS_FIRESTORE_DATABASE`, and `APP_VIEW_BUCKET`, the Cloud Storage
  *     bucket for what it derives from releases
- *     (`registry:release-contents`), or `APP_VIEW_OBJECT_DIR`, a directory
+ *     (`registry/release-contents`), or `APP_VIEW_OBJECT_DIR`, a directory
  *     for it, as `PDS_BLOB_BUCKET` and `PDS_BLOB_DIR`. With the PDS in the
  *     same process, it is kept beside the PDS's blobs.
  * - `APP_VIEW_SESSION_SECRET`: 32 bytes in hex, which signs the site's web
- *   sessions and the URLs of its avatars (`registry:web-sessions`). By
+ *   sessions and the URLs of its avatars (`registry/web-sessions`). By
  *   default the PDS's `PDS_JWT_SECRET` in the same process; required with
  *   `APP_VIEW_PDS_URL` and `APP_VIEW_STORAGE=firestore`, and otherwise made
  *   up at start.
  * - `APP_VIEW_ROTATION_KEY`: the App View's online PLC rotation key, a
  *   secp256k1 private key in hex; or `APP_VIEW_ROTATION_KMS_KEY`, a Cloud
  *   KMS key version, `projects/…/cryptoKeyVersions/<n>`, on secp256k1 or
- *   P-256, which signs without the key leaving Cloud KMS (`pds:signer`).
+ *   P-256, which signs without the key leaving Cloud KMS (`pds/signer`).
  *   One of them is required with Firestore (`PDS_STORAGE` or
  *   `APP_VIEW_STORAGE`), since the accounts it creates outlive the server.
  *   In memory, a missing key is made up at start.
@@ -76,7 +76,7 @@
  *   machine needs (tests, demos). Off by default, so a DID document cannot
  *   point the App View's reads at what is behind it.
  * - `APP_VIEW_HANDLE_RECORDS`: where the App View writes its handles' DNS
- *   records (`registry:handles`): `cloud-dns`, a Cloud DNS managed zone,
+ *   records (`registry/handles`): `cloud-dns`, a Cloud DNS managed zone,
  *   or `memory`, for local runs. `memory` by default, but required with
  *   Firestore, so that no deployment keeps them in memory by leaving it
  *   out. With `cloud-dns`, `APP_VIEW_DNS_ZONE` names the zone,
@@ -88,13 +88,13 @@
  * - `APP_VIEW_PLC`: `public` (the default), where the App View sends the
  *   operations of the accounts it makes to `APP_VIEW_PLC_DIRECTORY`; or
  *   `staging`, where the server is a PLC directory itself, at `/plc`
- *   (`registry:plc-directory`), that records them in its storage and reads
+ *   (`registry/plc-directory`), that records them in its storage and reads
  *   every other DID from `APP_VIEW_PLC_DIRECTORY`, so nothing a staging
  *   App View makes reaches it.
  * - `APP_VIEW_WEB_DIR`: the directory of the web app's assets and static
  *   documentation (`packages/pds-web`'s build), which the server serves at
  *   `/assets/` and `/docs/`. The App View renders its pages
- *   (`registry:web/routes`) with or without it, but unstyled without.
+ *   (`registry/web/routes`) with or without it, but unstyled without.
  */
 
 import {Future} from 'zena:async';
@@ -102,27 +102,27 @@ import {Unmanaged} from 'zena:core';
 import {App, Server, mount, serve as serveFiles} from 'zena:http';
 import {randomBytes} from 'zena:random';
 import {URL} from 'zena:url';
-import {defaultProjectId} from 'google-cloud:auth';
-import {CloudDns} from 'google-cloud:dns';
-import {Firestore} from 'google-cloud:firestore';
-import {CloudKms} from 'google-cloud:kms';
-import {parseDidDocument} from 'atproto:did';
-import {KeyType, PublicKey, parseDidKey} from 'atproto:didkey';
-import {IdentityResolver} from 'atproto:identity';
-import {PlcOperation, fetchOperations, submitPlcOperation} from 'atproto:plc';
-import {SigningKeyLookup} from 'atproto:service-auth';
-import {PlcLogLookup, TrustedAppView} from 'pds:managed';
-import {Pds} from 'pds:pds';
-import {InProcessPds, PdsClient, XrpcPds} from 'pds:pds-client';
-import {MemoryBlobs} from 'pds:firestore';
+import {defaultProjectId} from 'google-cloud/auth';
+import {CloudDns} from 'google-cloud/dns';
+import {Firestore} from 'google-cloud/firestore';
+import {CloudKms} from 'google-cloud/kms';
+import {parseDidDocument} from 'atproto/did';
+import {KeyType, PublicKey, parseDidKey} from 'atproto/didkey';
+import {IdentityResolver} from 'atproto/identity';
+import {PlcOperation, fetchOperations, submitPlcOperation} from 'atproto/plc';
+import {SigningKeyLookup} from 'atproto/service-auth';
+import {PlcLogLookup, TrustedAppView} from 'pds/managed';
+import {Pds} from 'pds/pds';
+import {InProcessPds, PdsClient, XrpcPds} from 'pds/pds-client';
+import {MemoryBlobs} from 'pds/firestore';
 import {
   BlobChoice, InBucket, InDirectory, InFirestore, PDS_VARIABLES, PdsConfig, blobBytes, buildPds, decodeKey,
   didWebOfOrigin, listen, originOf, readPdsConfig, readPort, refuseProblems, valuesOf
-} from 'pds:service';
-import {Sessions} from 'pds:sessions';
-import {KmsSigner, LocalSigner, Signer} from 'pds:signer';
-import {SigningKey} from 'pds:storage';
-import {REQUEST_BODY_LIMIT} from 'pds:xrpc/common';
+} from 'pds/service';
+import {Sessions} from 'pds/sessions';
+import {KmsSigner, LocalSigner, Signer} from 'pds/signer';
+import {SigningKey} from 'pds/storage';
+import {REQUEST_BODY_LIMIT} from 'pds/xrpc/common';
 import {AppViewConfig, AppViewStore, MemoryAppViewStore, AppView} from './app-view.zena';
 import {FirestoreAppViewStore, FirestorePlcLog} from './firestore.zena';
 import {DerivedObjects} from './release-contents.zena';
@@ -243,7 +243,7 @@ export final class Service {
 
 /**
  * The configuration the variables `env` gives (see the module comment and
- * `pds:service`'s). Throws `ConfigError` naming every variable that is
+ * `pds/service`'s). Throws `ConfigError` naming every variable that is
  * wrong.
  */
 export function configFromEnv(env: (name: String) => String | null): ServiceConfig {
@@ -646,7 +646,7 @@ function byHostName(siteUrl: String, site: App, pds: App): App {
 /**
  * `app`, with the web app's assets in `dir`, when there is one, at
  * `/assets/` and its static documentation pages at `/docs/`. The dynamic
- * pages are `app`'s (`registry:web/routes`).
+ * pages are `app`'s (`registry/web/routes`).
  */
 /**
  * The content security policy of every response the server sends, unless

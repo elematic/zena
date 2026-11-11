@@ -40,7 +40,7 @@ A page shows a person by their avatar and name, linked to their page. The
 name and avatar come from their own profile record, `app.bsky.actor.profile`,
 which this App View reads from their PDS and caches, and never keeps a copy
 of: a person changes them in the app that writes that record
-(`registry:web/people`). Reading someone else's PDS while a page renders, and
+(`registry/web/people`). Reading someone else's PDS while a page renders, and
 serving their avatar, are limited so the App View is no tool for anyone else:
 
 - Each read runs under `zena:task`'s `timeout`, and answers are cached,
@@ -55,7 +55,7 @@ serving their avatar, are limited so the App View is no tool for anyone else:
 ## Approvals
 
 A release's approvers are the maintainers whose own repositories hold an
-attestation of its record (`registry:web/approvals`). An attestation sits at a
+attestation of its record (`registry/web/approvals`). An attestation sits at a
 record key fixed by the record's AT-URI and CID, so the page asks each
 maintainer's repository for that key, with no index: the maintainers the
 record names, by DID, by commitment, or through a team
@@ -95,7 +95,7 @@ in the browser. Then:
 2. The App View checks the token as it checks every call to its methods, and
    answers with a cookie: an HS256 token naming the person's DID and
    handle, signed with `PDS_JWT_SECRET`, HttpOnly, SameSite=Lax, and
-   Secure over HTTPS (`registry:web/session`).
+   Secure over HTTPS (`registry/web/session`).
 3. Every page reads the cookie, so the pages are rendered for the person
    on the server. Signing out posts a form to `/signout`, which drops the
    cookie, after the page revokes the OAuth session.
@@ -149,7 +149,7 @@ serves the assets from its image (`packages/registry/deploy`).
 ## How the App View serves them
 
 `APP_VIEW_WEB_DIR` names `out/`, and the App View serves its files at `/assets/` and
-`out/docs/` at `/docs/` (`registry:service`). A program run by `zena run` or
+`out/docs/` at `/docs/` (`registry/service`). A program run by `zena run` or
 `zena-run` sees only the directories it is given, so the directory is given
 with `--dir`: `npm run demo` passes `--dir packages/pds-web/out::/web` with
 `APP_VIEW_WEB_DIR=/web`, and the image passes `--dir /app/web::/web`. Without

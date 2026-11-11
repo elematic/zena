@@ -24,7 +24,7 @@ the checker and codegen are unaffected by anything here.
 | `zena doc` (`zena-cli`) | Compiles and runs `zena/cli/main.zena`, the same way `bench` and `test` run their orchestrators |
 | `@zena-lang/website`    | Its build runs `zena doc` over the stdlib and renders `/reference/stdlib/` from the result      |
 
-Doc comments are parsed by the compiler's `zena-compiler:doc-comment`,
+Doc comments are parsed by the compiler's `zena-compiler/doc-comment`,
 which the language server's hover reads too, so hover shows a comment's
 paragraphs and code the way the generated documentation does. Hover
 shows the comment's text as written, block tags included; it does not

@@ -22,7 +22,7 @@ where reached.
 
 The local project is the entry point and everything it reaches by
 relative import (`./`, `../`). A package specifier (`zena:core`,
-`wit-parser:parser`) leaves the project, and everything beyond one is a
+`zena-lang:wit-parser/parser`) leaves the project, and everything beyond one is a
 dependency. `checkCompilation` computes the set as a breadth-first
 search from the entry over `SourceFile.imports`, which maps specifier to
 resolved path.

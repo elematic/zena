@@ -546,7 +546,7 @@ decides from the request: an `http://` request whose `content-type` is
 `application/grpc` or `application/grpc+<codec>` goes over h2c, on a
 pool of its own.
 
-`protobuf:grpc` is the transport. `GrpcTransport` posts the framed
+`protobuf/grpc` is the transport. `GrpcTransport` posts the framed
 request to `/<service>/<method>` with `content-type: application/grpc`
 and `te: trailers`, and reads framed responses from the body as they
 arrive. The call's status comes from the trailers, or from the headers
@@ -592,7 +592,7 @@ without credentials. The first answered 400 with a bare `Status`
 (`08 03 ...`, code 3), the second 403 with the `Status` inside field 2 of
 a `StreamBody` (`12 a1 03 08 07 ...`, code 7).
 
-`protobuf:fallback` (`packages/protobuf/zena/fallback.zena`) implements
+`protobuf/fallback` (`packages/protobuf/zena/fallback.zena`) implements
 this as `FallbackTransport`, over the `wasi:http` bindings, so it runs
 under `wasmtime serve`, whose outgoing HTTP is HTTP/1.1 only.
 
@@ -644,7 +644,7 @@ with the header `Metadata-Flavor: Google`. The JSON response holds
 before it expires, and sends it as `authorization: Bearer <token>`. The
 request needs one header, which the `wasi:http` bindings set.
 
-`google-cloud:auth` implements this as `MetadataServerCredentials`, a
+`google-cloud/auth` implements this as `MetadataServerCredentials`, a
 `Credentials` that fetches a token on first use and again a minute before
 it expires. `defaultCredentials()` uses `GOOGLE_OAUTH_ACCESS_TOKEN` when
 it is set, for local runs with a token from
@@ -833,11 +833,11 @@ produce the same bytes for the same values
 
 The Firestore client has four layers:
 
-1. `protobuf:runtime`: `ProtoView`, `ProtoWriter`, `ProtoList`,
+1. `protobuf/runtime`: `ProtoView`, `ProtoWriter`, `ProtoList`,
    `ProtoMap`, `ProtoBytes` and the transport interface.
 2. Generated views, records, encoders and the `FirestoreClient` for
    `google.firestore.v1`.
-3. A hand-written client, `google-cloud:firestore`:
+3. A hand-written client, `google-cloud/firestore`:
    `db.collection('users').doc(id).get()`, transactions with retry,
    batched writes and query building.
 4. Typed documents: mapping user classes and records to Firestore's
@@ -936,17 +936,17 @@ Done:
   and negotiates HTTP/2.
 - Generated Firestore code, with size measurements.
 - Dead-field elimination in the compiler (#301).
-- The fallback transport, `protobuf:fallback`, with server streaming.
+- The fallback transport, `protobuf/fallback`, with server streaming.
 - Per-call metadata, credentials, and routing headers from
   `google.api.routing` and `google.api.http`.
 - `packages/google-cloud`: the generated Firestore module,
   metadata-server credentials, and the hand-written client.
-- The gRPC transport, `protobuf:grpc`, and h2c in `zena-runtime` for
+- The gRPC transport, `protobuf/grpc`, and h2c in `zena-runtime` for
   `http://` gRPC requests. The Firestore client runs against the
   emulator over it (`npm run test:emulator -w @zena-lang/google-cloud`,
   which depends on the root `emulators:start` wireit service).
 - Client-streaming methods, and the generated Cloud Storage module
-  (`google-cloud:storage-v2`).
+  (`google-cloud/storage-v2`).
 
 Remaining:
 

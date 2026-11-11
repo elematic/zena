@@ -119,8 +119,8 @@ again. The compiler does not read it.
 The directory, relative to the manifest, that holds the package's
 libraries: `src` when the manifest has no `source`. A library's name is
 its path from there, without `.zena`, so in a package named `router`,
-`src/match.zena` is `router:match` and `src/url/parse.zena` is
-`router:url/parse`. The manifest, the README and the license sit at the
+`src/match.zena` is `router/match` and `src/url/parse.zena` is
+`router/url/parse`. The manifest, the README and the license sit at the
 package's root, beside `src`, and tests and documentation can sit there
 too, outside the libraries' names.
 
@@ -212,13 +212,13 @@ archive must hold. Other kinds of package may give other paths a meaning
 A pattern must be a path inside the package: not empty, not absolute, and
 without `..`. The App View refuses an archive that holds a file its
 manifest does not publish, or lacks a file its `exports` name
-(`package-manager:files`, `package-manager:validate`). Releases published
+(`package-manager/files`, `package-manager/validate`). Releases published
 before the rule are fetched as they are.
 
 ### `dependencies`
 
 Each key is a **local name**: what this package's libraries call the
-dependency in their imports (`import {Router} from 'router:server'`), a
+dependency in their imports (`import {Router} from 'router/server'`), a
 package name or `<scope>:<name>` (`'acme:router/server'`). `zena pkg add`
 names a package in a scope `<scope>:<name>`, and any other by the name
 its profile suggests ([import-names.md](import-names.md)). A dependency is
@@ -410,8 +410,8 @@ my-app/
 }
 ```
 
-`main.zena` imports `router:server` and `lib:lib`; `lib.zena` imports
-`json:parse`. Neither sees the other's names.
+`main.zena` imports `router/server` and `lib/lib`; `lib.zena` imports
+`json/parse`. Neither sees the other's names.
 
 ## `zena-packages.json`
 

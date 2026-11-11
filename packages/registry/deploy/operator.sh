@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Runs one of the App View's operator commands (registry:main) on this
+# Runs one of the App View's operator commands (registry/main) on this
 # machine, against one environment (env.sh), with the configuration its
 # service runs with: the same variables, its secrets read from Secret
 # Manager, and Google credentials of its service account, which you act

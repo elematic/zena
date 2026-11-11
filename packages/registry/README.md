@@ -38,7 +38,7 @@ metadata server that gives the service its Google credentials
 (`packages/zena-runtime`).
 
 The App View keeps its accounts on a PDS in the same process by default
-(`registry:service`), and reaches it through `InProcessPds`. With
+(`registry/service`), and reaches it through `InProcessPds`. With
 `APP_VIEW_PDS_URL`, it keeps them on a PDS elsewhere instead, which trusts
 it (`PDS_TRUSTED_APP_VIEWS`), and reaches it through `XrpcPds`, with
 service-auth tokens signed by its own signing key, which its DID document
@@ -164,9 +164,9 @@ variables below change it too.
 ## Configuration
 
 `main.zena` reads its configuration from the environment: the App View's
-variables are `APP_VIEW_*` (`registry:service` lists them), and a PDS it
+variables are `APP_VIEW_*` (`registry/service` lists them), and a PDS it
 runs in the same process reads its own, `PDS_*`, as padstone alone does
-(`pds:service`). It needs `APP_VIEW_DOMAIN`; with nothing else, it keeps
+(`pds/service`). It needs `APP_VIEW_DOMAIN`; with nothing else, it keeps
 everything in memory on port 2583. A PDS alone starts from
 `packages/pds/zena/main.zena`.
 
@@ -230,7 +230,7 @@ archives for now. It also counts each day's actions on each package and
 scope and by each caller, and the scopes and packages created
 (docs/design/package-manager.md, "Limits on creating accounts").
 `set-limit <DID or handle> <limit> <number>|default` raises one of these
-limits (`registry:app-view`'s `Limit`, such as `packageBytes` or
+limits (`registry/app-view`'s `Limit`, such as `packageBytes` or
 `userActions`) for a package, a scope's organization and its packages, or
 a caller, or takes the setting away, and exits.
 
@@ -255,10 +255,10 @@ Every variable the App View, padstone, the image and the deploy scripts
 read, with its value in the demo and in the two deployments. The
 deployments' values come from `deploy/env.sh` and `deploy/deploy.sh`; a
 blank cell means the variable is not set, and the default applies.
-`registry:service` and `pds:service` describe each variable in full, and
+`registry/service` and `pds/service` describe each variable in full, and
 `zena/test/configuration_test.zena` fails when one is missing here.
 
-### The App View (`registry:service`)
+### The App View (`registry/service`)
 
 | Variable                        | What it is                                                                                                                                             | Default                                            | Demo                       | Staging                                  | Production                            |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | -------------------------- | ---------------------------------------- | ------------------------------------- |
@@ -290,7 +290,7 @@ blank cell means the variable is not set, and the default applies.
 | `APP_VIEW_PLC`                  | `public`: it sends its accounts' operations to the PLC directory. `staging`: it is a PLC directory itself, at `/plc`.                                  | `public`                                           | `public`, to the stand-in  | `staging`                                | `public`                              |
 | `APP_VIEW_WEB_DIR`              | The build of the pages' stylesheet and script (`packages/pds-web`).                                                                                    | none: unstyled pages                               | `/web`                     | `/web`, from the image                   | `/web`, from the image                |
 
-### The PDS (`pds:service`)
+### The PDS (`pds/service`)
 
 padstone reads these, and so does the App View for the PDS it runs in the
 same process. With `APP_VIEW_PDS_URL`, the App View refuses them.
@@ -527,7 +527,7 @@ which padstone reads again when a token does not check.
 
 ## Layout
 
-- `zena/`: the Zena package `registry`, imported as `registry:<library>`:
+- `zena/`: the Zena package `registry`, imported as `registry/<library>`:
   - `app-view`: the App View's methods, and what it keeps beside the
     accounts: scopes, names in them, and private membership entries;
   - `firestore`: the App View's stores in Firestore, beside the PDS's or
@@ -540,7 +540,7 @@ which padstone reads again when a token does not check.
     for someone;
   - `web-sessions`: the site's sessions and the signatures of the URLs its
     pages make, under the App View's own secret;
-  - `server`: the HTTP application: the PDS's routes (`pds:server`) when the
+  - `server`: the HTTP application: the PDS's routes (`pds/server`) when the
     PDS is in the same process, the registry methods (`xrpc/`), and the
     site (`web/`);
   - `service`: the configuration, read from the environment, and the

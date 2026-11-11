@@ -754,7 +754,7 @@ Original stage list, still accurate from stage 2 onward; each stage is useful
 on its own.
 
 1. **Parser → compiler integration.** The parser now has a public entry point
-   (`wit-parser:wit` — `parse`, `parseSyntax`, `resolve`, `toJson`) and is a
+   (`zena-lang:wit-parser/wit` — `parse`, `parseSyntax`, `resolve`, `toJson`) and is a
    package of the repository's workspace, so any Zena code in the repo can
    import it. Real `wasi:http` parses and resolves today, p2 and p3 both.
 

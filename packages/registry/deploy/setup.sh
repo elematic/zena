@@ -103,7 +103,7 @@ if [ "$WEEKLY_BACKUPS" = 1 ]; then
     echo "    weekly backups on Sundays, kept 14 weeks"
   fi
 fi
-# The App View's count of a day's actions (registry:firestore, counts/)
+# The App View's count of a day's actions (registry/firestore, counts/)
 # carries the time it can be deleted at.
 gcloud firestore fields ttls update expiresAt --collection-group counts --enable-ttl --database "$DATABASE" \
   --project "$PROJECT" --async --quiet > /dev/null

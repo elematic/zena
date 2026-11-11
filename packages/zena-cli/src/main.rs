@@ -101,7 +101,7 @@ fn workspace_root_for(cwd: &Path) -> PathBuf {
 
 /// Whether the manifest in `root` lists `package` in `workspace.packages`,
 /// by its path from `root`, or as a directory in a `<dir>/*` entry's
-/// `<dir>`, as `package-manager:workspace` reads them. A manifest that is
+/// `<dir>`, as `package-manager/workspace` reads them. A manifest that is
 /// missing or cannot be read lists nothing.
 fn lists_package(root: &Path, package: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(root.join(MANIFEST)) else {
