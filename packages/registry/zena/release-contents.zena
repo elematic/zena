@@ -12,6 +12,7 @@ import {join} from 'zena:core';
 import {EncodeSet, percentDecode, percentEncode} from 'zena:url';
 import {UrlResolver, markdownToHtml} from 'markdown';
 import {gfmExtensions} from 'markdown/plugins/gfm';
+import {headingAnchorsExtension} from 'markdown/plugins/heading-anchors';
 import {decodeCbor, encodeCbor} from 'atproto/cbor';
 import {Cid} from 'atproto/cid';
 import {BytesValue, IntValue, LinkValue, ListValue, MapValue, StringValue, Value, field, newMap} from 'atproto/data';
@@ -23,9 +24,17 @@ import {BlobBytes} from 'pds/firestore';
  * The format `ReleaseContents.toBytes` writes. Contents of another are
  * derived again. 2 added each file's offset in the archive; 3 pointed the
  * README's images to `rawUrl`, and its links to the files' pages; 4 kept
- * its links to directories, to their pages.
+ * its links to directories, to their pages; 5 gave its headings IDs
+ * after `ANCHOR_PREFIX`, and links to them.
  */
-export let CONTENTS_FORMAT = 4;
+export let CONTENTS_FORMAT = 5;
+
+/**
+ * What the IDs of a rendered Markdown file's headings start with, as on
+ * GitHub, so that they cannot be taken for the page's own: `#files`, a
+ * tab's fragment, or `#sign-in`.
+ */
+export let ANCHOR_PREFIX = 'user-content-';
 
 /** The largest README rendered, in bytes of Markdown. A larger one is linked to instead. */
 export let MAX_README_BYTES = 256 * 1024;
@@ -167,13 +176,16 @@ export function deriveContents(did: String, version: String, archive: Cid, bytes
  * `text`, a Markdown file in `directory` (`''` for the package's root) of
  * release `version` of the package `ref`, whose archive holds the files at
  * `paths`, as HTML: in safe mode, without raw HTML or URLs that could run
- * script, and with its relative URLs resolved from `directory`
- * (`PackageUrls`).
+ * script, with its relative URLs resolved from `directory`
+ * (`PackageUrls`), and with each heading's ID, after `ANCHOR_PREFIX`,
+ * linked from the heading.
  */
 export function renderMarkdown(text: String, ref: String, version: String, paths: HashSet<String>,
     directory: String): String {
-  return markdownToHtml(text,
-      {safe: true, extensions: gfmExtensions(), resolver: new PackageUrls(ref, version, paths, directory)});
+  let extensions = gfmExtensions();
+  extensions.push(headingAnchorsExtension(ANCHOR_PREFIX));
+  return markdownToHtml(text, {safe: true, extensions, headingLinks: true,
+      resolver: new PackageUrls(ref, version, paths, directory)});
 }
 
 /**
@@ -208,8 +220,9 @@ function releaseUrl(ref: String, version: String, kind: String, path: String): S
  * Resolves the links and images of a Markdown file in `directory` (`''`
  * for the package's root) of release `version` of the package `ref`, whose
  * archive holds the files at `paths`. A URL with a scheme, or to another
- * host, and a link within the page (`#...`) stay as they are, so images
- * from other sites show. A relative path is resolved from `directory`, and
+ * host, stays as it is, so images from other sites show; a link within
+ * the page (`#...`), and one to a heading of another Markdown file, gets
+ * `ANCHOR_PREFIX` before its fragment. A relative path is resolved from `directory`, and
  * one that starts with `/` from the package's root: a link points to the
  * page of the file or directory (`fileUrl`), and an image to the file
  * itself, which the App View serves from the release's archive
@@ -226,7 +239,10 @@ export final class PackageUrls implements UrlResolver {
       : #ref = ref, #version = version, #paths = paths, #directory = directory;
 
   resolve(url: String, isImage: boolean): String | null {
-    if (url == '' || url.startsWith('#') || url.startsWith('//') || hasScheme(url)) {
+    if (url.startsWith('#')) {
+      return anchored(url);
+    }
+    if (url == '' || url.startsWith('//') || hasScheme(url)) {
       return url;
     }
     // The path, apart from its query and fragment, which are kept.
@@ -260,8 +276,13 @@ export final class PackageUrls implements UrlResolver {
     if (!this.#paths.has(path) && (isImage || !this.#isDirectory(path))) {
       return null;
     }
-    let target = if (isImage) rawUrl(this.#ref, this.#version, path) else fileUrl(this.#ref, this.#version, path);
-    return `${target}${suffix}`;
+    if (isImage) {
+      return `${rawUrl(this.#ref, this.#version, path)}${suffix}`;
+    }
+    // A heading of another Markdown file has the prefixed ID on its page too.
+    let lower = path.asciiLowerCase();
+    let markdown = lower.endsWith('.md') || lower.endsWith('.markdown');
+    return `${fileUrl(this.#ref, this.#version, path)}${if (markdown) anchored(suffix) else suffix}`;
   }
 
   /** Whether `path` is a directory of the archive: one that holds a file. */
@@ -277,6 +298,21 @@ export final class PackageUrls implements UrlResolver {
     }
     return false;
   }
+}
+
+/**
+ * `suffix`, a URL's query and fragment, with `ANCHOR_PREFIX` before a
+ * fragment that names a heading of a rendered Markdown file.
+ */
+function anchored(suffix: String): String {
+  var hash = 0;
+  while (hash < suffix.length && suffix.getByteAt(hash) != 35) {
+    hash += 1;
+  }
+  if (hash + 1 >= suffix.length || suffix.sliceBytes(hash + 1, suffix.length).startsWith(ANCHOR_PREFIX)) {
+    return suffix;
+  }
+  return `${suffix.sliceBytes(0, hash + 1)}${ANCHOR_PREFIX}${suffix.sliceBytes(hash + 1, suffix.length)}`;
 }
 
 /**

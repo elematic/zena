@@ -9,6 +9,10 @@ import {Block, Document, Heading, BlockQuote, ListBlock, ListItem, inlinesToPlai
 import {AstTransformer, BlockParserFactory, DelimiterProcessor, InlineContentParser, InlineParserRunner, MarkdownExtension, NodeRenderer} from '../plugin.zena';
 
 final class HeadingAnchorsTransformer implements AstTransformer {
+  #prefix: String;
+
+  new(prefix: String) : #prefix = prefix;
+
   transform(doc: Document, inlineParser: InlineParserRunner): void {
     let counts = new HashMap<String, i32>();
     this.#visitBlocks(doc.blocks, counts);
@@ -25,10 +29,10 @@ final class HeadingAnchorsTransformer implements AstTransformer {
               if (counts.has(baseSlug)) {
                 let n = counts[baseSlug];
                 counts[baseSlug] = n + 1;
-                h.id = `${baseSlug}-${i32ToString(n)}`;
+                h.id = `${this.#prefix}${baseSlug}-${i32ToString(n)}`;
               } else {
                 counts[baseSlug] = 1;
-                h.id = baseSlug;
+                h.id = `${this.#prefix}${baseSlug}`;
               };
             };
           };
@@ -85,11 +89,12 @@ export function slugifyHeading(text: String): String {
 
 /**
  * Returns the `MarkdownExtension` that populates deduplicated `id` slugs on
- * `Heading` AST nodes.
+ * `Heading` AST nodes, each after `prefix`, which keeps them apart from the
+ * IDs of the page the document is shown in (GitHub uses `user-content-`).
  */
-export function headingAnchorsExtension(): MarkdownExtension {
+export function headingAnchorsExtension(prefix: String = ''): MarkdownExtension {
   let transformers = new GrowableArray<AstTransformer>(1);
-  transformers.push(new HeadingAnchorsTransformer());
+  transformers.push(new HeadingAnchorsTransformer(prefix));
   return new MarkdownExtension(
     new GrowableArray<BlockParserFactory>(0),
     new GrowableArray<DelimiterProcessor>(0),
