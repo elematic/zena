@@ -4823,6 +4823,12 @@ here, or the base type when some member's field is wider than a literal.
 A member whose field is wider (`{kind: i32, ...}`) stays on both sides of
 a comparison.
 
+A discriminated union can be inline, when its field is a boolean or integer
+literal: `inline {kind: 0, ok: i32} | {kind: 1, err: String}` is passed and
+returned as its members' fields, which share slots by field and type, and
+reads, patterns and narrowing work on it as on the boxed union without
+building a record. Its members cannot have optional or inline fields yet.
+
 #### Spreading Record Types
 
 A record type can spread another record type into itself, which builds a

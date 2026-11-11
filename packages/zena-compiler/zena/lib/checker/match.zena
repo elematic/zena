@@ -14,6 +14,7 @@ import { adaptArmToContext, adaptJoinedArm, armValueNode } from './adaptation.ze
 import { CheckerContext } from './context.zena';
 import { checkExpression } from './expressions.zena';
 import { literalFits, recordUnionMembersOf } from './members.zena';
+import { inlineRecordOf } from './annotations.zena';
 import { sameInterfaceDeclaration, sameTypeArguments } from './generics.zena';
 import { prescanPendingFunctions } from './module.zena';
 import {
@@ -320,7 +321,7 @@ function subtractPatternFromType(ctx: CheckerContext, t: Type, pattern: Node): T
       // whole. A record with no literal field is left as it was: its arms
       // are not checked for coverage.
       return narrowUnion(t, (member) => {
-        let rec = baseType(member);
+        let rec = inlineRecordOf(member) ?? baseType(member);
         return if (rec is RecordT && hasLiteralField(rec) && recordMemberCovered(ctx, rec, rp)) {
           new NeverType() as Type
         } else {

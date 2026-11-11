@@ -271,7 +271,83 @@ function unionOfInlineMembers(
       return new ErrorType();
     }
   }
+  if (!checkInlineRecordUnion(ctx, members, loc)) {
+    return new ErrorType();
+  }
   return createUnionType(members, ctx, loc);
+}
+
+/**
+ * The rules for a union of inline records, laid out as tuples over all
+ * its fields (#811): every member a record, none with optional or inline
+ * fields, and a boolean or integer literal field every member has, with
+ * a different literal in each, which its slot is tested against. False,
+ * having reported it, when one is broken.
+ */
+function checkInlineRecordUnion(ctx: CheckerContext, members: Array<Type>,
+    loc: SourceLocation | null): boolean {
+  var records = 0;
+  for (let member in members) {
+    if (inlineRecordOf(member) != null) {
+      records += 1;
+    }
+  }
+  if (records == 0) {
+    return true;
+  }
+  if (records != members.length) {
+    ctx.error("An inline union cannot mix records with tuples.",
+        DiagnosticCode.TypeMismatch, loc);
+    return false;
+  }
+  let recs = new Array<RecordT>();
+  for (let member in members) {
+    let rec = inlineRecordOf(member) as RecordT;
+    let {optionalProperties} = rec;
+    if (optionalProperties != null && optionalProperties.size > 0) {
+      ctx.error("A member of a union of inline records cannot have optional fields yet.",
+          DiagnosticCode.TypeMismatch, loc);
+      return false;
+    }
+    for (let pair in rec.properties) {
+      if (isInlineType(pair.value)) {
+        ctx.error("A member of a union of inline records cannot have inline fields yet.",
+            DiagnosticCode.TypeMismatch, loc);
+        return false;
+      }
+    }
+    recs.push(rec);
+  }
+  for (let field in recs[0].properties.keys()) {
+    var allDiffer = true;
+    let seen = new Array<String>();
+    for (let rec in recs) {
+      let t = if (rec.properties.has(field)) rec.properties[field] else null;
+      let key = if (t != null) inlineDiscriminantKey(t) else null;
+      if (key == null || seen.contains(key)) {
+        allDiffer = false;
+        break;
+      }
+      seen.push(key);
+    }
+    if (allDiffer) {
+      return true;
+    }
+  }
+  ctx.error("A union of inline records needs a boolean or integer literal field with a different literal in each member, to tell them apart.",
+      DiagnosticCode.TypeMismatch, loc);
+  return false;
+}
+
+/** A boolean or integer literal type as text, or null for anything else. */
+function inlineDiscriminantKey(t: Type): String | null {
+  if (let BoolLiteralType {value} = t) {
+    return if (value) 'true' else 'false';
+  }
+  if (let NumLiteralType {raw} = t) {
+    return if (raw.contains('.')) null else raw;
+  }
+  return null;
 }
 
 /**
@@ -557,6 +633,24 @@ export function boxedRecordOf(record: RecordT): RecordT {
 /** Whether `t` is an inline record, through aliases. */
 export function isInlineRecordType(t: Type): boolean {
   return inlineRecordOf(t) != null;
+}
+
+/**
+ * The union of the records a union of inline records holds, through
+ * aliases, or null for any other type: what a literal for it is checked
+ * against.
+ */
+export function inlineRecordUnionBoxed(t: Type): Type | null {
+  let u = unwrapAliases(t);
+  if (!(u is UnionT)) {
+    return null;
+  }
+  for (let member in u.types) {
+    if (inlineRecordOf(member) == null) {
+      return null;
+    }
+  }
+  return boxedFormOf(t);
 }
 
 /** The record an inline record type is, through aliases, or null. */

@@ -668,6 +668,38 @@ export let tests = suite('WatGenerator', () => {
   // An inline union inside an inline tuple is distributed over the outer
   // tuple (#811), so writing, matching and forwarding it move slots and
   // test its literal, and box nothing.
+  // A union of inline records is its members' fields in slots, told
+  // apart by their literal field (#811): matching, narrowing and passing
+  // a literal read and write slots, and box nothing.
+  test('unions of inline records allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Outcome = inline {kind: 0, ok: i32} | {kind: 1, err: i32};
+      function make(good: boolean): Outcome {
+        return if (good) ({kind: 0, ok: 5}) else ({kind: 1, err: 7});
+      }
+      function score(o: Outcome): i32 {
+        return match (o) {
+          case {kind: 0, ok}: ok
+          case {kind: 1, err}: err * 10
+        };
+      }
+      function viaIf(o: Outcome): i32 {
+        if (o.kind == 0) {
+          return o.ok;
+        }
+        if (let {kind: 1, err} = o) {
+          return err;
+        }
+        return 0;
+      }
+      export let main = (): i32 => score(make(true)) + viaIf({kind: 1, err: 2});
+    `);
+    assertNoAllocation(result, '$make', 'record literals written into slots');
+    assertNoAllocation(result, '$score', 'a match reads the literal field and slots');
+    assertNoAllocation(result, '$viaIf', 'narrowing and if-let read slots');
+    assertNoAllocation(result, '$main', 'a literal argument passed as slots');
+  });
+
   test('nested inline unions allocate nothing', async (ctx) => {
     let result = await compileAndGenerateWat(`
       type Reply = (true, i32) | (false, i32);
