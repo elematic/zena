@@ -12,8 +12,8 @@ zena pkg add zena-lang:wit-parser
 ## Example
 
 ```zena
-import { parse } from 'wit-parser:wit';
-import { AstItemTag } from 'wit-parser:parser';
+import { parse } from 'zena-lang:wit-parser/wit';
+import { AstItemTag } from 'zena-lang:wit-parser/parser';
 
 let source = `
 package example:greeter@1.0.0;
@@ -51,7 +51,7 @@ for (let item in doc.items) {
 
 ## Libraries
 
-### `wit-parser:wit`
+### `zena-lang:wit-parser/wit`
 
 The primary entry point for parsing, resolving, and serializing WIT source text.
 
@@ -62,17 +62,17 @@ The primary entry point for parsing, resolving, and serializing WIT source text.
 | `resolve(ast)`               | Resolves names and validates an `Ast` in place.                                                     |
 | `toJson(ast, packageOrder?)` | Serializes a resolved `Ast` to the `.wit.json` format emitted by `wasm-tools component wit --json`. |
 
-`wit-parser:wit` also re-exports `Ast`, `ParseError`, and `ResolveError`. Both
+`zena-lang:wit-parser/wit` also re-exports `Ast`, `ParseError`, and `ResolveError`. Both
 error types carry a `Span` with byte offsets into the source text.
 
-### `wit-parser:parser`
+### `zena-lang:wit-parser/parser`
 
 The AST node declarations (`Ast`, `AstItem`, `AstItemTag`, `InterfaceDef`,
 `WorldDef`, `TypeDef`, `Type`, `NamedFunc`, `ResourceFunc`, `Use`, `Include`,
 `Docs`, `Attribute`, `PackageName`, `NestedPackage`, and related types) and
 `Parser`.
 
-### `wit-parser:document`
+### `zena-lang:wit-parser/document`
 
 Utilities for assembling multi-file WIT directories into a single source
 document while tracking file boundaries for error reporting:
@@ -87,7 +87,7 @@ document while tracking file boundaries for error reporting:
 - `findInterface(ast, namespace, interfacePath)`: looks up an interface (`pkg/iface`)
   in a parsed document.
 
-### `wit-parser:component-encoder`
+### `zena-lang:wit-parser/component-encoder`
 
 Encodes a resolved WIT world into WebAssembly Component Model binary type and
 import sections:
@@ -99,10 +99,10 @@ import sections:
 - `expandedWorldItems(ast, world)` and `worldNames(ast)`: expands world
   `include`s and transitive `use` dependencies.
 
-### `wit-parser:lexer` and `wit-parser:token`
+### `zena-lang:wit-parser/lexer` and `zena-lang:wit-parser/token`
 
 Low-level tokenization: `Lexer`, `LexError`, `Token`, `TokenType`, and `Span`.
 
-### `wit-parser:resolver`
+### `zena-lang:wit-parser/resolver`
 
 Semantic validation and name resolution: `Resolver` and `ResolveError`.

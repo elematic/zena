@@ -3,24 +3,36 @@
  *
  * Stdlib files already carry a `zena:` id. Every other package resolves
  * to filesystem paths, and a path is not something a reader or a link
- * can use, so a path under the package root is rewritten to the same
- * `<package>:<path>` shape the stdlib's private files have.
+ * can use, so a path under the package root is rewritten to the
+ * specifier an import would use, `<package>/<path>`.
  */
 export final class Naming {
-  #name: String;
+  #prefix: String;
   #root: String;
 
-  new(name: String, root: String) : #name = name, #root = root;
+  new(name: String, root: String) : #prefix = modulePrefix(name), #root = root;
 
   idOf(canonical: String): String {
-    if (canonical.startsWith(this.#name + ':')) {
+    if (canonical.startsWith(this.#prefix)) {
       return canonical;
     }
     let prefix = this.#root + '/';
     if (canonical.startsWith(prefix)) {
-      return this.#name + ':' +
-          canonical.sliceBytes(prefix.length, canonical.length);
+      return this.#prefix + canonical.sliceBytes(prefix.length, canonical.length);
     }
     return canonical;
   }
+}
+
+/**
+ * The specifier that imports `module` of the package `name`:
+ * `zena:<module>` in the standard library, `<name>/<module>` in any other
+ * package (docs/design/import-names.md).
+ */
+export function moduleId(name: String, module: String): String {
+  return `${modulePrefix(name)}${module}`;
+}
+
+function modulePrefix(name: String): String {
+  return if (name == 'zena') 'zena:' else `${name}/`;
 }

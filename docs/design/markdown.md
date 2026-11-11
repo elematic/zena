@@ -78,7 +78,7 @@ export final class Document(
 ```
 
 Core block and inline nodes form two `sealed class` hierarchies in
-`markdown:ast`. Each hierarchy includes one open abstract variant
+`markdown/ast`. Each hierarchy includes one open abstract variant
 (`CustomBlock` and `CustomInline`) that plugins subclass for their own syntax
 nodes:
 
@@ -131,7 +131,7 @@ match concrete plugin subclasses (`case TableBlock as t: ...`) directly.
 
 ## Extension API
 
-A plugin implements one or more of five interfaces in `markdown:plugin` and is
+A plugin implements one or more of five interfaces in `markdown/plugin` and is
 registered through a `MarkdownExtension` passed to `Parser` and `HtmlRenderer`:
 
 1. **`BlockParserFactory`**: starts custom block containers or leaf blocks

@@ -18,17 +18,17 @@ import {
   createCompiler, checkCompilation, CompilerHost,
   PackageConfig, ModuleExport, ProgramCheckResult, Diagnostic,
   DiagnosticSeverity,
-} from 'zena-compiler:compiler';
-import { stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
-import { isWitModulePath, synthesizeWitModule } from 'zena-compiler:wit-module-synth';
-import { directoryNames } from 'zena-compiler:fs-host';
+} from 'zena-compiler/compiler';
+import { stdlibIdToRelativeFile } from 'zena-compiler/module-resolver';
+import { isWitModulePath, synthesizeWitModule } from 'zena-compiler/wit-module-synth';
+import { directoryNames } from 'zena-compiler/fs-host';
 import { Package } from './package.zena';
 import { join2 } from 'zena:path';
 import { extractModule, ExtractOptions } from './extract.zena';
 import { resolveReexports, WalkCache } from './reexports.zena';
 import { inheritMembers } from './inherit.zena';
 import { resolveLinks } from './publish.zena';
-import { Naming } from './ids.zena';
+import { Naming, moduleId } from './ids.zena';
 import { ModelLinker } from './links.zena';
 import { DocPackage } from './model.zena';
 
@@ -175,7 +175,7 @@ async function documentBatch(
   while (i < to) {
     let module = pkg.modules[i];
     try {
-      let entry = target.resolve(`${pkg.name}:${module.name}`, '');
+      let entry = target.resolve(moduleId(pkg.name, module.name), '');
       let result = await compiler.compile({entry: entry.path, target: options.target});
       let checkResults = checkCompilation(result, previous);
       previous = checkResults;
@@ -185,7 +185,7 @@ async function documentBatch(
       let checked = checkResults.results[result.entry.path];
       let model = if (checked == null) { null } else { checked.model };
       let naming = new Naming(pkg.name, pkg.root);
-      let documented = extractModule(`${pkg.name}:${module.name}`, module.name,
+      let documented = extractModule(moduleId(pkg.name, module.name), module.name,
           module.file, result.entry.ast, model, extractOptions,
           new ModelLinker(model, naming));
       // Through the same naming as a link, or the two spell the same

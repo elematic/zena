@@ -133,7 +133,7 @@ find_parent_zone() {
 # so both use the same one.
 TENANT=pkg
 
-# The App View's configuration (registry:service), which deploy.sh gives
+# The App View's configuration (registry/service), which deploy.sh gives
 # its service and operator.sh the commands it runs here: APP_VIEW_VARS,
 # its variables as NAME=value, and APP_VIEW_SECRETS, as NAME=<secret>, the
 # Secret Manager secret each takes its value from.

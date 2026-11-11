@@ -33,7 +33,7 @@ dependencies (`zena-lock.json`).
   `router.acme.pkg.zena-lang.dev`, or a domain the package's maintainers
   control.
 - **Local names.** A package gives each dependency a name of its own,
-  used in imports (`import {Router} from 'router:server'`). A package
+  used in imports (`import {Router} from 'router/server'`). A package
   suggests a name, and the importer is free to pick another.
   `zena-package.json` maps local names to DIDs and minimum versions.
 - **Releases.** One record per version, keyed by the version string. A
@@ -216,7 +216,7 @@ A package has three kinds of name:
 - **Its DID** is its identity. Manifests and lockfiles record it. A `did:plc` is a hash and a `did:web` belongs to a
   domain, so DIDs cannot collide, and there is no short one to take.
 - **A local name** is what a package's imports use
-  (`import {Router} from 'router:server'`). Each package chooses its own,
+  (`import {Router} from 'router/server'`). Each package chooses its own,
   starting from the name the package's profile suggests, so two packages
   that both suggest `router` can be used side by side.
   A package in a scope is named `scope:name` by default
@@ -512,7 +512,7 @@ together, counting a file once for each path that names it. Contents
 two paths share are stored once, so without the second limit an archive
 of a few megabytes could name one block from every path and take
 gigabytes to write out. Packing and unpacking both refuse an archive
-over either limit (`package-manager:archive`), so publishing, fetching
+over either limit (`package-manager/archive`), so publishing, fetching
 and the App View's pages all do.
 
 ### Large artifacts
@@ -645,7 +645,7 @@ To fetch a release, the client:
 ### Validating releases
 
 A release is checked in three places, by one set of rules
-(`package-manager:validate`). `zena pkg publish` checks before it uploads
+(`package-manager/validate`). `zena pkg publish` checks before it uploads
 anything. The App View checks before it records a release, since it
 trusts no client. A fetch checks too, since a package can be kept on any
 PDS, where nothing checked what was written. The rules:

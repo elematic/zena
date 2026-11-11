@@ -173,32 +173,7 @@ export final class ModuleResolver {
     let packageName = if (restSlash < 0) rest else rest.sliceBytes(0, restSlash);
     let moduleName = if (restSlash < 0) "index" else rest.sliceBytes(restSlash + 1, rest.length);
     let name = if (scope != null) `${scope}:${packageName}` else packageName;
-    if (scope != null && this.#lookupKey(name, referrer) == null) {
-      // TODO(import-names): the old form, `<package>:<library>`, while the
-      // repository's imports are written in it. The change that renames
-      // them, after the bootstrap reads the new form, removes this.
-      let old = this.#lookupKey(scope, referrer);
-      if (old != null) {
-        return this.resolvePackage(old, rest, referrer);
-      }
-    }
     return this.resolvePackage(this.#packageKey(name, referrer), moduleName, referrer);
-  }
-
-  // The key of the package `name` stands for in an import from
-  // `referrer`, or null when it stands for none.
-  #lookupKey(name: String, referrer: String): String | null {
-    let owner = this.findPackageForPath(referrer);
-    if (owner != "" && owner != "zena") {
-      let dependencies = this.#packages[owner].dependencies;
-      if (dependencies != null) {
-        if (let (true, key) = dependencies.get(name)) {
-          return key;
-        }
-        return if (name == "zena" || this.#isWitPackage(name)) name else null;
-      }
-    }
-    return if (this.#packages.has(name)) name else null;
   }
 
   // The key of the WIT-backed package the scope `scope` names in an import

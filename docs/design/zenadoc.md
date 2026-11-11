@@ -68,7 +68,7 @@ extractor and for documenting an example.
 
 The package name comes from `--name`, else the manifest's
 `name` field, else the directory's basename. Module ids are
-`<package>:<module>` — the string a user would write in an `import`.
+`<package>/<module>` — the string a user would write in an `import`.
 
 A manifest may name a source root, which is what lets the standard
 library keep its manifest at `packages/stdlib/stdlib-manifest.json`
@@ -90,8 +90,8 @@ at `packages/stdlib/stdlib-manifest.json` and its module map is called
 zenadoc's code, zenadoc reads `zena-package.json` if present and
 `stdlib-manifest.json` otherwise, and accepts either key. Adding
 `"name": "zena"` to the stdlib manifest then gives the stdlib the same
-treatment as any other package, and `zena:array` ids fall out of the
-normal `<package>:<module>` rule.
+treatment as any other package, and its ids are `zena:array`, since the
+standard library is the scope `zena` (import-names.md).
 
 The rename of `stdlib-manifest.json` to `zena-package.json` is planned
 independently (see package-manifest.md); zenadoc reading both means the
@@ -114,7 +114,7 @@ compiler already produces:
 - **The `SemanticModel`** for resolved types, so an unannotated
   declaration documents the type it actually has and a type reference
   can name the declaration it resolves to.
-- **`attachComments`** (`zena-compiler:comment-attachment`), which
+- **`attachComments`** (`zena-compiler/comment-attachment`), which
   already assigns each comment to the nearest node. The formatter and
   the language server both use it; zenadoc filters its leading comments
   for `/** … */`.

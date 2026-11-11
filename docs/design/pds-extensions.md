@@ -16,8 +16,8 @@ names, checks the callers of its `dev.zena-lang.registry.*` methods,
 writes handle records to DNS, and checks releases before recording them
 ([package-manager.md](./package-manager.md), "Hosting, keys and
 maintainers"). All of that is compiled into the server today.
-`registry:app-view` holds most of it, and `registry:server` and
-`registry:service` put it together with the PDS.
+`registry/app-view` holds most of it, and `registry/server` and
+`registry/service` put it together with the PDS.
 
 The goal is a PDS whose core does what any PDS does, with everything
 specific to Zena packages in extensions: WebAssembly components the PDS
@@ -59,15 +59,15 @@ use.
 | The `dev.zena-lang.registry.*` methods: `createOrganization`, `createPackage`, `uploadArtifact`, `publish`                               | `app-view.zena` (`AppView`), routes in `server.zena` (`registryRoutes`)                   | yes                                                                                           |
 | `com.atproto.server.describeServer` with the App View's DID and handle domain                                                            | `server.zena`                                                                             | no: the core PDS answers it, with values from configuration                                   |
 | The App View's own DID document at `/.well-known/did.json`                                                                               | `server.zena`                                                                             | no                                                                                            |
-| Checking service-auth tokens addressed to the App View, with replay protection                                                           | `AppView.authenticate`, using `atproto:service-auth`                                      | no: any extension with methods of its own needs it                                            |
+| Checking service-auth tokens addressed to the App View, with replay protection                                                           | `AppView.authenticate`, using `atproto/service-auth`                                      | no: any extension with methods of its own needs it                                            |
 | Account kinds (package, organization, automation), each allowed only some collections                                                    | `AccountKind` and `Account.allows` in `storage.zena`, checked in `Repository.applyWrites` | the kinds are; refusing writes by a policy is not                                             |
 | Creating an account with a new `did:plc`, whose genesis operation ranks the maintainers' recovery keys above the App View's rotation key | `AppView.#prepareAccount`, `#createAccount`                                               | partly: creating accounts with `did:plc`s is core; the recovery-key ranking is the App View's |
 | Scope and package names, claimed once each                                                                                               | `AppViewStore.claimScope`, `claimName` and their Firestore implementation                 | yes                                                                                           |
 | Private membership entries behind the commitments in members and maintainers records, and the role checks that read them                 | `AppViewStore.entries`, `AppView.#hasRole`, `#maintainedPackage`                          | yes                                                                                           |
-| Checking a release against its source archive and dependencies before recording it                                                       | `package-manager:validate`, called from `AppView.publish` (#574)                          | yes                                                                                           |
-| Writing each handle's `_atproto` TXT record to a DNS zone, and rewriting them all (`sync-handles`)                                       | `registry:handles`, `AppView.syncHandles`, `main.zena`                                    | no: any PDS that gives out handles under its own domain needs it                              |
-| A PLC directory of its own for staging, reading other DIDs from the public one                                                           | `registry:plc-directory`, mounted in `registry:service`                                   | no                                                                                            |
-| Configuration: the domain, service DID, public URL, rotation key, reserved scopes, largest artifact, handle records                      | `registry:service` (`configFromEnv`)                                                      | partly                                                                                        |
+| Checking a release against its source archive and dependencies before recording it                                                       | `package-manager/validate`, called from `AppView.publish` (#574)                          | yes                                                                                           |
+| Writing each handle's `_atproto` TXT record to a DNS zone, and rewriting them all (`sync-handles`)                                       | `registry/handles`, `AppView.syncHandles`, `main.zena`                                    | no: any PDS that gives out handles under its own domain needs it                              |
+| A PLC directory of its own for staging, reading other DIDs from the public one                                                           | `registry/plc-directory`, mounted in `registry/service`                                   | no                                                                                            |
+| Configuration: the domain, service DID, public URL, rotation key, reserved scopes, largest artifact, handle records                      | `registry/service` (`configFromEnv`)                                                      | partly                                                                                        |
 | Telling listeners, after each commit, which records it changed                                                                           | `Pds.onCommit`, called from `Repository.applyWrites`                                      | no: the firehose (#680) sends the same changes                                                |
 | A catalog of the App View's packages, and which accounts mention each person and team, written with each commit and by `sync-indexes`    | `AppView.#indexCommit`, `AppViewStore.putSummary` and `addMentions`, `main.zena`          | yes                                                                                           |
 
@@ -89,7 +89,7 @@ general pieces from the table above:
 - accounts, their repositories and commits, blobs, and `com.atproto.sync`
   and `com.atproto.repo` reads;
 - telling extensions, and later the firehose, what each commit changed;
-- storage (`pds:storage`, `pds:firestore`);
+- storage (`pds/storage`, `pds/firestore`);
 - identity: resolving DIDs and handles, creating `did:plc`s and sending
   their operations, and the staging PLC directory;
 - managed accounts, for the services the operator trusts;
@@ -204,7 +204,7 @@ rotation key, and sends it to the configured PLC directory, which is the
 staging directory on a staging host.
 
 The core writes the new handle's DNS record, so the App View does
-not need its own `registry:handles` calls. Taking a name in a scope stays the
+not need its own `registry/handles` calls. Taking a name in a scope stays the
 App View's: it claims the name in its storage before asking for the
 account, and releases it if the core fails to create one, as
 `AppView.createOrganization` does today.
@@ -220,7 +220,7 @@ Account extensions have a quota.
 
 The App View keeps its scope and name claims, its membership entries,
 its catalog and mentions, and its account kinds there. Today these are
-`registry:app-view`'s `AppViewStore` and its Firestore implementation, which this
+`registry/app-view`'s `AppViewStore` and its Firestore implementation, which this
 storage replaces.
 
 ### Jobs

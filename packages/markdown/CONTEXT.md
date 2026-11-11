@@ -2,7 +2,7 @@
 
 `packages/markdown` is Zena's CommonMark and GitHub Flavored Markdown (GFM)
 parser, syntax tree, plugin API, and HTML renderer (`markdown`, imported as
-`markdown:<library>`). See [docs/design/markdown.md](../../docs/design/markdown.md)
+`markdown/<library>`). See [docs/design/markdown.md](../../docs/design/markdown.md)
 for the architecture.
 
 ## Layout
@@ -28,7 +28,7 @@ for the architecture.
   (raw HTML stripping/escaping and URL scheme checks), a `UrlResolver` that
   rewrites or removes each link and image URL before `safe` mode checks it,
   and `NodeRenderer` dispatch.
-- `src/plugins/`: built-in extensions implemented against `markdown:plugin`:
+- `src/plugins/`: built-in extensions implemented against `markdown/plugin`:
   - `strikethrough.zena`: `~` / `~~` strikethrough (`DelimiterProcessor` +
     `Strikethrough` inline node + `NodeRenderer`).
   - `tables.zena`: GFM pipe tables (`BlockParserFactory` + `TableBlock` node +

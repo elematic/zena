@@ -9,9 +9,9 @@ defines local names and the manifest, and
 and handles.
 
 > **Current status**: implemented: the compiler reads both forms of name,
-> `zena pkg add` writes `<scope>:<name>`, and `scopedNames` turns that
-> off. Until this repository's own imports are renamed, the compiler also
-> reads `<package>:<library>` when `<package>` is not a scope it knows.
+> `zena pkg add` writes `<scope>:<name>`, `scopedNames` turns that off,
+> and this repository's imports use the form, wit-parser's in the scope
+> `zena-lang`.
 
 ## The form
 

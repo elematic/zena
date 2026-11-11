@@ -14,16 +14,16 @@ the `zena` command. The design is in
      `test-run.zena`, `bench-run.zena`, which hands a suite to
      `zena:bench`'s `runSuite` with a function that compiles its `zena`
      variants, `lsp.zena`, which connects the language server
-     (`language-service:server`) to stdin and stdout, `lint.zena`,
-     which runs zena-lint's rules (`zena-lint:lint`) over files and
+     (`language-service/server`) to stdin and stdout, `lint.zena`,
+     which runs zena-lint's rules (`zena-lint/lint`) over files and
      prints the findings or, with `--fix`, applies them, `fetch.zena`,
      which fetches the packages `zena-lock.json` pins into the package
-     cache with `package-manager:fetch`, and `add.zena`, for `zena pkg add`
+     cache with `package-manager/fetch`, and `add.zena`, for `zena pkg add`
      and `zena pkg update`, which change the dependencies in
-     `zena-package.json`, select versions (`package-manager:resolve`), pin
+     `zena-package.json`, select versions (`package-manager/resolve`), pin
      them and fetch them, and `login.zena`, for `zena pkg login` and
      `zena pkg logout`, which keep the maintainer's atproto session
-     (`atproto:session`) in the configuration directory, and
+     (`atproto/session`) in the configuration directory, and
      `publish.zena`, for `zena pkg publish` and `zena pkg create`, which
      call a registry's `dev.zena-lang.registry.*` methods with service-auth
      tokens from that session, `scope.zena`, for `zena pkg scope create` and
@@ -34,7 +34,7 @@ the `zena` command. The design is in
      release waiting for its maintainers and asks the registry to complete
      it, and `ci.zena`, for `zena pkg ci create` and `zena pkg ci token`.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
-     (`zena-compiler:compile-file`), zb, zenadoc, the language service and
+     (`zena-compiler/compile-file`), zb, zenadoc, the language service and
      the formatter linked
      in. Other programs (the VS Code extension's `lsp.wasm`, the
      playground) have their own entry points built from the same
@@ -132,7 +132,7 @@ the `zena` command. The design is in
    - When more files are stale in the compile cache than copies run at
      once, they are compiled first, in that many copies
      (`zena test --compile <files...>`), each compiling its share in file
-     order on one `CompileSession` (`zena-compiler:compile-file`), so the
+     order on one `CompileSession` (`zena-compiler/compile-file`), so the
      standard library and shared packages are checked once per copy.
      `compileIntoCache` stores each module with the files its program is
      made of (`CompileSession.sources`), not the files its compile read,

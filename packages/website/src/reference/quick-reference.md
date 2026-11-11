@@ -108,7 +108,7 @@ import * as regex from 'zena:regex';
 from 'zena:core' import {String};
 
 // A package's library, by the name the manifest gives the package
-import {parse} from 'json:parse';
+import {parse} from 'json/parse';
 import {Router} from 'acme:router/server';  // a package in a scope
 import {route} from 'acme:router';           // its index library
 ```

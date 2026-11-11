@@ -78,7 +78,7 @@ compiler can load dependency sources from the filesystem.
 module (see [cli-module.md](./cli-module.md)).
 
 The analysis moved out of `lsp.zena` into a library both use,
-`packages/language-service/zena/lib/service.zena` (`language-service:service`
+`packages/language-service/zena/lib/service.zena` (`language-service/service`
 to the repository's workspace). A program passes the service a function that
 reads files that are not open: `lsp.zena` passes one that calls its
 `read_file` host import, and `zena lsp` one over `zena:fs`.
@@ -86,10 +86,10 @@ Each of the service's features is a module of its own beside it
 (`hover.zena`, `completion.zena`, `symbols.zena`), and so is compiling a
 document for the playground (`compile.zena`), so that the language server
 does not carry the code generator. Doc comments are read with the
-compiler's `zena-compiler:doc-comment`, the parser zenadoc uses, and an
+compiler's `zena-compiler/doc-comment`, the parser zenadoc uses, and an
 import is followed to its declaration with `Symbol.resolveTarget()`.
 
-`lib/server.zena` (`language-service:server`) is the protocol:
+`lib/server.zena` (`language-service/server`) is the protocol:
 
 - `MessageReader` (`framing.zena`) splits the input into
   `Content-Length`-framed messages, and `frame` adds the header to a
@@ -109,7 +109,7 @@ import is followed to its declaration with `Symbol.resolveTarget()`.
 
 `zena lsp` analyses for the `zena-cli` target and loads the repository's
 workspace (`zena-package.json`), so a file that uses `zena:fs` or imports
-`zena-compiler:parser` checks the way it builds. It reads stdin with
+`zena-compiler/parser` checks the way it builds. It reads stdin with
 `zena:cli`'s `readStdinSync`. Diagnostics are published for the document
 that was checked; problems it finds in the files that document imports
 wait until those files are opened.

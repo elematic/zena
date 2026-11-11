@@ -1,6 +1,6 @@
 // Applies the saved theme before the page paints. Every page loads it as a
 // classic script in its <head>, from /assets/, since the pages' content
-// security policy runs no inline script (registry:service's PAGE_POLICY).
+// security policy runs no inline script (registry/service's PAGE_POLICY).
 (() => {
   const stored = localStorage.getItem('zena-appearance');
   const dark =

@@ -4,14 +4,14 @@ Clients for Google Cloud APIs, for servers on Cloud Run and other Google
 compute. The modules make requests through `wasi:http`, so they compile
 for component targets.
 
-- `google-cloud:firestore`: a Firestore client.
-- `google-cloud:storage`: a Cloud Storage client, for writing, reading
+- `google-cloud/firestore`: a Firestore client.
+- `google-cloud/storage`: a Cloud Storage client, for writing, reading
   and deleting objects.
-- `google-cloud:dns`: a Cloud DNS client for one managed zone's record
+- `google-cloud/dns`: a Cloud DNS client for one managed zone's record
   sets.
-- `google-cloud:auth`: access tokens and the project id, from the
+- `google-cloud/auth`: access tokens and the project id, from the
   metadata server or the environment.
-- `google-cloud:firestore-v1` and `google-cloud:storage-v2`: the protobuf
+- `google-cloud/firestore-v1` and `google-cloud/storage-v2`: the protobuf
   generator's output for `google.firestore.v1` and `google.storage.v2`,
   which the clients are built on. They are generated, not edited; see
   [Regenerating](#regenerating).
@@ -23,7 +23,7 @@ and `"protobuf": "./packages/protobuf/zena"`.
 ## Firestore
 
 ```zena
-import { Direction, Fields, Firestore, Operator, integerValue } from 'google-cloud:firestore';
+import { Direction, Fields, Firestore, Operator, integerValue } from 'google-cloud/firestore';
 
 let db = await Firestore.connect();
 
@@ -102,10 +102,10 @@ let total = await db.runTransaction<i64>(async (tx: Transaction): Future<i64> =>
 
 ### Transports
 
-- `Firestore.connect()` uses gRPC (`protobuf:grpc`). gRPC needs HTTP/2,
+- `Firestore.connect()` uses gRPC (`protobuf/grpc`). gRPC needs HTTP/2,
   which `zena-cli` and `zena-run` provide, with pooled connections.
 - `Firestore.connectFallback()` uses Google's gRPC fallback protocol
-  (`protobuf:fallback`), which works on any `wasi:http` host, stock
+  (`protobuf/fallback`), which works on any `wasi:http` host, stock
   `wasmtime serve` among them.
 - `new Firestore({projectId, transport})` takes any `ProtoTransport`:
   `new GrpcTransport(FIRESTORE_ORIGIN, credentials)`,
@@ -133,7 +133,7 @@ leaves it unset.
 ## Cloud Storage
 
 ```zena
-import { Storage } from 'google-cloud:storage';
+import { Storage } from 'google-cloud/storage';
 
 let bucket = Storage.connect().bucket('my-bucket');
 await bucket.write('notes/hello.txt', bytes, 'text/plain');
@@ -158,7 +158,7 @@ the client against an in-memory transport only.
 ## Cloud DNS
 
 ```zena
-import { CloudDns, RecordSet } from 'google-cloud:dns';
+import { CloudDns, RecordSet } from 'google-cloud/dns';
 
 let zone = CloudDns.connect('my-project', 'my-zone');
 await zone.put(new RecordSet('_atproto.alice.example.com.', 'TXT', 300, ['"did=did:plc:..."']));

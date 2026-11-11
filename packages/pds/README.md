@@ -20,13 +20,13 @@ gets service-auth tokens (`getServiceAuth`), and writes its own repository
 (`putRecord`, `deleteRecord`).
 
 It creates managed accounts for the App Views its operator trusts
-(`pds:managed`): `com.atproto.server.reserveSigningKey` makes the signing
+(`pds/managed`): `com.atproto.server.reserveSigningKey` makes the signing
 key of an account an App View is about to create, and
 `com.atproto.server.createAccount` creates it once the App View has minted
 its DID. A managed account has no password; it takes writes only with a
 service-auth token from its App View, and holds only the records and
 artifacts of Zena packages (`ManagedLimits`). An App View reaches the PDS
-through `pds:pds-client`: `XrpcPds` over the network, or `InProcessPds` in
+through `pds/pds-client`: `XrpcPds` over the network, or `InProcessPds` in
 the same process.
 
 pds.js's license is in `LICENSE-pds-js`.
@@ -49,7 +49,7 @@ npm run test:emulator -w @zena-lang/pds          # the storage tests against the
 ## Configuration
 
 `main.zena` reads its configuration from the environment, `PDS_*`
-(`pds:service` lists every variable). With none, it is a PDS in memory on
+(`pds/service` lists every variable). With none, it is a PDS in memory on
 port 2583, which keeps managed accounts for no App View. A PDS for the
 Zena App View names its own origin and DID, and the App View it trusts,
 by its DID and the online rotation key that signs its accounts' genesis
@@ -68,7 +68,7 @@ in the same process from the same variables, as on one machine. See
 
 ## Layout
 
-- `zena/`: the Zena package `pds`, imported as `pds:<library>`:
+- `zena/`: the Zena package `pds`, imported as `pds/<library>`:
   - `storage`: the storage interfaces, and `MemoryStorage`;
   - `firestore`: the storage in Firestore, and where blob bytes go beside
     it;

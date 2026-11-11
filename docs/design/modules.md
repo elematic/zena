@@ -81,8 +81,8 @@ package name that maps to the standard library.
 
 ```zena
 import { String } from 'zena:string';              // stdlib (reserved)
-import { parse } from 'zena-compiler:parser';       // user package
-import { format } from 'zena-formatter:format';     // user package
+import { parse } from 'zena-compiler/parser';       // user package
+import { format } from 'zena-formatter/format';     // user package
 ```
 
 **Rules:**

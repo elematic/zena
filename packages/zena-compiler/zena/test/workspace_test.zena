@@ -48,15 +48,15 @@ function workspace(): MockHost {
     "dependencies": {"paths": {"did": "did:plc:router", "version": "1.0.0"}}
   }`);
   host.addFile("/ws/packages/lib/src/lib.zena",
-      "import { route } from 'paths:match';\nexport let two = (): i32 => route() - 38;\n");
+      "import { route } from 'paths/match';\nexport let two = (): i32 => route() - 38;\n");
   host.addFile("/cache/sources/bafkreirouter/zena-package.json", `{"name": "router"}`);
   host.addFile("/cache/sources/bafkreirouter/src/match.zena",
-      "import { parse } from 'json:parse';\nexport let route = (): i32 => parse() - 1;\n");
+      "import { parse } from 'json/parse';\nexport let route = (): i32 => parse() - 1;\n");
   host.addFile("/cache/sources/bafkreijson/zena-package.json", `{"name": "json", "source": "."}`);
   host.addFile("/cache/sources/bafkreijson/parse.zena",
       "export let parse = (): i32 => 41;\n");
   host.addFile("/ws/prog.zena",
-      "import { two } from 'lib:lib';\nimport { route } from 'router:match';\n" +
+      "import { two } from 'lib/lib';\nimport { route } from 'router/match';\n" +
       "export let run = (): i32 => route() + two() - 42;\n");
   return host;
 }
@@ -98,14 +98,14 @@ export let tests = suite('Workspace', () => {
     let host = workspace();
     // `router` is app's name for the package, not lib's.
     host.addFile("/ws/packages/lib/src/lib.zena",
-        "import { route } from 'router:match';\nexport let two = (): i32 => route() - 38;\n");
+        "import { route } from 'router/match';\nexport let two = (): i32 => route() - 38;\n");
     isTrue(await failsNaming(host, "/ws/prog.zena", "router"));
   });
 
   test("a dependency's dependency is not the workspace's to import", async () => {
     let host = workspace();
     host.addFile("/ws/direct.zena",
-        "import { parse } from 'json:parse';\nexport let run = (): i32 => parse() - 41;\n");
+        "import { parse } from 'json/parse';\nexport let run = (): i32 => parse() - 41;\n");
     isTrue(await failsNaming(host, "/ws/direct.zena", "json"));
   });
 
@@ -118,10 +118,10 @@ export let tests = suite('Workspace', () => {
       "dependencies": {"paths": {"did": "did:plc:router", "version": "1.0.0"}}
     }`);
     host.addFile("/ws/packages/lib/lib/lib.zena",
-        "import { route } from 'paths:match';\nexport let two = (): i32 => route() - 38;\n");
+        "import { route } from 'paths/match';\nexport let two = (): i32 => route() - 38;\n");
     host.addFile("/ws/packages/lib/lib/more/extra.zena", "export let three = (): i32 => 3;\n");
     host.addFile("/ws/both.zena",
-        "import { two } from 'lib:lib';\nimport { three } from 'lib:extra';\n" +
+        "import { two } from 'lib/lib';\nimport { three } from 'lib/extra';\n" +
         "export let run = (): i32 => two() + three() - 6;\n");
     equal((await compileErrors(host, "/ws/both.zena")).length, 0);
   });
@@ -129,7 +129,7 @@ export let tests = suite('Workspace', () => {
   test('a library at the root of a package that keeps them in src/ is not found', async () => {
     let host = workspace();
     host.addFile("/ws/packages/lib/root.zena", "export let one = (): i32 => 1;\n");
-    host.addFile("/ws/root.zena", "import { one } from 'lib:root';\nexport let run = (): i32 => one() - 1;\n");
+    host.addFile("/ws/root.zena", "import { one } from 'lib/root';\nexport let run = (): i32 => one() - 1;\n");
     isTrue(await failsNaming(host, "/ws/root.zena", "root"));
   });
 

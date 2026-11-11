@@ -1,6 +1,6 @@
 /**
  * Keeps a package page's tab (`<rad-tab-group>` in
- * `registry:web/pages/package`) in the URL's fragment, `#readme`, `#files`,
+ * `registry/web/pages/package`) in the URL's fragment, `#readme`, `#files`,
  * `#dependencies` or `#versions`, so that a reload, a link or Back shows the
  * same tab. A fragment that names no tab, such as a heading in the README,
  * leaves the tabs as they are.

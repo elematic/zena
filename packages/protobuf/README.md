@@ -25,14 +25,14 @@ From the repository root:
   what it refers to. Repeatable. Without it, everything declared in the
   named files is generated.
 - `--runtime <specifier>`: where the generated module imports the
-  runtime from. The default is `protobuf:runtime`, which needs `protobuf` among the
+  runtime from. The default is `protobuf/runtime`, which needs `protobuf` among the
   importing package's dependencies, or the file to be outside a package in
   this repository's workspace.
 
 The same generator is a library, with no I/O of its own:
 
 ```zena
-import {generate} from 'protobuf:generator';
+import {generate} from 'protobuf/generator';
 
 let source = generate({files: ['a.proto'], read: (path) => readFromSomewhere(path)});
 ```
@@ -63,11 +63,11 @@ For each service there is a client class over a `ProtoTransport`. Two
 transports speak to servers over `wasi:http`, both with server-streaming
 methods:
 
-- `protobuf:grpc`: `GrpcTransport` speaks gRPC. It needs HTTP/2, which
+- `protobuf/grpc`: `GrpcTransport` speaks gRPC. It needs HTTP/2, which
   `zena-cli` and `zena-run` provide: `https://` origins negotiate it, and
   `http://` gRPC requests use cleartext HTTP/2, as local servers and
   the Firestore emulator expect.
-- `protobuf:fallback`: `FallbackTransport` speaks Google's gRPC fallback
+- `protobuf/fallback`: `FallbackTransport` speaks Google's gRPC fallback
   protocol (binary protobuf posted to `/$rpc/<service>/<method>`), which
   works over HTTP/1.1, so on hosts such as stock `wasmtime serve`. Google
   APIs serve it; local servers and emulators generally do not.
@@ -85,7 +85,7 @@ for await (let response in firestore.runQuery({parent, structuredQuery})) {
 header before each call. Generated clients also send each call's
 `x-goog-request-params` routing header, built from the request as
 https://google.aip.dev/client-libraries/4222 describes. A failed call
-throws an `RpcError` (`protobuf:runtime`) carrying the
+throws an `RpcError` (`protobuf/runtime`) carrying the
 `google.rpc.Code`, whichever the transport.
 
 ## Layout
@@ -101,7 +101,7 @@ throws an `RpcError` (`protobuf:runtime`) carrying the
 - `bin/generate.zena`: the command-line program.
 - `protos/`: vendored Google `.proto` files.
 - `examples/`: programs over the generated Firestore code
-  (`google-cloud:firestore-v1`), used for the size measurements in the
+  (`google-cloud/firestore-v1`), used for the size measurements in the
   design doc.
 - `test-files/protos/`: the test schema. `test-files/generated/`: the
   generator's output for it, checked in and compiled by the tests.

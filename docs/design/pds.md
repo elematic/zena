@@ -40,7 +40,7 @@ The single-account server is built so these do not require a rewrite; see
 ## Status
 
 The server holds many accounts, in memory (`MemoryStorage`) or in
-Firestore with blob bytes in Cloud Storage (`pds:firestore`), whose
+Firestore with blob bytes in Cloud Storage (`pds/firestore`), whose
 documents are keyed by tenant and account. An account's repository applies
 writes and signs a commit for each batch, rebuilding the record tree from
 the record index; pds.js updates the tree along the changed paths, and
@@ -57,7 +57,7 @@ blob, which the App View reads one file of an archive with), and the
 it has app-password sign-in (`com.atproto.server.createSession`,
 `refreshSession`, `getSession`, `deleteSession`), `getServiceAuth`, and
 an account's writes to its own repository (`putRecord`, `deleteRecord`),
-in `pds:sessions`; account passwords, `createAppPassword` and the other
+in `pds/sessions`; account passwords, `createAppPassword` and the other
 writes wait for ordinary accounts. Of the App View (milestone 6), it
 has account kinds that confine package, organization and automation
 accounts to `dev.zena-lang.*` records, and the methods
@@ -170,8 +170,8 @@ and tenants are therefore designed here. Open questions:
 The standard library and `packages/atproto` have what the first endpoints
 need: an HTTP server with streaming bodies, async functions and streams,
 JSON, SHA-256, HMAC and HKDF, ECDSA on both curves, base encodings, random
-bytes, Firestore and Cloud Storage clients (`google-cloud:firestore`,
-`google-cloud:storage`) and the atproto libraries listed in
+bytes, Firestore and Cloud Storage clients (`google-cloud/firestore`,
+`google-cloud/storage`) and the atproto libraries listed in
 [Status](#status). What is left:
 
 | Need                                                    | Status in Zena                                                                     | Plan                                                                                                                                |
@@ -207,7 +207,7 @@ grows. Milestones 1 to 4 are done.
 6. **The App View.** Package and organization accounts created on request,
    each with a `did:plc` whose genesis operation the App View signs; the
    `dev.zena-lang.registry.*` methods, checked with service auth
-   (`atproto:service-auth`); package accounts confined to
+   (`atproto/service-auth`); package accounts confined to
    `dev.zena-lang.*` records; and the limits on accounts and storage. The
    `zena` command's publishing tests run against it, in memory.
 7. **Deployment.** A Firestore adapter for the storage ports, GCS for
@@ -217,10 +217,10 @@ grows. Milestones 1 to 4 are done.
    against the Firestore emulator with a suite every storage passes
    (`zena/test/storage-conformance.zena`), and so is the server's
    configuration, read from the environment: the PDS's alone
-   (`pds:service`, `PDS_*`), and the App View's with a PDS in the same
-   process (`registry:service`, `APP_VIEW_*`). The App View
+   (`pds/service`, `PDS_*`), and the App View's with a PDS in the same
+   process (`registry/service`, `APP_VIEW_*`). The App View
    writes a TXT record for each handle it gives out, to a Cloud DNS zone
-   or in memory (`registry:handles`), and `npm run demo` runs it on this
+   or in memory (`registry/handles`), and `npm run demo` runs it on this
    machine. The image, its Cloud Run scripts for a staging and a
    production environment, and their zones are in `packages/registry/deploy`;
    neither environment is up yet.
@@ -263,9 +263,9 @@ the PDS at `padstone-staging.zena-lang.dev`. It also has its own Firestore
 database, blob prefix, rotation key and handle records.
 
 With `APP_VIEW_PLC=staging` the server is a PLC directory itself, at `/plc` on
-the PDS's name (`registry:plc-directory`). It records the operations of the
+the PDS's name (`registry/plc-directory`). It records the operations of the
 accounts the App View makes, after checking that each follows the last
-(`checkNextOperation` in `atproto:plc`), and serves those DIDs' documents
+(`checkNextOperation` in `atproto/plc`), and serves those DIDs' documents
 and logs. Every other
 DID it reads from the public directory, so maintainers sign in with
 their real accounts, and the App View checks their service-auth tokens with

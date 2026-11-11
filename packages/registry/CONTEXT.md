@@ -21,8 +21,8 @@ When a pull request closes an item there, tick its box.
   PDS's routes and the pages in `zena/web/` together. A method's route is
   added with `registryQuery` or `registryProcedure`, which check the
   caller's token for the same method.
-- Method names come from `atproto:methods` and
-  `package-manager:registry-methods`, never from a string literal, here and
+- Method names come from `atproto/methods` and
+  `package-manager/registry-methods`, never from a string literal, here and
   in `zena`. A new method needs its lexicon and its constant; the lexicon
   test fails without either. Tests keep the literals, since they check the
   wire.
@@ -35,7 +35,7 @@ When a pull request closes an item there, tick its box.
   addresses" and "Finding an App View"). `packages/pds-web/CONTEXT.md`
   has the rules of the pages.
 - The App View reaches its accounts' repositories only through `PdsClient`
-  (`pds:pds-client`), in `com.atproto`'s terms, and keeps its own record
+  (`pds/pds-client`), in `com.atproto`'s terms, and keeps its own record
   of its accounts, their kinds, scopes and names, in `AppViewStore`. It does
   not read `Pds` or `Storage`; `InProcessPds` is the PDS in the same
   process, and `XrpcPds` one elsewhere (`APP_VIEW_PDS_URL`). Automation accounts are managed accounts too: CI calls with a
@@ -44,8 +44,8 @@ When a pull request closes an item there, tick its box.
 
 ## Storage
 
-- `registry:app-view` declares `AppViewStore` and keeps it in memory;
-  `registry:firestore` keeps it in Firestore, under the PDS's tenant, or
+- `registry/app-view` declares `AppViewStore` and keeps it in memory;
+  `registry/firestore` keeps it in Firestore, under the PDS's tenant, or
   under its own (`APP_VIEW_TENANT`) when the PDS is elsewhere. Both
   pass `zena/test/store-conformance.zena`; add a test there for anything a
   store must do.
@@ -59,7 +59,7 @@ When a pull request closes an item there, tick its box.
   `AppViewStore.claimScope` and `claimName`, never with a read and then a
   write.
 - What the App View derives from a release's archive for its pages (the
-  files, the rendered README) is `registry:release-contents`, kept as one
+  files, the rendered README) is `registry/release-contents`, kept as one
   object per release in `AppView.derived`: a bucket, or memory. Pages read
   `AppView.releaseContents`, never the archive; a file's own route reads
   only that file's span of it (`releaseFile`, `PdsClient.getBlobRange`).
@@ -67,5 +67,5 @@ When a pull request closes an item there, tick its box.
   `CONTENTS_FORMAT`, so that kept contents are derived again
   (package-manager.md, "What the App View derives from releases").
 - The emulator run is `npm run test:emulator -w @zena-lang/registry`. It
-  is not part of `npm test`, so run it after changing `registry:firestore`
-  or `registry:service`.
+  is not part of `npm test`, so run it after changing `registry/firestore`
+  or `registry/service`.
