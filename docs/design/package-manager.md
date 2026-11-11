@@ -219,6 +219,8 @@ A package has three kinds of name:
   (`import {Router} from 'router:server'`). Each package chooses its own,
   starting from the name the package's profile suggests, so two packages
   that both suggest `router` can be used side by side.
+  [import-names.md](import-names.md) designs `scope:name` as the local
+  name of a package in a scope (`'acme:router/server'`).
 - **A handle** is for finding a package. `zena pkg add` resolves it to a DID
   once and records the DID, so a handle that later points elsewhere
   changes nothing that depends on the package. The index shows handles.
