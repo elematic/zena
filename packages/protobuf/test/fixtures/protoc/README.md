@@ -11,8 +11,8 @@ files):
 
 ```sh
 for m in node:Node scalars:Scalars; do
-  protoc -I test-files/protos -I protos \
+  protoc -I test/fixtures/protos -I protos \
     --encode=zena.test.v1.${m##*:} zena/test/v1/everything.proto \
-    < test-files/protoc/${m%%:*}.txtpb > test-files/protoc/${m%%:*}.binpb
+    < test/fixtures/protoc/${m%%:*}.txtpb > test/fixtures/protoc/${m%%:*}.binpb
 done
 ```

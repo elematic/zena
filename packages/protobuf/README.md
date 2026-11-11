@@ -1,48 +1,41 @@
-# Protobuf for Zena
+# protobuf
 
-A generator that turns `.proto` files into Zena source, and the runtime
-the generated code calls. The design, and the reasons for the shape of
-the generated code, are in
-[docs/design/protobuf.md](../../docs/design/protobuf.md).
+A Protocol Buffers (`.proto`) code generator, wire-format runtime, and gRPC / gRPC-fallback transports for Zena.
 
-For Firestore, use `packages/google-cloud`, which checks in the generated
-module and adds credentials and a hand-written client.
-
-## Generating code
-
-From the repository root:
+## Installation
 
 ```sh
-./target/release/zena-cli run --dir . packages/protobuf/bin/generate.zena -- \
-  -I path/to/protos -I packages/protobuf/protos \
-  -o out/firestore.zena google/firestore/v1/firestore.proto
+zena pkg add @zena/protobuf
 ```
 
-- `-I <dir>`: where to look for the named files and their imports, in
-  order. `packages/protobuf/protos` has the Google well-known types and
-  the Firestore protos.
-- `--root <full.name>`: generate only this message, enum or service and
-  what it refers to. Repeatable. Without it, everything declared in the
-  named files is generated.
-- `--runtime <specifier>`: where the generated module imports the
-  runtime from. The default is `protobuf/runtime`, which needs `protobuf` among the
-  importing package's dependencies, or the file to be outside a package in
-  this repository's workspace.
+## Generating Code
 
-The same generator is a library, with no I/O of its own:
+`protobuf/generator` compiles `.proto` schemas into Zena source code with no I/O of its own—you supply the entry file paths and a callback that reads imported `.proto` files:
 
 ```zena
-import {generate} from 'protobuf/generator';
+import { generate } from 'protobuf/generator';
 
-let source = generate({files: ['a.proto'], read: (path) => readFromSomewhere(path)});
+let source = await generate({
+  files: ['service.proto'],
+  read: async (path) => readProtoFile(path),
+});
 ```
 
-## Using generated code
+### Options (`GenerateOptions`)
 
-For each message `M` there is a class `M`, which reads an encoded
-message, and a record type `MInit`, which `M.of` encodes:
+- `files`: `Array<String>` — entry `.proto` files to generate from.
+- `read`: `(path: String) => Future<String | null>` — returns the `.proto` text for `path`, or `null` if not found.
+- `roots`: `Array<String>` (optional) — generate only the named messages, enums, or services (by full name) and the types they transitively reference. When omitted or empty, everything declared in `files` is generated.
+- `runtimeImport`: `String` (optional) — module specifier that generated code imports runtime helpers from (defaults to `'protobuf/runtime'`).
+
+## Using Generated Code
+
+For each message `M`, the generator emits a view class `M` (which reads an encoded message in place without eagerly allocating child objects) and a record type `MInit`, which `M.of` encodes:
 
 ```zena
+import { HashMap } from 'zena:collections';
+
+// Decoding wire bytes
 let doc = Document.decode(bytes);
 let title = doc.fields.getOr('title', Value.of({}));
 let text = match (title.valueType) {
@@ -50,72 +43,41 @@ let text = match (title.valueType) {
   case _: ''
 };
 
+// Encoding a message
 let fields = new HashMap<String, Value>();
 fields['title'] = Value.of({stringValue: 'Hello'});
 let encoded = Document.of({name, fields}).protoView.toByteArray();
 ```
 
-A message-typed field takes the message's class, so nested messages are
-built inside out with `M.of`, and a message read from one response can
-go into the next request unchanged.
+A message-typed field accepts the message's class, so nested messages are built inside out with `M.of`, and a message read from one response can be passed into another message unchanged without re-encoding.
 
-For each service there is a client class over a `ProtoTransport`. Two
-transports speak to servers over `wasi:http`, both with server-streaming
-methods:
+## Services and Transports
 
-- `protobuf/grpc`: `GrpcTransport` speaks gRPC. It needs HTTP/2, which
-  `zena-cli` and `zena-run` provide: `https://` origins negotiate it, and
-  `http://` gRPC requests use cleartext HTTP/2, as local servers and
-  the Firestore emulator expect.
-- `protobuf/fallback`: `FallbackTransport` speaks Google's gRPC fallback
-  protocol (binary protobuf posted to `/$rpc/<service>/<method>`), which
-  works over HTTP/1.1, so on hosts such as stock `wasmtime serve`. Google
-  APIs serve it; local servers and emulators generally do not.
+For each `service` in a `.proto` file, the generator emits a client class over `ProtoTransport` (`protobuf/runtime`). Two transports speak over `wasi:http`, both supporting unary and server-streaming RPCs (and `GrpcTransport` also supporting client-streaming RPCs):
+
+- **`protobuf/grpc`** (`GrpcTransport`): standard gRPC over HTTP/2 (`https://` via ALPN or cleartext HTTP/2 for `http://`).
+- **`protobuf/fallback`** (`FallbackTransport`): Google's gRPC HTTP/1.1 `$rpc` fallback protocol (binary protobuf posted to `/$rpc/<service>/<method>`), usable on hosts whose outgoing HTTP is HTTP/1.1 only.
 
 ```zena
-let transport = new FallbackTransport('https://firestore.googleapis.com', credentials);
-let firestore = new FirestoreClient(transport);
-let doc = await firestore.getDocument({name: path});
-for await (let response in firestore.runQuery({parent, structuredQuery})) {
-  ...
-}
+import { GrpcTransport } from 'protobuf/grpc';
+
+let transport = new GrpcTransport('https://example.googleapis.com', credentials);
+let client = new MyServiceClient(transport);
+let response = await client.getItem({name: 'items/1'});
 ```
 
-`credentials` is any `Credentials`: it supplies the `authorization`
-header before each call. Generated clients also send each call's
-`x-goog-request-params` routing header, built from the request as
-https://google.aip.dev/client-libraries/4222 describes. A failed call
-throws an `RpcError` (`protobuf/runtime`) carrying the
-`google.rpc.Code`, whichever the transport.
+`credentials` is any `Credentials` (`protobuf/runtime`), which supplies the `authorization` header before each call. Generated clients also populate the `x-goog-request-params` routing header from `google.api.http` and `google.api.routing` options ([AIP-4222](https://google.aip.dev/client-libraries/4222)). Failed calls throw `RpcError` (`protobuf/runtime`) carrying the `google.rpc.Code`.
 
-## Layout
+## Libraries
 
-- `zena/runtime.zena`: `ProtoView`, `ProtoWriter`, `ProtoList`, `ProtoMap`,
-  `ProtoBytes`, `ProtoStream` and the transport interface.
-- `zena/fallback.zena`: `FallbackTransport`, for component targets.
-- `zena/lexer.zena`, `zena/parser.zena`: `.proto` source to a syntax tree.
-- `zena/schema.zena`: loading imports, resolving names, choosing what to
-  generate.
-- `zena/emitter.zena`: the Zena source.
-- `zena/generator.zena`: the library's entry point.
-- `bin/generate.zena`: the command-line program.
-- `protos/`: vendored Google `.proto` files.
-- `examples/`: programs over the generated Firestore code
-  (`google-cloud/firestore-v1`), used for the size measurements in the
-  design doc.
-- `test-files/protos/`: the test schema. `test-files/generated/`: the
-  generator's output for it, checked in and compiled by the tests.
-  `test-files/protoc/`: messages `protoc` encoded.
+- `protobuf/runtime` — Wire-format views and writers (`ProtoView`, `ProtoWriter`, `ProtoList`, `ProtoMap`, `ProtoBytes`, `ProtoStream`), `ProtoTransport`, `Credentials`, `RpcMetadata`, `RpcMethod`, and `RpcError`.
+- `protobuf/grpc` — `GrpcTransport` over HTTP/2.
+- `protobuf/fallback` — `FallbackTransport` over Google's HTTP/1.1 `$rpc` fallback protocol.
+- `protobuf/generator` — `generate` and `GenerateOptions` for turning `.proto` files into Zena source.
+- `protobuf/parser` and `protobuf/lexer` — `.proto` syntax tree and tokenizer (`parseProto`, `Lexer`).
+- `protobuf/schema` and `protobuf/emitter` — Schema resolution and Zena code emission.
+- `protobuf/text` — Protobuf text format helpers.
 
-## Testing
+## License
 
-```sh
-npm test -w @zena-lang/protobuf
-```
-
-When the generator's output changes on purpose, regenerate the checked-in
-modules and review the diff:
-
-```sh
-UPDATE_PROTO_GOLDENS=1 ./target/release/zena-cli test packages/protobuf/zena/test/generator_test.zena
-```
+MIT

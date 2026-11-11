@@ -1,0 +1,134 @@
+/**
+ * `firestore-v1.zena` and `storage-v2.zena` are the protobuf generator's
+ * output for the vendored Firestore and Cloud Storage protos; these tests
+ * fail when they no longer match, and also exercise the generated Firestore
+ * messages and client directly. Regenerate them with
+ * `npm run generate -w @zena-lang/google-cloud`.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {AsyncIterator, Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {exists, readFile} from 'zena:fs';
+import {generate} from 'protobuf/generator';
+import {ProtoTransport, ProtoView, RpcMetadata, RpcMethod} from 'protobuf/runtime';
+import {
+  ArrayValue,
+  Document,
+  DocumentMask,
+  FirestoreClient,
+  MapValue,
+  StructuredQuery,
+  StructuredQueryFieldFilterOperator,
+  Value,
+  ValueIntegerValue,
+  ValueMapValue,
+  ValueStringValue
+} from 'google-cloud/firestore-v1';
+
+/** Relative to the repository root, which is where a test runs. */
+let PROTOS = 'packages/protobuf/protos';
+
+async function readProto(path: String): Future<String | null> {
+  let candidate = `${PROTOS}/${path}`;
+  return if (await exists(candidate)) await readFile(candidate) else null;
+}
+
+/** Checks that `generated` is the generator's output for `proto`. */
+async function isCurrent(proto: String, generated: String) {
+  let source = await generate({files: [proto], read: readProto});
+  isTrue(
+    (await readFile(generated)) == source,
+    `${generated} does not match the generator's output; run npm run generate -w @zena-lang/google-cloud`
+  );
+}
+
+/** The value of the `x-goog-request-params` header in `metadata`, or ''. */
+function routingOf(metadata: RpcMetadata) {
+  for (var i = 0; i < metadata.length; i += 1) {
+    if (metadata.name(i) == 'x-goog-request-params') {
+      return metadata.value(i);
+    }
+  }
+  return '';
+}
+
+/** Answers every unary call by echoing the request, recording the method and routing header. */
+final class EchoTransport implements ProtoTransport {
+  calls = new GrowableArray<String>();
+  routing = new GrowableArray<String>();
+
+  unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView> {
+    this.calls.push(`${method.service}/${method.name}`);
+    this.routing.push(routingOf(metadata));
+    return Future.of(request);
+  }
+
+  serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView> {
+    throw new Error('not streamed');
+  }
+
+  clientStream(method: RpcMethod, requests: Array<ProtoView>, metadata: RpcMetadata): Future<ProtoView> {
+    throw new Error('not streamed');
+  }
+}
+
+export let tests = suite('google-cloud generated code', () => {
+  test('firestore-v1.zena is current', async () => {
+    await isCurrent('google/firestore/v1/firestore.proto', 'packages/google-cloud/src/firestore-v1.zena');
+  });
+
+  test('storage-v2.zena is current', async () => {
+    await isCurrent('google/storage/v2/storage.proto', 'packages/google-cloud/src/storage-v2.zena');
+  });
+
+  test('builds and reads a Firestore document', () => {
+    let fields: HashMap<String, Value> = {
+      'title' => Value.of({stringValue: 'Hello'}),
+      'views' => Value.of({integerValue: 42 as i64}),
+      'tags' => Value.of({
+        arrayValue: ArrayValue.of({values: [Value.of({stringValue: 'a'})]}),
+      }),
+    };
+    let nested: HashMap<String, Value> = {
+      'deep' => Value.of({booleanValue: true}),
+    };
+    fields['meta'] = Value.of({mapValue: MapValue.of({fields: nested})});
+    let doc = Document.of({name: 'projects/p/databases/(default)/documents/posts/1', fields});
+    let decoded = Document.decode(doc.protoView.toByteArray());
+    equal(decoded.name, 'projects/p/databases/(default)/documents/posts/1');
+    let title = decoded.fields.getOr('title', Value.of({}));
+    let text = match (title.valueType) {
+      case ValueStringValue {value}: value
+      case ValueIntegerValue {value}: `${value}`
+      case _: '?'
+    };
+    equal(text, 'Hello');
+    equal(decoded.fields.getOr('views', Value.of({})).integerValue, 42 as i64);
+    let meta = decoded.fields.getOr('meta', Value.of({}));
+    isTrue(meta.valueType is ValueMapValue);
+    let deep = (meta.mapValue as MapValue).fields.getOr('deep', Value.of({}));
+    isTrue(deep.booleanValue);
+    isTrue(decoded.updateTime == null);
+  });
+
+  test('sends and routes Firestore requests through the generated client', async () => {
+    let transport = new EchoTransport();
+    let client = new FirestoreClient(transport);
+    // GetDocument answers with a Document; the echo transport returns the
+    // request, whose field 1 is the document name, as Document's is.
+    let doc = await client.getDocument({
+      name: 'projects/p/databases/(default)/documents/posts/1',
+      mask: DocumentMask.of({fieldPaths: ['title']}),
+    });
+    equal(doc.name, 'projects/p/databases/(default)/documents/posts/1');
+    equal(transport.calls[0], 'google.firestore.v1.Firestore/GetDocument');
+    await client.updateDocument({
+      document: Document.of({name: 'projects/p/databases/(default)/documents/posts/1'}),
+    });
+    equal(transport.routing[1], 'document.name=projects%2Fp%2Fdatabases%2F%28default%29%2Fdocuments%2Fposts%2F1');
+    isTrue(StructuredQueryFieldFilterOperator.LessThan as i32 == 1);
+    isTrue(StructuredQuery.of({}).protoView.byteLength == 0);
+  });
+});

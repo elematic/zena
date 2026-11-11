@@ -1,6 +1,6 @@
 /**
- * The generated code, compiled and run: `test-files/generated/` holds the
- * generator's output for `test-files/protos/` and for Firestore, which
+ * The generated code, compiled and run: `test/fixtures/generated/` holds the
+ * generator's output for `test/fixtures/protos/`, which
  * `generator_test.zena` keeps current.
  */
 
@@ -11,7 +11,7 @@ import {AsyncIterator, AsyncStep} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {newByteArray} from 'zena:core';
 import {readFileBytes} from 'zena:fs';
-import {ProtoBytes, ProtoTransport, ProtoView, RpcMetadata, RpcMethod} from '../runtime.zena';
+import {ProtoBytes, ProtoTransport, ProtoView, RpcMetadata, RpcMethod} from 'protobuf/runtime';
 import {
   Color,
   Node,
@@ -24,20 +24,7 @@ import {
   Scalars,
   ThingsClient,
   Timestamp
-} from '../../test-files/generated/everything.zena';
-import {
-  ArrayValue,
-  Document,
-  DocumentMask,
-  FirestoreClient,
-  MapValue,
-  StructuredQuery,
-  StructuredQueryFieldFilterOperator,
-  Value,
-  ValueIntegerValue,
-  ValueMapValue,
-  ValueStringValue
-} from 'google-cloud/firestore-v1';
+} from './fixtures/generated/everything.zena';
 
 /**
  * Answers every call by echoing the request, and streams it back three
@@ -98,7 +85,7 @@ final class Repeat implements AsyncIterator<ProtoView> {
 }
 
 /** Paths relative to the repository root, which is where a test runs. */
-let PROTOC = 'packages/protobuf/test-files/protoc';
+let PROTOC = 'packages/protobuf/test/fixtures/protoc';
 
 /** Whether `a` and `b` hold the same bytes. */
 function sameBytes(a: ByteArray, b: ByteArray): boolean {
@@ -355,55 +342,5 @@ export let tests = suite('generated protobuf code', () => {
     equal(transport.routing[0], 'name=nodes%2F1');
     equal(transport.routing[1], 'project=p1&zone=z1&inner.label=L');
     equal(transport.routing[2], '');
-    let firestore = new FirestoreClient(transport);
-    await firestore.updateDocument({
-      document: Document.of({name: 'projects/p/databases/(default)/documents/posts/1'}),
-    });
-    equal(transport.routing[3], 'document.name=projects%2Fp%2Fdatabases%2F%28default%29%2Fdocuments%2Fposts%2F1');
-  });
-
-  test('builds and reads a Firestore document', () => {
-    let fields: HashMap<String, Value> = {
-      'title' => Value.of({stringValue: 'Hello'}),
-      'views' => Value.of({integerValue: 42 as i64}),
-      'tags' => Value.of({
-        arrayValue: ArrayValue.of({values: [Value.of({stringValue: 'a'})]}),
-      }),
-    };
-    let nested: HashMap<String, Value> = {
-      'deep' => Value.of({booleanValue: true}),
-    };
-    fields['meta'] = Value.of({mapValue: MapValue.of({fields: nested})});
-    let doc = Document.of({name: 'projects/p/databases/(default)/documents/posts/1', fields});
-    let decoded = Document.decode(doc.protoView.toByteArray());
-    equal(decoded.name, 'projects/p/databases/(default)/documents/posts/1');
-    let title = decoded.fields.getOr('title', Value.of({}));
-    let text = match (title.valueType) {
-      case ValueStringValue {value}: value
-      case ValueIntegerValue {value}: `${value}`
-      case _: '?'
-    };
-    equal(text, 'Hello');
-    equal(decoded.fields.getOr('views', Value.of({})).integerValue, 42 as i64);
-    let meta = decoded.fields.getOr('meta', Value.of({}));
-    isTrue(meta.valueType is ValueMapValue);
-    let deep = (meta.mapValue as MapValue).fields.getOr('deep', Value.of({}));
-    isTrue(deep.booleanValue);
-    isTrue(decoded.updateTime == null);
-  });
-
-  test('sends a Firestore request through a client', async () => {
-    let transport = new EchoTransport();
-    let client = new FirestoreClient(transport);
-    // GetDocument answers with a Document; the echo transport returns the
-    // request, whose field 1 is the document name, as Document's is.
-    let doc = await client.getDocument({
-      name: 'projects/p/databases/(default)/documents/posts/1',
-      mask: DocumentMask.of({fieldPaths: ['title']}),
-    });
-    equal(doc.name, 'projects/p/databases/(default)/documents/posts/1');
-    equal(transport.calls[0], 'google.firestore.v1.Firestore/GetDocument');
-    isTrue(StructuredQueryFieldFilterOperator.LessThan as i32 == 1);
-    isTrue(StructuredQuery.of({}).protoView.byteLength == 0);
   });
 });
