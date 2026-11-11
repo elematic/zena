@@ -38,13 +38,13 @@ The CLI module contains:
 | argument parsing and help | `zena:args`                                          |
 | `zena build`, `zena run`  | the compiler, linked in as a library                 |
 | `zena test`               | the compiler, and the host import that runs a module |
-| `zena build <target>`     | zb, linked in as a library                           |
+| `zena build <target>`     | zebra, linked in as a library                        |
 | `zena doc`                | zenadoc, linked in                                   |
 | `zena fmt`                | the formatter, linked in                             |
 | `zena bench`              | `zena:bench`'s `runSuite`, which runs modules        |
 | `zena lsp`                | the language service, and a JSON-RPC loop over stdio |
 
-The compiler, zb, zenadoc and the formatter are all Zena packages
+The compiler, zebra, zenadoc and the formatter are all Zena packages
 already. The compiler's own command-line program
 (`packages/zena-compiler/zena/cli/main.zena`) is about 400 lines around
 the compiler library, and the language service
@@ -59,7 +59,7 @@ own entry points from the same libraries:
   the language service and nothing else. The extension loads it and
   calls its exported functions through VS Code's APIs, and runs in the
   browser (vscode.dev) with nothing installed. It has no use for the
-  test runner or zb.
+  test runner or zebra.
 - The playground keeps its module for the browser.
 - A program that wants only the compiler links only the compiler.
 
@@ -71,7 +71,7 @@ host:
 - **WASI 0.3**, for files, the environment, the clock and stdio.
 - **`zena:host/stack-trace`**, the `capture` function behind
   `Error`'s stack traces on this target.
-- **`zena:host/process`**, to spawn host processes. zb runs build
+- **`zena:host/process`**, to spawn host processes. zebra runs build
   commands through it, and `zena bench` runs command variants through
   it.
 - **`zena:host/wasm`**, which runs another component. This is what
@@ -82,7 +82,7 @@ The `zena:host` interfaces are declared in
 `packages/stdlib/zena/host-wit/host.wit` (package `zena:host@1.0.0`)
 and implemented in the `zena-runtime` crate
 (`packages/zena-runtime/src/component.rs`), so `zena-run` provides the
-same set. File watching, which zb's watch mode needs, will be a further
+same set. File watching, which zebra's watch mode needs, will be a further
 import when that lands; see [workflow.md](./workflow.md#file-watching).
 
 ### Running a module
@@ -153,18 +153,18 @@ are cached under their own `.cwasm` name, because wasmtime refuses a
 - `zena build` with no argument runs the `build` target of the package
   the user is in.
 - `zena build test` runs that package's `test` target, and
-  `zena build ./packages/zb:test` runs the `test` target of another
+  `zena build ./packages/zebra:test` runs the `test` target of another
   package, in the `<path>:<script>` form wireit dependencies use. As in
   wireit, the leading `./` is what marks the part before the colon as a
-  path, so `test` alone is always a script of the current package. zb
-  reads the targets from each package's wireit configuration and runs
+  path, so `test` alone is always a script of the current package. zebra
+  reads the targets from each package's configuration and runs
   them.
 
 A file argument always compiles exactly that file, with the enclosing
 package's settings (its package map and default target). It never runs
 a target, even when some target builds the same file with other flags.
-Wireit targets are shell commands, so zb cannot reliably tell which of
-them builds a given file. When zb has built-in build rules, which
+Wireit targets are shell commands, so zebra cannot reliably tell which of
+them builds a given file. When zebra has built-in build rules, which
 declare their inputs instead of running a shell command (see
 [workflow.md](./workflow.md#rules)), `zena build` can name the target
 that builds a file the user compiled directly.
@@ -311,7 +311,7 @@ source once instead of twice.
 
 It is not done here because:
 
-- Every change to the command line, zb, zenadoc or the formatter would
+- Every change to the command line, zebra, zenadoc or the formatter would
   then be a change to what the bootstrap has to build and reproduce, and
   the fixpoint gate would cover all of it.
 - The bootstrap would grow with every tool added to the command.

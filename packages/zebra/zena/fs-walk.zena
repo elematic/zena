@@ -1,0 +1,408 @@
+import {
+  FileType,
+  FsError,
+  FsErrorCode,
+  exists,
+  isFile,
+  listDir,
+  readFile,
+  readFileBytes,
+  rename,
+  stat,
+  writeFile,
+} from 'zena:fs';
+import { HashSet } from 'zena:collections';
+import {compareStrings, sortBy} from 'workflow/canonical';
+import {Fingerprint} from 'workflow/fingerprint';
+import {StringBuilder} from 'zena:core';
+import {GlobSet, hasMagic} from 'zena:glob';
+import {isAbsolute} from 'zena:path';
+import {ensureParentDir, joinWorkspace, withRoot} from './fs-util.zena';
+import {HashMemoEntry, hashesFromJson, hashesToJson} from './state-json.zena';
+import {sha256Hex} from 'zena:crypto';
+import {ConfigError} from './wireit-config.zena';
+
+/**
+ * Entries modified within 20ms of `.zebra/hashes.json`'s own mtime are
+ * treated as racily clean (same principle as Git's index timestamp
+ * check, covering coarse 1–4ms kernel filesystem ticks) and re-hashed
+ * on the next build before becoming permanent memo hits.
+ */
+let RACY_WINDOW_NANOS = 20000000 as i64;
+
+/**
+ * A pattern split at its first segment with glob syntax in it: the
+ * literal directory prefix to walk from, and the pattern for paths
+ * relative to it. A fully literal pattern splits into its directory and
+ * file name. `''` is the workspace root.
+ */
+export class GlobBase(base: String, rest: String)
+
+export function splitBase(pattern: String): GlobBase {
+  let segments = pattern.split('/');
+  var literal = 0;
+  while (literal < segments.length && !hasMagic(segments[literal])) {
+    literal += 1;
+  }
+  if (literal == segments.length) {
+    // Fully literal: the last segment is the file name.
+    literal = segments.length - 1;
+  }
+  let base = new StringBuilder();
+  for (var i = 0; i < literal; i += 1) {
+    if (i > 0) {
+      base.append('/');
+    }
+    base.append(segments[i]);
+  }
+  let rest = new StringBuilder();
+  for (var i = literal; i < segments.length; i += 1) {
+    if (i > literal) {
+      rest.append('/');
+    }
+    rest.append(segments[i]);
+  }
+  return new GlobBase(base.toString(), rest.toString());
+}
+
+/** Directories never worth walking for build inputs or outputs. */
+function skipDir(name: String) {
+  return name == 'node_modules' || name == '.git' || name == '.wireit' ||
+    name == '.zebra' || name == 'target';
+}
+
+function prepareGlobs(
+  packageDir: String,
+  globs: Array<String>,
+): (GlobSet, GrowableArray<String>) {
+  let rewritten = new GrowableArray<String>();
+  let bases = new GrowableArray<String>();
+  let seenBases = new HashSet<String>();
+  for (let raw in globs) {
+    var pattern = raw;
+    var negated = false;
+    if (pattern.startsWith('!')) {
+      negated = true;
+      pattern = pattern.sliceBytes(1, pattern.length);
+    }
+    let workspaceRelative = joinWorkspace(packageDir, pattern);
+    if (workspaceRelative.startsWith('..') || isAbsolute(workspaceRelative)) {
+      throw new ConfigError(
+        `glob "${raw}" in ${packageDir} escapes the workspace`,
+      );
+    }
+    rewritten.push(if (negated) '!' + workspaceRelative else workspaceRelative);
+    if (!negated) {
+      // A pattern with no glob syntax checks that single path directly
+      // instead of listing its parent directory (or the workspace root).
+      let base = if (hasMagic(workspaceRelative))
+        splitBase(workspaceRelative).base
+      else
+        workspaceRelative;
+      if (seenBases.add(base)) {
+        bases.push(base);
+      }
+    }
+  }
+  return (new GlobSet(rewritten), bases);
+}
+
+async function collectFiles(
+  root: String,
+  dir: String,
+  set: GlobSet,
+  out: GrowableArray<String>,
+  seen: HashSet<String>,
+): Future<void> {
+  let full = withRoot(root, dir);
+  if (!(await exists(full))) {
+    return;
+  }
+  if (await isFile(full)) {
+    if (set.matches(dir) && seen.add(dir)) {
+      out.push(dir);
+    }
+    return;
+  }
+  for (let entry in await listDir(full)) {
+    if (entry.name == '.' || entry.name == '..') {
+      continue;
+    }
+    if (entry.fileType == FileType.Directory) {
+      if (!skipDir(entry.name)) {
+        await collectFiles(root, joinWorkspace(dir, entry.name), set, out, seen);
+      }
+    } else {
+      let path = joinWorkspace(dir, entry.name);
+      if (set.matches(path) && seen.add(path)) {
+        out.push(path);
+      }
+    }
+  }
+}
+
+/**
+ * Expands a package's glob list to sorted workspace-relative file
+ * paths. Patterns are interpreted relative to `packageDir` and may
+ * reach sibling packages with '../'; escaping the workspace, by climbing
+ * out of it or by naming an absolute path, is an error. Negations apply
+ * across the whole list in order.
+ */
+export async function expandGlobs(
+  root: String,
+  packageDir: String,
+  globs: Array<String>,
+): Future<Array<String>> {
+  let (set, bases) = prepareGlobs(packageDir, globs);
+  let out = new GrowableArray<String>();
+  let seen = new HashSet<String>();
+  for (let base in bases) {
+    await collectFiles(root, base, set, out, seen);
+  }
+  sortBy(out, (a, b) => compareStrings(a, b));
+  return out;
+}
+
+/** The content fingerprint zebra uses everywhere: 'sha256:<hex>'. */
+export async function hashFile(root: String, path: String): Future<Fingerprint> {
+  return new Fingerprint('sha256:' + sha256Hex(await readFileBytes(withRoot(root, path))));
+}
+
+/** Validates glob patterns up front so escaping globs fail at plan time. */
+export function validateGlobs(packageDir: String, globs: Array<String>): void {
+  for (let raw in globs) {
+    var pattern = raw;
+    if (pattern.startsWith('!')) {
+      pattern = pattern.sliceBytes(1, pattern.length);
+    }
+    let workspaceRelative = joinWorkspace(packageDir, pattern);
+    if (workspaceRelative.startsWith('..') || isAbsolute(workspaceRelative)) {
+      throw new ConfigError(
+        `glob "${raw}" in ${packageDir} escapes the workspace`,
+      );
+    }
+  }
+}
+
+/**
+ * Workspace-level `(modified, size)` file hash memo, persisted across
+ * runs under `<root>/.zebra/hashes.json`.
+ *
+ * Within a run, before any step executes or restores outputs into the
+ * workspace, a file verified once needs no second `stat`; across runs
+ * (and after workspace mutations begin), `stat` checks `(modified, size)`
+ * before re-reading bytes.
+ */
+export class FileHasher {
+  #root: String;
+  #memo = new HashMap<String, HashMemoEntry>();
+  #missingThisRun = new HashSet<String>();
+  var #mutationsPossible = false;
+  var #dirty = false;
+  /** Number of times file bytes were actually read and hashed in this instance. */
+  var hashReads: i32 = 0;
+  /** Number of times a `stat` check satisfied `hash` / `hashIfExists` without reading bytes. */
+  var statHits: i32 = 0;
+
+  new(root: String) : #root = root;
+
+  #hashesPath(): String {
+    return withRoot(this.#root, '.zebra/hashes.json');
+  }
+
+  /** Loads `<root>/.zebra/hashes.json` if present, skipping racily-recent entries. */
+  async load(): Future<void> {
+    let path = this.#hashesPath();
+    if (!(await isFile(path))) {
+      return;
+    }
+    try {
+      let memoStat = await stat(path);
+      let cutoff = memoStat.modified - RACY_WINDOW_NANOS;
+      let loaded = hashesFromJson(await readFile(path));
+      loaded.forEach((filePath, entry) => {
+        if (memoStat.modified > (0 as i64) && entry.modified < cutoff) {
+          this.#memo[filePath] = entry;
+        }
+      });
+    } catch (e) {
+      // Corrupt or unreadable memo files fall back to hashing cleanly.
+    }
+  }
+
+  /** Persists updated `(modified, size) -> sha256` entries to `<root>/.zebra/hashes.json`. */
+  async save(): Future<void> {
+    if (!this.#dirty) {
+      return;
+    }
+    let path = this.#hashesPath();
+    let merged = new HashMap<String, HashMemoEntry>();
+    if (await isFile(path)) {
+      try {
+        hashesFromJson(await readFile(path)).forEach((k, v) => {
+          merged[k] = v;
+        });
+      } catch (e) {}
+    }
+    this.#memo.forEach((k, v) => {
+      if (v.modified > (0 as i64)) {
+        merged[k] = v;
+      }
+    });
+    await ensureParentDir(path);
+    let tmp = path + '.tmp';
+    await writeFile(tmp, hashesToJson(merged));
+    await rename(tmp, path);
+    this.#dirty = false;
+  }
+
+  markMutated(): void {
+    this.#mutationsPossible = true;
+  }
+
+  /** Records a file just restored from the blob cache so the next run hits the memo. */
+  async recordRestored(path: String, fingerprint: Fingerprint): Future<void> {
+    this.#mutationsPossible = true;
+    this.#missingThisRun.delete(path);
+    let full = withRoot(this.#root, path);
+    try {
+      let info = await stat(full);
+      if (info.fileType == FileType.RegularFile && info.modified > (0 as i64)) {
+        this.#memo[path] = new HashMemoEntry(info.modified, info.size, fingerprint, true);
+        this.#dirty = true;
+      }
+    } catch (e) {}
+  }
+
+  async hash(path: String): Future<Fingerprint> {
+    this.#missingThisRun.delete(path);
+    let full = withRoot(this.#root, path);
+    if (let (true, cached) = this.#memo.get(path)) {
+      if (cached.verifiedThisRun && !this.#mutationsPossible) {
+        return cached.fingerprint;
+      }
+      let info = await stat(full);
+      if (
+        info.fileType == FileType.RegularFile &&
+        info.modified > (0 as i64) &&
+        info.modified == cached.modified &&
+        info.size == cached.size
+      ) {
+        cached.verifiedThisRun = true;
+        this.statHits += 1;
+        return cached.fingerprint;
+      }
+      this.hashReads += 1;
+      let fp = await hashFile(this.#root, path);
+      this.#memo[path] = new HashMemoEntry(info.modified, info.size, fp, true);
+      this.#dirty = true;
+      return fp;
+    }
+    let info = await stat(full);
+    this.hashReads += 1;
+    let fp = await hashFile(this.#root, path);
+    this.#memo[path] = new HashMemoEntry(info.modified, info.size, fp, true);
+    this.#dirty = true;
+    return fp;
+  }
+
+  /**
+   * Returns `path`'s content fingerprint when it exists on disk as a
+   * regular file, or `null` when missing or non-regular.
+   */
+  async hashIfExists(path: String): Future<Fingerprint?> {
+    if (!this.#mutationsPossible) {
+      if (let (true, cached) = this.#memo.get(path)) {
+        if (cached.verifiedThisRun) {
+          return cached.fingerprint;
+        }
+      }
+      if (this.#missingThisRun.has(path)) {
+        return null;
+      }
+    }
+    let full = withRoot(this.#root, path);
+    var hasStat = false;
+    var modified = 0 as i64;
+    var size = 0 as i64;
+    try {
+      let info = await stat(full);
+      if (info.fileType == FileType.RegularFile) {
+        hasStat = true;
+        modified = info.modified;
+        size = info.size;
+      }
+    } catch (e) {
+      if (
+        !(e is FsError) ||
+        (e.code != FsErrorCode.NotFound && e.code != FsErrorCode.NotDirectory)
+      ) {
+        throw e;
+      }
+    }
+    if (!hasStat) {
+      if (!this.#mutationsPossible) {
+        this.#missingThisRun.add(path);
+      }
+      if (this.#memo.delete(path)) {
+        this.#dirty = true;
+      }
+      return null;
+    }
+    if (let (true, cached) = this.#memo.get(path)) {
+      if (
+        modified > (0 as i64) &&
+        modified == cached.modified &&
+        size == cached.size
+      ) {
+        cached.verifiedThisRun = true;
+        this.statHits += 1;
+        return cached.fingerprint;
+      }
+    }
+    this.hashReads += 1;
+    let fp = await hashFile(this.#root, path);
+    this.#memo[path] = new HashMemoEntry(modified, size, fp, true);
+    this.#dirty = true;
+    return fp;
+  }
+
+  async hashGlobs(
+    packageDir: String,
+    globs: Array<String>,
+  ): Future<Array<(String, Fingerprint)>> {
+    return await this.hashInputs(packageDir, globs, new GrowableArray<String>());
+  }
+
+  /**
+   * Expands `globs` relative to `packageDir` and includes any existing
+   * workspace-relative `lockCandidates`, deduplicating paths so explicit
+   * lockfile globs never collide with `packageLocks`.
+   */
+  async hashInputs(
+    packageDir: String,
+    globs: Array<String>,
+    lockCandidates: Array<String>,
+  ): Future<Array<(String, Fingerprint)>> {
+    let pairs = new GrowableArray<(String, Fingerprint)>();
+    let seen = new HashSet<String>();
+    if (globs.length > 0) {
+      let files = await expandGlobs(this.#root, packageDir, globs);
+      for (let path in files) {
+        if (seen.add(path)) {
+          pairs.push((path, await this.hash(path)));
+        }
+      }
+    }
+    for (let lockPath in lockCandidates) {
+      if (!seen.has(lockPath)) {
+        let fp = await this.hashIfExists(lockPath);
+        if (fp != null) {
+          seen.add(lockPath);
+          pairs.push((lockPath, fp));
+        }
+      }
+    }
+    return pairs;
+  }
+}

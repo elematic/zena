@@ -1,0 +1,695 @@
+import {Future} from 'zena:async';
+import {getEnv} from 'zena:cli';
+import {HashSet} from 'zena:collections';
+import {StringBuilder} from 'zena:core';
+import {isFile, readFile, writeFile} from 'zena:fs';
+import {div} from 'zena:math';
+import {checkSignal, listenSignals, waitSignalFor} from 'zena:process';
+import {monotonic} from 'zena:time';
+import {NullCache, StepCache} from 'workflow/cache';
+import {
+  Engine,
+  Failed,
+  RunOptions,
+  RunResult,
+  ServicePool,
+  Skipped,
+  StepOutcome,
+  StepSource,
+  Succeeded,
+} from 'workflow/engine';
+import {Fingerprint} from 'workflow/fingerprint';
+import {OutputManifest} from 'workflow/manifest';
+import {EngineState, StepRecord} from 'workflow/state';
+import {StepKey} from 'workflow/step';
+import {Spinner} from './animation.zena';
+import {StepExecution, lockfileCandidates, planScripts} from './builder.zena';
+import {Colors} from './colors.zena';
+import {DiskCache, stateDirOf} from './disk-cache.zena';
+import {ensureParentDir, withRoot} from './fs-util.zena';
+import {FileHasher} from './fs-walk.zena';
+import {RailLayout, StepKind, formatDuration} from './layout.zena';
+import {PlanLoadStats, loadOrCollectConfigs} from './plan-cache.zena';
+import {sha256HexOfString} from 'zena:crypto';
+import {stateFromJson, stateToJson} from './state-json.zena';
+import {ScriptConfig, ScriptRef, refKey} from './wireit-config.zena';
+import {MigrationResult} from './zebra-config.zena';
+
+// State is stored per package ('<pkg>/.zebra/state.json'), like wireit's
+// .wireit/, so its location does not depend on the invocation
+// directory.
+
+function packageStatePath(root: String, stateDir: String) {
+  return withRoot(root, stateDir + '/state.json');
+}
+
+async function loadState(root: String, stateDirs: Array<String>) {
+  let state = new EngineState();
+  for (let stateDir in stateDirs) {
+    let path = packageStatePath(root, stateDir);
+    if (!(await isFile(path))) {
+      continue;
+    }
+    stateFromJson(await readFile(path)).forEach((key, record) => {
+      state.setRecord(new StepKey(key), record);
+    });
+  }
+  return state;
+}
+
+/**
+ * Writes each package's records back, merged over what its state file
+ * already holds — a run of one target must not drop a package's
+ * records for scripts outside the run's closure.
+ */
+async function saveState(root: String, result: RunResult, skipKey: String? = null) {
+  let entries = new GrowableArray<(String, StepRecord)>();
+  let dirs = new GrowableArray<String>();
+  let seenDirs = new HashSet<String>();
+  result.state.forEach((key, record) => {
+    if (skipKey != null && key == skipKey) {
+      return;
+    }
+    entries.push((key, record));
+    let stateDir = stateDirOf(key);
+    if (seenDirs.add(stateDir)) {
+      dirs.push(stateDir);
+    }
+  });
+  let byDir = new HashMap<String, EngineState>();
+  for (let stateDir in dirs) {
+    let path = packageStatePath(root, stateDir);
+    byDir[stateDir] = if (await isFile(path))
+      stateFromJson(await readFile(path))
+    else
+      EngineState.empty();
+  }
+  for (let (key, record) in entries) {
+    let stateDir = stateDirOf(key);
+    if (let (true, packageState) = byDir.get(stateDir)) {
+      packageState.setRecord(new StepKey(key), record);
+    }
+  }
+  for (let stateDir in dirs) {
+    if (let (true, packageState) = byDir.get(stateDir)) {
+      let path = packageStatePath(root, stateDir);
+      await ensureParentDir(path);
+      await writeFile(path, stateToJson(packageState));
+    }
+  }
+}
+
+function joinComma(parts: GrowableArray<String>) {
+  let sb = new StringBuilder();
+  for (var i = 0; i < parts.length; i += 1) {
+    if (i > 0) {
+      sb.append(', ');
+    }
+    sb.append(parts[i]);
+  }
+  return sb.toString();
+}
+
+function formatActiveSpinnerMessage(
+  inFlight: GrowableArray<String>,
+  completed: i32,
+  total: i32,
+) {
+  if (inFlight.length == 0) {
+    return `Building (${i32ToString(completed)}/${i32ToString(total)})...`;
+  }
+  let first = inFlight[0];
+  let more = if (inFlight.length > 1)
+    ` (+${i32ToString(inFlight.length - 1)} more)`
+  else
+    '';
+  return `Running ${first}${more} (${i32ToString(completed)}/${i32ToString(total)})...`;
+}
+
+/**
+ * Formats a finished build as a Clack-style rail report (`┌`, `│`, `└`)
+ * with step status symbols (`◇`, `◆`, `○`, `▲`, `■`), rail-indented
+ * command output blocks, and a duration/count summary in the footer.
+ *
+ * By default, `ran`, `restored`, and `failed` steps are listed on the
+ * rail while `fresh` and `skipped` steps are summarized in the footer;
+ * passing `verbose = true` lists every step on the rail and prints
+ * captured stdout/stderr for passing steps too.
+ */
+export function formatBuildReport(
+  outcome: BuildOutcome,
+  verbose: boolean = false,
+  colors: Colors = new Colors(),
+): String {
+  let layout = new RailLayout(colors);
+  let lines = new GrowableArray<String>();
+  let title = if (outcome.target != '')
+    `${layout.badge('zebra')} ${colors.bold(outcome.target)}`
+  else
+    layout.badge('zebra');
+  lines.push(layout.intro(title));
+
+  let result = outcome.result;
+  var ranCount = 0;
+  var restoredCount = 0;
+  var freshCount = 0;
+  var failedCount = 0;
+  var skippedCount = 0;
+
+  for (let key in outcome.stepKeys) {
+    let stepOutcome = result.outcomeOf(new StepKey(key));
+    if (stepOutcome is Succeeded) {
+      if (stepOutcome.source == StepSource.Fresh) {
+        freshCount += 1;
+        if (verbose) {
+          lines.push(layout.bar());
+          lines.push(layout.step(StepKind.Fresh, `${key}: fresh`));
+        }
+      } else if (stepOutcome.source == StepSource.Cache) {
+        restoredCount += 1;
+        lines.push(layout.bar());
+        lines.push(layout.step(StepKind.Active, `${key}: restored`));
+      } else {
+        ranCount += 1;
+        lines.push(layout.bar());
+        var detail = '';
+        var output = '';
+        if (let (true, exec) = outcome.executions.get(key)) {
+          detail = `(${formatDuration(exec.durationMs)})`;
+          output = exec.combinedOutput();
+        }
+        lines.push(layout.step(StepKind.Success, `${key}: ran`, detail));
+        if (verbose && output != '') {
+          for (let logLine in layout.logBlock(output, false)) {
+            lines.push(logLine);
+          }
+        }
+      }
+    } else if (stepOutcome is Failed) {
+      failedCount += 1;
+      lines.push(layout.bar());
+      if (let (true, exec) = outcome.executions.get(key)) {
+        let detail = `(${formatDuration(exec.durationMs)})`;
+        lines.push(
+          layout.step(
+            StepKind.Error,
+            `${key}: failed (exit ${i32ToString(exec.exitCode)})`,
+            detail,
+          ),
+        );
+        let combined = exec.combinedOutput();
+        let blockText = if (combined != '')
+          `$ ${exec.command}\n${combined}`
+        else
+          `$ ${exec.command}`;
+        for (let logLine in layout.logBlock(blockText, true)) {
+          lines.push(logLine);
+        }
+      } else {
+        lines.push(layout.step(StepKind.Error, `${key}: failed`));
+        for (let logLine in layout.logBlock(stepOutcome.error.message, true)) {
+          lines.push(logLine);
+        }
+      }
+    } else if (stepOutcome is Skipped) {
+      skippedCount += 1;
+      if (verbose) {
+        lines.push(layout.bar());
+        lines.push(
+          layout.step(StepKind.Warning, `${key}: skipped (${stepOutcome.reason})`),
+        );
+      }
+    }
+  }
+
+  lines.push(layout.bar());
+  let counts = new GrowableArray<String>();
+  if (failedCount > 0) {
+    counts.push(`${i32ToString(failedCount)} failed`);
+  }
+  if (skippedCount > 0) {
+    counts.push(`${i32ToString(skippedCount)} skipped`);
+  }
+  if (ranCount > 0) {
+    counts.push(`${i32ToString(ranCount)} ran`);
+  }
+  if (restoredCount > 0) {
+    counts.push(`${i32ToString(restoredCount)} restored`);
+  }
+  if (freshCount > 0) {
+    counts.push(`${i32ToString(freshCount)} fresh`);
+  }
+  let status = if (result.allSucceeded)
+    colors.green('build succeeded')
+  else
+    colors.red('build failed');
+  let elapsed = colors.dim(`in ${formatDuration(outcome.durationMs)}`);
+  let summary = if (counts.length > 0)
+    `${status} ${elapsed} ${colors.dim(`(${joinComma(counts)})`)}`
+  else
+    `${status} ${elapsed}`;
+  lines.push(layout.outro(summary));
+
+  let sb = new StringBuilder();
+  for (var i = 0; i < lines.length; i += 1) {
+    if (i > 0) {
+      sb.append('\n');
+    }
+    sb.append(lines[i]);
+  }
+  return sb.toString();
+}
+
+/**
+ * Prints a Clack-style build report and returns the exit status: 0 when
+ * every step succeeded, 1 otherwise (or `128 + sig` if interrupted).
+ * `zebra` and `zena build <target>` both report this way.
+ */
+export function reportBuild(
+  outcome: BuildOutcome,
+  verbose: boolean = false,
+  colors: Colors = new Colors(),
+): i32 {
+  let sig = checkSignal();
+  if (sig != 0) {
+    return 128 + sig;
+  }
+  console.log(formatBuildReport(outcome, verbose, colors));
+  if (!outcome.result.allSucceeded) {
+    return 1;
+  }
+  return 0;
+}
+
+/**
+ * A finished build: the engine result plus the step keys in dependency
+ * order, target label, wall-clock duration, and captured step outputs.
+ */
+export class BuildOutcome {
+  result: RunResult;
+  stepKeys: Array<String>;
+  target: String;
+  durationMs: i64;
+  executions: HashMap<String, StepExecution>;
+
+  new(
+    this.result,
+    this.stepKeys,
+    this.target = '',
+    this.durationMs = 0 as i64,
+    this.executions = new HashMap<String, StepExecution>(),
+  );
+}
+
+/** Default max concurrent script executions: ZENA_AVAILABLE_PARALLELISM, or 8. */
+export function defaultParallelism(): i32 {
+  let raw = getEnv('ZENA_AVAILABLE_PARALLELISM');
+  if (raw != null) {
+    if (let (true, n) = parseI32(raw)) {
+      if (n >= 1) {
+        return n;
+      }
+    }
+  }
+  return 8;
+}
+
+async function verifyManifestOutputs(
+  hasher: FileHasher,
+  manifest: OutputManifest,
+): Future<boolean> {
+  for (let entry in manifest.outputs) {
+    if (!entry.fingerprint.value.startsWith('sha256:')) {
+      continue;
+    }
+    let current = await hasher.hashIfExists(entry.name);
+    if (current == null || current.value != entry.fingerprint.value) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function runTargetOnce(
+  root: String,
+  entry: ScriptRef,
+  parallelism: i32 = 0,
+  force: boolean = false,
+  useCache: boolean = true,
+  hasherOut: FileHasher? = null,
+  servicePool: ServicePool? = null,
+  allowForegroundService: boolean = true,
+  configPathsOut: GrowableArray<String>? = null,
+  configsOut: GrowableArray<ScriptConfig>? = null,
+  planStatsOut: PlanLoadStats? = null,
+): Future<BuildOutcome> {
+  listenSignals();
+  let startNs = monotonic() as i64;
+  let jobs = if (parallelism > 0) parallelism else defaultParallelism();
+  let configs = await loadOrCollectConfigs(
+    root,
+    entry,
+    configPathsOut,
+    planStatsOut,
+  );
+  if (configsOut != null) {
+    for (let config in configs) {
+      configsOut.push(config);
+    }
+  }
+  let foregroundServiceKey = if (
+    allowForegroundService &&
+    configs.length > 0 &&
+    configs[0].service != null
+  )
+    refKey(entry)
+  else
+    null;
+  let hasher = hasherOut ?? new FileHasher(root);
+  await hasher.load();
+  let plan = planScripts(
+    root,
+    configs,
+    i64ToString(monotonic() as i64),
+    hasher,
+    foregroundServiceKey,
+  );
+  let stateDirs = new GrowableArray<String>();
+  let seenDirs = new HashSet<String>();
+  for (let config in configs) {
+    let stateDir = stateDirOf(refKey(config.ref));
+    if (seenDirs.add(stateDir)) {
+      stateDirs.push(stateDir);
+    }
+  }
+  let cache: StepCache = if (useCache)
+    new DiskCache(
+      root,
+      () => {
+        hasher.markMutated();
+      },
+      (path, fp) => hasher.recordRestored(path, fp),
+    )
+  else
+    new NullCache();
+  let engine = new Engine(
+    (data: String) => new Fingerprint('sha256:' + sha256HexOfString(data)),
+    cache,
+  );
+  let spinner = new Spinner();
+  let inFlight = new GrowableArray<String>();
+  var completed = 0;
+  let entryKey = refKey(entry);
+  let filesetKeys = new HashSet<String>();
+  for (let config in configs) {
+    let k = refKey(config.ref);
+    if (config.isFileset && k != entryKey) {
+      filesetKeys.add(k);
+    }
+  }
+  let totalSteps = configs.length - filesetKeys.size;
+  var result: RunResult | null = null;
+  try {
+    result = await engine.run(
+      plan.graph,
+      plan.leaves,
+      await loadState(root, stateDirs),
+      new RunOptions(
+        jobs,
+        force,
+        (step, manifest) => verifyManifestOutputs(hasher, manifest),
+        servicePool,
+        (step: StepKey) => {
+          if (filesetKeys.has(step.value)) {
+            return;
+          }
+          if (foregroundServiceKey != null && step.value == foregroundServiceKey) {
+            spinner.stop();
+            return;
+          }
+          inFlight.push(step.value);
+          spinner.update(formatActiveSpinnerMessage(inFlight, completed, totalSteps));
+        },
+        (step: StepKey, stepOutcome: StepOutcome) => {
+          if (filesetKeys.has(step.value)) {
+            return;
+          }
+          completed += 1;
+          let remaining = new GrowableArray<String>();
+          for (let k in inFlight) {
+            if (k != step.value) {
+              remaining.push(k);
+            }
+          }
+          inFlight.clear();
+          for (let k in remaining) {
+            inFlight.push(k);
+          }
+          if (inFlight.length > 0) {
+            spinner.update(formatActiveSpinnerMessage(inFlight, completed, totalSteps));
+          } else {
+            spinner.stop();
+          }
+        },
+      ),
+    );
+  } finally {
+    spinner.stop();
+  }
+  let runResult = result as RunResult;
+  await saveState(root, runResult, foregroundServiceKey);
+  await hasher.save();
+  let stepKeys = new GrowableArray<String>();
+  for (let config in configs) {
+    let k = refKey(config.ref);
+    if (!filesetKeys.has(k)) {
+      stepKeys.push(k);
+    }
+  }
+  let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+  return new BuildOutcome(
+    runResult,
+    stepKeys,
+    entryKey,
+    durationMs,
+    plan.executions,
+  );
+}
+
+/**
+ * One full build of a script and its transitive dependencies: load
+ * config and prior state, snapshot inputs, run the engine with the
+ * local disk cache, persist the new state and hash memo.
+ */
+export async function buildTarget(
+  root: String,
+  entry: ScriptRef,
+  parallelism: i32 = 0,
+  force: boolean = false,
+  useCache: boolean = true,
+  hasherOut: FileHasher? = null,
+  planStatsOut: PlanLoadStats? = null,
+): Future<BuildOutcome> {
+  return await runTargetOnce(
+    root,
+    entry,
+    parallelism,
+    force,
+    useCache,
+    hasherOut,
+    null,
+    true,
+    null,
+    null,
+    planStatsOut,
+  );
+}
+
+/** Formats a Wireit-to-Zebra migration report on a Clack rail. */
+export function formatMigrationReport(
+  migration: MigrationResult,
+  dryRun: boolean = false,
+  colors: Colors = new Colors(),
+): String {
+  let layout = new RailLayout(colors);
+  let lines = new GrowableArray<String>();
+  let title = if (dryRun) 'migrate (dry run)' else 'migrate';
+  lines.push(layout.intro(`${layout.badge('zebra')}  ${colors.dim(title)}`));
+
+  if (migration.written.length > 0 || migration.skippedExisting.length > 0) {
+    lines.push(layout.bar());
+    for (let item in migration.written) {
+      let action = if (dryRun) colors.cyan('preview') else colors.green('wrote');
+      lines.push(layout.step(StepKind.Success, `${colors.bold(item.path)}: ${action}`));
+      if (dryRun) {
+        for (let logLine in layout.logBlock(item.content)) {
+          lines.push(logLine);
+        }
+      }
+    }
+    for (let skippedPath in migration.skippedExisting) {
+      lines.push(layout.step(
+        StepKind.Warning,
+        `${colors.bold(skippedPath)}: ${colors.yellow('skipped (already exists; pass -f to overwrite)')}`,
+      ));
+    }
+  }
+
+  lines.push(layout.bar());
+  let count = migration.written.length;
+  let footer = if (count > 0) {
+    let verb = if (dryRun) 'would write' else 'migrated';
+    let noun = if (count == 1) 'package' else 'packages';
+    colors.green(`${verb} ${i32ToString(count)} ${noun}`)
+  } else if (migration.skippedExisting.length > 0) {
+    colors.yellow(`0 packages written (${i32ToString(migration.skippedExisting.length)} existing skipped)`)
+  } else {
+    colors.dim('no wireit packages found to migrate')
+  };
+  lines.push(layout.outro(footer));
+
+  let sb = new StringBuilder();
+  for (var i = 0; i < lines.length; i += 1) {
+    if (i > 0) {
+      sb.append('\n');
+    }
+    sb.append(lines[i]);
+  }
+  return sb.toString();
+}
+
+/** Prints a migration report and returns exit code 0. */
+export function reportMigration(
+  migration: MigrationResult,
+  dryRun: boolean = false,
+  colors: Colors = new Colors(),
+): i32 {
+  console.log(formatMigrationReport(migration, dryRun, colors));
+  return 0;
+}
+
+async function snapshotWatchFiles(
+  root: String,
+  configPaths: Array<String>,
+  configs: Array<ScriptConfig>,
+): Future<HashMap<String, String>> {
+  let hasher = new FileHasher(root);
+  await hasher.load();
+  let snapshot = new HashMap<String, String>();
+  for (let path in configPaths) {
+    let fp = await hasher.hashIfExists(path);
+    snapshot[path] = fp?.value ?? '$missing';
+  }
+  for (let config in configs) {
+    let lockCandidates = if (
+      config.isWireit &&
+      config.command != null &&
+      config.fingerprintable &&
+      config.packageLocks.length > 0
+    )
+      lockfileCandidates(config.ref.packageDir, config.packageLocks)
+    else
+      new GrowableArray<String>();
+    if (config.files.length > 0 || lockCandidates.length > 0) {
+      for (let (path, fp) in await hasher.hashInputs(
+        config.ref.packageDir,
+        config.files,
+        lockCandidates,
+      )) {
+        snapshot[path] = fp.value;
+      }
+    }
+  }
+  return snapshot;
+}
+
+function snapshotsEqual(
+  a: HashMap<String, String>,
+  b: HashMap<String, String>,
+) {
+  if (a.size != b.size) {
+    return false;
+  }
+  var same = true;
+  a.forEach((key, valA) => {
+    if (let (true, valB) = b.get(key)) {
+      if (valA != valB) {
+        same = false;
+      }
+    } else {
+      same = false;
+    }
+  });
+  return same;
+}
+
+/**
+ * Runs `entry` and watches its input files, lockfiles, and `package.json`
+ * manifests for changes, re-running incrementally and keeping services
+ * alive in a `ServicePool` across rebuilds.
+ *
+ * When `onIteration` is null (CLI watch mode), each completed iteration
+ * is reported with `reportBuild(outcome)` and watching continues until
+ * the process is terminated. When `onIteration` is supplied, it is
+ * called after each iteration's post-build file snapshot is captured;
+ * returning `false` stops watching and tears down all pinned services.
+ */
+export async function watchTarget(
+  root: String,
+  entry: ScriptRef,
+  parallelism: i32 = 0,
+  force: boolean = false,
+  useCache: boolean = true,
+  pollIntervalMs: i64 = 150,
+  onIteration: ((iteration: i32, outcome: BuildOutcome) => Future<boolean>)? = null,
+  verbose: boolean = false,
+): Future<BuildOutcome> {
+  listenSignals();
+  let servicePool = new ServicePool();
+  let interval = if (pollIntervalMs > (0 as i64)) pollIntervalMs else 50 as i64;
+  var iteration = 0;
+  try {
+    while (true) {
+      let configPaths = new GrowableArray<String>();
+      let configs = new GrowableArray<ScriptConfig>();
+      let outcome = await runTargetOnce(
+        root,
+        entry,
+        parallelism,
+        force,
+        useCache,
+        null,
+        servicePool,
+        false,
+        configPaths,
+        configs,
+      );
+      if (checkSignal() != 0) {
+        return outcome;
+      }
+      iteration += 1;
+      let baseline = await snapshotWatchFiles(root, configPaths, configs);
+      if (onIteration != null) {
+        if (!(await onIteration(iteration, outcome))) {
+          return outcome;
+        }
+      } else {
+        reportBuild(outcome, verbose);
+      }
+      while (true) {
+        if (checkSignal() != 0) {
+          return outcome;
+        }
+        let current = await snapshotWatchFiles(root, configPaths, configs);
+        if (!snapshotsEqual(baseline, current)) {
+          break;
+        }
+        if ((await waitSignalFor(interval)) != 0) {
+          return outcome;
+        }
+      }
+    }
+  } finally {
+    await servicePool.stopAll();
+  }
+}

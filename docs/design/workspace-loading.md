@@ -73,15 +73,15 @@ The name is in each package's manifest, so the first such import has to
 read every workspace manifest. Today these import workspace packages by
 name:
 
-| directory                                                        | imports                                                                                           |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `packages/zena-cli/zena` (the CLI module)                        | zena-compiler, zb, zenadoc, zena-formatter, zena-lint, atproto, package-manager, language-service |
-| `packages/zena-cli/dev/bundle.zena`                              | workflow                                                                                          |
-| `packages/zena-cli/tests/fixtures`                               | atproto, package-manager, pds                                                                     |
-| `packages/language-service/zena` (`lsp.zena`, tests)             | zena-compiler, zena-formatter                                                                     |
-| `packages/zena-compiler/zena/test`                               | wit-parser                                                                                        |
-| `packages/zenadoc/zena/cli`, `zena/test`                         | zena-compiler                                                                                     |
-| examples under `packages/protobuf`, `google-cloud`, `wit-parser` | their packages                                                                                    |
+| directory                                                        | imports                                                                                              |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `packages/zena-cli/zena` (the CLI module)                        | zena-compiler, zebra, zenadoc, zena-formatter, zena-lint, atproto, package-manager, language-service |
+| `packages/zena-cli/dev/bundle.zena`                              | workflow                                                                                             |
+| `packages/zena-cli/tests/fixtures`                               | atproto, package-manager, pds                                                                        |
+| `packages/language-service/zena` (`lsp.zena`, tests)             | zena-compiler, zena-formatter                                                                        |
+| `packages/zena-compiler/zena/test`                               | wit-parser                                                                                           |
+| `packages/zenadoc/zena/cli`, `zena/test`                         | zena-compiler                                                                                        |
+| examples under `packages/protobuf`, `google-cloud`, `wit-parser` | their packages                                                                                       |
 
 The compiler's own build is not among them: `zena-compiler/zena/cli/main.zena`
 imports `../lib` by relative path, and the libraries there are in the

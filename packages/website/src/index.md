@@ -789,7 +789,7 @@ happen frequently.
           <td><span class="badge success">Complete</span></td>
         </tr>
         <tr>
-          <td>Build runner (zb)</td>
+          <td>Build runner (Zebra)</td>
           <td><span class="badge warning">In progress</span></td>
         </tr>
         <tr>

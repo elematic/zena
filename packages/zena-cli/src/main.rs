@@ -16,7 +16,7 @@
 //!   `/stdlib`, and the whole filesystem as `/` for everything else.
 //! - How many CPUs there are, which WASI cannot ask.
 //!
-//! The module may spawn processes and run components (zb runs build
+//! The module may spawn processes and run components (zebra runs build
 //! commands, and `zena test` runs each test), so it gets the grant. See
 //! docs/design/cli-module.md.
 

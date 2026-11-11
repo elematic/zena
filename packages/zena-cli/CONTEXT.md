@@ -34,7 +34,7 @@ the `zena` command. The design is in
      release waiting for its maintainers and asks the registry to complete
      it, and `ci.zena`, for `zena pkg ci create` and `zena pkg ci token`.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
-     (`zena-compiler/compile-file`), zb, zenadoc, the language service and
+     (`zena-compiler/compile-file`), zebra, zenadoc, the language service and
      the formatter linked
      in. Other programs (the VS Code extension's `lsp.wasm`, the
      playground) have their own entry points built from the same
@@ -69,7 +69,7 @@ the `zena` command. The design is in
    - Preopens the repository root as `.` (first, so relative paths mean the
      repository: the compiler reads the workspace's `zena-package.json` and
      `packages/stdlib/zena` relative to it) and `/` as `/`.
-   - Grants spawning, so zb can run build commands and the module can run
+   - Grants spawning, so zebra can run build commands and the module can run
      other modules with `zena:wasm`, and loading components, so the test
      runner can pass that on to tests. The programs `zena run` starts get
      each grant only with its flag (`--allow-spawn`,

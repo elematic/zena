@@ -1,0 +1,141 @@
+import {
+  exists,
+  isFile,
+  readFile,
+  readFileBytes,
+  rename,
+  writeFile,
+  writeFileBytes,
+} from 'zena:fs';
+import {StepCache} from 'workflow/cache';
+import {CacheKey, Fingerprint} from 'workflow/fingerprint';
+import {OutputManifest} from 'workflow/manifest';
+import {StepKey} from 'workflow/step';
+import {ensureDir, ensureParentDir, withRoot} from './fs-util.zena';
+import {manifestFromJson, manifestToJson} from './state-json.zena';
+
+/**
+ * The package directory of a step key ('pkg/dir:script' — package
+ * directories never contain ':', script names may).
+ */
+export function packageDirOf(stepKey: String): String {
+  for (var i = 0; i < stepKey.length; i += 1) {
+    if (stepKey.getByteAt(i) == 58) {
+      return stepKey.sliceBytes(0, i);
+    }
+  }
+  throw new Error('malformed step key: ' + stepKey);
+}
+
+/** A package's build-state directory, '<pkg>/.zebra'. */
+export function stateDirOf(stepKey: String): String {
+  let pkg = packageDirOf(stepKey);
+  return if (pkg == '') '.zebra' else pkg + '/.zebra';
+}
+
+/**
+ * Entries with content fingerprints are files in the workspace;
+ * anything else (e.g. the '$volatile' marker of an untracked script)
+ * is virtual and has no bytes to store or restore.
+ */
+function isFileEntry(fp: Fingerprint) {
+  return fp.value.startsWith('sha256:');
+}
+
+function blobName(fp: Fingerprint) {
+  // 'sha256:<hex>' -> 'sha256-<hex>', a safe file name.
+  let colonSplit = fp.value.split(':');
+  if (colonSplit.length != 2) {
+    throw new Error('unexpected fingerprint format: ' + fp.value);
+  }
+  return `${colonSplit[0]}-${colonSplit[1]}`;
+}
+
+/**
+ * The local cache, sharded per package like wireit's .wireit/: each
+ * package's '<pkg>/.zebra/' holds an action cache mapping cache keys to
+ * manifests (one JSON file per key) and a content-addressed blob store
+ * for output bytes, so the cache location does not depend on where zebra
+ * was invoked. A hit materializes the outputs into the workspace
+ * before returning, so dependents can read them; missing blobs make
+ * the entry a miss.
+ */
+export class DiskCache implements StepCache {
+  #root: String;
+  #onRestore: (() => void)?;
+  #onFileRestore: ((path: String, fp: Fingerprint) => Future<void>)?;
+  var #nextTempId = 0;
+
+  new(
+    root: String,
+    onRestore: (() => void)? = null,
+    onFileRestore: ((path: String, fp: Fingerprint) => Future<void>)? = null,
+  ) : #root = root,
+      #onRestore = onRestore,
+      #onFileRestore = onFileRestore;
+
+  #tempSuffix(): String {
+    let id = this.#nextTempId;
+    this.#nextTempId = id + 1;
+    return `.tmp-${i32ToString(id)}`;
+  }
+
+  #manifestPath(step: StepKey, key: CacheKey): String {
+    return withRoot(this.#root, `${stateDirOf(step.value)}/cache/${key.value}.json`);
+  }
+
+  #blobPath(step: StepKey, fp: Fingerprint): String {
+    return withRoot(this.#root, `${stateDirOf(step.value)}/blobs/${blobName(fp)}`);
+  }
+
+  async get(step: StepKey, key: CacheKey): Future<OutputManifest?> {
+    let manifestPath = this.#manifestPath(step, key);
+    if (!(await isFile(manifestPath))) {
+      return null;
+    }
+    let manifest = manifestFromJson(await readFile(manifestPath));
+    for (let entry in manifest.outputs) {
+      if (isFileEntry(entry.fingerprint) && !(await isFile(this.#blobPath(step, entry.fingerprint)))) {
+        return null;
+      }
+    }
+    let onFileRestore = this.#onFileRestore;
+    for (let entry in manifest.outputs) {
+      if (!isFileEntry(entry.fingerprint)) {
+        continue;
+      }
+      let target = withRoot(this.#root, entry.name);
+      await ensureParentDir(target);
+      await writeFileBytes(target, await readFileBytes(this.#blobPath(step, entry.fingerprint)));
+      if (onFileRestore != null) {
+        await onFileRestore(entry.name, entry.fingerprint);
+      }
+    }
+    let onRestore = this.#onRestore;
+    if (onRestore != null) {
+      onRestore();
+    }
+    return manifest;
+  }
+
+  async put(step: StepKey, key: CacheKey, manifest: OutputManifest): Future<void> {
+    let stateDir = withRoot(this.#root, stateDirOf(step.value));
+    await ensureDir(stateDir + '/blobs');
+    await ensureDir(stateDir + '/cache');
+    for (let entry in manifest.outputs) {
+      if (!isFileEntry(entry.fingerprint)) {
+        continue;
+      }
+      let blob = this.#blobPath(step, entry.fingerprint);
+      if (!(await exists(blob))) {
+        let tmp = blob + this.#tempSuffix();
+        await writeFileBytes(tmp, await readFileBytes(withRoot(this.#root, entry.name)));
+        await rename(tmp, blob);
+      }
+    }
+    let manifestPath = this.#manifestPath(step, key);
+    let tmpManifest = manifestPath + this.#tempSuffix();
+    await writeFile(tmpManifest, manifestToJson(manifest));
+    await rename(tmpManifest, manifestPath);
+  }
+}
