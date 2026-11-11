@@ -7,15 +7,19 @@
  * release's README, its files, its dependencies, and every version; and
  * beside them a side bar with the command that adds it, when it was
  * published, who approved it, its size, its links and its maintainers.
+ * A file's page, `/packages/<handle>/versions/<version>/files/<path>`, is
+ * its version's page with the file shown in the Files tab; the file's
+ * bytes are served at `.../raw/<path>`.
  */
 
 import {HashMap} from 'zena:collections';
 import {GrowableArray} from 'zena:core';
+import {isValidUtf8} from 'zena:encoding';
 import {HTMLPartial, Response, Router, TemplateValue, html, unsafeHTML} from 'zena:http';
 import {percentDecode} from 'zena:url';
 import {Dependency, Maintainer, Maintainers, RELEASE_TYPE, Release} from 'package-manager:records';
 import {PackageDetail, AppView} from '../../app-view.zena';
-import {ReleaseContents, fileUrl} from '../../release-contents.zena';
+import {ReleaseContents, ReleaseFile, fileUrl, rawUrl} from '../../release-contents.zena';
 import {Approvals} from '../approvals.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
@@ -29,14 +33,30 @@ import {notFound} from './not-found.zena';
 /** How many of a package's newest releases its page shows the approvers of. */
 let APPROVALS_SHOWN = 10;
 
+/** The largest file shown in its page, in bytes; a larger one is linked to. */
+let MAX_FILE_SHOWN = 1024 * 1024;
+
+/** The image types a package's file is served as, by its extension; any other file is plain text. */
+let IMAGE_TYPES: HashMap<String, String> = {
+  'png' => 'image/png',
+  'jpg' => 'image/jpeg',
+  'jpeg' => 'image/jpeg',
+  'gif' => 'image/gif',
+  'webp' => 'image/webp',
+  'avif' => 'image/avif',
+  'svg' => 'image/svg+xml',
+  'ico' => 'image/x-icon',
+};
+
 /**
- * Adds the package page, `/packages/<handle>`, and its versions' pages,
- * `/packages/<handle>/versions/<version>`, to `router`.
+ * Adds the package page, `/packages/<handle>`, its versions' pages,
+ * `/packages/<handle>/versions/<version>`, and their files' pages and
+ * bytes to `router`.
  */
 export function packagePage(router: Router, appView: AppView, people: People, approvals: Approvals): void {
   // By handle or by DID: a README's links name the package by its DID, so
   // that they keep working when it is renamed.
-  router.get('/packages/:handle/versions/:version/files/*', async (req, res, next, params) => {
+  router.get('/packages/:handle/versions/:version/raw/*', async (req, res, next, params) => {
     let handle = percentDecode(params['handle'] ?? '');
     let version = percentDecode(params['version'] ?? '');
     let detail = await appView.getPackage(handle);
@@ -49,23 +69,30 @@ export function packagePage(router: Router, appView: AppView, people: People, ap
     let context = await contextOf(req, appView, people);
     notFound(res, context, `${handle} ${version} has no file ${path}.`);
   });
+  router.get('/packages/:handle/versions/:version/files/*', async (req, res, next, params) => {
+    let context = await contextOf(req, appView, people);
+    await packageView(context, res, appView, approvals, percentDecode(params['handle'] ?? ''),
+        percentDecode(params['version'] ?? ''), percentDecode(params['*'] ?? ''));
+  });
   router.get('/packages/:handle/versions/:version', async (req, res, next, params) => {
     let context = await contextOf(req, appView, people);
     await packageView(context, res, appView, approvals, percentDecode(params['handle'] ?? ''),
-        percentDecode(params['version'] ?? ''));
+        percentDecode(params['version'] ?? ''), null);
   });
   router.get('/packages/:handle', async (req, res, next, params) => {
     let context = await contextOf(req, appView, people);
-    await packageView(context, res, appView, approvals, percentDecode(params['handle'] ?? ''), null);
+    await packageView(context, res, appView, approvals, percentDecode(params['handle'] ?? ''), null, null);
   });
 }
 
 /**
  * Answers with the page of the package `handle` at `version`, or at its
- * latest release that is not retracted for null; or not found.
+ * latest release that is not retracted for null, showing the file at
+ * `path` of that release in its Files tab when `path` is not null; or not
+ * found.
  */
 async function packageView(context: PageContext, res: Response, appView: AppView, approvals: Approvals,
-    handle: String, version: String | null): Future<void> {
+    handle: String, version: String | null, path: String | null): Future<void> {
   let detail = await appView.getPackage(handle);
   if (detail == null) {
     notFound(res, context, `No package here has the handle ${handle}.`);
@@ -146,19 +173,40 @@ async function packageView(context: PageContext, res: Response, appView: AppView
     }
   }
   let contents = if (wanted != null) await appView.releaseContents(found.did, wanted) else null;
+  var file: HTMLPartial | null = null;
+  if (path != null) {
+    var listed: ReleaseFile | null = null;
+    if (contents != null) {
+      for (let candidate in contents.files) {
+        if (candidate.path == path) {
+          listed = candidate;
+        }
+      }
+    }
+    if (listed == null) {
+      notFound(res, context, `${handle} ${version ?? ''} has no file ${path}.`);
+      return;
+    }
+    // An image is shown from its bytes' URL, and a file too large to show is linked to; only text is read.
+    let read = !IMAGE_TYPES.has(extensionOf(path)) && listed.size <= MAX_FILE_SHOWN as i64;
+    let bytes = if (read) await appView.releaseFile(found.did, wanted as String, path) else null;
+    file = fileView(found.handle, wanted as String, listed, bytes);
+  }
   let title = if (version != null) `${name} ${version}` else name;
+  let fullTitle = if (path != null) `${path} · ${title}` else title;
   res.type = 'text/html; charset=utf-8';
-  res.body = page(`${title} · Zena packages`, context,
-      packageBody(found, release, version != null, contents, handles, shown, approvedBy, waiting));
+  res.body = page(`${fullTitle} · Zena packages`, context,
+      packageBody(found, release, version != null, contents, file, handles, shown, approvedBy, waiting));
 }
 
 /**
  * The page of `detail` showing `release`, or no release when it has none
  * that is not retracted; `pinned` when the page is the release's own, whose
- * command adds that version.
+ * command adds that version. With a `file`, the Files tab is open and
+ * shows it in place of the list.
  */
 function packageBody(detail: PackageDetail, release: Release | null, pinned: boolean, contents: ReleaseContents | null,
-    handles: HashMap<String, String>, shown: Shown, approvedBy: HashMap<String, Array<String>>,
+    file: HTMLPartial | null, handles: HashMap<String, String>, shown: Shown, approvedBy: HashMap<String, Array<String>>,
     waiting: HTMLPartial | null): HTMLPartial {
   let profile = detail.profile;
   let name = profile?.name ?? detail.handle;
@@ -194,16 +242,16 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
     <div class="package-layout">
       <div class="package-main">
         <rad-tab-group data-fragment>
-          <rad-tab slot="tabs" panel="readme" active>Readme</rad-tab>
-          <rad-tab slot="tabs" panel="files">Files</rad-tab>
+          <rad-tab slot="tabs" panel="readme"${if (file == null) ' active' else ''}>Readme</rad-tab>
+          <rad-tab slot="tabs" panel="files"${if (file != null) ' active' else ''}>Files</rad-tab>
           <rad-tab slot="tabs" panel="dependencies">Dependencies</rad-tab>
           <rad-tab slot="tabs" panel="versions">Versions</rad-tab>
-          <rad-tab-panel name="readme" active>
+          <rad-tab-panel name="readme"${if (file == null) ' active' else ''}>
             ${if (release == null) html`<p class="muted">Nothing is published yet.</p>`
                 else readme(detail.handle, version as String, contents)}
           </rad-tab-panel>
-          <rad-tab-panel name="files">
-            ${if (contents == null) html`<p class="muted">${if (release == null) 'Nothing is published yet.' else 'The source archive could not be read.'}</p>`
+          <rad-tab-panel name="files"${if (file != null) ' active' else ''}>
+            ${file ?? if (contents == null) html`<p class="muted">${if (release == null) 'Nothing is published yet.' else 'The source archive could not be read.'}</p>`
                 else fileList(detail.handle, version as String, contents)}
           </rad-tab-panel>
           <rad-tab-panel name="dependencies">
@@ -256,18 +304,6 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
   `;
 }
 
-/** The image types a package's file is served as, by its extension; any other file is plain text. */
-let IMAGE_TYPES: HashMap<String, String> = {
-  'png' => 'image/png',
-  'jpg' => 'image/jpeg',
-  'jpeg' => 'image/jpeg',
-  'gif' => 'image/gif',
-  'webp' => 'image/webp',
-  'avif' => 'image/avif',
-  'svg' => 'image/svg+xml',
-  'ico' => 'image/x-icon',
-};
-
 /**
  * Answers with `contents`, the file at `path` in a release's archive: an
  * image as its type, so a README can show it, and anything else as plain
@@ -276,13 +312,68 @@ let IMAGE_TYPES: HashMap<String, String> = {
  * release never does.
  */
 function serveFile(res: Response, path: String, contents: FixedArray<u8>): void {
-  let dot = path.split('.');
-  let extension = if (dot.length > 1) dot[dot.length - 1].asciiLowerCase() else '';
-  res.type = IMAGE_TYPES.getOr(extension, 'text/plain; charset=utf-8');
+  res.type = IMAGE_TYPES.getOr(extensionOf(path), 'text/plain; charset=utf-8');
   res.setHeader('cache-control', 'public, max-age=31536000, immutable');
   res.setHeader('x-content-type-options', 'nosniff');
   res.setHeader('content-security-policy', "default-src 'none'; sandbox");
   res.body = contents;
+}
+
+/** The extension of the file at `path`, in lower case, or `''`. */
+function extensionOf(path: String): String {
+  let dot = path.split('.');
+  return if (dot.length > 1) dot[dot.length - 1].asciiLowerCase() else '';
+}
+
+/**
+ * The Files tab's panel for `file` of release `version` of the package
+ * `handle`: an image shown, text numbered by line, and a link to anything
+ * else. `bytes` are the file's when they were read, which they are not for
+ * an image or a file larger than `MAX_FILE_SHOWN`.
+ */
+function fileView(handle: String, version: String, file: ReleaseFile, bytes: FixedArray<u8> | null): HTMLPartial {
+  let raw = rawUrl(handle, version, file.path);
+  var body: TemplateValue = html`<p class="muted">This file is too large to show here: <a href="${raw}">download it</a>.</p>`;
+  if (IMAGE_TYPES.has(extensionOf(file.path))) {
+    body = html`<img class="file-image" src="${raw}" alt="${file.path}">`;
+  } else if (bytes != null) {
+    body = if (isText(bytes)) sourceLines(String.fromBytes(bytes))
+        else html`<p class="muted">This file is not text: <a href="${raw}">download it</a>.</p>`;
+  } else if (file.size <= MAX_FILE_SHOWN as i64) {
+    body = html`<p class="muted">The file could not be read: <a href="${raw}">download it</a>.</p>`;
+  }
+  return html`
+    <div class="file-header">
+      <a href="/packages/${handle}/versions/${version}#files">All files</a>
+      <span class="mono file-path">${file.path}</span>
+      <span class="muted">${formatBytes(file.size)}</span>
+      <a href="${raw}">Raw</a>
+    </div>
+    ${body}
+  `;
+}
+
+/** Whether `bytes` are UTF-8 with no NUL, which a binary file almost always has. */
+function isText(bytes: FixedArray<u8>): boolean {
+  for (let byte in bytes) {
+    if (byte == 0 as u8) {
+      return false;
+    }
+  }
+  return isValidUtf8(bytes);
+}
+
+/** `text` in a `<pre>`, a span per line, which the stylesheet numbers. */
+function sourceLines(text: String): HTMLPartial {
+  let lines = text.split('\n');
+  // A final newline ends the last line rather than starting another.
+  let count = if (lines.length > 0 && lines[lines.length - 1] == '') lines.length - 1 else lines.length;
+  let shown = new GrowableArray<String>();
+  for (var i = 0; i < count; i += 1) {
+    shown.push(lines[i]);
+  }
+  return html`<pre class="file-source"><code>${each(shown, (line) => html`<span class="line">${line}</span>
+`)}</code></pre>`;
 }
 
 /**

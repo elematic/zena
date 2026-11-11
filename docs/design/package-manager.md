@@ -1985,8 +1985,9 @@ keeps:
   any case, rendered to HTML. It is rendered in safe mode, without raw
   HTML or URLs that could run script, and only when it is at most
   256 KiB of Markdown; a larger one is linked to instead. Its relative
-  links and images point to the release's files by the package's DID,
-  so that they keep working when the package is renamed.
+  links point to the pages of the release's files, and its images to
+  the files' bytes, by the package's DID, so that they keep working when
+  the package is renamed.
 - **Later, its API**: the JSON `zena doc` writes
   ([zenadoc.md](zenadoc.md)), and the text search reads (names,
   descriptions, doc comments).
@@ -2005,7 +2006,11 @@ one file reads only that file's bytes, where the contents say they are:
 `com.atproto.sync.getBlob` with an HTTP `Range`, which padstone answers
 with that span of the archive. A PDS that ignores the `Range` sends the
 whole blob, and the App View takes the span from it. The bytes are
-checked against the file's CID.
+checked against the file's CID. A file's page,
+`/packages/<handle>/versions/<version>/files/<path>`, is its release's
+page with the file in the Files tab: text up to 1 MiB, numbered by line,
+or an image; its bytes are served at `.../raw/<path>`, as plain text or
+an image type, with a policy that runs nothing.
 
 Documenting a package means compiling it with its dependencies, at the
 latest versions their ranges allow when the documentation is built. That
