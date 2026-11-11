@@ -2,9 +2,11 @@ import {suite, test} from 'zena:test';
 import {equal, equalText, fail, isTrue} from 'zena:assert';
 import {
   FileType,
+  isFile,
   listDir,
   readFile,
   readFileBytes,
+  unlink,
   writeFile,
   writeFileBytes,
 } from 'zena:fs';
@@ -12,8 +14,10 @@ import {monotonic} from 'zena:time';
 import {RunResult, StepSource, Succeeded} from 'workflow/engine';
 import {StepKey} from 'workflow/step';
 import {ensureDir, withRoot} from '../fs-util.zena';
+import {PlanLoadStats} from '../plan-cache.zena';
 import {buildTarget} from '../runner.zena';
 import {ScriptRef} from '../wireit-config.zena';
+import {migrateWorkspaceToZebra} from '../zebra-config.zena';
 
 /**
  * Builds the checked-in example workspace (packages/zb/example) after
@@ -78,5 +82,37 @@ export let tests = suite('zb example workspace', () => {
     isTrue(sourceOf(third.result, 'greeting:build') == StepSource.Ran, 'third: greeting ran');
     isTrue(sourceOf(third.result, 'site:build') == StepSource.Ran, 'third: site ran');
     isTrue((await readFile(withRoot(root, 'site/out/index.html'))).contains('A second line.'), 'edit visible in output');
+  });
+
+  test('migrating the example workspace to zebra.json builds cleanly without package.json', async () => {
+    let root = '/tmp/zb-example-migrated-' + i64ToString(monotonic() as i64);
+    await copyDir('packages/zb/example', root);
+
+    let migration = await migrateWorkspaceToZebra(root);
+    equal(migration.written.length, 4);
+    isTrue(await isFile(withRoot(root, 'zebra.json')));
+    isTrue(await isFile(withRoot(root, 'greeting/zebra.json')));
+    isTrue(await isFile(withRoot(root, 'site/zebra.json')));
+    isTrue(await isFile(withRoot(root, 'hello-wasm/zebra.json')));
+
+    // Remove all package.json files so the workspace is 100% zebra.json.
+    await unlink(withRoot(root, 'package.json'));
+    await unlink(withRoot(root, 'greeting/package.json'));
+    await unlink(withRoot(root, 'site/package.json'));
+    await unlink(withRoot(root, 'hello-wasm/package.json'));
+
+    let entry = new ScriptRef('site', 'build');
+    let coldStats = new PlanLoadStats();
+    let first = await buildTarget(root, entry, 0, false, true, null, coldStats);
+    isTrue(first.result.allSucceeded, 'migrated zebra.json build succeeds');
+    equal(coldStats.filesParsed, 2);
+    isTrue((await readFile(withRoot(root, 'site/out/index.html'))).contains('Hello from zb!'));
+
+    let warmStats = new PlanLoadStats();
+    let second = await buildTarget(root, entry, 0, false, true, null, warmStats);
+    isTrue(warmStats.fromSnapshot, 'second build hits plan snapshot');
+    equal(warmStats.filesParsed, 0);
+    isTrue(sourceOf(second.result, 'greeting:build') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, 'site:build') == StepSource.Fresh);
   });
 });

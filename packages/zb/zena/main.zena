@@ -1,20 +1,56 @@
 import {Future} from 'zena:async';
 import {getArguments} from 'zena:cli';
 import {checkSignal} from 'zena:process';
-import {BuildOutcome, buildTarget, reportBuild, watchTarget} from './runner.zena';
+import {joinWorkspace} from './fs-util.zena';
+import {
+  BuildOutcome,
+  buildTarget,
+  reportBuild,
+  reportMigration,
+  watchTarget,
+} from './runner.zena';
 import {ScriptRef} from './wireit-config.zena';
+import {migrateWorkspaceToZebra} from './zebra-config.zena';
 
 /**
- * zb: a wireit-compatible incremental build runner.
+ * zb: an incremental build runner for Zena (`zena-package.json`),
+ * standalone Zebra (`zebra.json`), and Wireit (`package.json`) workspaces.
  *
- *     zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] <script>
- *     zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] <package-dir> <script>
+ *     zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<package-dir>] [<script>]
+ *     zb [-C <workspace-root>] --migrate [--dry-run] [-f|--force] [<package-dir>...]
  *
- * The workspace root defaults to the current directory; -C points at a
- * nested workspace (a directory with its own package.json tree).
+ * The workspace root defaults to the current directory (`-C` points at a
+ * nested workspace), and `<script>` defaults to `build`.
  */
 let usage =
-  'usage: zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<package-dir>] <script>';
+  'usage: zb [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [--migrate [--dry-run]] [<package-dir>] [<script>]';
+
+function parseCliEntry(args: Array<String>, next: i32) {
+  let rest = args.length - next;
+  if (rest == 0) {
+    return new ScriptRef('', 'build');
+  }
+  if (rest == 1) {
+    let arg = args[next];
+    if (arg.startsWith('.')) {
+      var colon = -1;
+      for (var i = 0; i < arg.length; i += 1) {
+        if (arg.getByteAt(i) == 58) {
+          colon = i;
+          break;
+        }
+      }
+      if (colon < 0) {
+        return new ScriptRef(joinWorkspace('', arg), 'build');
+      }
+      let pkg = joinWorkspace('', arg.sliceBytes(0, colon));
+      let script = arg.sliceBytes(colon + 1, arg.length);
+      return new ScriptRef(pkg, script);
+    }
+    return new ScriptRef('', arg);
+  }
+  return new ScriptRef(joinWorkspace('', args[next]), args[next + 1]);
+}
 
 export async function main(): Future<i32> {
   let args = getArguments();
@@ -24,6 +60,8 @@ export async function main(): Future<i32> {
   var force = false;
   var useCache = true;
   var verbose = false;
+  var migrate = false;
+  var dryRun = false;
   var next = 1;
   while (next < args.length && args[next].startsWith('-')) {
     let flag = args[next];
@@ -60,20 +98,42 @@ export async function main(): Future<i32> {
     } else if (flag == '-v' || flag == '--verbose') {
       verbose = true;
       next += 1;
+    } else if (flag == '--migrate') {
+      migrate = true;
+      next += 1;
+    } else if (flag == '--dry-run') {
+      dryRun = true;
+      next += 1;
     } else {
       console.log(usage);
       return 2;
     }
   }
-  let rest = args.length - next;
-  if (rest < 1 || rest > 2) {
+
+  if (migrate) {
+    let targetDirs = new GrowableArray<String>();
+    while (next < args.length) {
+      targetDirs.push(args[next]);
+      next += 1;
+    }
+    try {
+      let result = await migrateWorkspaceToZebra(root, targetDirs, force, dryRun);
+      return reportMigration(result, dryRun);
+    } catch (e) {
+      console.log('zb: ' + e.message);
+      return 1;
+    }
+  }
+  if (dryRun) {
     console.log(usage);
     return 2;
   }
-  let entry = if (rest == 1)
-    new ScriptRef('', args[next])
-  else
-    new ScriptRef(args[next], args[next + 1]);
+  let rest = args.length - next;
+  if (rest > 2) {
+    console.log(usage);
+    return 2;
+  }
+  let entry = parseCliEntry(args, next);
 
   var outcome: BuildOutcome | null = null;
   try {

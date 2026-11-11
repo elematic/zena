@@ -12,6 +12,7 @@ import { ArgParser, OptionType, ParsedArgs } from 'zena:args';
 import { Future } from 'zena:async';
 import { getArguments, getEnv } from 'zena:cli';
 import { exists, isFile, readFile, writeFile } from 'zena:fs';
+import { JsonArray, JsonObject, parseJson } from 'zena:json';
 import { AbsolutePath, extname } from 'zena:path';
 import { precompileModule } from 'zena:wasm';
 import { DiagnosticSeverity, SourceSpan } from 'zena-compiler/diagnostics';
@@ -19,8 +20,9 @@ import { format } from 'zena-formatter';
 import { documentPackage, DocumentOptions } from 'zenadoc';
 import { packageToJson } from 'zenadoc/json';
 import { loadPackage } from 'zenadoc/package';
-import { buildTarget, reportBuild, watchTarget } from 'zb/runner';
+import { BuildOutcome, buildTarget, reportBuild, reportMigration, watchTarget } from 'zb/runner';
 import { ScriptRef } from 'zb/wireit-config';
+import { migrateWorkspaceToZebra } from 'zb/zebra-config';
 import { benchCommand } from './bench-run.zena';
 import { CompileFailure, CompileRequest, compileTo } from './compile.zena';
 import { Options, repoRelative, resolveUserPath, userCwd } from './env.zena';
@@ -115,6 +117,14 @@ function describe() {
             type: OptionType.Flag,
             abbr: 'v',
             help: 'List fresh and skipped target steps and print step command output',
+          },
+          'migrate' => {
+            type: OptionType.Flag,
+            help: 'Convert package.json wireit scripts into zena-package.json or zebra.json',
+          },
+          'dry-run' => {
+            type: OptionType.Flag,
+            help: 'Preview migrated zena-package.json or zebra.json files without writing them',
           },
           'time' => time,
           'no-cache' => noCache,
@@ -547,14 +557,56 @@ async function pkgCommand(pkg: ArgParser, args: ParsedArgs, options: Options): F
  * anything else is a build target, run with zb.
  */
 async function build(args: ParsedArgs, options: Options): Future<i32> {
+  if (args.getFlag('migrate')) {
+    let startDir = if (args.rest.length == 0)
+      userCwd()
+    else
+      resolveUserPath(args.rest[0]);
+    let root = await workspaceRoot(startDir);
+    let targetDirs = new GrowableArray<String>();
+    if (args.rest.length == 0) {
+      if (startDir.value != root.value) {
+        let rel = startDir.stripPrefix(root);
+        if (rel != null) {
+          targetDirs.push(rel.value);
+        }
+      }
+    } else {
+      for (let raw in args.rest) {
+        let dir = resolveUserPath(raw);
+        let rel = dir.stripPrefix(root);
+        targetDirs.push(if (rel == null) raw else rel.value);
+      }
+    }
+    let dryRun = args.getFlag('dry-run');
+    try {
+      let result = await migrateWorkspaceToZebra(
+        root.value,
+        targetDirs,
+        args.getFlag('force'),
+        dryRun,
+      );
+      return reportMigration(result, dryRun);
+    } catch (e) {
+      console.error(`Error: ${e.message}`);
+      return 1;
+    }
+  }
+  if (args.getFlag('dry-run')) {
+    console.error('Error: --dry-run is only used with --migrate');
+    return 2;
+  }
   if (args.rest.length > 1) {
     console.error('Error: build takes one file or target');
     return 2;
   }
-  let argument = if (args.rest.length == 0) 'build' else args.rest[0];
-  let path = resolveUserPath(argument);
-  if (extname(argument) == '.zena' || await isFile(path.value)) {
-    return await buildFile(args, options, argument, path);
+  var argument = 'build';
+  if (args.rest.length == 1) {
+    argument = args.rest[0];
+    let path = resolveUserPath(argument);
+    if (extname(argument) == '.zena' || await isFile(path.value)) {
+      return await buildFile(args, options, argument, path);
+    }
   }
   var jobs = 0;
   if (let (true, rawJobs) = args.getOption('jobs')) {
@@ -650,34 +702,182 @@ async function buildScript(
       }
     }
     if (colon < 0) {
-      console.error(`Error: ${argument} names a package; add :<script>`);
-      return 2;
+      packagePath = argument;
+      script = 'build';
+    } else {
+      packagePath = argument.sliceBytes(0, colon);
+      script = argument.sliceBytes(colon + 1, argument.length);
     }
-    packagePath = argument.sliceBytes(0, colon);
-    script = argument.sliceBytes(colon + 1, argument.length);
   }
   let packageDir = resolveUserPath(packagePath);
-  if (!(await isFile(packageDir.value + '/package.json'))) {
-    console.error(`Error: no package.json in ${packageDir.value}`);
+  if (!(await isFile(`${packageDir.value}/zebra.json`)) &&
+      !(await isFile(`${packageDir.value}/zena-package.json`)) &&
+      !(await isFile(`${packageDir.value}/package.json`))) {
+    console.error(`Error: no zebra.json, zena-package.json, or package.json in ${packageDir.value}`);
     return 2;
   }
   let root = await workspaceRoot(packageDir);
   let relative = packageDir.stripPrefix(root);
   let packageRef = if (relative == null) '' else relative.value;
   let entry = new ScriptRef(packageRef, script);
-  let outcome = if (watch)
-    await watchTarget(root.value, entry, jobs, force, useCache, 150 as i64, null, verbose)
-  else
-    await buildTarget(root.value, entry, jobs, force, useCache);
+  var outcome: BuildOutcome | null = null;
+  try {
+    outcome = if (watch)
+      await watchTarget(root.value, entry, jobs, force, useCache, 150 as i64, null, verbose)
+    else
+      await buildTarget(root.value, entry, jobs, force, useCache);
+  } catch (e) {
+    console.error(`Error: ${e.message}`);
+    return 1;
+  }
   return reportBuild(outcome, verbose);
 }
 
-/** The nearest directory at or above `from` whose package.json has workspaces. */
+function normalizeWorkspacePattern(raw: String) {
+  var p = raw;
+  if (p.startsWith('./')) {
+    p = p.sliceBytes(2, p.length);
+  }
+  while (p.length > 0 && p.endsWith('/')) {
+    p = p.sliceBytes(0, p.length - 1);
+  }
+  return p;
+}
+
+function workspacePatternMatches(rawPattern: String, rel: String) {
+  let pattern = normalizeWorkspacePattern(rawPattern);
+  if (pattern == '') {
+    return false;
+  }
+  if (pattern == rel || pattern.startsWith(`${rel}/`)) {
+    return true;
+  }
+  if (pattern.endsWith('/**')) {
+    let prefix = pattern.sliceBytes(0, pattern.length - 3);
+    return prefix == '' || rel == prefix || rel.startsWith(`${prefix}/`);
+  }
+  if (pattern == '*') {
+    return rel != '' && !rel.contains('/');
+  }
+  if (pattern.endsWith('/*')) {
+    let parent = pattern.sliceBytes(0, pattern.length - 2);
+    if (!rel.startsWith(`${parent}/`)) {
+      return false;
+    }
+    let rest = rel.sliceBytes(parent.length + 1, rel.length);
+    return rest != '' && !rest.contains('/');
+  }
+  return false;
+}
+
+async function manifestWorkspacePatterns(path: String): Future<Array<String>?> {
+  if (!(await isFile(path))) {
+    return null;
+  }
+  try {
+    let root = parseJson(
+      await readFile(path),
+      {allowComments: true, trackLocations: false},
+    );
+    if (root is JsonObject) {
+      let ws = root['workspace'];
+      if (ws is JsonObject) {
+        let pkgs = ws['packages'];
+        if (pkgs is JsonArray) {
+          let out = new GrowableArray<String>();
+          for (var i = 0; i < pkgs.length; i += 1) {
+            let item = pkgs[i];
+            if (item is String) {
+              out.push(item);
+            }
+          }
+          return out;
+        }
+      }
+    }
+  } catch (e) {
+    return null;
+  }
+  return null;
+}
+
+async function npmWorkspacePatterns(dir: String): Future<Array<String>?> {
+  let path = `${dir}/package.json`;
+  if (!(await isFile(path))) {
+    return null;
+  }
+  try {
+    let root = parseJson(await readFile(path));
+    if (root is JsonObject) {
+      let ws = root['workspaces'];
+      var arr: JsonArray | null = null;
+      if (ws is JsonArray) {
+        arr = ws;
+      } else if (ws is JsonObject) {
+        let pkgs = ws['packages'];
+        if (pkgs is JsonArray) {
+          arr = pkgs;
+        }
+      }
+      if (arr != null) {
+        let out = new GrowableArray<String>();
+        for (var i = 0; i < arr.length; i += 1) {
+          let item = arr[i];
+          if (item is String) {
+            out.push(item);
+          }
+        }
+        return out;
+      }
+    }
+  } catch (e) {
+    return null;
+  }
+  return null;
+}
+
+function matchesAnyWorkspacePattern(
+  patterns: Array<String>?,
+  dir: AbsolutePath,
+  from: AbsolutePath,
+): boolean {
+  if (patterns == null) {
+    return false;
+  }
+  if (dir.value == from.value) {
+    return true;
+  }
+  let rel = from.stripPrefix(dir);
+  if (rel == null) {
+    return false;
+  }
+  for (let p in patterns) {
+    if (workspacePatternMatches(p, rel.value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The workspace root for `from`: `from` itself when its `zebra.json` or
+ * `zena-package.json` declares `workspace` or its `package.json` declares
+ * `workspaces`, else the nearest ancestor whose workspace patterns list
+ * `from`, else `from`.
+ */
 async function workspaceRoot(from: AbsolutePath): Future<AbsolutePath> {
   var dir = from;
   while (true) {
-    let manifest = dir.value + '/package.json';
-    if ((await isFile(manifest)) && (await readFile(manifest)).contains('"workspaces"')) {
+    let zebraPatterns = await manifestWorkspacePatterns(`${dir.value}/zebra.json`);
+    if (matchesAnyWorkspacePattern(zebraPatterns, dir, from)) {
+      return dir;
+    }
+    let zenaPatterns = await manifestWorkspacePatterns(`${dir.value}/zena-package.json`);
+    if (matchesAnyWorkspacePattern(zenaPatterns, dir, from)) {
+      return dir;
+    }
+    let npmPatterns = await npmWorkspacePatterns(dir.value);
+    if (matchesAnyWorkspacePattern(npmPatterns, dir, from)) {
       return dir;
     }
     if (dir.value == '/') {

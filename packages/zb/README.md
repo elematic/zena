@@ -6,11 +6,13 @@ changed. It is written in Zena on the `workflow` engine
 (`packages/workflow`); `docs/design/workflow.md` describes the layered
 design this implements and where it is headed.
 
-Configuration currently comes from a
-[wireit](https://github.com/google/wireit) compatibility mode: zb reads
-the same `package.json` wireit blocks this repository already uses.
-Zena workspaces will get their own configuration (likely as part of the
-Zena package manifests) as that format takes shape.
+Configuration comes from `zena-package.json` (`scripts`, `filesets`, and
+`locks`) or standalone per-package `zebra.json` files (both supporting `//`
+and `/* ... */` comments), with a per-package fallback to
+[wireit](https://github.com/google/wireit) blocks in `package.json`.
+Dependencies can cross between `zena-package.json`, `zebra.json`, and
+`package.json` packages, and `--migrate` converts existing wireit
+configurations into `zena-package.json` (when present) or `zebra.json`.
 
 For each script, zb content-hashes the declared inputs and asks the
 engine what to do: nothing (the previous run recorded the same
@@ -22,6 +24,21 @@ Commands run through `sh -c` in the package directory with
 
 Working today:
 
+- Zena-native `zena-package.json` and standalone `zebra.json` configs
+  with `//` and `/* ... */` comments: `scripts` (object stanzas and
+  command string shorthands), `filesets` (reusable file groups plus the
+  automatic `source` fileset synthesized from `zena-package.json`'s
+  `source` and `dependencies`), `files`, `output` (`[]` by default when
+  `files` or a fileset dependency is declared), `locks`
+  (`['zena-lock.json']` by default at package or script scope, `[]` to
+  disable), `cache` (`false` to opt out of caching while keeping `files`
+  for watch mode), `dependencies`, `env`, `service`, `clean`, and
+  comment keys, plus `--migrate [--dry-run] [-f]` from `package.json`
+- cached plan snapshots (`.zb/plans/<hash>.plan`): a cold run records
+  probed config paths (existing file `(mtime, size)` stamps plus
+  probed-absent config paths) and the resolved `ScriptConfig` closure;
+  warm runs verify those `stat` stamps and load the snapshot without
+  reading or parsing package config files
 - wireit script configs: `command`, `files`, `output`, `packageLocks`
   (`['package-lock.json']` by default, `[]` to disable), `dependencies`
   (strings, `../pkg:script`, dependency-only scripts, and `{script,
@@ -83,9 +100,12 @@ root:
 
 ```sh
 ./target/release/zena-cli build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<target>]
+./target/release/zena-cli build --migrate [--dry-run] [-f|--force] [<package-dir>]
 # or directly:
 ./target/release/zena-cli run --dir . --allow-spawn packages/zb/zena/main.zena \
-  [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<package-dir>] <script>
+  [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<package-dir>] [<script>]
+./target/release/zena-cli run --dir . --allow-spawn packages/zb/zena/main.zena \
+  [-C <workspace-root>] --migrate [--dry-run] [-f|--force] [<package-dir>]
 ```
 
 `--dir .` grants filesystem access and `--allow-spawn` process spawning;
@@ -126,10 +146,12 @@ Build state lives per package, like wireit's `.wireit/`: each package's
 `<pkg>/.zb/` holds `state.json` (freshness records for that package's
 scripts: the last cache key and output manifest), `cache/<key>.json`
 (cache key → output manifest), and `blobs/` (output bytes,
-content-addressed). The workspace root's `.zb/hashes.json` stores the
-`(mtime, size)` → `sha256` file memo shared across packages. Because
-per-package state sits next to each `package.json`, the cache location
-does not depend on the directory zb was invoked from. Pass `-f` /
+content-addressed). The workspace root's `.zb/` holds `hashes.json` (the `(mtime, size)` →
+`sha256` file memo shared across packages) and `plans/<hash>.plan`
+(cached `ScriptConfig` closures keyed by target entry). Because
+per-package state sits next to each `zena-package.json`, `zebra.json`, or
+`package.json`, the cache location does not depend on the directory zb
+was invoked from. Pass `-f` /
 `--force` to rerun scripts regardless of freshness or cached outputs, or
 `--no-cache` to disable restoring from `blobs/` when a step is not
 fresh. Deleting a package's `state.json` drops freshness while keeping
@@ -166,12 +188,87 @@ run side by side with wireit on the same checkout. The two systems do
 not share caches: after building with one, the other will re-run steps
 whose outputs changed on disk.
 
+## Configuration (`zena-package.json` and `zebra.json`)
+
+Zena packages can configure scripts and filesets directly in
+`zena-package.json`, and non-Zena projects can use a standalone
+`zebra.json` (with an optional `"workspace": {"packages": [...]}` at the
+workspace root):
+
+```jsonc
+{
+  "name": "app",
+  "dependencies": {
+    "lib": {"path": "../lib"},
+  },
+  "filesets": {
+    "assets": ["assets/**"],
+  },
+  "scripts": {
+    "build": {
+      "command": "zena build src/main.zena -o out/app.wasm",
+      "output": ["out/app.wasm"],
+      "dependencies": ["source", "assets"],
+    },
+    "test": {
+      "command": "zena test",
+      "files": ["test/**/*_test.zena"],
+      "dependencies": ["source"],
+    },
+    "fmt": "zena fmt --check .",
+  },
+}
+```
+
+In `zena-package.json` and `zebra.json`:
+
+- Every package with `zena-package.json` exposes an automatic `source`
+  fileset covering its library `.zena` files (from `"source"`, defaulting
+  to `"src"` and excluding `*_test.zena`, `test/**`, and `tests/**`),
+  `zena-package.json`, any `"wit"` dependencies, and the `source`
+  filesets of all `"path"` dependencies. Scripts opt into it via
+  `"dependencies": ["source"]` (or `"../pkg:source"`).
+- Named `"filesets"` entries accept either a glob array shorthand
+  (`"wit": ["wit/**/*.wit"]`) or `{"files": [...], "dependencies": [...]}`
+  and compose transitively without spawning commands.
+- Task scripts cache automatically whenever `files`, `output`, or a
+  fileset dependency is declared, defaulting `output` to `[]` when
+  omitted.
+- Setting `"cache": false` opts a step out of freshness and caching while
+  keeping its `files` globs active in `--watch` mode.
+- Omitting `files`, `output`, and fileset dependencies on a command step
+  leaves it untracked so it runs every time; `"cache": true` without
+  declared inputs or outputs is a configuration error.
+- String entries (`"fmt": "zena fmt --check ."`) are shorthands for
+  always-run commands.
+- `locks` defaults to `["zena-lock.json"]` and may be set at the package
+  root or overridden per script (`"locks": []` disables lockfile hashing).
+- Running `zena build` (or `zb`) with no target argument runs the current
+  package's `build` script; `zena build ./pkg` runs `./pkg:build`.
+
+When a package directory has `zebra.json`, or `zena-package.json` with a
+`"scripts"` block, zb ignores that directory's `package.json`; otherwise
+zb falls back to `package.json` for scripts while still serving filesets
+from `zena-package.json`. `zena build --migrate` (or `zb --migrate`)
+converts wireit `package.json` files into `zena-package.json` (when one
+exists in that directory) or `zebra.json`, preserving script semantics
+(emitting `"cache": false` where wireit declared `files` without
+`output`, and keeping `package-lock.json` in `locks` when present). Pass
+`--dry-run` to preview generated files on the rail without writing, or
+`-f` to overwrite existing migrated configs.
+
 ## Layout
 
 - `zena/main.zena` — the CLI
 - `zena/runner.zena` — config → plan → engine run → persisted state and
   rail report
-- `zena/wireit-config.zena` — package.json wireit parsing and resolution
+- `zena/zebra-config.zena` — `zena-package.json` and `zebra.json`
+  parsing, fileset rules and synthesized `source` filesets, per-package
+  workspace resolution, and `--migrate` conversion from `package.json`
+- `zena/plan-cache.zena` — `.zb/plans/` snapshot serialization and
+  `stat`-verified warm plan loading
+- `zena/wireit-config.zena` — package.json wireit parsing and shared
+  script config primitives
 - `zena/builder.zena` — script configs → workflow steps and run callbacks
 - `zena/fs-walk.zena` — input discovery: walks each glob's literal base
   directory and keeps what `zena:glob`'s `GlobSet` matches

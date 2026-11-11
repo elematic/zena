@@ -118,4 +118,75 @@ printf '%s\\n' "import { answer } from 'lib/answer';" '${MAIN} { return answer()
       await run(['rm', '-rf', outside]);
     }
   });
+
+  test('zena build runs zena-package.json and standalone zebra.json workspaces and migrates wireit configs', async (ctx) => {
+    let outside = (await run(['mktemp', '-d'])).stdout.trim();
+    try {
+      // 1. Zena workspace using `scripts` + synthesized `source` fileset in `zena-package.json`.
+      let setUp = await run(['/bin/sh', '-c', `mkdir -p "$1/packages/lib/src" "$1/packages/app/src" &&
+printf '%s\\n' '{"workspace":{"packages":["packages/*"]}}' > "$1/zena-package.json" &&
+printf '%s\\n' '{"name":"lib","scripts":{"gen":{"command":"printf hello > out.txt","files":[],"output":["out.txt"]}}}' > "$1/packages/lib/zena-package.json" &&
+printf '%s\\n' 'export let x = 1;' > "$1/packages/lib/src/x.zena" &&
+printf '%s\\n' '{"name":"app","dependencies":{"lib":{"path":"../lib"}},"scripts":{"build":{"command":"cat ../lib/out.txt src/main.zena > app.txt","output":["app.txt"],"dependencies":["source","../lib:gen"]}}}' > "$1/packages/app/zena-package.json" &&
+printf '%s\\n' 'export let y = 2;' > "$1/packages/app/src/main.zena"`,
+          'sh', outside]);
+      isTrue(setUp.succeeded(), described(setUp));
+      var unset = '';
+      for (let name in CHOOSERS) {
+        unset = `${unset} -u ${name}`;
+      }
+      // `zena build` with no args runs `build` in the current package (even if a `./build` file exists).
+      let touchBuildFile = await run(['/bin/sh', '-c', `printf 'unrelated\n' > "$1/packages/app/build"`, 'sh', outside]);
+      isTrue(touchBuildFile.succeeded(), described(touchBuildFile));
+      let first = await run(['/bin/sh', '-c',
+          `cd "$1/packages/app" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build`,
+          'sh', outside, zenaBinary()]);
+      isTrue(first.succeeded(), described(first));
+      isTrue(first.stdout.contains('packages/lib:gen: ran'), first.stdout);
+      isTrue(first.stdout.contains('packages/app:build: ran'), first.stdout);
+
+      // `zena build ./packages/app` from workspace root defaults to `:build` and stays fresh.
+      let warmFromRoot = await run(['/bin/sh', '-c',
+          `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build ./packages/app`,
+          'sh', outside, zenaBinary()]);
+      isTrue(warmFromRoot.succeeded(), described(warmFromRoot));
+      isTrue(warmFromRoot.stdout.contains('2 fresh'), warmFromRoot.stdout);
+
+      // 2. Standalone `zebra.json` workspace (no zena-package.json or package.json).
+      let setUpZebra = await run(['/bin/sh', '-c', `mkdir -p "$1/standalone/pkg" &&
+printf '%s\\n' '{"workspace":{"packages":["pkg"]}}' > "$1/standalone/zebra.json" &&
+printf '%s\\n' '{"scripts":{"build":{"command":"printf ok > built.txt","files":[],"output":["built.txt"]}}}' > "$1/standalone/pkg/zebra.json"`,
+          'sh', outside]);
+      isTrue(setUpZebra.succeeded(), described(setUpZebra));
+      let standaloneBuild = await run(['/bin/sh', '-c',
+          `cd "$1/standalone/pkg" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" build`,
+          'sh', outside, zenaBinary()]);
+      isTrue(standaloneBuild.succeeded(), described(standaloneBuild));
+      isTrue(standaloneBuild.stdout.contains('pkg:build: ran'), standaloneBuild.stdout);
+
+      // 3. `zena build --migrate` writes `zebra.json` when no `zena-package.json` exists,
+      // and merges `scripts` into `zena-package.json` when one exists.
+      let setUpWireit = await run(['/bin/sh', '-c', `mkdir -p "$1/wireit-pkg" "$1/zena-wireit-pkg" &&
+printf '%s\\n' '{"scripts":{"test":"wireit"},"wireit":{"test":{"command":"echo ok","files":[],"output":[]}}}' > "$1/wireit-pkg/package.json" &&
+printf '%s\\n' '{"name":"zpkg"}' > "$1/zena-wireit-pkg/zena-package.json" &&
+printf '%s\\n' '{"scripts":{"build":"wireit"},"wireit":{"build":{"command":"echo built > out.txt","files":[],"output":["out.txt"]}}}' > "$1/zena-wireit-pkg/package.json"`,
+          'sh', outside]);
+      isTrue(setUpWireit.succeeded(), described(setUpWireit));
+      let migratedZebra = await run(['/bin/sh', '-c',
+          `cd "$1/wireit-pkg" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" build --migrate`,
+          'sh', outside, zenaBinary()]);
+      isTrue(migratedZebra.succeeded(), described(migratedZebra));
+      isTrue(migratedZebra.stdout.contains('zebra.json: wrote'), migratedZebra.stdout);
+      let verifyZebra = await run(['test', '-f', `${outside}/wireit-pkg/zebra.json`]);
+      isTrue(verifyZebra.succeeded(), 'zebra.json exists after --migrate');
+
+      let migratedZena = await run(['/bin/sh', '-c',
+          `cd "$1/zena-wireit-pkg" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" build --migrate`,
+          'sh', outside, zenaBinary()]);
+      isTrue(migratedZena.succeeded(), described(migratedZena));
+      isTrue(migratedZena.stdout.contains('zena-package.json: wrote'), migratedZena.stdout);
+    } finally {
+      await run(['rm', '-rf', outside]);
+    }
+  });
 });

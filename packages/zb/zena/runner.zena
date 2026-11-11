@@ -26,12 +26,14 @@ import {Spinner} from './animation.zena';
 import {StepExecution, lockfileCandidates, planScripts} from './builder.zena';
 import {Colors} from './colors.zena';
 import {DiskCache, stateDirOf} from './disk-cache.zena';
-import {ensureParentDir, readFileOrNull, withRoot} from './fs-util.zena';
+import {ensureParentDir, withRoot} from './fs-util.zena';
 import {FileHasher} from './fs-walk.zena';
 import {RailLayout, StepKind, formatDuration} from './layout.zena';
+import {PlanLoadStats, loadOrCollectConfigs} from './plan-cache.zena';
 import {sha256HexOfString} from 'zena:crypto';
 import {stateFromJson, stateToJson} from './state-json.zena';
-import {ScriptConfig, ScriptRef, WireitWorkspace, refKey} from './wireit-config.zena';
+import {ScriptConfig, ScriptRef, refKey} from './wireit-config.zena';
+import {MigrationResult} from './zebra-config.zena';
 
 // State is stored per package ('<pkg>/.zb/state.json'), like wireit's
 // .wireit/, so its location does not depend on the invocation
@@ -339,18 +341,17 @@ async function runTargetOnce(
   allowForegroundService: boolean = true,
   configPathsOut: GrowableArray<String>? = null,
   configsOut: GrowableArray<ScriptConfig>? = null,
+  planStatsOut: PlanLoadStats? = null,
 ): Future<BuildOutcome> {
   listenSignals();
   let startNs = monotonic() as i64;
   let jobs = if (parallelism > 0) parallelism else defaultParallelism();
-  let seenConfigPaths = new HashSet<String>();
-  let workspace = new WireitWorkspace((path: String) => {
-    if (configPathsOut != null && seenConfigPaths.add(path)) {
-      configPathsOut.push(path);
-    }
-    return readFileOrNull(withRoot(root, path));
-  });
-  let configs = await workspace.collect([entry]);
+  let configs = await loadOrCollectConfigs(
+    root,
+    entry,
+    configPathsOut,
+    planStatsOut,
+  );
   if (configsOut != null) {
     for (let config in configs) {
       configsOut.push(config);
@@ -398,7 +399,15 @@ async function runTargetOnce(
   let spinner = new Spinner();
   let inFlight = new GrowableArray<String>();
   var completed = 0;
-  let totalSteps = configs.length;
+  let entryKey = refKey(entry);
+  let filesetKeys = new HashSet<String>();
+  for (let config in configs) {
+    let k = refKey(config.ref);
+    if (config.isFileset && k != entryKey) {
+      filesetKeys.add(k);
+    }
+  }
+  let totalSteps = configs.length - filesetKeys.size;
   var result: RunResult | null = null;
   try {
     result = await engine.run(
@@ -411,6 +420,9 @@ async function runTargetOnce(
         (step, manifest) => verifyManifestOutputs(hasher, manifest),
         servicePool,
         (step: StepKey) => {
+          if (filesetKeys.has(step.value)) {
+            return;
+          }
           if (foregroundServiceKey != null && step.value == foregroundServiceKey) {
             spinner.stop();
             return;
@@ -419,6 +431,9 @@ async function runTargetOnce(
           spinner.update(formatActiveSpinnerMessage(inFlight, completed, totalSteps));
         },
         (step: StepKey, stepOutcome: StepOutcome) => {
+          if (filesetKeys.has(step.value)) {
+            return;
+          }
           completed += 1;
           let remaining = new GrowableArray<String>();
           for (let k in inFlight) {
@@ -446,13 +461,16 @@ async function runTargetOnce(
   await hasher.save();
   let stepKeys = new GrowableArray<String>();
   for (let config in configs) {
-    stepKeys.push(refKey(config.ref));
+    let k = refKey(config.ref);
+    if (!filesetKeys.has(k)) {
+      stepKeys.push(k);
+    }
   }
   let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
   return new BuildOutcome(
     runResult,
     stepKeys,
-    refKey(entry),
+    entryKey,
     durationMs,
     plan.executions,
   );
@@ -470,6 +488,7 @@ export async function buildTarget(
   force: boolean = false,
   useCache: boolean = true,
   hasherOut: FileHasher? = null,
+  planStatsOut: PlanLoadStats? = null,
 ): Future<BuildOutcome> {
   return await runTargetOnce(
     root,
@@ -478,7 +497,75 @@ export async function buildTarget(
     force,
     useCache,
     hasherOut,
+    null,
+    true,
+    null,
+    null,
+    planStatsOut,
   );
+}
+
+/** Formats a Wireit-to-Zebra migration report on a Clack rail. */
+export function formatMigrationReport(
+  migration: MigrationResult,
+  dryRun: boolean = false,
+  colors: Colors = new Colors(),
+): String {
+  let layout = new RailLayout(colors);
+  let lines = new GrowableArray<String>();
+  let title = if (dryRun) 'migrate (dry run)' else 'migrate';
+  lines.push(layout.intro(`${layout.badge('zb')}  ${colors.dim(title)}`));
+
+  if (migration.written.length > 0 || migration.skippedExisting.length > 0) {
+    lines.push(layout.bar());
+    for (let item in migration.written) {
+      let action = if (dryRun) colors.cyan('preview') else colors.green('wrote');
+      lines.push(layout.step(StepKind.Success, `${colors.bold(item.path)}: ${action}`));
+      if (dryRun) {
+        for (let logLine in layout.logBlock(item.content)) {
+          lines.push(logLine);
+        }
+      }
+    }
+    for (let skippedPath in migration.skippedExisting) {
+      lines.push(layout.step(
+        StepKind.Warning,
+        `${colors.bold(skippedPath)}: ${colors.yellow('skipped (already exists; pass -f to overwrite)')}`,
+      ));
+    }
+  }
+
+  lines.push(layout.bar());
+  let count = migration.written.length;
+  let footer = if (count > 0) {
+    let verb = if (dryRun) 'would write' else 'migrated';
+    let noun = if (count == 1) 'package' else 'packages';
+    colors.green(`${verb} ${i32ToString(count)} ${noun}`)
+  } else if (migration.skippedExisting.length > 0) {
+    colors.yellow(`0 packages written (${i32ToString(migration.skippedExisting.length)} existing skipped)`)
+  } else {
+    colors.dim('no wireit packages found to migrate')
+  };
+  lines.push(layout.outro(footer));
+
+  let sb = new StringBuilder();
+  for (var i = 0; i < lines.length; i += 1) {
+    if (i > 0) {
+      sb.append('\n');
+    }
+    sb.append(lines[i]);
+  }
+  return sb.toString();
+}
+
+/** Prints a migration report and returns exit code 0. */
+export function reportMigration(
+  migration: MigrationResult,
+  dryRun: boolean = false,
+  colors: Colors = new Colors(),
+): i32 {
+  console.log(formatMigrationReport(migration, dryRun, colors));
+  return 0;
 }
 
 async function snapshotWatchFiles(

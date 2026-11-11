@@ -1,0 +1,586 @@
+/**
+ * Cached build-plan snapshots (`.zb/plans/<hash>.plan`) for zero-parse
+ * warm startup.
+ *
+ * Resolving a target's configuration closure on a cold run walks across
+ * reachable packages and parses each package's `zebra.json`,
+ * `zena-package.json`, or `package.json`. `loadOrCollectConfigs` records
+ * every probed config path (both existing files with `(modified, size, sha256)`
+ * and probed-absent config paths) alongside the resolved `Array<ScriptConfig>`
+ * in a compact length-prefixed snapshot file.
+ *
+ * On warm runs where no probed config path changed, `zb` verifies those
+ * `stat` stamps and deserializes the `ScriptConfig` closure directly
+ * without opening or JSON-parsing any package configuration files.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap, HashSet} from 'zena:collections';
+import {StringBuilder} from 'zena:core';
+import {sha256Hex, sha256HexOfString} from 'zena:crypto';
+import {
+  FileType,
+  FsError,
+  FsErrorCode,
+  exists,
+  isFile,
+  readFile,
+  readFileBytes,
+  rename,
+  stat,
+  writeFile,
+} from 'zena:fs';
+import {monotonic} from 'zena:time';
+import {ensureParentDir, readFileOrNull, withRoot} from './fs-util.zena';
+import {
+  DependencySpec,
+  EnvBinding,
+  EnvExternal,
+  EnvLiteral,
+  ScriptConfig,
+  ScriptRef,
+  ServiceConfig,
+  refKey,
+} from './wireit-config.zena';
+import {ZebraWorkspace} from './zebra-config.zena';
+
+let PLAN_SNAPSHOT_HEADER = 'zebra-plan-v1\n';
+
+/**
+ * Config files modified within 20ms of the plan snapshot's own mtime are
+ * verified by `sha256` in addition to `(modified, size)` so rapid
+ * same-tick edits of identical byte size cannot read falsely fresh.
+ */
+let RACY_WINDOW_NANOS = 20000000 as i64;
+
+/** One filesystem probe recorded while collecting a target's config closure. */
+export class ConfigProbe {
+  exists: boolean;
+  path: String;
+  modified: i64;
+  size: i64;
+  sha256: String;
+
+  new(
+    this.exists,
+    this.path,
+    this.modified = 0 as i64,
+    this.size = 0 as i64,
+    this.sha256 = '',
+  );
+}
+
+/** Observability counters for testing warm snapshot hits vs cold parses. */
+export class PlanLoadStats {
+  var fromSnapshot = false;
+  var filesParsed = 0;
+  var statChecks = 0;
+  var racyHashChecks = 0;
+}
+
+class PlanDecodeError extends Error {
+  new(message: String) : super(message);
+}
+
+function writeBool(sb: StringBuilder, value: boolean) {
+  sb.appendByte(if (value) 49 else 48);
+  sb.appendByte(10);
+}
+
+function writeI32(sb: StringBuilder, value: i32) {
+  sb.appendI32(value);
+  sb.appendByte(10);
+}
+
+function writeI64(sb: StringBuilder, value: i64) {
+  sb.appendI64(value);
+  sb.appendByte(10);
+}
+
+function writeStr(sb: StringBuilder, value: String) {
+  sb.appendI32(value.length);
+  sb.appendByte(58);
+  sb.append(value);
+  sb.appendByte(10);
+}
+
+function writeOptStr(sb: StringBuilder, value: String?) {
+  if (value == null) {
+    writeBool(sb, false);
+  } else {
+    writeBool(sb, true);
+    writeStr(sb, value);
+  }
+}
+
+function writeStrList(sb: StringBuilder, items: Array<String>) {
+  writeI32(sb, items.length);
+  for (let item in items) {
+    writeStr(sb, item);
+  }
+}
+
+/** Serializes `probes` and `configs` into the length-prefixed snapshot format. */
+export function planSnapshotToText(
+  probes: Array<ConfigProbe>,
+  configs: Array<ScriptConfig>,
+): String {
+  let sb = new StringBuilder(256);
+  sb.append(PLAN_SNAPSHOT_HEADER);
+  writeI32(sb, probes.length);
+  for (let probe in probes) {
+    writeBool(sb, probe.exists);
+    writeStr(sb, probe.path);
+    if (probe.exists) {
+      writeI64(sb, probe.modified);
+      writeI64(sb, probe.size);
+      writeStr(sb, probe.sha256);
+    }
+  }
+  writeI32(sb, configs.length);
+  for (let config in configs) {
+    writeStr(sb, config.ref.packageDir);
+    writeStr(sb, config.ref.script);
+    writeBool(sb, config.isWireit);
+    writeBool(sb, config.cacheEnabled);
+    writeBool(sb, config.isFileset);
+    writeOptStr(sb, config.command);
+    writeStrList(sb, config.files);
+    writeStrList(sb, config.output);
+    writeBool(sb, config.filesDeclared);
+    writeBool(sb, config.outputDeclared);
+    writeI32(sb, config.dependencies.length);
+    for (let dep in config.dependencies) {
+      writeStr(sb, dep.ref.packageDir);
+      writeStr(sb, dep.ref.script);
+      writeBool(sb, dep.cascade);
+    }
+    writeStr(sb, config.clean);
+    let svc = config.service;
+    if (svc == null) {
+      writeBool(sb, false);
+    } else {
+      writeBool(sb, true);
+      writeOptStr(sb, svc.readyWhenLineMatches);
+    }
+    writeI32(sb, config.env.length);
+    for (let (name, binding) in config.env) {
+      writeStr(sb, name);
+      match (binding) {
+        case EnvLiteral as lit: {
+          writeStr(sb, 'L');
+          writeStr(sb, lit.value);
+        }
+        case EnvExternal as ext: {
+          writeStr(sb, 'X');
+          writeOptStr(sb, ext.defaultValue);
+        }
+      }
+    }
+    writeStrList(sb, config.packageLocks);
+  }
+  return sb.toString();
+}
+
+class PlanReader {
+  #text: String;
+  var #pos = 0;
+
+  new(text: String, startPos: i32) : #text = text, #pos = startPos;
+
+  atEnd(): boolean {
+    return this.#pos == this.#text.length;
+  }
+
+  readBool(): boolean {
+    if (this.#pos + 1 >= this.#text.length || this.#text.getByteAt(this.#pos + 1) != 10) {
+      throw new PlanDecodeError('expected boolean line');
+    }
+    let b = this.#text.getByteAt(this.#pos);
+    this.#pos += 2;
+    if (b == 49) {
+      return true;
+    }
+    if (b == 48) {
+      return false;
+    }
+    throw new PlanDecodeError('invalid boolean byte');
+  }
+
+  readI32(): i32 {
+    if (this.#pos >= this.#text.length) {
+      throw new PlanDecodeError('unexpected end reading i32');
+    }
+    var negative = false;
+    if (this.#text.getByteAt(this.#pos) == 45) {
+      negative = true;
+      this.#pos += 1;
+    }
+    var acc = 0;
+    var digits = 0;
+    while (this.#pos < this.#text.length) {
+      let b = this.#text.getByteAt(this.#pos);
+      if (b == 10) {
+        this.#pos += 1;
+        if (digits == 0) {
+          throw new PlanDecodeError('empty i32');
+        }
+        return if (negative) 0 - acc else acc;
+      }
+      if (b < 48 || b > 57) {
+        throw new PlanDecodeError('invalid digit in i32');
+      }
+      acc = acc * 10 + (b - 48);
+      digits += 1;
+      this.#pos += 1;
+    }
+    throw new PlanDecodeError('unterminated i32');
+  }
+
+  readI64(): i64 {
+    if (this.#pos >= this.#text.length) {
+      throw new PlanDecodeError('unexpected end reading i64');
+    }
+    var negative = false;
+    if (this.#text.getByteAt(this.#pos) == 45) {
+      negative = true;
+      this.#pos += 1;
+    }
+    var acc = 0 as i64;
+    var digits = 0;
+    while (this.#pos < this.#text.length) {
+      let b = this.#text.getByteAt(this.#pos);
+      if (b == 10) {
+        this.#pos += 1;
+        if (digits == 0) {
+          throw new PlanDecodeError('empty i64');
+        }
+        return if (negative) (0 as i64) - acc else acc;
+      }
+      if (b < 48 || b > 57) {
+        throw new PlanDecodeError('invalid digit in i64');
+      }
+      acc = acc * (10 as i64) + ((b - 48) as i64);
+      digits += 1;
+      this.#pos += 1;
+    }
+    throw new PlanDecodeError('unterminated i64');
+  }
+
+  readStr(): String {
+    var len = 0;
+    var digits = 0;
+    while (this.#pos < this.#text.length) {
+      let b = this.#text.getByteAt(this.#pos);
+      if (b == 58) {
+        this.#pos += 1;
+        if (digits == 0) {
+          throw new PlanDecodeError('empty string length');
+        }
+        if (this.#pos + len >= this.#text.length) {
+          throw new PlanDecodeError('truncated string payload');
+        }
+        if (this.#text.getByteAt(this.#pos + len) != 10) {
+          throw new PlanDecodeError('missing newline after string');
+        }
+        let s = this.#text.sliceBytes(this.#pos, this.#pos + len);
+        this.#pos += len + 1;
+        return s;
+      }
+      if (b < 48 || b > 57) {
+        throw new PlanDecodeError('invalid digit in string length');
+      }
+      len = len * 10 + (b - 48);
+      digits += 1;
+      this.#pos += 1;
+    }
+    throw new PlanDecodeError('unterminated string length');
+  }
+
+  readOptStr(): String? {
+    if (!this.readBool()) {
+      return null;
+    }
+    return this.readStr();
+  }
+
+  readStrList(): Array<String> {
+    let n = this.readI32();
+    if (n < 0) {
+      throw new PlanDecodeError('negative list length');
+    }
+    let out = new GrowableArray<String>();
+    for (var i = 0; i < n; i += 1) {
+      out.push(this.readStr());
+    }
+    return out;
+  }
+}
+
+/** Deserialized plan snapshot containing probed config paths and resolved scripts. */
+export class PlanSnapshot {
+  probes: Array<ConfigProbe>;
+  configs: Array<ScriptConfig>;
+
+  new(this.probes, this.configs);
+}
+
+/** Deserializes a snapshot produced by `planSnapshotToText`. */
+export function planSnapshotFromText(text: String): PlanSnapshot {
+  if (!text.startsWith(PLAN_SNAPSHOT_HEADER)) {
+    throw new PlanDecodeError('unrecognized plan snapshot header');
+  }
+  let reader = new PlanReader(text, PLAN_SNAPSHOT_HEADER.length);
+  let probeCount = reader.readI32();
+  if (probeCount < 0) {
+    throw new PlanDecodeError('negative probe count');
+  }
+  let probes = new GrowableArray<ConfigProbe>();
+  for (var i = 0; i < probeCount; i += 1) {
+    let probeExists = reader.readBool();
+    let path = reader.readStr();
+    if (probeExists) {
+      let modified = reader.readI64();
+      let size = reader.readI64();
+      let sha = reader.readStr();
+      probes.push(new ConfigProbe(true, path, modified, size, sha));
+    } else {
+      probes.push(new ConfigProbe(false, path));
+    }
+  }
+
+  let configCount = reader.readI32();
+  if (configCount < 0) {
+    throw new PlanDecodeError('negative config count');
+  }
+  let configs = new GrowableArray<ScriptConfig>();
+  for (var i = 0; i < configCount; i += 1) {
+    let pkgDir = reader.readStr();
+    let script = reader.readStr();
+    let isWireit = reader.readBool();
+    let cacheEnabled = reader.readBool();
+    let isFileset = reader.readBool();
+    let command = reader.readOptStr();
+    let files = reader.readStrList();
+    let output = reader.readStrList();
+    let filesDeclared = reader.readBool();
+    let outputDeclared = reader.readBool();
+    let depCount = reader.readI32();
+    if (depCount < 0) {
+      throw new PlanDecodeError('negative dep count');
+    }
+    let deps = new GrowableArray<DependencySpec>();
+    for (var d = 0; d < depCount; d += 1) {
+      let depDir = reader.readStr();
+      let depScript = reader.readStr();
+      let cascade = reader.readBool();
+      deps.push(new DependencySpec(new ScriptRef(depDir, depScript), cascade));
+    }
+    let clean = reader.readStr();
+    let hasService = reader.readBool();
+    let service = if (hasService)
+      new ServiceConfig(reader.readOptStr())
+    else
+      null;
+    let envCount = reader.readI32();
+    if (envCount < 0) {
+      throw new PlanDecodeError('negative env count');
+    }
+    let env = new GrowableArray<(String, EnvBinding)>();
+    for (var e = 0; e < envCount; e += 1) {
+      let name = reader.readStr();
+      let kind = reader.readStr();
+      if (kind == 'L') {
+        env.push((name, new EnvLiteral(reader.readStr())));
+      } else if (kind == 'X') {
+        env.push((name, new EnvExternal(reader.readOptStr())));
+      } else {
+        throw new PlanDecodeError('unknown env binding kind');
+      }
+    }
+    let locks = reader.readStrList();
+    configs.push(new ScriptConfig(
+      new ScriptRef(pkgDir, script),
+      isWireit,
+      command,
+      files,
+      output,
+      filesDeclared,
+      outputDeclared,
+      deps,
+      clean,
+      service,
+      env,
+      locks,
+      cacheEnabled,
+      isFileset,
+    ));
+  }
+  if (!reader.atEnd()) {
+    throw new PlanDecodeError('trailing bytes in plan snapshot');
+  }
+  return new PlanSnapshot(probes, configs);
+}
+
+/** Path of `entry`'s plan snapshot under `<root>/.zb/plans/`. */
+export function planSnapshotPath(root: String, entry: ScriptRef): String {
+  let keyHash = sha256HexOfString(`zebra-plan-v1:${refKey(entry)}`);
+  return withRoot(root, `.zb/plans/${keyHash}.plan`);
+}
+
+async function probesAreFresh(
+  root: String,
+  planModified: i64,
+  probes: Array<ConfigProbe>,
+  stats: PlanLoadStats?,
+): Future<boolean> {
+  if (probes.length == 0) {
+    return false;
+  }
+  for (let probe in probes) {
+    if (stats != null) {
+      stats.statChecks += 1;
+    }
+    let full = withRoot(root, probe.path);
+    if (!probe.exists) {
+      if (await exists(full)) {
+        return false;
+      }
+      continue;
+    }
+    var modified = 0 as i64;
+    var size = 0 as i64;
+    var isReg = false;
+    try {
+      let st = await stat(full);
+      isReg = st.fileType == FileType.RegularFile;
+      modified = st.modified;
+      size = st.size;
+    } catch (e) {
+      if (e is FsError && e.code == FsErrorCode.NotFound) {
+        return false;
+      }
+      throw e;
+    }
+    if (!isReg || size != probe.size || modified != probe.modified) {
+      return false;
+    }
+    if (
+      planModified <= (0 as i64) ||
+      modified <= (0 as i64) ||
+      (planModified - modified) < RACY_WINDOW_NANOS
+    ) {
+      if (stats != null) {
+        stats.racyHashChecks += 1;
+      }
+      var currentSha = '';
+      try {
+        currentSha = sha256Hex(await readFileBytes(full));
+      } catch (e) {
+        return false;
+      }
+      if (currentSha != probe.sha256) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Loads `entry`'s transitive `ScriptConfig` closure from `.zb/plans/` when
+ * every probed config path still matches on disk, or resolves it fresh via
+ * `ZebraWorkspace` and atomically updates the cached plan snapshot.
+ */
+export async function loadOrCollectConfigs(
+  root: String,
+  entry: ScriptRef,
+  configPathsOut: GrowableArray<String>? = null,
+  statsOut: PlanLoadStats? = null,
+): Future<Array<ScriptConfig>> {
+  let snapshotPath = planSnapshotPath(root, entry);
+  if (await isFile(snapshotPath)) {
+    var planModified = 0 as i64;
+    var decoded: PlanSnapshot | null = null;
+    try {
+      planModified = (await stat(snapshotPath)).modified;
+      decoded = planSnapshotFromText(await readFile(snapshotPath));
+    } catch (e) {
+      decoded = null;
+    }
+    if (decoded != null) {
+      let probes = decoded.probes;
+      let cachedConfigs = decoded.configs;
+      if (await probesAreFresh(root, planModified, probes, statsOut)) {
+        if (configPathsOut != null) {
+          let seen = new HashSet<String>();
+          for (let probe in probes) {
+            if (seen.add(probe.path)) {
+              configPathsOut.push(probe.path);
+            }
+          }
+        }
+        if (statsOut != null) {
+          statsOut.fromSnapshot = true;
+        }
+        return cachedConfigs;
+      }
+    }
+  }
+
+  let probedOrder = new GrowableArray<String>();
+  let seenProbed = new HashSet<String>();
+  let readContents = new HashMap<String, String>();
+  let workspace = new ZebraWorkspace(async (path: String): Future<String?> => {
+    if (seenProbed.add(path)) {
+      probedOrder.push(path);
+    }
+    let content = await readFileOrNull(withRoot(root, path));
+    if (content != null) {
+      readContents[path] = content;
+    }
+    return content;
+  });
+
+  let configs = await workspace.collect([entry]);
+  if (statsOut != null) {
+    statsOut.fromSnapshot = false;
+    statsOut.filesParsed = readContents.size;
+  }
+  if (configPathsOut != null) {
+    for (let path in probedOrder) {
+      configPathsOut.push(path);
+    }
+  }
+
+  let probes = new GrowableArray<ConfigProbe>();
+  for (let path in probedOrder) {
+    if (let (true, content) = readContents.get(path)) {
+      var modified = 0 as i64;
+      var size = content.length as i64;
+      try {
+        let st = await stat(withRoot(root, path));
+        modified = st.modified;
+        size = st.size;
+      } catch (e) {
+        modified = 0 as i64;
+      }
+      probes.push(
+        new ConfigProbe(true, path, modified, size, sha256HexOfString(content)),
+      );
+    } else {
+      probes.push(new ConfigProbe(false, path));
+    }
+  }
+
+  try {
+    await ensureParentDir(snapshotPath);
+    let tempPath = `${snapshotPath}.tmp-${i64ToString(monotonic() as i64)}`;
+    await writeFile(tempPath, planSnapshotToText(probes, configs));
+    await rename(tempPath, snapshotPath);
+  } catch (e) {
+    // Snapshot persistence is purely a warm-startup acceleration.
+  }
+
+  return configs;
+}
