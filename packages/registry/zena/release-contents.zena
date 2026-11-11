@@ -22,9 +22,10 @@ import {BlobBytes} from 'pds/firestore';
 /**
  * The format `ReleaseContents.toBytes` writes. Contents of another are
  * derived again. 2 added each file's offset in the archive; 3 pointed the
- * README's images to `rawUrl`, and its links to the files' pages.
+ * README's images to `rawUrl`, and its links to the files' pages; 4 kept
+ * its links to directories, to their pages.
  */
-export let CONTENTS_FORMAT = 3;
+export let CONTENTS_FORMAT = 4;
 
 /** The largest README rendered, in bytes of Markdown. A larger one is linked to instead. */
 export let MAX_README_BYTES = 256 * 1024;
@@ -209,10 +210,11 @@ function releaseUrl(ref: String, version: String, kind: String, path: String): S
  * archive holds the files at `paths`. A URL with a scheme, or to another
  * host, and a link within the page (`#...`) stay as they are, so images
  * from other sites show. A relative path is resolved from `directory`, and
- * one that starts with `/` from the package's root: a link points to the file's page (`fileUrl`), and an image to the
- * file itself, which the App View serves from the release's archive
- * (`rawUrl`). One that climbs out of the package's root, or names
- * no file in the archive, is left out.
+ * one that starts with `/` from the package's root: a link points to the
+ * page of the file or directory (`fileUrl`), and an image to the file
+ * itself, which the App View serves from the release's archive
+ * (`rawUrl`). One that climbs out of the package's root, or names no file
+ * or directory in the archive, is left out.
  */
 export final class PackageUrls implements UrlResolver {
   #ref: String;
@@ -255,11 +257,25 @@ export final class PackageUrls implements UrlResolver {
       segments.push(percentDecode(segment));
     }
     let path = join(segments, '/');
-    if (!this.#paths.has(path)) {
+    if (!this.#paths.has(path) && (isImage || !this.#isDirectory(path))) {
       return null;
     }
     let target = if (isImage) rawUrl(this.#ref, this.#version, path) else fileUrl(this.#ref, this.#version, path);
     return `${target}${suffix}`;
+  }
+
+  /** Whether `path` is a directory of the archive: one that holds a file. */
+  #isDirectory(path: String): boolean {
+    if (path == '') {
+      return false;
+    }
+    let prefix = `${path}/`;
+    for (let candidate in this.#paths) {
+      if (candidate.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
   }
 }
 

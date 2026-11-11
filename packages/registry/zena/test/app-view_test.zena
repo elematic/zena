@@ -1582,7 +1582,7 @@ export let tests = suite('registry/app-view', () => {
       };
       return packSource(files);
     };
-    let links = '[guide](docs/guide.md#start) [up](../outside.md) [gone](nope.md) [source](/router.zena) ' +
+    let links = '[guide](docs/guide.md#start) [up](../outside.md) [gone](nope.md) [source](/router.zena) [docs](docs/) ' +
         '![logo](./logo.png) ![badge](https://img.example/badge.svg) [top](#router)';
     await release(fixture, ALICE, router, '1.0.0', await upload(fixture, router,
         withReadme('1.0.0', `# Router\n\nRoutes **requests**.\n\n<script>alert(1)</script>\n\n${links}\n`)));
@@ -1604,7 +1604,7 @@ export let tests = suite('registry/app-view', () => {
     let files = `/packages/${router}/versions/1.0.0/files`;
     let raw = `/packages/${router}/versions/1.0.0/raw`;
     for (let expected in [`<a href="${files}/docs/guide.md#start">guide</a>`, ' up ', ' gone ',
-        `<a href="${files}/router.zena">source</a>`, `<img src="${raw}/logo.png" alt="logo" />`,
+        `<a href="${files}/router.zena">source</a>`, `<a href="${files}/docs">docs</a>`, `<img src="${raw}/logo.png" alt="logo" />`,
         '<img src="https://img.example/badge.svg"', '<a href="#router">top</a>']) {
       isTrue(packageHtml.contains(expected), `${expected} in the README`);
     }
@@ -1627,10 +1627,11 @@ export let tests = suite('registry/app-view', () => {
     // to.
     let guidePage = pageOf(await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/docs/guide.md'));
     let handleRaw = '/packages/router.acme.pkg.test/versions/1.0.0/raw';
+    let handleFiles = '/packages/router.acme.pkg.test/versions/1.0.0/files';
     for (let expected in ['<rad-tab slot="tabs" panel="files" active>Files</rad-tab>', '<rad-tab-panel name="files" active>',
         '<div class="prose markdown-file"><h1>Guide</h1>', `<a href="${files}/router.zena">here</a>`, `href="${handleRaw}/docs/guide.md"`,
-        'href="/packages/router.acme.pkg.test/versions/1.0.0#files"', 'zena pkg add router.acme.pkg.test@1.0.0',
-        '<title>docs/guide.md · ']) {
+        '<a href="/packages/router.acme.pkg.test/versions/1.0.0#files">router</a>', `<a href="${handleFiles}/docs">docs</a>`,
+        'zena pkg add router.acme.pkg.test@1.0.0', '<title>docs/guide.md · ']) {
       isTrue(guidePage.contains(expected), `${expected} in the file's page`);
     }
     isTrue(!guidePage.contains('panel="readme" active') && !guidePage.contains('<b>Start'), 'the README is not the active tab');
@@ -1642,15 +1643,28 @@ export let tests = suite('registry/app-view', () => {
     isTrue(binaryPage.contains('not text') && binaryPage.contains(`href="${handleRaw}/data.bin"`), binaryPage);
     equal((await fixture.get(`${files}/nope.md`)).statusCode, 404);
 
+    // A directory's page lists what is in it, under the same path; the
+    // Files tab lists the package's root.
+    for (let directory in ['docs', 'docs/']) {
+      let docsPage = pageOf(await fixture.get(`${handleFiles}/${directory}`));
+      for (let expected in ['<rad-tab-panel name="files" active>', `<a href="${handleFiles}/docs/guide.md">guide.md</a>`,
+          '<a href="/packages/router.acme.pkg.test/versions/1.0.0#files">router</a>', '<title>docs/ · ']) {
+        isTrue(docsPage.contains(expected), `${expected} in the directory's page`);
+      }
+      isTrue(!docsPage.contains('router.zena</a>'), 'only the directory');
+    }
+    equal((await fixture.get(`${handleFiles}/do`)).statusCode, 404);
+
     // A version's page has its own README, its files with their sizes, and
     // the command that adds it.
     let versionResponse = await fixture.get('/packages/router.acme.pkg.test/versions/1.1.0');
     equal(versionResponse.statusCode, 200);
     let versionHtml = pageOf(versionResponse);
     for (let expected in ['<del>fewer</del>', 'README.md', 'router.zena', 'zena-package.json', '6 files', 'retracted',
-        'broken', 'bytes', 'zena pkg add router.acme.pkg.test@1.1.0', 'href="/packages/router.acme.pkg.test/versions/1.1.0/files/docs/guide.md"']) {
+        'broken', 'bytes', 'zena pkg add router.acme.pkg.test@1.1.0', '<a href="/packages/router.acme.pkg.test/versions/1.1.0/files/docs">docs/</a>']) {
       isTrue(versionHtml.contains(expected), `${expected} in the version page`);
     }
+    isTrue(!versionHtml.contains('guide.md'), 'a directory, not its files');
     // The side bar counts the dependencies, and says how many approve; the
     // tabs, which keep their place in the URL's fragment, count nothing.
     for (let expected in ['<dt>Dependencies</dt><dd>0</dd>', '<h4>Policy</h4>', '<h4>Approved 1.1.0</h4>', '<rad-tab-group data-fragment>',

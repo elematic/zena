@@ -173,40 +173,54 @@ async function packageView(context: PageContext, res: Response, appView: AppView
     }
   }
   let contents = if (wanted != null) await appView.releaseContents(found.did, wanted) else null;
-  var file: HTMLPartial | null = null;
+  var opened: HTMLPartial | null = null;
+  var shownPath: String | null = null;
   if (path != null) {
+    // A directory's path may end with `/`; its page's title does.
+    let trimmed = if (path.endsWith('/')) path.sliceBytes(0, path.length - 1) else path;
     var listed: ReleaseFile | null = null;
+    var directory = false;
     if (contents != null) {
       for (let candidate in contents.files) {
-        if (candidate.path == path) {
+        if (candidate.path == trimmed) {
           listed = candidate;
+        } else if (trimmed != '' && candidate.path.startsWith(`${trimmed}/`)) {
+          directory = true;
         }
       }
     }
-    if (listed == null) {
+    if (listed != null) {
+      // An image is shown from its bytes' URL, and a file too large to show is linked to; only text is read.
+      let read = !IMAGE_TYPES.has(extensionOf(trimmed)) && listed.size <= MAX_FILE_SHOWN as i64;
+      let bytes = if (read) await appView.releaseFile(found.did, wanted as String, trimmed) else null;
+      opened = fileView(found.handle, found.did, name, wanted as String, contents as ReleaseContents, listed, bytes);
+      shownPath = trimmed;
+    } else if (directory) {
+      opened = html`
+        ${breadcrumb(found.handle, wanted as String, name, trimmed)}
+        ${directoryList(found.handle, wanted as String, contents as ReleaseContents, trimmed)}
+      `;
+      shownPath = `${trimmed}/`;
+    } else {
       notFound(res, context, `${handle} ${version ?? ''} has no file ${path}.`);
       return;
     }
-    // An image is shown from its bytes' URL, and a file too large to show is linked to; only text is read.
-    let read = !IMAGE_TYPES.has(extensionOf(path)) && listed.size <= MAX_FILE_SHOWN as i64;
-    let bytes = if (read) await appView.releaseFile(found.did, wanted as String, path) else null;
-    file = fileView(found.handle, found.did, wanted as String, contents as ReleaseContents, listed, bytes);
   }
   let title = if (version != null) `${name} ${version}` else name;
-  let fullTitle = if (path != null) `${path} · ${title}` else title;
+  let fullTitle = if (shownPath != null) `${shownPath} · ${title}` else title;
   res.type = 'text/html; charset=utf-8';
   res.body = page(`${fullTitle} · Zena packages`, context,
-      packageBody(found, release, version != null, contents, file, handles, shown, approvedBy, waiting));
+      packageBody(found, release, version != null, contents, opened, handles, shown, approvedBy, waiting));
 }
 
 /**
  * The page of `detail` showing `release`, or no release when it has none
  * that is not retracted; `pinned` when the page is the release's own, whose
- * command adds that version. With a `file`, the Files tab is open and
- * shows it in place of the list.
+ * command adds that version. With `opened`, a file or a directory, the
+ * Files tab is open and shows it in place of the package's root.
  */
 function packageBody(detail: PackageDetail, release: Release | null, pinned: boolean, contents: ReleaseContents | null,
-    file: HTMLPartial | null, handles: HashMap<String, String>, shown: Shown, approvedBy: HashMap<String, Array<String>>,
+    opened: HTMLPartial | null, handles: HashMap<String, String>, shown: Shown, approvedBy: HashMap<String, Array<String>>,
     waiting: HTMLPartial | null): HTMLPartial {
   let profile = detail.profile;
   let name = profile?.name ?? detail.handle;
@@ -242,17 +256,17 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
     <div class="package-layout">
       <div class="package-main">
         <rad-tab-group data-fragment>
-          <rad-tab slot="tabs" panel="readme"${if (file == null) ' active' else ''}>Readme</rad-tab>
-          <rad-tab slot="tabs" panel="files"${if (file != null) ' active' else ''}>Files</rad-tab>
+          <rad-tab slot="tabs" panel="readme"${if (opened == null) ' active' else ''}>Readme</rad-tab>
+          <rad-tab slot="tabs" panel="files"${if (opened != null) ' active' else ''}>Files</rad-tab>
           <rad-tab slot="tabs" panel="dependencies">Dependencies</rad-tab>
           <rad-tab slot="tabs" panel="versions">Versions</rad-tab>
-          <rad-tab-panel name="readme"${if (file == null) ' active' else ''}>
+          <rad-tab-panel name="readme"${if (opened == null) ' active' else ''}>
             ${if (release == null) html`<p class="muted">Nothing is published yet.</p>`
                 else readme(detail.handle, version as String, contents)}
           </rad-tab-panel>
-          <rad-tab-panel name="files"${if (file != null) ' active' else ''}>
-            ${file ?? if (contents == null) html`<p class="muted">${if (release == null) 'Nothing is published yet.' else 'The source archive could not be read.'}</p>`
-                else fileList(detail.handle, version as String, contents)}
+          <rad-tab-panel name="files"${if (opened != null) ' active' else ''}>
+            ${opened ?? if (contents == null) html`<p class="muted">${if (release == null) 'Nothing is published yet.' else 'The source archive could not be read.'}</p>`
+                else rootList(detail.handle, version as String, contents)}
           </rad-tab-panel>
           <rad-tab-panel name="dependencies">
             ${if (release == null) html`<p class="muted">Nothing is published yet.</p>` else dependencies(release, handles)}
@@ -333,8 +347,8 @@ function extensionOf(path: String): String {
  * read, which they are not for an image or a file larger than
  * `MAX_FILE_SHOWN`.
  */
-function fileView(handle: String, did: String, version: String, contents: ReleaseContents, file: ReleaseFile,
-    bytes: FixedArray<u8> | null): HTMLPartial {
+function fileView(handle: String, did: String, name: String, version: String, contents: ReleaseContents,
+    file: ReleaseFile, bytes: FixedArray<u8> | null): HTMLPartial {
   let raw = rawUrl(handle, version, file.path);
   var body: TemplateValue = html`<p class="muted">This file is too large to show here: <a href="${raw}">download it</a>.</p>`;
   if (IMAGE_TYPES.has(extensionOf(file.path))) {
@@ -353,8 +367,7 @@ function fileView(handle: String, did: String, version: String, contents: Releas
   }
   return html`
     <div class="file-header">
-      <a href="/packages/${handle}/versions/${version}#files">All files</a>
-      <span class="mono file-path">${file.path}</span>
+      ${breadcrumb(handle, version, name, file.path)}
       <span class="muted">${formatBytes(file.size)}</span>
       <a href="${raw}">Raw</a>
     </div>
@@ -522,17 +535,74 @@ function approvalPolicy(record: Maintainers): HTMLPartial {
   `;
 }
 
-function fileList(handle: String, version: String, contents: ReleaseContents): HTMLPartial {
+/** The Files tab of release `version` of the package `handle`: its root directory, and the archive's size. */
+function rootList(handle: String, version: String, contents: ReleaseContents): HTMLPartial {
   return html`
-    <table>
-      <thead><tr><th>File</th><th>Size</th></tr></thead>
-      <tbody>${each(contents.files, (file) => html`
+    ${directoryList(handle, version, contents, '')}
+    <p class="muted file-summary">${count(contents.files.length, 'file')}, ${formatBytes(contents.archiveBytes)} as an archive.</p>
+  `;
+}
+
+/**
+ * What the directory at `path` (`''` for the root) of release `version`
+ * holds: its directories first, each with how many files are under it and
+ * their size, then its files, each linked to its page.
+ */
+function directoryList(handle: String, version: String, contents: ReleaseContents, path: String): HTMLPartial {
+  let prefix = if (path == '') '' else `${path}/`;
+  let directories = new GrowableArray<String>();
+  let counts = new HashMap<String, i32>();
+  let sizes = new HashMap<String, i64>();
+  let files = new GrowableArray<ReleaseFile>();
+  for (let file in contents.files) {
+    if (!file.path.startsWith(prefix)) {
+      continue;
+    }
+    let rest = file.path.sliceBytes(prefix.length, file.path.length);
+    let segments = rest.split('/');
+    if (segments.length == 1) {
+      files.push(file);
+      continue;
+    }
+    let directory = segments[0];
+    if (!counts.has(directory)) {
+      directories.push(directory);
+    }
+    counts[directory] = counts.getOr(directory, 0) + 1;
+    sizes[directory] = sizes.getOr(directory, 0 as i64) + file.size;
+  }
+  return html`
+    <table class="file-list">
+      <thead><tr><th>Name</th><th>Size</th></tr></thead>
+      <tbody>${each(directories, (directory) => html`
         <tr>
-          <td class="mono"><a href="${fileUrl(handle, version, file.path)}">${file.path}</a></td>
+          <td class="mono"><a href="${fileUrl(handle, version, `${prefix}${directory}`)}">${directory}/</a>
+            <span class="muted small">${count(counts.getOr(directory, 0), 'file')}</span></td>
+          <td class="muted">${formatBytes(sizes.getOr(directory, 0 as i64))}</td>
+        </tr>`)}${each(files, (file) => html`
+        <tr>
+          <td class="mono"><a href="${fileUrl(handle, version, file.path)}">${file.path.sliceBytes(prefix.length, file.path.length)}</a></td>
           <td class="muted">${formatBytes(file.size)}</td>
         </tr>`)}
       </tbody>
     </table>
-    <p class="muted">${count(contents.files.length, 'file')}, ${formatBytes(contents.archiveBytes)} as an archive.</p>
   `;
+}
+
+/**
+ * Where `path` is in release `version` of the package `handle`, named
+ * `name`: the package, which links to the Files tab, then each directory
+ * on the way, linked to its page, and the last segment, unlinked.
+ */
+function breadcrumb(handle: String, version: String, name: String, path: String): HTMLPartial {
+  let segments = path.split('/');
+  let parents = new GrowableArray<HTMLPartial>();
+  for (var i = 0; i < segments.length - 1; i += 1) {
+    let directory = new GrowableArray<String>();
+    for (var j = 0; j <= i; j += 1) {
+      directory.push(segments[j]);
+    }
+    parents.push(html`<a href="${fileUrl(handle, version, join(directory, '/'))}">${segments[i]}</a><span class="separator">/</span>`);
+  }
+  return html`<nav class="breadcrumb mono" aria-label="Path"><a href="/packages/${handle}/versions/${version}#files">${name}</a><span class="separator">/</span>${each(parents, (parent) => parent)}<span class="current">${segments[segments.length - 1]}</span></nav>`;
 }
