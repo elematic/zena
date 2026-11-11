@@ -8,6 +8,7 @@
     "test": "wireit",
     "test:emulator": "wireit",
     "demo": "wireit",
+    "demo:publish": "wireit",
     "build:server": "wireit",
     "stage:docker": "wireit",
     "stage:web": "wireit",
@@ -98,8 +99,8 @@
       }
     },
     "demo": {
-      "#command": "An App View for pkg.test on this machine, with a stand-in PLC directory and a resolver for its handles, to try `zena pkg login`, `zena pkg publish` and `zena pkg add` against: dev/demo.zena prints how. Runs until stopped.",
-      "command": "cd ../.. && APP_VIEW_WEB_DIR=${APP_VIEW_WEB_DIR:-/web} ./target/release/zena-cli run --dir packages/pds-web/out::/web packages/registry/dev/demo.zena",
+      "#command": "An App View for pkg.test on this machine, with a stand-in PLC directory and a resolver for its handles, to try `zena pkg login`, `zena pkg publish` and `zena pkg add` against: dev/demo.zena prints how, and writes the variables to .zena/demo/env.sh. Runs until stopped.",
+      "command": "cd ../.. && mkdir -p .zena/demo && DEMO_REPO=$PWD APP_VIEW_WEB_DIR=${APP_VIEW_WEB_DIR:-/web} ./target/release/zena-cli run --allow-spawn --dir packages/pds-web/out::/web --dir .zena/demo::/demo packages/registry/dev/demo.zena",
       "service": true,
       "files": [
         "dev/*.zena",
@@ -126,6 +127,15 @@
         "../google-cloud/zena-package.json",
         "../protobuf/zena-package.json"
       ],
+      "dependencies": [
+        "../zena-cli:build",
+        "../pds-web:build"
+      ]
+    },
+    "demo:publish": {
+      "#command": "The demo, with the scope zena-lang, owned by its maintainer, and the packages DEMO_PUBLISH names (packages/wit-parser by default) published in it with `zena pkg login` and `zena pkg publish`, each from a copy in .zena/demo/packages. Runs until stopped.",
+      "command": "cd ../.. && mkdir -p .zena/demo && DEMO_REPO=$PWD DEMO_SCOPES=${DEMO_SCOPES:-zena-lang=did:plc:maintainermaintainermain} DEMO_PUBLISH=${DEMO_PUBLISH:-packages/wit-parser} APP_VIEW_WEB_DIR=${APP_VIEW_WEB_DIR:-/web} ./target/release/zena-cli run --allow-spawn --dir packages/pds-web/out::/web --dir .zena/demo::/demo packages/registry/dev/demo.zena",
+      "service": true,
       "dependencies": [
         "../zena-cli:build",
         "../pds-web:build"

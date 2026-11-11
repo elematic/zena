@@ -52,6 +52,7 @@ From the repository root:
 npm test -w @zena-lang/registry                  # its tests, through wireit
 npm run test:emulator -w @zena-lang/registry     # the store tests against the Firestore emulator
 npm run demo -w @zena-lang/registry              # an App View to try zena against, on this machine
+npm run demo:publish -w @zena-lang/registry      # the same, with zena-lang:wit-parser published in it
 ./target/release/zena-cli test "packages/registry/zena/test/*_test.zena"
 APP_VIEW_DOMAIN=pkg.test ./target/release/zena-cli run packages/registry/zena/main.zena   # serve on $PORT, default 2583
 ```
@@ -80,30 +81,36 @@ memory: Ctrl-C forgets it all. The limits on actions and creations apply
 (docs/design/package-manager.md, "Limits on creating accounts"), so the
 maintainer can create two scopes before the demo is restarted.
 
-### Publishing a package
+### The variables
 
-The demo prints the variables `zena` needs. Set them in each shell that
-runs `zena pkg`: without `ZENA_REGISTRY`, `zena` calls the Zena project's
-registry, `https://pkg.zena-lang.dev`. They stay right when the demo is
-started again, with the same `PORT`, though what the demo held is gone:
-a session made against its maintainer needs `zena pkg login` again.
+Each start writes the variables `zena` needs to use the demo to
+`.zena/demo/env.sh`. Source it in each shell that runs `zena pkg`, from
+the repository's root: without `ZENA_REGISTRY`, `zena` calls the Zena
+project's registry, `https://pkg.zena-lang.dev`.
 
 ```sh
-export ZENA_PLC_DIRECTORY=http://127.0.0.1:2584/plc
-export ZENA_DNS_OVER_HTTPS=http://127.0.0.1:2585/dns-query
-export ZENA_REGISTRY=http://127.0.0.1:2583
-export ZENA_CONFIG_DIR=$(mktemp -d)   # keeps the demo's sign-in apart from yours
-alias zena="$PWD/target/release/zena-cli"   # run in the repository root
+source .zena/demo/env.sh
 ```
 
-Then make a package outside the repository, sign in as the demo's
-maintainer, create a scope, and publish. A package's manifest needs a
-name, a version, a description and a license.
+It sets `ZENA_REGISTRY`, `ZENA_PLC_DIRECTORY`, `ZENA_DNS_OVER_HTTPS`
+and `ZENA_CONFIG_DIR`, which keeps the demo's sign-in in
+`.zena/demo/config`, apart from yours. It also unsets
+`ZENA_REGISTRY_TOKEN`, and makes `zena` an alias for this checkout's
+`target/release/zena-cli`. With the same `PORT`, the file is the same from
+one start to the next, though what the demo held is gone: a session made
+against its maintainer needs `zena pkg login` again.
+
+### Publishing a package
+
+Make a package outside the repository, sign in as the demo's maintainer,
+create a scope, and publish. A package's manifest needs a name, a
+version, a description and a license; its libraries are in `src/`, and
+`main` names the one an import of the package's name alone gets.
 
 ```sh
-mkdir -p ~/demo/hello && cd ~/demo/hello
-echo '{"name": "hello", "version": "1.0.0", "description": "Says hello", "license": "MIT"}' > zena-package.json
-echo 'export let greeting = "hello";' > hello.zena
+mkdir -p ~/demo/hello/src && cd ~/demo/hello
+echo '{"name": "hello", "version": "1.0.0", "description": "Says hello", "license": "MIT", "main": "hello"}' > zena-package.json
+echo 'export let greeting = "hello";' > src/hello.zena
 echo demo-app-password | zena pkg login did:plc:maintainermaintainermain --password-stdin
 zena pkg scope create acme --yes
 zena pkg publish --scope acme --yes
@@ -115,15 +122,16 @@ waits for approval. Publish as the demo's maintainer rather than as
 yourself: `publish` writes an attestation to the publisher's repository,
 which for you is on your real PDS.
 
-In another workspace, with the same variables, add the package and import
-its libraries as `'<scope>:<name>/<library>'`:
+In another workspace, with the same variables, add the package as
+`scope:name` and import it: its main library as `'<scope>:<name>'`, and
+any of its libraries as `'<scope>:<name>/<library>'`.
 
 ```sh
 mkdir -p ~/demo/app && cd ~/demo/app
 echo '{"name": "app"}' > zena-package.json
-zena pkg add hello.acme.pkg.test
+zena pkg add acme:hello
 cat > main.zena <<'EOF'
-import {greeting} from 'acme:hello/hello';
+import {greeting} from 'acme:hello';
 
 export function main(): i32 {
   console.log(greeting);
@@ -132,6 +140,74 @@ export function main(): i32 {
 EOF
 zena run main.zena
 ```
+
+### The repository's packages
+
+`npm run demo:publish -w @zena-lang/registry` starts the demo with the
+scope `zena-lang` and the repository's packages published in it, as
+their maintainers will publish them on a registry:
+
+- `DEMO_SCOPES` creates `zena-lang`, owned by the demo's maintainer.
+  The App View reserves the name, so only the operator can create it
+  (below).
+- The demo signs in as its maintainer with `zena pkg login`, and runs
+  `zena pkg publish --yes` for each directory `DEMO_PUBLISH` names,
+  separated by spaces: `packages/wit-parser` by default. It publishes
+  each from a fresh copy in `.zena/demo/packages`, since `publish` writes
+  the new package's DID into the manifest, and the repository's manifest
+  must not name a DID that is gone when the demo stops.
+
+It prints what each `zena` command prints, and keeps serving if a
+publish fails. Only a package whose manifest has a scope, a version, a
+description and a license, and no `path` dependencies, can be published.
+Of the repository's packages, only `wit-parser` has all of these.
+
+```sh
+npm run demo:publish -w @zena-lang/registry
+# and the scope zena, owned by you
+DEMO_SCOPES="zena-lang=did:plc:maintainermaintainermain zena=alice.bsky.social" npm run demo:publish -w @zena-lang/registry
+```
+
+The maintainer stays signed in, so in another shell:
+
+```sh
+source .zena/demo/env.sh
+mkdir -p ~/demo/try-wit && cd ~/demo/try-wit
+echo '{"name": "try-wit"}' > zena-package.json
+zena pkg add zena-lang:wit-parser
+cat > main.zena <<'EOF'
+import {parse} from 'zena-lang:wit-parser';
+import {serializeAstToJson} from 'zena-lang:wit-parser/ast-json';
+
+export function main(): i32 {
+  let ast = parse('package demo:greeter;\n\ninterface greet {\n  hello: func(name: string) -> string;\n}\n');
+  console.log(serializeAstToJson(ast));
+  return 0;
+}
+EOF
+zena run main.zena
+```
+
+### What to try
+
+Before deploying a change to staging, try what it touches here:
+
+- **Adding.** `zena pkg add zena-lang:wit-parser`, then `zena run` a
+  program that imports its main library and another of its libraries, as
+  above. In another workspace, add it by its handle under a name of your
+  own, `zena pkg add wit-parser.zena-lang.pkg.test --name wit`, and
+  import it as `'wit'` and `'wit/ast-json'`.
+- **Another version.** In `.zena/demo/packages/wit-parser`, raise
+  `version` in `zena-package.json` and run `zena pkg publish`; then
+  `zena pkg update` in the workspace that added it.
+- **Who belongs.** `zena pkg scope info zena-lang`,
+  `zena pkg scope members zena-lang`, and `zena pkg owner list` in
+  `.zena/demo/packages/wit-parser`.
+- **The pages.** At `http://127.0.0.1:2583`: the home page's listing,
+  `/scopes/zena-lang`, `/packages/wit-parser.zena-lang.pkg.test` with its
+  README and its Files tab, a Markdown file and a source file there,
+  and `/people/did:plc:maintainermaintainermain`. Then sign in with your
+  own account, as below, and open `/me`.
 
 ### The pages
 
@@ -145,10 +221,11 @@ at `127.0.0.1`, not `localhost`: signing in sends the browser back to
 ### Reserved scopes
 
 `zena pkg scope create` refuses the names the App View reserves, `zena`
-among them; the operator creates those with `create-scope`, which acts on a
-server's store. The demo's store is in its own process, so the demo creates
-them itself, as the operator, from `DEMO_SCOPES`: scope and owner pairs,
-the owner by DID or handle, separated by spaces.
+and `zena-lang` among them; the operator creates those with
+`create-scope`, which acts on a server's store. The demo's store is in its
+own process, so the demo creates them itself, as the operator, from
+`DEMO_SCOPES`: scope and owner pairs, the owner by DID or handle,
+separated by spaces.
 
 ```sh
 DEMO_SCOPES="zena=alice.bsky.social" npm run demo -w @zena-lang/registry
@@ -381,7 +458,7 @@ npm run deploy:setup -w @zena-lang/registry    # once: the resources, the key an
 npm run deploy -w @zena-lang/registry          # builds the image with Cloud Build, and deploys both services
 npm run deploy:domain -w @zena-lang/registry   # once: maps both names, with gcloud's beta component
 ZENA_ALERT_EMAIL=you@example.com npm run deploy:alerts -w @zena-lang/registry   # once both names answer
-packages/registry/deploy/smoke.sh setup        # once, signed in to zena as an owner of the scope zena
+packages/registry/deploy/smoke.sh setup        # once, signed in to zena as an owner of the scope zena-lang
 npm run deploy:smoke -w @zena-lang/registry    # after every deploy
 ```
 
@@ -413,7 +490,75 @@ export ZENA_CONFIG_DIR=$(mktemp -d)           # optional: a staging sign-in apar
 
 Every shell that runs `zena` against staging needs them, `zena pkg add` and
 `zena pkg fetch` included: without `ZENA_PLC_DIRECTORY`, a staging package's
-DID is looked up in `plc.directory`, which has never heard of it.
+DID is looked up in `plc.directory`, which has never heard of it. In a
+shell that sourced the demo's `.zena/demo/env.sh`, `ZENA_CONFIG_DIR` still
+names the demo's sign-in: set it, or use a new shell.
+
+### A new staging
+
+To deploy what is on `main` to staging, and publish the repository's
+packages there:
+
+1. Bring the checkout up to date, and build the `zena` command:
+
+   ```sh
+   git switch main && git pull
+   npm ci
+   npm run build -w @zena-lang/zena-cli
+   ```
+
+2. Try it on this machine first: `npm test -w @zena-lang/registry`, and
+   `npm run test:emulator -w @zena-lang/registry` after a change to
+   `registry/firestore` or `registry/service`. Then
+   `npm run demo:publish -w @zena-lang/registry`, and what "What to try"
+   lists.
+
+3. Deploy, with `gcloud` signed in to the project:
+
+   ```sh
+   export ZENA_GCP_PROJECT=meta-garage-420114 PDS_ENV=staging
+   npm run deploy:setup -w @zena-lang/registry   # when a change adds a resource; it changes nothing otherwise
+   npm run deploy -w @zena-lang/registry
+   npm run deploy:smoke -w @zena-lang/registry
+   ```
+
+   `deploy` builds the image with Cloud Build, deploys padstone and then
+   the App View, and checks that each answers. `deploy:smoke` checks both
+   names as their clients see them, and publishes and withdraws a version
+   of the canary `zena-lang:smoke`.
+
+4. Publish the repository's packages to staging, signed in as yourself.
+   Publish each from a copy, as the demo does: the DID `publish` writes
+   is staging's, and the repository's manifests keep their `did` for the
+   production registry.
+
+   ```sh
+   source packages/registry/deploy/staging.env
+   export ZENA_CONFIG_DIR=~/.config/zena-staging
+   alias zena="$PWD/target/release/zena-cli"
+   zena pkg login <your handle>
+   zena pkg scope info zena-lang
+   mkdir -p ~/zena-staging && cp -R packages/wit-parser ~/zena-staging/
+   (cd ~/zena-staging/wit-parser && zena pkg publish --yes)
+   ```
+
+   `zena-lang` is a reserved scope. When `scope info` finds none, create
+   it as the operator, with you as its owner, before publishing:
+
+   ```sh
+   packages/registry/deploy/operator.sh create-scope zena-lang --owner <your DID>
+   ```
+
+   Keep the copy, since its manifest has staging's DID. For a later
+   version, copy the package again and add that DID to the copy's
+   manifest; `publish` names the DID when a copy without it tries to
+   create the package again. Publishing as yourself writes the release's
+   attestation to your own repository, on your PDS.
+
+5. Try it there, as on this machine: the pages at
+   `https://pkg-staging.zena-lang.dev`, and, in a new workspace with the
+   same variables, `zena pkg add zena-lang:wit-parser` and a program
+   that imports it, as in "The repository's packages".
 
 ### Backups and alerts
 

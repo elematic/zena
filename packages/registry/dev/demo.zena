@@ -22,19 +22,26 @@
  *
  * `npm run demo` builds the web app (`packages/pds-web`) and gives it to
  * the demo as the directory `/web` (`--dir packages/pds-web/out::/web`,
- * `APP_VIEW_WEB_DIR=/web`), which the App View serves at its origin.
+ * `APP_VIEW_WEB_DIR=/web`), which the App View serves at its origin. It
+ * gives it `.zena/demo` in the repository as `/demo`, and the repository's
+ * path as `DEMO_REPO`.
  *
- * Then it prints the environment `zena` needs, and the commands of a
- * first publish. Run from the repository root with
- * `npm run demo -w @zena-lang/registry`, and stop it with Ctrl-C; everything in
- * memory is gone then.
+ * Then it writes the environment `zena` needs to `/demo/env.sh`, signs in
+ * and publishes the packages `DEMO_PUBLISH` names, and prints the commands
+ * of a first publish. Run from the repository root with
+ * `npm run demo -w @zena-lang/registry`, or `npm run demo:publish` to have
+ * the scope `zena-lang` and `wit-parser` in it, and stop it with Ctrl-C;
+ * everything in memory is gone then.
  */
 
 import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
-import {dedent} from 'zena:core';
+import {dedent, join} from 'zena:core';
 import {getEnv} from 'zena:cli';
+import {mkdir, readFile, writeFile} from 'zena:fs';
 import {Server} from 'zena:http';
+import {JsonObject, parseJson} from 'zena:json';
+import {runWith} from 'zena:process';
 import {FakePds} from 'package-manager/testing/fake-pds';
 import {MemoryHandleRecords, dnsOverHttpsApp, dnsOverHttpsUpstream} from 'registry/handles';
 import {readPort} from 'pds/service';
@@ -44,6 +51,110 @@ import {nowMicros} from 'pds/xrpc/common';
 
 let MAINTAINER = 'did:plc:maintainermaintainermain';
 let PASSWORD = 'demo-app-password';
+
+/** `.zena/demo` in the repository, as this program sees it. */
+let STATE = '/demo';
+
+/**
+ * Runs this checkout's `zena` against the demo, with the environment
+ * `/demo/env.sh` sets: the demo's PLC directory, resolver and registry,
+ * and the sign-in kept in `.zena/demo/config`.
+ */
+final class DemoZena {
+  /** The repository's path on this machine. */
+  repo: String;
+  /** The variables `zena` needs, as name and value. */
+  env: Array<(String, String)>;
+
+  new(repo: String, plc: String, dns: String, registry: String) : repo = repo, env = [
+    ('ZENA_PLC_DIRECTORY', plc),
+    ('ZENA_DNS_OVER_HTTPS', dns),
+    ('ZENA_REGISTRY', registry),
+    ('ZENA_CONFIG_DIR', `${repo}/.zena/demo/config`),
+  ];
+
+  /** The commands `/demo/env.sh` holds, to `source` in a shell. */
+  script(): String {
+    var text = '# The environment `zena` uses the demo with (packages/registry/dev/demo.zena).\n';
+    for (let (name, value) in this.env) {
+      text = `${text}export ${name}='${value}'\n`;
+    }
+    // A CI token would publish as its automation account, not as the
+    // maintainer signed in here.
+    return `${text}unset ZENA_REGISTRY_TOKEN\nalias zena='${this.repo}/target/release/zena-cli'\n`;
+  }
+
+  /**
+   * Runs `zena` with `args` in `cwd`, a directory under `/demo`, with the
+   * variables `extra` as well, printing what it prints. Returns whether it
+   * succeeded.
+   */
+  async run(args: Array<String>, cwd: String, extra: Array<(String, String)> = []): Future<boolean> {
+    let argv = new GrowableArray<String>();
+    argv.push(`${this.repo}/target/release/zena-cli`);
+    for (let arg in args) {
+      argv.push(arg);
+    }
+    let env = new GrowableArray<(String, String)>();
+    for (let pair in this.env) {
+      env.push(pair);
+    }
+    for (let pair in extra) {
+      env.push(pair);
+    }
+    console.log(`\n==> zena ${join(args, ' ')}`);
+    let result = await runWith(argv,
+        {cwd: cwd, env: env, envRemove: ['ZENA_REGISTRY_TOKEN', 'ZENA_APP_PASSWORD'], inheritStdio: true});
+    return result.succeeded();
+  }
+
+  /** Runs a command other than `zena`, printing what it prints. Returns whether it succeeded. */
+  async shell(argv: Array<String>): Future<boolean> {
+    return (await runWith(argv, {inheritStdio: true})).succeeded();
+  }
+}
+
+/**
+ * Signs in as the demo's maintainer and publishes the packages `dirs`
+ * names, directories of the repository separated by spaces
+ * (`DEMO_PUBLISH`), in order, with `zena pkg publish` as a person would.
+ * Each is published from a fresh copy in `.zena/demo/packages`, since
+ * publishing writes the new package's DID into its manifest, and the
+ * repository's manifest must not name a DID that is gone when the demo
+ * stops. Their scopes must exist, as `DEMO_SCOPES` makes them. Stops at
+ * the first that fails; returns the directories it published.
+ */
+async function publishPackages(zena: DemoZena, dirs: String): Future<Array<String>> {
+  let published = new GrowableArray<String>();
+  let copies = `${zena.repo}/.zena/demo/packages`;
+  if (!(await zena.shell(['rm', '-rf', copies]))) {
+    return published;
+  }
+  await mkdir(`${STATE}/packages`);
+  if (!(await zena.run(['pkg', 'login', MAINTAINER], STATE, [('ZENA_APP_PASSWORD', PASSWORD)]))) {
+    return published;
+  }
+  for (let dir in dirs.split(' ')) {
+    if (dir == '') {
+      continue;
+    }
+    let parts = dir.split('/');
+    let name = parts[parts.length - 1];
+    if (dir.startsWith('/') || name == '' || dir.contains('..')) {
+      console.error(`DEMO_PUBLISH: '${dir}' is not a directory of the repository, such as packages/wit-parser`);
+      return published;
+    }
+    if (!(await zena.shell(['cp', '-R', `${zena.repo}/${dir}`, `${copies}/${name}`]))) {
+      return published;
+    }
+    if (!(await zena.run(['pkg', 'publish', '--yes'], `${STATE}/packages/${name}`))) {
+      console.error(`DEMO_PUBLISH: publishing ${dir} failed, above; the demo goes on without it.`);
+      return published;
+    }
+    published.push(dir);
+  }
+  return published;
+}
 
 /**
  * Creates the scopes `pairs` names, `<scope>=<owner's DID or handle>`
@@ -129,31 +240,81 @@ export async function main(): Future<void> {
   dns.start();
 
   let dnsUrl = `http://127.0.0.1:${dns.port as i32}/dns-query`;
-  console.log(dedent`
-    An App View for pkg.test is listening on ${running.origin}, which
-    serves its web pages there too.
-
-    In another shell, in a directory with a zena-package.json that has a name, a
-    version, a description and a license (such as "MIT"):
+  let repo = getEnv('DEMO_REPO') ?? '';
+  let zena = if (repo == '') null else new DemoZena(repo, world.plcDirectory, dnsUrl, running.origin);
+  var environment = dedent`
+    In another shell, set the variables zena needs to use it:
 
       export ZENA_PLC_DIRECTORY=${world.plcDirectory}
       export ZENA_DNS_OVER_HTTPS=${dnsUrl}
       export ZENA_REGISTRY=${running.origin}
       export ZENA_CONFIG_DIR=$(mktemp -d)   # keeps the demo's sign-in apart from yours
+  `;
+  if (zena != null) {
+    await writeFile(`${STATE}/env.sh`, zena.script());
+    environment = dedent`
+      In another shell, from the repository root,
+
+        source .zena/demo/env.sh
+
+      sets the variables zena needs to use it (ZENA_REGISTRY, ZENA_PLC_DIRECTORY,
+      ZENA_DNS_OVER_HTTPS, and ZENA_CONFIG_DIR, which keeps the demo's sign-in
+      apart from yours), and makes \`zena\` this checkout's zena-cli.
+    `;
+  }
+  console.log(dedent`
+    An App View for pkg.test is listening on ${running.origin}, which
+    serves its web pages there too.
+
+    ${environment}
+    Every shell that runs zena pkg needs them: without ZENA_REGISTRY it calls
+    the Zena project's registry. Then, in a directory with a zena-package.json
+    that has a name, a version, a description and a license (such as "MIT"),
+    and the package's libraries in src/:
 
       echo ${PASSWORD} | zena pkg login ${MAINTAINER} --password-stdin
       zena pkg scope create acme --yes
       zena pkg publish --scope acme --yes
 
-    Every shell that runs zena pkg needs those exports: without ZENA_REGISTRY it
-    calls the Zena project's registry. In another workspace,
-    \`zena pkg add <name>.acme.pkg.test\`, then import its libraries as
-    '<name>:<library>' and \`zena run\`.
+    In another workspace, \`zena pkg add acme:<name>\`, then import its libraries
+    as 'acme:<name>/<library>', its main library as 'acme:<name>', and
+    \`zena run\`.
     To see /admin when you sign in to the pages, start the demo with
     APP_VIEW_ADMIN_DIDS set to your DID. A scope the App View reserves, such
-    as zena, is created only as the operator: start the demo with
+    as zena or zena-lang, is created only as the operator: start the demo with
     DEMO_SCOPES="zena=<your handle or DID>".
-    Ctrl-C stops the App View and forgets everything it held in memory.
   `);
+
+  let toPublish = getEnv('DEMO_PUBLISH') ?? '';
+  if (toPublish != '') {
+    if (zena == null) {
+      console.error('DEMO_PUBLISH needs DEMO_REPO and .zena/demo as /demo: run npm run demo:publish -w @zena-lang/registry');
+    } else {
+      let published = await publishPackages(zena, toPublish);
+      if (published.length > 0) {
+        var added = '';
+        for (let dir in published) {
+          added = `${added}\n  zena pkg add ${await scopedName(dir)}`;
+        }
+        console.log(dedent`
+
+          Published ${join(published, ', ')} as ${MAINTAINER}, who stays signed in
+          in .zena/demo/config. To use them, after \`source .zena/demo/env.sh\`, in a
+          new workspace (mkdir app && cd app && echo '{"name": "app"}' > zena-package.json):
+        `);
+        console.log(added.sliceBytes(1, added.length));
+      }
+    }
+  }
+  console.log('\nCtrl-C stops the App View and forgets everything it held in memory.');
   await world.done();
+}
+
+/** `scope:name` of the package published from the copy of `dir`, or its name. */
+async function scopedName(dir: String): Future<String> {
+  let parts = dir.split('/');
+  let manifest = parseJson(await readFile(`${STATE}/packages/${parts[parts.length - 1]}/zena-package.json`)) as JsonObject;
+  let name = manifest['name'] as String;
+  let scope = manifest['scope'];
+  return if (scope is String) `${scope}:${name}` else name;
 }
