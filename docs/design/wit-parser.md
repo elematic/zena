@@ -433,7 +433,7 @@ the parser is implemented.
 
 ### Integration
 
-- [x] Public entry point on the parser (`zena-lang:wit-parser/wit`)
+- [x] Public entry point on the parser (`zena-lang:wit-parser`)
 - [x] Test against real WASI WIT files (pinned corpus, gated in `npm test`)
 - [ ] Make WIT imports first-class in the compiler (see component-model.md)
 

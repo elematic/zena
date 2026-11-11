@@ -12,7 +12,7 @@ zena pkg add zena-lang:wit-parser
 ## Example
 
 ```zena
-import { parse } from 'zena-lang:wit-parser/wit';
+import { parse } from 'zena-lang:wit-parser';
 import { AstItemTag } from 'zena-lang:wit-parser/parser';
 
 let source = `
@@ -51,7 +51,7 @@ for (let item in doc.items) {
 
 ## Libraries
 
-### `zena-lang:wit-parser/wit`
+### `zena-lang:wit-parser`
 
 The primary entry point for parsing, resolving, and serializing WIT source text.
 
@@ -62,7 +62,7 @@ The primary entry point for parsing, resolving, and serializing WIT source text.
 | `resolve(ast)`               | Resolves names and validates an `Ast` in place.                                                     |
 | `toJson(ast, packageOrder?)` | Serializes a resolved `Ast` to the `.wit.json` format emitted by `wasm-tools component wit --json`. |
 
-`zena-lang:wit-parser/wit` also re-exports `Ast`, `ParseError`, and `ResolveError`. Both
+`zena-lang:wit-parser` also re-exports `Ast`, `ParseError`, and `ResolveError`. Both
 error types carry a `Span` with byte offsets into the source text.
 
 ### `zena-lang:wit-parser/parser`
