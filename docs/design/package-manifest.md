@@ -233,7 +233,9 @@ dependency is one of two kinds:
 
 Local names belong to the package that chooses them. Two packages can give
 the same dependency different names, or the same name to different
-packages. A package sees its own dependencies' names, its own name, so
+packages. [import-names.md](import-names.md) designs local names of the
+form `scope:name`, which `zena pkg add` will give a package in a scope,
+and the specifier `[scope:]package[/library]`. A package sees its own dependencies' names, its own name, so
 that its tests can import its libraries as a dependent would, the
 standard library (`zena`), and the WIT packages the standard library
 carries (`wasi`).
