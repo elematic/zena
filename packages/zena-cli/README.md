@@ -6,7 +6,7 @@ and add and fetch published packages.
 
 The command is a Zena program. `zena/main.zena` and the files beside it
 are the **CLI module**, compiled to `out/zena.wasm` with the compiler,
-zb, zenadoc and the formatter linked in. `zena-cli` is the Rust binary
+zebra, zenadoc and the formatter linked in. `zena-cli` is the Rust binary
 that runs it on wasmtime. See
 [docs/design/cli-module.md](../../docs/design/cli-module.md).
 
@@ -31,7 +31,7 @@ checked-in bootstrap, then the CLI module with that compiler
 zena-cli run examples/hello-world.zena
 zena-cli build main.zena -o main.wasm
 zena-cli test packages/stdlib/tests
-zena-cli build ./packages/zb:test      # a wireit target, run with zb
+zena-cli build ./packages/zebra:test   # a build target, run with zebra
 zena-cli --help
 zena-cli <command> --help
 ```
@@ -47,7 +47,7 @@ of what the command does.
 | Command                                                         | What it does                                                                                                                                                                                           |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `build <file.zena> -o <out.wasm\|.wat>`                         | Compiles a file. `--target` (`zena-component`, `component`, `js`, `zena-js`, `core`), `--wit` and `--world` for components, `--extension-wit` to check the world against an extension's WIT, `--time`. |
-| `build [target]`                                                | Runs a wireit build target with zb, such as `build test` or `build ./packages/zb:test`.                                                                                                                |
+| `build [target]`                                                | Runs a build target with zebra, such as `build`, `build test`, or `build ./packages/zebra:test`.                                                                                                       |
 | `run <file.zena\|file.wasm> [-- args...]`                       | Compiles through the compile cache and runs. `--dir HOST[::GUEST]`, `--allow-spawn`, `--allow-extensions`, `--invoke <fn>`, `--no-cache`, `--time`.                                                    |
 | `test [paths or globs...]`                                      | Runs `*_test.zena` files in parallel. `-f` / `--filter`, `--exclude <glob>`.                                                                                                                           |
 | `fmt [--write \| --check] <files...>`                           | Formats Zena files, printing the result, rewriting the files, or failing if any is not formatted.                                                                                                      |

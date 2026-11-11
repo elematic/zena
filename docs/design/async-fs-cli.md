@@ -125,7 +125,7 @@ forms do not try. The library headers say where they work.
 The synchronous callers in the repository use the `Sync` forms. They
 are the tools, and all of them run from a synchronous `main`: the
 compiler's `CompilerHost.readFile` and `listDir`, the test runners, the
-`zena` command, `zb`, `zenadoc`, and the test and benchmark harnesses.
+`zena` command, `zebra`, `zenadoc`, and the test and benchmark harnesses.
 Callers already inside an asynchronous function use the asynchronous
 forms: `zena:http`'s static file server, whose private copies of the
 preopen lookup and `stat` helpers are replaced by `zena:fs`'s, and the

@@ -83,7 +83,7 @@ synchronous:
 
 A function that becomes asynchronous uses the asynchronous `zena:fs`
 forms for its own I/O. A function that stays synchronous keeps the
-`Sync` forms. So `zb`, the package manager's commands and the other
+`Sync` forms. So `zebra`, the package manager's commands and the other
 tools that do not call the compiler are unchanged.
 
 ## Detailed design

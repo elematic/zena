@@ -691,8 +691,8 @@ Names follow these rules:
 
 ### Build step
 
-A zb or Wireit script can run `bin/generate.zena` and write `.zena`
-files. zb already supports this: it runs arbitrary commands, caches by
+A Zebra or Wireit script can run `bin/generate.zena` and write `.zena`
+files. Zebra already supports this: it runs arbitrary commands, caches by
 content, and lets dependents rebuild only when the output's digest
 changes ([workflow.md](workflow.md)).
 

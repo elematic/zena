@@ -1,0 +1,1226 @@
+import {suite, test} from 'zena:test';
+import {equal, fail, isFalse, isTrue} from 'zena:assert';
+import {getEnv} from 'zena:cli';
+import {isFile, readFile, unlink, writeFile} from 'zena:fs';
+import {spawnWith} from 'zena:process';
+import {milliseconds, monotonic, sleep} from 'zena:time';
+import {
+  Failed,
+  RunResult,
+  StepSource,
+  Succeeded,
+} from 'workflow/engine';
+import {StepKey} from 'workflow/step';
+import {Colors} from '../colors.zena';
+import {ensureDir, ensureParentDir, withRoot} from '../fs-util.zena';
+import {FileHasher} from '../fs-walk.zena';
+import {PlanLoadStats} from '../plan-cache.zena';
+import {BuildOutcome, buildTarget, formatBuildReport, watchTarget} from '../runner.zena';
+import {ScriptRef} from '../wireit-config.zena';
+
+/**
+ * End-to-end build of a two-package fixture workspace created under
+ * /tmp (preopened by the test runner). Commands run through `sh`.
+ */
+
+async function write(root: String, path: String, content: String) {
+  let full = withRoot(root, path);
+  await ensureParentDir(full);
+  await writeFile(full, content);
+}
+
+async function mkFixture(root: String) {
+  await ensureDir(root);
+  await write(root, 'package.json', `{
+    "scripts": {"build": "wireit"},
+    "wireit": {
+      "build": {"dependencies": ["./packages/app:build"]}
+    }
+  }`);
+  await write(root, 'packages/lib/package.json', `{
+    "scripts": {"build": "wireit"},
+    "wireit": {
+      "build": {
+        "command": "mkdir -p out && cat src/in.txt > out/lib.txt",
+        "files": ["src/**"],
+        "output": ["out/**"]
+      }
+    }
+  }`);
+  await write(root, 'packages/lib/src/in.txt', 'lib-v1\n');
+  await write(root, 'packages/app/package.json', `{
+    "scripts": {"build": "wireit"},
+    "wireit": {
+      "build": {
+        "command": "mkdir -p out && cat ../lib/out/lib.txt greeting.txt > out/app.txt",
+        "files": ["greeting.txt"],
+        "output": ["out/**"],
+        "dependencies": ["../lib:build"]
+      }
+    }
+  }`);
+  await write(root, 'packages/app/greeting.txt', 'hello-v1\n');
+}
+
+function sourceOf(result: RunResult, key: String): StepSource {
+  let outcome = result.outcomeOf(new StepKey(key));
+  if (outcome is Succeeded) {
+    return outcome.source;
+  }
+  fail('step did not succeed: ' + key);
+}
+
+export let tests = suite('zebra end to end', () => {
+  test('build, rebuild fresh, incremental change, cache restore', async () => {
+    let root = '/tmp/zebra-e2e-' + i64ToString(monotonic() as i64);
+    await mkFixture(root);
+    let entry = new ScriptRef('', 'build');
+
+    // First build runs everything.
+    let first = await buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+    isTrue(sourceOf(first.result, 'packages/lib:build') == StepSource.Ran);
+    isTrue(sourceOf(first.result, 'packages/app:build') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v1\n');
+
+    // An identical second build is fully fresh.
+    let second = await buildTarget(root, entry);
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, 'packages/lib:build') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, 'packages/app:build') == StepSource.Fresh);
+
+    // Changing app's input reruns app but not lib.
+    await write(root, 'packages/app/greeting.txt', 'hello-v2\n');
+    let third = await buildTarget(root, entry);
+    isTrue(third.result.allSucceeded);
+    isTrue(sourceOf(third.result, 'packages/lib:build') == StepSource.Fresh);
+    isTrue(sourceOf(third.result, 'packages/app:build') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v2\n');
+
+    // Losing the state files falls back to the cache, not to running.
+    await unlink(withRoot(root, 'packages/lib/.zebra/state.json'));
+    await unlink(withRoot(root, 'packages/app/.zebra/state.json'));
+    let fourth = await buildTarget(root, entry);
+    isTrue(fourth.result.allSucceeded);
+    isTrue(sourceOf(fourth.result, 'packages/lib:build') == StepSource.Cache);
+    isTrue(sourceOf(fourth.result, 'packages/app:build') == StepSource.Cache);
+    equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v2\n');
+
+    // A dependency change propagates: lib reruns, then app.
+    await write(root, 'packages/lib/src/in.txt', 'lib-v2\n');
+    let fifth = await buildTarget(root, entry);
+    isTrue(fifth.result.allSucceeded);
+    isTrue(sourceOf(fifth.result, 'packages/lib:build') == StepSource.Ran);
+    isTrue(sourceOf(fifth.result, 'packages/app:build') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v2\nhello-v2\n');
+  });
+
+  test('untracked scripts always run and poison dependents', async () => {
+    let root = '/tmp/zebra-untracked-' + i64ToString(monotonic() as i64);
+    await write(root, 'package.json', `{
+      "scripts": {"all": "wireit"},
+      "wireit": {
+        "all": {"dependencies": ["./use:build", "./steady:build"]}
+      }
+    }`);
+    // A command with output but no files key: inputs unknown.
+    await write(root, 'gen/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "mkdir -p out && echo generated > out/g.txt",
+          "output": ["out/**"]
+        }
+      }
+    }`);
+    // Fully tracked, but downstream of the untracked script.
+    await write(root, 'use/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "mkdir -p out && cat ../gen/out/g.txt > out/u.txt",
+          "files": [],
+          "output": ["out/**"],
+          "dependencies": ["../gen:build"]
+        }
+      }
+    }`);
+    // Fully tracked control, with declared-empty files and output.
+    await write(root, 'steady/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {"command": "true", "files": [], "output": []}
+      }
+    }`);
+    let entry = new ScriptRef('', 'all');
+
+    let first = await buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+
+    let second = await buildTarget(root, entry);
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, 'gen:build') == StepSource.Ran);
+    isTrue(sourceOf(second.result, 'use:build') == StepSource.Ran);
+    isTrue(sourceOf(second.result, 'steady:build') == StepSource.Fresh);
+  });
+
+  test('independent scripts run concurrently and -j 1 serializes them', async () => {
+    let root = '/tmp/zebra-parallel-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    // Two independent scripts write their own start marker and wait up
+    // to ~2s for the peer's marker: they succeed iff both are in flight
+    // at the same time.
+    await write(root, 'package.json', `{
+      "scripts": {"both": "wireit", "a": "wireit", "b": "wireit"},
+      "wireit": {
+        "both": {"dependencies": ["a", "b"]},
+        "a": {
+          "command": "touch a.started; i=0; while [ ! -f b.started ] && [ $i -lt 100 ]; do sleep 0.02; i=$((i+1)); done; [ -f b.started ]",
+          "files": [],
+          "output": ["a.started"]
+        },
+        "b": {
+          "command": "touch b.started; i=0; while [ ! -f a.started ] && [ $i -lt 100 ]; do sleep 0.02; i=$((i+1)); done; [ -f a.started ]",
+          "files": [],
+          "output": ["b.started"]
+        }
+      }
+    }`);
+    let entry = new ScriptRef('', 'both');
+
+    let parallel = await buildTarget(root, entry, 2);
+    isTrue(parallel.result.allSucceeded, 'a and b should overlap under -j 2');
+
+    // Under -j 1 on a fresh workspace, independent scripts never overlap:
+    // whichever acquires the single permit first finishes before the other starts.
+    let serialRoot = '/tmp/zebra-serial-' + i64ToString(monotonic() as i64);
+    await ensureDir(serialRoot);
+    await write(serialRoot, 'package.json', `{
+      "scripts": {"both": "wireit", "a": "wireit", "b": "wireit"},
+      "wireit": {
+        "both": {"dependencies": ["a", "b"]},
+        "a": {
+          "command": "echo a-start >> order.log; sleep 0.08; echo a-end >> order.log; touch a.started",
+          "files": [],
+          "output": ["a.started"]
+        },
+        "b": {
+          "command": "echo b-start >> order.log; sleep 0.08; echo b-end >> order.log; touch b.started",
+          "files": [],
+          "output": ["b.started"]
+        }
+      }
+    }`);
+    let serial = await buildTarget(serialRoot, entry, 1);
+    isTrue(serial.result.allSucceeded, 'serial build under -j 1 should succeed');
+    let orderLog = await readFile(withRoot(serialRoot, 'order.log'));
+    isTrue(
+      orderLog == 'a-start\na-end\nb-start\nb-end\n' ||
+      orderLog == 'b-start\nb-end\na-start\na-end\n',
+      'a and b should not interleave under -j 1, got: ' + orderLog,
+    );
+    isFalse(sourceOf(serial.result, ':a') == StepSource.Fresh);
+  });
+
+  test('services wait for readyWhen.lineMatches, share across dependents, skip when fresh, and tear down process groups', async () => {
+    let root = '/tmp/zebra-service-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'svc.cfg', 'port=8080\n');
+    await write(root, 'package.json', `{
+      "scripts": {"all": "wireit", "svc": "wireit", "a": "wireit", "b": "wireit"},
+      "wireit": {
+        "all": {"dependencies": ["a", "b"]},
+        "svc": {
+          "command": "echo start >> svc.starts; sleep 30 & sleep 0.05; touch svc.ready; echo 'booting...'; echo 'Server ready on 8080'; wait",
+          "service": {"readyWhen": {"lineMatches": "ready on [0-9]+"}},
+          "files": ["svc.cfg"]
+        },
+        "a": {
+          "command": "[ -f svc.ready ] && cat svc.cfg > a.out",
+          "files": [],
+          "output": ["a.out"],
+          "dependencies": ["svc"]
+        },
+        "b": {
+          "command": "[ -f svc.ready ] && cat svc.cfg > b.out",
+          "files": [],
+          "output": ["b.out"],
+          "dependencies": ["svc"]
+        }
+      }
+    }`);
+    let entry = new ScriptRef('', 'all');
+
+    let first = await buildTarget(root, entry, 2);
+    isTrue(first.result.allSucceeded, 'first build with shared service succeeds');
+    isTrue(sourceOf(first.result, ':svc') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':a') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':b') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'svc.starts')), 'start\n');
+    equal(await readFile(withRoot(root, 'a.out')), 'port=8080\n');
+    equal(await readFile(withRoot(root, 'b.out')), 'port=8080\n');
+
+    // Second build: dependents are fresh, so the service never starts.
+    let second = await buildTarget(root, entry, 2);
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, ':svc') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, ':a') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, ':b') == StepSource.Fresh);
+    equal(await readFile(withRoot(root, 'svc.starts')), 'start\n');
+
+    // Changing the service's declared file invalidates dependents and restarts it.
+    await write(root, 'svc.cfg', 'port=9090\n');
+    let third = await buildTarget(root, entry, 2);
+    isTrue(third.result.allSucceeded);
+    isTrue(sourceOf(third.result, ':svc') == StepSource.Ran);
+    isTrue(sourceOf(third.result, ':a') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'svc.starts')), 'start\nstart\n');
+    equal(await readFile(withRoot(root, 'a.out')), 'port=9090\n');
+  });
+
+  test('services fail loudly when exiting before readyWhen or crashing mid-run', async () => {
+    // 1. Exits before readyWhen.lineMatches ever matches.
+    let earlyEofRoot = '/tmp/zebra-svc-eof-' + i64ToString(monotonic() as i64);
+    await ensureDir(earlyEofRoot);
+    await write(earlyEofRoot, 'package.json', `{
+      "scripts": {"all": "wireit", "svc": "wireit", "app": "wireit", "ok": "wireit"},
+      "wireit": {
+        "all": {"dependencies": ["app", "ok"]},
+        "svc": {
+          "command": "echo 'starting...'; exit 1",
+          "service": {"readyWhen": {"lineMatches": "never-printed"}},
+          "files": []
+        },
+        "app": {
+          "command": "echo ran > app.out",
+          "files": [],
+          "output": ["app.out"],
+          "dependencies": ["svc"]
+        },
+        "ok": {
+          "command": "echo fine > ok.out",
+          "files": [],
+          "output": ["ok.out"]
+        }
+      }
+    }`);
+    let eofRun = await buildTarget(earlyEofRoot, new ScriptRef('', 'all'));
+    isFalse(eofRun.result.allSucceeded);
+    isTrue(eofRun.result.outcomeOf(new StepKey(':svc')) is Failed);
+    isTrue(eofRun.result.outcomeOf(new StepKey(':app')) is Failed);
+    isTrue(eofRun.result.outcomeOf(new StepKey(':ok')) is Succeeded);
+
+    // 2. service: true crashes while its dependent is running.
+    let crashRoot = '/tmp/zebra-svc-crash-' + i64ToString(monotonic() as i64);
+    await ensureDir(crashRoot);
+    await write(crashRoot, 'package.json', `{
+      "scripts": {"app": "wireit", "svc": "wireit"},
+      "wireit": {
+        "svc": {
+          "command": "sleep 0.02; exit 2",
+          "service": true,
+          "files": []
+        },
+        "app": {
+          "command": "sleep 0.15; touch app.out",
+          "files": [],
+          "output": ["app.out"],
+          "dependencies": ["svc"]
+        }
+      }
+    }`);
+    let crashRun = await buildTarget(crashRoot, new ScriptRef('', 'app'));
+    isFalse(crashRun.result.allSucceeded);
+    isTrue(crashRun.result.outcomeOf(new StepKey(':svc')) is Failed);
+  });
+
+  test('invoking a service as the top-level target runs its dependencies and executes it in the foreground', async () => {
+    let root = '/tmp/zebra-svc-fg-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'src.txt', 'built-asset\n');
+    await write(root, 'package.json', `{
+      "scripts": {"prep": "wireit", "serve": "wireit", "bad-serve": "wireit"},
+      "wireit": {
+        "prep": {
+          "command": "cp src.txt asset.txt",
+          "files": ["src.txt"],
+          "output": ["asset.txt"]
+        },
+        "serve": {
+          "command": "cat asset.txt >> served.log; echo 'server running'",
+          "service": {"readyWhen": {"lineMatches": "server running"}},
+          "files": ["asset.txt"],
+          "dependencies": ["prep"]
+        },
+        "bad-serve": {
+          "command": "echo 'wrong banner'",
+          "service": {"readyWhen": {"lineMatches": "server running"}},
+          "files": []
+        }
+      }
+    }`);
+
+    let first = await buildTarget(root, new ScriptRef('', 'serve'));
+    isTrue(first.result.allSucceeded);
+    isTrue(sourceOf(first.result, ':prep') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':serve') == StepSource.Ran);
+
+    // Invoking the top-level service again leaves prep fresh, but runs serve again.
+    let second = await buildTarget(root, new ScriptRef('', 'serve'));
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, ':prep') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, ':serve') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'served.log')), 'built-asset\nbuilt-asset\n');
+
+    // Exiting 0 without matching readyWhen.lineMatches still fails.
+    let bad = await buildTarget(root, new ScriptRef('', 'bad-serve'));
+    isFalse(bad.result.allSucceeded);
+  });
+
+  test('env sets literal and default external variables and invalidates on change', async () => {
+    let root = '/tmp/zebra-env-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    let writePkg = async (port: String) => {
+      await write(root, 'package.json', `{
+        "scripts": {"run": "wireit"},
+        "wireit": {
+          "run": {
+            "command": "printf '%s|%s' \\"$API_PORT\\" \\"$ZEBRA_UNSET_EXT_TEST\\" > out.txt",
+            "files": [],
+            "output": ["out.txt"],
+            "env": {
+              "API_PORT": "${port}",
+              "ZEBRA_UNSET_EXT_TEST": {"external": true, "default": "fallback"}
+            }
+          }
+        }
+      }`);
+    };
+    await writePkg('8080');
+    let entry = new ScriptRef('', 'run');
+
+    let first = await buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+    equal(await readFile(withRoot(root, 'out.txt')), '8080|fallback');
+
+    let second = await buildTarget(root, entry);
+    isTrue(sourceOf(second.result, ':run') == StepSource.Fresh);
+
+    await writePkg('9090');
+    let third = await buildTarget(root, entry);
+    isTrue(sourceOf(third.result, ':run') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'out.txt')), '9090|fallback');
+  });
+
+  test('cascade: false orders untracked producers while fileset groups hash generated files lazily', async () => {
+    let root = '/tmp/zebra-cascade-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'desired.txt', 'bin-v1\n');
+    // Mirrors zena-cli's build:cargo -> build:binary -> build -> app pattern:
+    // build:cargo omits `files` (always runs, emits $volatile) and only
+    // rewrites out/tool when desired.txt differs. build:binary names
+    // out/tool in `files` with `cascade: false` on build:cargo (and out/tool
+    // does not exist yet before the first run!).
+    await write(root, 'package.json', `{
+      "scripts": {"app": "wireit", "build": "wireit", "build:binary": "wireit", "build:cargo": "wireit"},
+      "wireit": {
+        "build:cargo": {
+          "command": "mkdir -p out && if [ ! -f out/tool ] || ! cmp -s desired.txt out/tool; then cp desired.txt out/tool; fi",
+          "output": []
+        },
+        "build:binary": {
+          "files": ["out/tool"],
+          "dependencies": [{"script": "build:cargo", "cascade": false}]
+        },
+        "build": {
+          "dependencies": ["build:binary"]
+        },
+        "app": {
+          "command": "cat out/tool > app.out",
+          "files": [],
+          "output": ["app.out"],
+          "dependencies": ["build"]
+        }
+      }
+    }`);
+    let entry = new ScriptRef('', 'app');
+
+    // Clean run: out/tool is created by build:cargo, then hashed by build:binary.
+    let first = await buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+    isTrue(sourceOf(first.result, ':build:cargo') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':build:binary') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':build') == StepSource.Ran);
+    isTrue(sourceOf(first.result, ':app') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'app.out')), 'bin-v1\n');
+
+    // No-op cargo rerun: build:cargo runs again, but out/tool is unchanged,
+    // so build:binary, build, and app all stay fresh!
+    let second = await buildTarget(root, entry);
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, ':build:cargo') == StepSource.Ran);
+    isTrue(sourceOf(second.result, ':build:binary') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, ':build') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, ':app') == StepSource.Fresh);
+
+    // Real binary update: build:cargo rewrites out/tool, which cascades
+    // through build:binary and build to rerun app.
+    await write(root, 'desired.txt', 'bin-v2\n');
+    let third = await buildTarget(root, entry);
+    isTrue(third.result.allSucceeded);
+    isTrue(sourceOf(third.result, ':build:cargo') == StepSource.Ran);
+    isTrue(sourceOf(third.result, ':build:binary') == StepSource.Ran);
+    isTrue(sourceOf(third.result, ':build') == StepSource.Ran);
+    isTrue(sourceOf(third.result, ':app') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'app.out')), 'bin-v2\n');
+  });
+
+  test('persistent hash memo skips byte reads across runs and detects same-size edits', async (ctx) => {
+    let root = '/tmp/zebra-memo-' + i64ToString(monotonic() as i64);
+    await mkFixture(root);
+    let entry = new ScriptRef('', 'build');
+
+    // First build populates .zebra/hashes.json.
+    let first = await buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+
+    // Immediate sub-millisecond same-size edit ("lib-v1\n" -> "lib-v2\n",
+    // both 7 bytes): the racy-timestamp guard forces a byte re-hash so it
+    // cannot slip past as a false memo hit.
+    await write(root, 'packages/lib/src/in.txt', 'lib-v2\n');
+    let immediateEdit = await buildTarget(root, entry);
+    isTrue(immediateEdit.result.allSucceeded);
+    isTrue(sourceOf(immediateEdit.result, 'packages/lib:build') == StepSource.Ran);
+    isTrue(sourceOf(immediateEdit.result, 'packages/app:build') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v2\nhello-v1\n');
+
+    // Advance past the 20ms racy window, run once so .zebra/hashes.json has a
+    // post-window mtime, then verify the next warm run reads zero file bytes.
+    await sleep(milliseconds(35));
+    let settle = await buildTarget(root, entry);
+    isTrue(settle.result.allSucceeded);
+    isTrue(sourceOf(settle.result, 'packages/lib:build') == StepSource.Fresh);
+    isTrue(sourceOf(settle.result, 'packages/app:build') == StepSource.Fresh);
+
+    let warmHasher = new FileHasher(root);
+    let warm = await buildTarget(root, entry, 0, false, true, warmHasher);
+    isTrue(warm.result.allSucceeded);
+    isTrue(sourceOf(warm.result, 'packages/lib:build') == StepSource.Fresh);
+    isTrue(sourceOf(warm.result, 'packages/app:build') == StepSource.Fresh);
+    equal(warmHasher.hashReads, 0);
+    isTrue(warmHasher.statHits > 0);
+
+    // Same-size edit after memo warm-up advances mtime and triggers rebuild.
+    await sleep(milliseconds(10));
+    await write(root, 'packages/lib/src/in.txt', 'lib-v3\n');
+    let edited = await buildTarget(root, entry);
+    isTrue(edited.result.allSucceeded);
+    isTrue(sourceOf(edited.result, 'packages/lib:build') == StepSource.Ran);
+    isTrue(sourceOf(edited.result, 'packages/app:build') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v3\nhello-v1\n');
+  });
+
+  test('deleted or modified output files invalidate freshness and restore or rerun', async (ctx) => {
+    let root = '/tmp/zebra-outputs-' + i64ToString(monotonic() as i64);
+    await mkFixture(root);
+    let entry = new ScriptRef('', 'build');
+
+    let first = await buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+
+    // Deleting an upstream output file makes that step non-fresh; it
+    // restores from the disk blob cache while downstream stays fresh.
+    await unlink(withRoot(root, 'packages/lib/out/lib.txt'));
+    let afterDelete = await buildTarget(root, entry);
+    isTrue(afterDelete.result.allSucceeded);
+    isTrue(sourceOf(afterDelete.result, 'packages/lib:build') == StepSource.Cache);
+    isTrue(sourceOf(afterDelete.result, 'packages/app:build') == StepSource.Fresh);
+    equal(await readFile(withRoot(root, 'packages/lib/out/lib.txt')), 'lib-v1\n');
+
+    // Corrupting a downstream output file restores the clean bytes from cache.
+    await sleep(milliseconds(10));
+    await write(root, 'packages/app/out/app.txt', 'corrupted-by-hand\n');
+    let afterCorrupt = await buildTarget(root, entry);
+    isTrue(afterCorrupt.result.allSucceeded);
+    isTrue(sourceOf(afterCorrupt.result, 'packages/lib:build') == StepSource.Fresh);
+    isTrue(sourceOf(afterCorrupt.result, 'packages/app:build') == StepSource.Cache);
+    equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v1\n');
+
+    // Deleting the output with --no-cache (`useCache = false`) reruns the step.
+    await unlink(withRoot(root, 'packages/app/out/app.txt'));
+    let rerunNoCache = await buildTarget(root, entry, 0, false, false);
+    isTrue(rerunNoCache.result.allSucceeded);
+    isTrue(sourceOf(rerunNoCache.result, 'packages/lib:build') == StepSource.Fresh);
+    isTrue(sourceOf(rerunNoCache.result, 'packages/app:build') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v1\n');
+  });
+
+  test('packageLocks fingerprints ancestor lockfiles by default and respects overrides', async () => {
+    let root = '/tmp/zebra-locks-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package-lock.json', '{"lockfileVersion":3,"v":1}\n');
+    await write(root, 'pnpm-lock.yaml', 'lockfileVersion: 9.0\nv: 1\n');
+    await write(root, 'package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "dependencies": [
+            "./packages/default-lock:build",
+            "./packages/no-lock:build",
+            "./packages/pnpm-lock:build"
+          ]
+        }
+      }
+    }`);
+    await write(root, 'packages/default-lock/src.txt', 'a\n');
+    await write(root, 'packages/default-lock/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "cat src.txt > out.txt",
+          "files": ["src.txt", "../../package-lock.json"],
+          "output": ["out.txt"]
+        }
+      }
+    }`);
+    await write(root, 'packages/no-lock/src.txt', 'b\n');
+    await write(root, 'packages/no-lock/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "cat src.txt > out.txt",
+          "files": ["src.txt"],
+          "output": ["out.txt"],
+          "packageLocks": []
+        }
+      }
+    }`);
+    await write(root, 'packages/pnpm-lock/src.txt', 'c\n');
+    await write(root, 'packages/pnpm-lock/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "cat src.txt > out.txt",
+          "files": ["src.txt"],
+          "output": ["out.txt"],
+          "packageLocks": ["pnpm-lock.yaml"]
+        }
+      }
+    }`);
+    // Also add a second default-lock package that does NOT list package-lock.json in `files`.
+    await write(root, 'packages/implicit-lock/src.txt', 'd\n');
+    await write(root, 'packages/implicit-lock/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "cat src.txt > out.txt",
+          "files": ["src.txt"],
+          "output": ["out.txt"]
+        }
+      }
+    }`);
+    await write(root, 'package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "dependencies": [
+            "./packages/default-lock:build",
+            "./packages/implicit-lock:build",
+            "./packages/no-lock:build",
+            "./packages/pnpm-lock:build"
+          ]
+        }
+      }
+    }`);
+    let entry = new ScriptRef('', 'build');
+
+    let first = await buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+    isTrue(sourceOf(first.result, 'packages/default-lock:build') == StepSource.Ran);
+    isTrue(sourceOf(first.result, 'packages/implicit-lock:build') == StepSource.Ran);
+    isTrue(sourceOf(first.result, 'packages/no-lock:build') == StepSource.Ran);
+    isTrue(sourceOf(first.result, 'packages/pnpm-lock:build') == StepSource.Ran);
+
+    let second = await buildTarget(root, entry);
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, 'packages/default-lock:build') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, 'packages/implicit-lock:build') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, 'packages/no-lock:build') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, 'packages/pnpm-lock:build') == StepSource.Fresh);
+
+    // Updating root package-lock.json invalidates both explicit+default and
+    // implicit default-lock packages (without duplicate-input collision),
+    // while leaving packageLocks:[] and pnpm-lock packages fresh.
+    await write(root, 'package-lock.json', '{"lockfileVersion":3,"v":2}\n');
+    let third = await buildTarget(root, entry);
+    isTrue(third.result.allSucceeded);
+    isTrue(sourceOf(third.result, 'packages/default-lock:build') == StepSource.Ran);
+    isTrue(sourceOf(third.result, 'packages/implicit-lock:build') == StepSource.Ran);
+    isTrue(sourceOf(third.result, 'packages/no-lock:build') == StepSource.Fresh);
+    isTrue(sourceOf(third.result, 'packages/pnpm-lock:build') == StepSource.Fresh);
+
+    // Updating pnpm-lock.yaml invalidates only packages/pnpm-lock:build.
+    await write(root, 'pnpm-lock.yaml', 'lockfileVersion: 9.0\nv: 2\n');
+    let fourth = await buildTarget(root, entry);
+    isTrue(fourth.result.allSucceeded);
+    isTrue(sourceOf(fourth.result, 'packages/default-lock:build') == StepSource.Fresh);
+    isTrue(sourceOf(fourth.result, 'packages/implicit-lock:build') == StepSource.Fresh);
+    isTrue(sourceOf(fourth.result, 'packages/no-lock:build') == StepSource.Fresh);
+    isTrue(sourceOf(fourth.result, 'packages/pnpm-lock:build') == StepSource.Ran);
+  });
+
+  test('force bypasses freshness and cache; no-cache skips disk cache restore', async () => {
+    let root = '/tmp/zebra-force-' + i64ToString(monotonic() as i64);
+    await mkFixture(root);
+    let entry = new ScriptRef('', 'build');
+
+    let first = await buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+
+    let second = await buildTarget(root, entry);
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, 'packages/lib:build') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, 'packages/app:build') == StepSource.Fresh);
+
+    // force = true reruns every step even when fresh and cached.
+    let forced = await buildTarget(root, entry, 0, true, true);
+    isTrue(forced.result.allSucceeded);
+    isTrue(sourceOf(forced.result, 'packages/lib:build') == StepSource.Ran);
+    isTrue(sourceOf(forced.result, 'packages/app:build') == StepSource.Ran);
+
+    // Deleting lib's state.json with useCache = false reruns lib instead of
+    // restoring from DiskCache, while app stays fresh via early cutoff.
+    await unlink(withRoot(root, 'packages/lib/.zebra/state.json'));
+    let noCache = await buildTarget(root, entry, 0, false, false);
+    isTrue(noCache.result.allSucceeded);
+    isTrue(sourceOf(noCache.result, 'packages/lib:build') == StepSource.Ran);
+    isTrue(sourceOf(noCache.result, 'packages/app:build') == StepSource.Fresh);
+  });
+
+  test('watchTarget rebuilds incrementally across file edits', async (ctx) => {
+    let root = '/tmp/zebra-watch-inc-' + i64ToString(monotonic() as i64);
+    await mkFixture(root);
+    let entry = new ScriptRef('', 'build');
+
+    var observed = 0;
+    let finalOutcome = await watchTarget(
+      root,
+      entry,
+      0,
+      false,
+      true,
+      20 as i64,
+      async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
+        observed = iteration;
+        isTrue(outcome.result.allSucceeded);
+        if (iteration == 1) {
+          isTrue(sourceOf(outcome.result, 'packages/lib:build') == StepSource.Ran);
+          isTrue(sourceOf(outcome.result, 'packages/app:build') == StepSource.Ran);
+          await write(root, 'packages/app/greeting.txt', 'hello-v2\n');
+          return true;
+        }
+        if (iteration == 2) {
+          isTrue(sourceOf(outcome.result, 'packages/lib:build') == StepSource.Fresh);
+          isTrue(sourceOf(outcome.result, 'packages/app:build') == StepSource.Ran);
+          equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v2\n');
+          await write(root, 'packages/lib/src/in.txt', 'lib-v2\n');
+          return true;
+        }
+        isTrue(sourceOf(outcome.result, 'packages/lib:build') == StepSource.Ran);
+        isTrue(sourceOf(outcome.result, 'packages/app:build') == StepSource.Ran);
+        equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v2\nhello-v2\n');
+        return false;
+      },
+    );
+    equal(observed, 3);
+    isTrue(finalOutcome.result.allSucceeded);
+  });
+
+  test('watchTarget pins a service across dependent rebuilds, restarts on service input edit, and stops on exit', async (ctx) => {
+    let root = '/tmp/zebra-watch-svc-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {
+        "db": "wireit",
+        "app": "wireit"
+      },
+      "wireit": {
+        "db": {
+          "command": "echo $$ > db.pid && echo start >> svc.log && trap 'echo stop >> svc.log; exit 0' TERM; echo READY && while true; do sleep 0.1; done",
+          "service": {"readyWhen": {"lineMatches": "^READY$"}},
+          "files": ["db.conf"]
+        },
+        "app": {
+          "command": "mkdir -p out && cat db.pid src/app.txt > out/result.txt",
+          "files": ["src/app.txt"],
+          "output": ["out/result.txt"],
+          "dependencies": ["db"]
+        }
+      }
+    }`);
+    await write(root, 'db.conf', 'port=5432\n');
+    await write(root, 'src/app.txt', 'hello-1\n');
+
+    var pid1 = '';
+    var pid2 = '';
+    var observed = 0;
+    await watchTarget(
+      root,
+      new ScriptRef('', 'app'),
+      0,
+      false,
+      true,
+      20 as i64,
+      async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
+        observed = iteration;
+        isTrue(outcome.result.allSucceeded);
+        if (iteration == 1) {
+          isTrue(sourceOf(outcome.result, ':db') == StepSource.Ran);
+          isTrue(sourceOf(outcome.result, ':app') == StepSource.Ran);
+          pid1 = await readFile(withRoot(root, 'db.pid'));
+          equal(await readFile(withRoot(root, 'svc.log')), 'start\n');
+          await write(root, 'src/app.txt', 'hello-2\n');
+          return true;
+        }
+        if (iteration == 2) {
+          // Service stays pinned and fresh while dependent rebuilds against the same PID.
+          isTrue(sourceOf(outcome.result, ':db') == StepSource.Fresh);
+          isTrue(sourceOf(outcome.result, ':app') == StepSource.Ran);
+          equal(await readFile(withRoot(root, 'out/result.txt')), pid1 + 'hello-2\n');
+          equal(await readFile(withRoot(root, 'svc.log')), 'start\n');
+          await write(root, 'db.conf', 'port=5433\n');
+          return true;
+        }
+        // Editing db.conf stops the old service, starts a new one, and reruns app.
+        isTrue(sourceOf(outcome.result, ':db') == StepSource.Ran);
+        isTrue(sourceOf(outcome.result, ':app') == StepSource.Ran);
+        pid2 = await readFile(withRoot(root, 'db.pid'));
+        isFalse(pid1 == pid2);
+        equal(await readFile(withRoot(root, 'out/result.txt')), pid2 + 'hello-2\n');
+        equal(await readFile(withRoot(root, 'svc.log')), 'start\nstop\nstart\n');
+        return false;
+      },
+    );
+    equal(observed, 3);
+    // Exiting watch mode stops all remaining pinned services.
+    equal(await readFile(withRoot(root, 'svc.log')), 'start\nstop\nstart\nstop\n');
+  });
+
+  test('watchTarget starts a root service target and reloads on input or package.json edit', async (ctx) => {
+    let root = '/tmp/zebra-watch-root-svc-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {"serve": "wireit"},
+      "wireit": {
+        "serve": {
+          "command": "echo start:$(cat srv.conf) >> serve.log && trap 'echo stop >> serve.log; exit 0' TERM; echo SERVING && while true; do sleep 0.1; done",
+          "service": {"readyWhen": {"lineMatches": "^SERVING$"}},
+          "files": ["srv.conf"]
+        }
+      }
+    }`);
+    await write(root, 'srv.conf', 'v1');
+
+    var observed = 0;
+    await watchTarget(
+      root,
+      new ScriptRef('', 'serve'),
+      0,
+      false,
+      true,
+      20 as i64,
+      async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
+        observed = iteration;
+        isTrue(outcome.result.allSucceeded);
+        isTrue(sourceOf(outcome.result, ':serve') == StepSource.Ran);
+        if (iteration == 1) {
+          equal(await readFile(withRoot(root, 'serve.log')), 'start:v1\n');
+          await write(root, 'srv.conf', 'v2');
+          return true;
+        }
+        if (iteration == 2) {
+          equal(await readFile(withRoot(root, 'serve.log')), 'start:v1\nstop\nstart:v2\n');
+          await write(root, 'package.json', `{
+            "scripts": {"serve": "wireit"},
+            "wireit": {
+              "serve": {
+                "command": "echo reloaded:$(cat srv.conf) >> serve.log && trap 'echo stop >> serve.log; exit 0' TERM; echo SERVING && while true; do sleep 0.1; done",
+                "service": {"readyWhen": {"lineMatches": "^SERVING$"}},
+                "files": ["srv.conf"]
+              }
+            }
+          }`);
+          return true;
+        }
+        equal(
+          await readFile(withRoot(root, 'serve.log')),
+          'start:v1\nstop\nstart:v2\nstop\nreloaded:v2\n',
+        );
+        return false;
+      },
+    );
+    equal(observed, 3);
+    equal(
+      await readFile(withRoot(root, 'serve.log')),
+      'start:v1\nstop\nstart:v2\nstop\nreloaded:v2\nstop\n',
+    );
+  });
+
+  test('SIGTERM cleanly tears down pinned services in watch mode and exits 143', async (ctx) => {
+    let root = '/tmp/zebra-sig-watch-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {
+        "db": "wireit",
+        "app": "wireit"
+      },
+      "wireit": {
+        "db": {
+          "command": "echo start >> svc.log && trap 'echo stop >> svc.log; exit 0' TERM; echo READY && while true; do sleep 0.1; done",
+          "service": {"readyWhen": {"lineMatches": "^READY$"}}
+        },
+        "app": {
+          "command": "mkdir -p out && echo ok > out/app.txt",
+          "files": ["in.txt"],
+          "output": ["out/app.txt"],
+          "dependencies": ["db"]
+        }
+      }
+    }`);
+    await write(root, 'in.txt', 'v1\n');
+
+    let zenaBin = (getEnv('ZENA_WORKSPACE_ROOT') ?? '.') + '/target/release/zena-cli';
+    let proc = spawnWith([zenaBin, 'build', '--watch', 'app'], {
+      cwd: root,
+    });
+    var sawSucceeded = false;
+    while (true) {
+      let line = await proc.readLine();
+      if (line == null) {
+        break;
+      }
+      if (line.contains('build succeeded')) {
+        sawSucceeded = true;
+        break;
+      }
+    }
+    isTrue(sawSucceeded, 'expected first watch iteration to report build succeeded');
+    equal(await readFile(withRoot(root, 'svc.log')), 'start\n');
+
+    let stopped = await proc.stop(3000 as i64);
+    isFalse(stopped.timedOut, 'expected watch process to exit cleanly on SIGTERM');
+    equal(stopped.exitCode, 143);
+    equal(await readFile(withRoot(root, 'svc.log')), 'start\nstop\n');
+  });
+
+  test('SIGTERM cleanly stops a foreground top-level service and exits 143', async (ctx) => {
+    let root = '/tmp/zebra-sig-fg-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {"serve": "wireit"},
+      "wireit": {
+        "serve": {
+          "command": "echo start >> serve.log && trap 'echo stop >> serve.log; exit 0' TERM; echo SERVING && while true; do sleep 0.1; done",
+          "service": {"readyWhen": {"lineMatches": "^SERVING$"}}
+        }
+      }
+    }`);
+
+    let zenaBin = (getEnv('ZENA_WORKSPACE_ROOT') ?? '.') + '/target/release/zena-cli';
+    let proc = spawnWith([zenaBin, 'build', 'serve'], {
+      cwd: root,
+    });
+    let firstLine = await proc.readLine();
+    equal(firstLine, 'SERVING');
+    equal(await readFile(withRoot(root, 'serve.log')), 'start\n');
+
+    let stopped = await proc.stop(3000 as i64);
+    isFalse(stopped.timedOut, 'expected foreground service to exit cleanly on SIGTERM');
+    equal(stopped.exitCode, 143);
+    equal(await readFile(withRoot(root, 'serve.log')), 'start\nstop\n');
+  });
+
+  test('SIGTERM during an in-flight build stops running scripts and active services', async (ctx) => {
+    let root = '/tmp/zebra-sig-build-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {
+        "db": "wireit",
+        "app": "wireit"
+      },
+      "wireit": {
+        "db": {
+          "command": "echo db-start >> svc.log && trap 'echo db-stop >> svc.log; exit 0' TERM; echo READY && while true; do sleep 0.1; done",
+          "service": {"readyWhen": {"lineMatches": "^READY$"}}
+        },
+        "app": {
+          "command": "echo app-start >> svc.log && trap 'echo app-stop >> svc.log; exit 0' TERM; echo running > app.running && while true; do sleep 0.1; done",
+          "dependencies": ["db"]
+        }
+      }
+    }`);
+
+    let zenaBin = (getEnv('ZENA_WORKSPACE_ROOT') ?? '.') + '/target/release/zena-cli';
+    let proc = spawnWith([zenaBin, 'build', 'app'], {
+      cwd: root,
+    });
+    while (!(await isFile(withRoot(root, 'app.running')))) {
+      await sleep(milliseconds(20));
+    }
+    equal(await readFile(withRoot(root, 'svc.log')), 'db-start\napp-start\n');
+
+    let stopped = await proc.stop(3000 as i64);
+    isFalse(stopped.timedOut, 'expected in-flight build to exit cleanly on SIGTERM');
+    equal(stopped.exitCode, 143);
+    equal(await readFile(withRoot(root, 'svc.log')), 'db-start\napp-start\napp-stop\ndb-stop\n');
+  });
+
+  test('formatBuildReport renders Clack rail for ran, fresh, restored, verbose, and failed builds', async (ctx) => {
+    let root = '/tmp/zebra-report-ux-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    await write(root, 'package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {"dependencies": ["./packages/app:build"]}
+      }
+    }`);
+    await write(root, 'packages/lib/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "mkdir -p out && echo 'lib log line' && cat src/in.txt > out/lib.txt",
+          "files": ["src/**"],
+          "output": ["out/**"]
+        }
+      }
+    }`);
+    await write(root, 'packages/lib/src/in.txt', 'lib-v1\n');
+    await write(root, 'packages/app/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "mkdir -p out && cat ../lib/out/lib.txt greeting.txt > out/app.txt",
+          "files": ["greeting.txt"],
+          "output": ["out/**"],
+          "dependencies": ["../lib:build"]
+        }
+      }
+    }`);
+    await write(root, 'packages/app/greeting.txt', 'hello-v1\n');
+    let entry = new ScriptRef('', 'build');
+    let plain = Colors.plain();
+
+    // 1. Cold build: lists ran steps on the rail and summarizes fresh (:build aggregator) in the outro.
+    let first = await buildTarget(root, entry);
+    let firstDefault = formatBuildReport(first, false, plain);
+    isTrue(firstDefault.contains('┌  [zebra] :build'), firstDefault);
+    isTrue(firstDefault.contains('◇  packages/lib:build: ran'), firstDefault);
+    isTrue(firstDefault.contains('◇  packages/app:build: ran'), firstDefault);
+    isFalse(firstDefault.contains('lib log line'), 'passing stdout is hidden unless verbose');
+    isTrue(firstDefault.contains('└  build succeeded in '), firstDefault);
+    isTrue(firstDefault.contains('(3 ran)'), firstDefault);
+
+    // Verbose mode prints captured stdout indented along the rail.
+    let firstVerbose = formatBuildReport(first, true, plain);
+    isTrue(firstVerbose.contains('│  lib log line'), firstVerbose);
+
+    // 2. Warm build: collapses fresh steps into the outro unless verbose is true.
+    let second = await buildTarget(root, entry);
+    let secondDefault = formatBuildReport(second, false, plain);
+    isFalse(secondDefault.contains('packages/lib:build: fresh'), secondDefault);
+    isTrue(secondDefault.contains('(3 fresh)'), secondDefault);
+
+    let secondVerbose = formatBuildReport(second, true, plain);
+    isTrue(secondVerbose.contains('○  packages/lib:build: fresh'), secondVerbose);
+    isTrue(secondVerbose.contains('○  packages/app:build: fresh'), secondVerbose);
+
+    // 3. Cache restore: shows restored steps with ◆ on the rail.
+    await unlink(withRoot(root, 'packages/lib/.zebra/state.json'));
+    let restored = await buildTarget(root, entry);
+    let restoredReport = formatBuildReport(restored, false, plain);
+    isTrue(restoredReport.contains('◆  packages/lib:build: restored'), restoredReport);
+    isTrue(restoredReport.contains('(1 restored, 2 fresh)'), restoredReport);
+
+    // 4. Failing step: prints ■, command, and stderr on the rail even when not verbose.
+    await write(root, 'packages/app/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "echo 'boom on stderr' >&2 && exit 1",
+          "files": ["greeting.txt"],
+          "output": ["out/**"],
+          "dependencies": ["../lib:build"]
+        }
+      }
+    }`);
+    let failed = await buildTarget(root, entry);
+    let failedDefault = formatBuildReport(failed, false, plain);
+    isTrue(failedDefault.contains('■  packages/app:build: failed (exit 1)'), failedDefault);
+    isTrue(failedDefault.contains('│  $ echo \'boom on stderr\' >&2 && exit 1'), failedDefault);
+    isTrue(failedDefault.contains('│  boom on stderr'), failedDefault);
+    isTrue(failedDefault.contains('└  build failed in '), failedDefault);
+    isTrue(failedDefault.contains('(1 failed, 1 skipped, 1 fresh)'), failedDefault);
+
+    let failedVerbose = formatBuildReport(failed, true, plain);
+    isTrue(failedVerbose.contains('▲  :build: skipped'), failedVerbose);
+  });
+
+  test('zebra.json builds, tracks zena-lock.json by default, and reuses cached plan snapshots with zero config parses', async () => {
+    let root = `/tmp/zebra-native-plan-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    await write(root, 'zena-lock.json', '{"resolved": {}}\n');
+    await write(root, 'zebra.json', `{
+      // Root standalone Zebra config
+      "scripts": {
+        "build": {
+          "dependencies": ["./packages/app:check", "./packages/legacy:build"]
+        }
+      }
+    }`);
+    await write(root, 'packages/app/src.zena', 'export let v = 1;\n');
+    await write(root, 'packages/app/zebra.json', `{
+      "scripts": {
+        "check": {
+          "command": "cat src.zena ../legacy/out.txt > checked.log && rm checked.log",
+          "files": ["src.zena"],
+          "dependencies": ["../legacy:build"]
+        }
+      }
+    }`);
+    await write(root, 'packages/legacy/in.txt', 'legacy-v1\n');
+    await write(root, 'packages/legacy/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "printf 'legacy-1\\n' > out.txt",
+          "files": ["in.txt"],
+          "output": ["out.txt"]
+        }
+      }
+    }`);
+
+    let entry = new ScriptRef('', 'build');
+
+    // 1. Cold build parses the 3 reachable config files and writes the plan snapshot.
+    let stats1 = new PlanLoadStats();
+    let r1 = await buildTarget(root, entry, 0, false, true, null, stats1);
+    isTrue(r1.result.allSucceeded, 'cold build succeeds');
+    isFalse(stats1.fromSnapshot, 'first run resolves configs fresh');
+    equal(stats1.filesParsed, 3);
+    isTrue(sourceOf(r1.result, 'packages/legacy:build') == StepSource.Ran);
+    isTrue(sourceOf(r1.result, 'packages/app:check') == StepSource.Ran);
+
+    // 2. Warm build reuses the plan snapshot with zero config files parsed.
+    let stats2 = new PlanLoadStats();
+    let r2 = await buildTarget(root, entry, 0, false, true, null, stats2);
+    isTrue(r2.result.allSucceeded, 'warm build succeeds');
+    isTrue(stats2.fromSnapshot, 'warm build loads plan snapshot');
+    equal(stats2.filesParsed, 0);
+    isTrue(sourceOf(r2.result, 'packages/legacy:build') == StepSource.Fresh);
+    isTrue(sourceOf(r2.result, 'packages/app:check') == StepSource.Fresh);
+
+    // 3. Editing zena-lock.json invalidates the zebra.json step (without changing zebra.json).
+    await write(root, 'zena-lock.json', '{"resolved": {"pkg": "v2"}}\n');
+    let stats3 = new PlanLoadStats();
+    let r3 = await buildTarget(root, entry, 0, false, true, null, stats3);
+    isTrue(r3.result.allSucceeded);
+    isTrue(stats3.fromSnapshot, 'lockfile change keeps plan snapshot valid');
+    isTrue(sourceOf(r3.result, 'packages/legacy:build') == StepSource.Fresh);
+    isTrue(sourceOf(r3.result, 'packages/app:check') == StepSource.Ran);
+
+    // 4. Same-byte-length edit to legacy/package.json invalidates the plan snapshot.
+    await write(root, 'packages/legacy/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "printf 'legacy-2\\n' > out.txt",
+          "files": ["in.txt"],
+          "output": ["out.txt"]
+        }
+      }
+    }`);
+    let stats4 = new PlanLoadStats();
+    let r4 = await buildTarget(root, entry, 0, false, true, null, stats4);
+    isTrue(r4.result.allSucceeded);
+    isFalse(stats4.fromSnapshot, 'config edit invalidates plan snapshot');
+    equal(await readFile(withRoot(root, 'packages/legacy/out.txt')), 'legacy-2\n');
+
+    // 5. Adding zebra.json to packages/legacy (without touching package.json)
+    // invalidates the plan snapshot because the missing zebra.json probe flips.
+    await write(root, 'packages/legacy/zebra.json', `{
+      "scripts": {
+        "build": {
+          "command": "printf 'native-zebra\\n' > out.txt",
+          "files": ["in.txt"],
+          "output": ["out.txt"]
+        }
+      }
+    }`);
+    let stats5 = new PlanLoadStats();
+    let r5 = await buildTarget(root, entry, 0, false, true, null, stats5);
+    isTrue(r5.result.allSucceeded);
+    isFalse(stats5.fromSnapshot, 'new zebra.json invalidates plan snapshot');
+    equal(await readFile(withRoot(root, 'packages/legacy/out.txt')), 'native-zebra\n');
+  });
+
+  test('zena-package.json scripts track transitive path-dependency :source filesets while ignoring upstream test edits', async () => {
+    let root = `/tmp/zebra-zena-pkg-fileset-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    let plain = Colors.plain();
+
+    await write(root, 'zena-package.json', `{
+      "workspace": {"packages": ["packages/*"]}
+    }`);
+    await write(root, 'packages/lib/zena-package.json', `{
+      "name": "lib",
+      "source": "."
+    }`);
+    await write(root, 'packages/lib/answer.zena', 'export let answer = 41;\n');
+    await write(root, 'packages/lib/test/answer_test.zena', '// test v1\n');
+
+    await write(root, 'packages/app/zena-package.json', `{
+      "name": "app",
+      "dependencies": {
+        "lib": {"path": "../lib"}
+      },
+      "scripts": {
+        "build": {
+          "command": "mkdir -p out && cat ../lib/answer.zena src/app.zena > out/bundle.txt",
+          "output": ["out/bundle.txt"],
+          "dependencies": ["source"]
+        }
+      }
+    }`);
+    await write(root, 'packages/app/src/app.zena', 'export let appVal = 1;\n');
+
+    let entry = new ScriptRef('packages/app', 'build');
+
+    // 1. Cold build runs `packages/app:build` and omits `:source` filesets from the rail report.
+    let r1 = await buildTarget(root, entry);
+    isTrue(r1.result.allSucceeded);
+    let report1 = formatBuildReport(r1, false, plain);
+    isTrue(report1.contains('◇  packages/app:build: ran'), report1);
+    isFalse(report1.contains(':source'), report1);
+    isTrue(report1.contains('(1 ran)'), report1);
+
+    // 2. Warm build hits plan snapshot and stays fresh.
+    let stats2 = new PlanLoadStats();
+    let r2 = await buildTarget(root, entry, 0, false, true, null, stats2);
+    isTrue(stats2.fromSnapshot);
+    equal(stats2.filesParsed, 0);
+    isTrue(sourceOf(r2.result, 'packages/app:build') == StepSource.Fresh);
+
+    // 3. Editing a test file inside `packages/lib` (`"source": "."`) does NOT invalidate `:source`.
+    await write(root, 'packages/lib/test/answer_test.zena', '// test v2 edited\n');
+    let r3 = await buildTarget(root, entry);
+    isTrue(sourceOf(r3.result, 'packages/app:build') == StepSource.Fresh);
+
+    // 4. Editing a library source file in `packages/lib` invalidates `packages/lib:source` -> `packages/app:source` -> `packages/app:build`.
+    await write(root, 'packages/lib/answer.zena', 'export let answer = 42;\n');
+    let r4 = await buildTarget(root, entry);
+    isTrue(sourceOf(r4.result, 'packages/app:build') == StepSource.Ran);
+    isTrue(
+      (await readFile(withRoot(root, 'packages/app/out/bundle.txt'))).contains('answer = 42'),
+    );
+  });
+});

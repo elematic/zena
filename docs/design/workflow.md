@@ -7,7 +7,7 @@ This document plans a family of tools built around one core library:
 - **`workflow`** — a Zena library containing the logic of incremental
   workflow execution: steps, dependencies, fingerprints, caching decisions,
   and long-running services. It performs no I/O.
-- **`zb`** (working name) — a build system in the style of
+- **`zebra`** — a build system in the style of
   [Wireit](https://github.com/google/wireit), built on `workflow`. It adds
   files, globs, process spawning, watching, and pluggable caches, and
   extends Wireit with rule abstractions and fine-grained input-to-output
@@ -55,9 +55,9 @@ once, in a library that any host can drive.
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ Hosts                                                       │
-│   zb (build CLI)   site generator   durable runner   tests  │
+│   zebra (build CLI)  site generator  durable runner  tests  │
 ├──────────────────────────────┬──────────────────────────────┤
-│ Rules (zb only)              │  Host adapters               │
+│ Rules (zebra only)           │  Host adapters               │
 │   builtin: typescript, zena  │   fs hashing, globs,         │
 │   later: WASI components     │   process spawn, watchers,   │
 │                              │   cache backends, DB state   │
@@ -221,7 +221,7 @@ engine per participant.
 
 ## Build system
 
-A CLI, working name `zb`, that reads a workspace's build configuration,
+A CLI (`zebra`) that reads a workspace's build configuration,
 constructs a step graph, and drives the engine with filesystem adapters:
 
 - **Inputs**: glob expansion and content hashing produce the leaf
@@ -229,15 +229,15 @@ constructs a step graph, and drives the engine with filesystem adapters:
 - **Execution**: commands spawn via `zena:process`
   ([#112](https://code.rictic.com/justin/zena/issues/112)); services get
   ready checks (port open, stdout line match, or an explicit protocol).
-- **State**: the engine's state and the local cache live under `.zb/`.
-- **Cleaning**: because the previous manifest lists outputs exactly, `zb`
+- **State**: the engine's state and the local cache live under `.zebra/`.
+- **Cleaning**: because the previous manifest lists outputs exactly, `zebra`
   deletes stale outputs precisely instead of Wireit's
   `clean: "if-file-deleted"` heuristic.
 - **Watch mode**: a watcher feeds leaf invalidations to repeated engine
   runs; services stay pinned between runs (see file watching below).
 - **Delta to commands**: for scripts that can use it, the input delta is
   exposed as files of newline-separated paths named by environment
-  variables (`ZB_CHANGED_FILES`, `ZB_REMOVED_FILES`), per the stdin/env
+  variables (`ZEBRA_CHANGED_FILES`, `ZEBRA_REMOVED_FILES`), per the stdin/env
   designs discussed in Wireit #168.
 
 ### Configuration
@@ -245,7 +245,7 @@ constructs a step graph, and drives the engine with filesystem adapters:
 Configuration uses `build.zconf`, the pure-declarative Zena format from
 [declarative.md](declarative.md) — statically parseable data with no
 logic. A converter imports existing `package.json` wireit stanzas, and a
-compatibility reader lets `zb` run an unconverted Wireit workspace so the
+compatibility reader lets `zebra` run an unconverted Wireit workspace so the
 monorepo can migrate incrementally and A/B the two systems.
 
 ```zconf
@@ -266,7 +266,7 @@ Parsing configuration and expanding rules on every invocation spends
 startup time exactly where latency is most visible: the warm no-op
 build. Because `build.zconf` is statically parseable Zena data and rules
 are Zena functions, a workspace's configuration can be compiled instead
-of interpreted: `zb` generates the graph-construction code with rules
+of interpreted: `zebra` generates the graph-construction code with rules
 already expanded, compiles it against the `workflow` library, and caches
 the precompiled binary keyed by the fingerprints of the config files and
 recorded rule reads. A warm invocation then starts a program whose graph
@@ -282,7 +282,7 @@ that also inlines rule executors.
 
 A Google-sized monorepo cannot bundle its graph into one program either
 way. The same machinery applies piecewise: configuration compiles or
-snapshots per package or per directory subtree, and `zb` loads only the
+snapshots per package or per directory subtree, and `zebra` loads only the
 units reachable from the requested targets. Nothing in the engine
 requires the whole graph up front — steps are keyed, so the host can
 materialize just the reachable subgraph before a run.
@@ -324,12 +324,12 @@ tsconfig" class of bug structurally.
 
 Delivery in two phases:
 
-1. **Built-in rules**, written in Zena and compiled into `zb`:
+1. **Built-in rules**, written in Zena and compiled into `zebra`:
    `typescript`, `zena` (see below), and a generic `script` rule that is
    just the raw stanza. This covers the monorepo.
 2. **Rule plugins as WASI components.** A rule component exports the
    expansion function (and optionally an in-process step executor, which
-   is how a rule ships fine-grained incremental logic). `zb` instantiates
+   is how a rule ships fine-grained incremental logic). `zebra` instantiates
    it with a read-only preopen of the workspace, no network, no clocks —
    WASI's capability model makes the sandbox the default. This waits on
    dynamic component loading in the Zena runtime; the interface is
@@ -354,7 +354,7 @@ to cache. Two integrations matter instead:
   pays for itself when reused (with a bounded lifetime — instances are
   recycled after a number of compiles).
 
-  The server is an ordinary `zb` service. Protocol: newline-delimited
+  The server is an ordinary `zebra` service. Protocol: newline-delimited
   JSON over stdio initially, with requests `compile` (entry point, output
   path, flags), `invalidate` (changed paths), and `shutdown`; responses
   carry diagnostics, output fingerprints, and the observed file
@@ -391,21 +391,21 @@ invalidation, cancellation) accrue to it for free.
    services, state serialization. Tested entirely with in-memory hosts —
    simulated fingerprints, scripted cache responses, fake clocks — which
    the no-I/O design makes cheap.
-2. **`zb` minimum.** Wireit-compatibility reader, task steps, local
+2. **`zebra` minimum.** Wireit-compatibility reader, task steps, local
    cache, precise cleaning. Run side by side with Wireit on this
    monorepo and diff the decisions.
 3. **Services and watch mode.** Parity with the Wireit features the
    monorepo uses; the `zena-cli` watcher capability with the polling
    fallback; `build.zconf` and the converter.
-4. **Fine-grained tracking.** Engine delta plumbing, `ZB_CHANGED_FILES`,
+4. **Fine-grained tracking.** Engine delta plumbing, `ZEBRA_CHANGED_FILES`,
    per-output records; prove it on the website build.
 5. **Built-in rules.** `typescript`, `zena` filesets, config-read
    recording.
 6. **Configuration snapshots.** Serialized graphs keyed by config
    fingerprints; measure warm no-op startup. Compiled configuration
    follows when the measurement justifies it.
-7. **Remote caches.** GitHub Actions and HTTP backends; move CI to `zb`.
-8. **Compile server.** Protocol in `zena-cli`, service rule in `zb`.
+7. **Remote caches.** GitHub Actions and HTTP backends; move CI to `zebra`.
+8. **Compile server.** Protocol in `zena-cli`, service rule in `zebra`.
 9. **Component rules and the durable runner.** After dynamic component
    loading lands.
 

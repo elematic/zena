@@ -1,0 +1,156 @@
+import {Future} from 'zena:async';
+import {getArguments} from 'zena:cli';
+import {checkSignal} from 'zena:process';
+import {joinWorkspace} from './fs-util.zena';
+import {
+  BuildOutcome,
+  buildTarget,
+  reportBuild,
+  reportMigration,
+  watchTarget,
+} from './runner.zena';
+import {ScriptRef} from './wireit-config.zena';
+import {migrateWorkspaceToZebra} from './zebra-config.zena';
+
+/**
+ * zebra: an incremental build runner for Zena (`zena-package.json`),
+ * standalone Zebra (`zebra.json`), and Wireit (`package.json`) workspaces.
+ *
+ *     zebra [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<package-dir>] [<script>]
+ *     zebra [-C <workspace-root>] --migrate [--dry-run] [-f|--force] [<package-dir>...]
+ *
+ * The workspace root defaults to the current directory (`-C` points at a
+ * nested workspace), and `<script>` defaults to `build`.
+ */
+let usage =
+  'usage: zebra [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [--migrate [--dry-run]] [<package-dir>] [<script>]';
+
+function parseCliEntry(args: Array<String>, next: i32) {
+  let rest = args.length - next;
+  if (rest == 0) {
+    return new ScriptRef('', 'build');
+  }
+  if (rest == 1) {
+    let arg = args[next];
+    if (arg.startsWith('.')) {
+      var colon = -1;
+      for (var i = 0; i < arg.length; i += 1) {
+        if (arg.getByteAt(i) == 58) {
+          colon = i;
+          break;
+        }
+      }
+      if (colon < 0) {
+        return new ScriptRef(joinWorkspace('', arg), 'build');
+      }
+      let pkg = joinWorkspace('', arg.sliceBytes(0, colon));
+      let script = arg.sliceBytes(colon + 1, arg.length);
+      return new ScriptRef(pkg, script);
+    }
+    return new ScriptRef('', arg);
+  }
+  return new ScriptRef(joinWorkspace('', args[next]), args[next + 1]);
+}
+
+export async function main(): Future<i32> {
+  let args = getArguments();
+  var root = '';
+  var jobs = 0;
+  var watch = false;
+  var force = false;
+  var useCache = true;
+  var verbose = false;
+  var migrate = false;
+  var dryRun = false;
+  var next = 1;
+  while (next < args.length && args[next].startsWith('-')) {
+    let flag = args[next];
+    if (flag == '-C') {
+      if (next + 1 >= args.length) {
+        console.log(usage);
+        return 2;
+      }
+      root = args[next + 1];
+      next += 2;
+    } else if (flag == '-j' || flag == '--jobs') {
+      if (next + 1 >= args.length) {
+        console.log(usage);
+        return 2;
+      }
+      if (let (true, n) = parseI32(args[next + 1])) {
+        if (n >= 1) {
+          jobs = n;
+          next += 2;
+          continue;
+        }
+      }
+      console.log(`zebra: invalid job count "${args[next + 1]}"`);
+      return 2;
+    } else if (flag == '-w' || flag == '--watch') {
+      watch = true;
+      next += 1;
+    } else if (flag == '-f' || flag == '--force') {
+      force = true;
+      next += 1;
+    } else if (flag == '--no-cache') {
+      useCache = false;
+      next += 1;
+    } else if (flag == '-v' || flag == '--verbose') {
+      verbose = true;
+      next += 1;
+    } else if (flag == '--migrate') {
+      migrate = true;
+      next += 1;
+    } else if (flag == '--dry-run') {
+      dryRun = true;
+      next += 1;
+    } else {
+      console.log(usage);
+      return 2;
+    }
+  }
+
+  if (migrate) {
+    let targetDirs = new GrowableArray<String>();
+    while (next < args.length) {
+      targetDirs.push(args[next]);
+      next += 1;
+    }
+    try {
+      let result = await migrateWorkspaceToZebra(root, targetDirs, force, dryRun);
+      return reportMigration(result, dryRun);
+    } catch (e) {
+      console.log('zebra: ' + e.message);
+      return 1;
+    }
+  }
+  if (dryRun) {
+    console.log(usage);
+    return 2;
+  }
+  let rest = args.length - next;
+  if (rest > 2) {
+    console.log(usage);
+    return 2;
+  }
+  let entry = parseCliEntry(args, next);
+
+  var outcome: BuildOutcome | null = null;
+  try {
+    outcome = if (watch)
+      await watchTarget(root, entry, jobs, force, useCache, 150 as i64, null, verbose)
+    else
+      await buildTarget(root, entry, jobs, force, useCache);
+  } catch (e) {
+    let sig = checkSignal();
+    if (sig != 0) {
+      return 128 + sig;
+    }
+    console.log('zebra: ' + e.message);
+    return 1;
+  }
+  if (outcome == null) {
+    return 1;
+  }
+  return reportBuild(outcome, verbose);
+}

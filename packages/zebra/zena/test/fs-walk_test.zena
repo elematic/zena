@@ -1,0 +1,44 @@
+import {suite, test} from 'zena:test';
+import {equal, rejects} from 'zena:assert';
+import {writeFile} from 'zena:fs';
+import {monotonic} from 'zena:time';
+import {ensureDir, ensureParentDir, withRoot} from '../fs-util.zena';
+import {expandGlobs} from '../fs-walk.zena';
+
+export let tests = suite('fs-walk', () => {
+  test('a glob may not leave the workspace', async () => {
+    // Both are refused before anything is walked, so no fixture is
+    // needed.
+    await rejects(async () => {
+      await expandGlobs('.', 'packages/app', ['../../../outside/**']);
+    });
+    // An absolute glob names a path outside the workspace just as
+    // surely; it used to be glued onto the package directory instead.
+    await rejects(async () => {
+      await expandGlobs('.', 'packages/app', ['/etc/**']);
+    });
+  });
+
+  test('literal file patterns resolve directly at root and subpaths', async () => {
+    let root = '/tmp/zebra-fswalk-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    let rootManifest = withRoot(root, 'zena-package.json');
+    await ensureParentDir(rootManifest);
+    await writeFile(rootManifest, '{}\n');
+    let sibling = withRoot(root, 'packages/other/ignore.txt');
+    await ensureParentDir(sibling);
+    await writeFile(sibling, 'unused\n');
+    let local = withRoot(root, 'packages/app/local.txt');
+    await ensureParentDir(local);
+    await writeFile(local, 'ok\n');
+
+    let matched = await expandGlobs(root, 'packages/app', [
+      '../../zena-package.json',
+      'local.txt',
+      'missing.txt',
+    ]);
+    equal(matched.length, 2);
+    equal(matched[0], 'packages/app/local.txt');
+    equal(matched[1], 'zena-package.json');
+  });
+});
