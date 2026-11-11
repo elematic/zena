@@ -2,10 +2,11 @@
  * A fake PLC directory, DNS-over-HTTPS resolver and PDS for package
  * accounts, for testing what fetches and resolves packages. A `zena:http`
  * server in the same program serves each account's DID document,
- * `com.atproto.sync.getRecord`, `com.atproto.sync.getBlob` and
- * `com.atproto.repo.listRecords`, and answers `_atproto` TXT queries for
- * their handles. Each account's records are in a repository whose commit
- * is signed with KEY, so every proof a client checks is a real one.
+ * `com.atproto.sync.getRecord`, `com.atproto.sync.getBlob`,
+ * `com.atproto.repo.getRecord` and `com.atproto.repo.listRecords`, and
+ * answers `_atproto` TXT queries for their handles. Each account's records
+ * are in a repository whose commit is signed with KEY, so every proof a
+ * client checks is a real one.
  *
  * ```zena
  * let pds = new FakePds();
@@ -49,7 +50,7 @@ import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {buildMst, compareKeys} from 'atproto:mst';
 import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, RETRACTION_TYPE, Retraction} from '../records.zena';
 import {
-  REPO_LIST_RECORDS, REPO_PUT_RECORD, SERVER_CREATE_SESSION, SERVER_DELETE_SESSION, SERVER_GET_SERVICE_AUTH,
+  REPO_GET_RECORD, REPO_LIST_RECORDS, REPO_PUT_RECORD, SERVER_CREATE_SESSION, SERVER_DELETE_SESSION, SERVER_GET_SERVICE_AUTH,
   SERVER_REFRESH_SESSION, SYNC_GET_BLOB, SYNC_GET_RECORD, xrpcPath
 } from 'atproto:methods';
 
@@ -154,16 +155,33 @@ export final class FakeAccount {
     let prefix = `${collection}/`;
     this.records.forEach((key, value) => {
       if (key.startsWith(prefix)) {
-        let entry = new JsonObject();
-        entry['uri'] = `at://${this.did}/${key}`;
-        entry['cid'] = Cid.forDagCbor(encodeCbor(value)).toString();
-        entry['value'] = toJson(value);
-        records.push(entry);
+        records.push(this.#recordJson(key, value));
       }
     });
     let page = new JsonObject();
     page['records'] = records;
     return stringify(page);
+  }
+
+  /**
+   * A `com.atproto.repo.getRecord` answer for `collection/rkey`, or null
+   * when there is no such record.
+   */
+  getRecordJson(collection: String, rkey: String): String | null {
+    let key = `${collection}/${rkey}`;
+    if (let (true, value) = this.records.get(key)) {
+      return stringify(this.#recordJson(key, value));
+    }
+    return null;
+  }
+
+  /** The record at `key`, as `getRecord` and `listRecords` give it. */
+  #recordJson(key: String, value: MapValue): JsonObject {
+    let entry = new JsonObject();
+    entry['uri'] = `at://${this.did}/${key}`;
+    entry['cid'] = Cid.forDagCbor(encodeCbor(value)).toString();
+    entry['value'] = toJson(value);
+    return entry;
   }
 }
 
@@ -404,6 +422,17 @@ function serve(pds: FakePds, port: i32): Own<Server> {
       if (path == xrpcPath(REPO_LIST_RECORDS)) {
         res.type = 'application/json';
         res.body = account.listRecordsJson(params.get('collection') ?? '');
+        return;
+      }
+      if (path == xrpcPath(REPO_GET_RECORD)) {
+        res.type = 'application/json';
+        let found = account.getRecordJson(params.get('collection') ?? '', params.get('rkey') ?? '');
+        if (found != null) {
+          res.body = found;
+          return;
+        }
+        res.statusCode = 400;
+        res.body = '{"error":"RecordNotFound","message":"no such record"}';
         return;
       }
     }

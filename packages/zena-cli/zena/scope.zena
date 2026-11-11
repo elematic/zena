@@ -74,7 +74,10 @@ export async function scopeInfoCommand(args: ParsedArgs, options: Options): Futu
       }
       did = found;
     }
-    let document = await packageResolver().resolveDid(did);
+    // The handle is the one that resolves back to the DID, not whatever
+    // its document claims.
+    let identity = await packageResolver().resolve(did);
+    let document = identity.document;
     if (document.pds == null) {
       throw new PublishError(`${did} names no PDS`);
     }
@@ -87,7 +90,7 @@ export async function scopeInfoCommand(args: ParsedArgs, options: Options): Futu
       throw new PublishError(`${did} has no members record, so it is not a scope: ${e.message}`);
     }
     let members = record['value'] as JsonObject;
-    console.log(document.handle ?? '(no handle)');
+    console.log(identity.handle ?? '(no handle)');
     let profile = await recordOf(did, SCOPE_PROFILE_TYPE);
     if (profile != null) {
       printProfile(ScopeProfile.fromValue(fromJson(profile['value'])));

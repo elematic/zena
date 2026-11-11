@@ -8,10 +8,11 @@
 import {suite, test} from 'zena:test';
 import {isTrue} from 'zena:assert';
 import {JsonObject, parseJson} from 'zena:json';
-import {Scratch, ZenaCommand, described, fakePdsOrigin, read, startFakePds, stopFakePds, write} from './cli-support.zena';
+import {Scratch, ZenaCommand, described, ensureDir, fakePdsOrigin, read, startFakePds, stopFakePds, write} from './cli-support.zena';
 
 let ALICE = 'did:plc:alicealicealicealicealic';
 let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
+let MALLORY = 'did:plc:mallorymallorymallorymal';
 
 export let tests = suite('zena pkg scope, team and owner', () => {
   test('adds people to a scope, a team and a package, and takes them away', async (ctx) => {
@@ -111,6 +112,42 @@ export let tests = suite('zena pkg scope, team and owner', () => {
       // The last owner stays: the registry refuses a record with none.
       let lastOwner = await alice.run(['pkg', 'scope', 'remove', 'acme', ALICE]);
       isTrue(!lastOwner.succeeded() && lastOwner.stderr.contains('InvalidRequest'), described(lastOwner));
+    } finally {
+      await stopFakePds(stack);
+      await scratch.remove();
+    }
+  });
+
+  test('shows a handle only when it resolves back to the DID', async (ctx) => {
+    let scratch = await Scratch.create('membership-handles');
+    let stack = await startFakePds(scratch, 'publish-stack.zena');
+    try {
+      await fakePdsOrigin(scratch, stack);
+      let addresses = parseJson(await read(scratch.at('pds/stack.json'))) as JsonObject;
+      await ensureDir(scratch.at('work'));
+      let alice = new ZenaCommand(scratch.at('work'), scratch.host('cache'))
+          .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
+          .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
+          .set('ZENA_REGISTRY', addresses['registry'] as String)
+          .set('ZENA_CONFIG_DIR', scratch.host('config'));
+      isTrue((await alice.run(['pkg', 'login', ALICE, '--password-stdin'], 'app-password\n')).succeeded(), 'alice signs in');
+      let scope = await alice.run(['pkg', 'scope', 'create', 'acme', '--yes']);
+      isTrue(scope.succeeded(), described(scope));
+
+      // Mallory's document claims the scope's handle, which resolves to the
+      // scope. Listed as a member, she is her DID alone.
+      let added = await alice.run(['pkg', 'scope', 'add', 'acme', MALLORY, '--role', 'member']);
+      isTrue(added.succeeded(), described(added));
+      let members = await alice.run(['pkg', 'scope', 'members', 'acme']);
+      isTrue(members.succeeded() && members.stdout.contains(`${MALLORY}  member`), described(members));
+
+      // The scope has its handle; Mallory, whose repository holds a members
+      // record too, does not.
+      let info = await alice.run(['pkg', 'scope', 'info', 'acme']);
+      isTrue(info.succeeded() && info.stdout.startsWith('acme.pkg.test\n'), described(info));
+      let posing = await alice.run(['pkg', 'scope', 'info', MALLORY]);
+      isTrue(posing.succeeded() && posing.stdout.startsWith('(no handle)\n') &&
+          !posing.stdout.contains('acme.pkg.test'), described(posing));
     } finally {
       await stopFakePds(stack);
       await scratch.remove();
