@@ -157,10 +157,22 @@ export function deriveContents(did: String, version: String, archive: Cid, bytes
     }
   }
   let readmeHtml = if (readme != null && readme.contents.length <= MAX_README_BYTES)
-      markdownToHtml(String.fromBytes(readme.contents),
-          {safe: true, extensions: gfmExtensions(), resolver: new PackageUrls(did, version, paths)})
+      renderMarkdown(String.fromBytes(readme.contents), did, version, paths, '')
       else null;
   return new ReleaseContents(archive, bytes.length as i64, files, readme?.path, readmeHtml);
+}
+
+/**
+ * `text`, a Markdown file in `directory` (`''` for the package's root) of
+ * release `version` of the package `ref`, whose archive holds the files at
+ * `paths`, as HTML: in safe mode, without raw HTML or URLs that could run
+ * script, and with its relative URLs resolved from `directory`
+ * (`PackageUrls`).
+ */
+export function renderMarkdown(text: String, ref: String, version: String, paths: HashSet<String>,
+    directory: String): String {
+  return markdownToHtml(text,
+      {safe: true, extensions: gfmExtensions(), resolver: new PackageUrls(ref, version, paths, directory)});
 }
 
 /**
@@ -192,12 +204,12 @@ function releaseUrl(ref: String, version: String, kind: String, path: String): S
 }
 
 /**
- * Resolves the links and images of a README at the root of release
- * `version` of the package `ref`, whose archive holds the files at `paths`.
- * A URL with a scheme, or to another host, and a link within the page
- * (`#...`) stay as they are, so images from other sites show. A relative
- * path is resolved from the package's root, as is one that starts with
- * `/`: a link points to the file's page (`fileUrl`), and an image to the
+ * Resolves the links and images of a Markdown file in `directory` (`''`
+ * for the package's root) of release `version` of the package `ref`, whose
+ * archive holds the files at `paths`. A URL with a scheme, or to another
+ * host, and a link within the page (`#...`) stay as they are, so images
+ * from other sites show. A relative path is resolved from `directory`, and
+ * one that starts with `/` from the package's root: a link points to the file's page (`fileUrl`), and an image to the
  * file itself, which the App View serves from the release's archive
  * (`rawUrl`). One that climbs out of the package's root, or names
  * no file in the archive, is left out.
@@ -206,8 +218,10 @@ export final class PackageUrls implements UrlResolver {
   #ref: String;
   #version: String;
   #paths: HashSet<String>;
+  #directory: String;
 
-  new(ref: String, version: String, paths: HashSet<String>) : #ref = ref, #version = version, #paths = paths;
+  new(ref: String, version: String, paths: HashSet<String>, directory: String)
+      : #ref = ref, #version = version, #paths = paths, #directory = directory;
 
   resolve(url: String, isImage: boolean): String | null {
     if (url == '' || url.startsWith('#') || url.startsWith('//') || hasScheme(url)) {
@@ -220,6 +234,13 @@ export final class PackageUrls implements UrlResolver {
     }
     let suffix = url.sliceBytes(end, url.length);
     let segments = new GrowableArray<String>();
+    if (!url.startsWith('/')) {
+      for (let segment in this.#directory.split('/')) {
+        if (segment != '') {
+          segments.push(segment);
+        }
+      }
+    }
     for (let segment in url.sliceBytes(0, end).split('/')) {
       if (segment == '' || segment == '.') {
         continue;

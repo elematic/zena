@@ -12,14 +12,14 @@
  * bytes are served at `.../raw/<path>`.
  */
 
-import {HashMap} from 'zena:collections';
-import {GrowableArray} from 'zena:core';
+import {HashMap, HashSet} from 'zena:collections';
+import {GrowableArray, join} from 'zena:core';
 import {isValidUtf8} from 'zena:encoding';
 import {HTMLPartial, Response, Router, TemplateValue, html, unsafeHTML} from 'zena:http';
 import {percentDecode} from 'zena:url';
 import {Dependency, Maintainer, Maintainers, RELEASE_TYPE, Release} from 'package-manager:records';
 import {PackageDetail, AppView} from '../../app-view.zena';
-import {ReleaseContents, ReleaseFile, fileUrl, rawUrl} from '../../release-contents.zena';
+import {MAX_README_BYTES, ReleaseContents, ReleaseFile, fileUrl, rawUrl, renderMarkdown} from '../../release-contents.zena';
 import {Approvals} from '../approvals.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
@@ -190,7 +190,7 @@ async function packageView(context: PageContext, res: Response, appView: AppView
     // An image is shown from its bytes' URL, and a file too large to show is linked to; only text is read.
     let read = !IMAGE_TYPES.has(extensionOf(path)) && listed.size <= MAX_FILE_SHOWN as i64;
     let bytes = if (read) await appView.releaseFile(found.did, wanted as String, path) else null;
-    file = fileView(found.handle, wanted as String, listed, bytes);
+    file = fileView(found.handle, found.did, wanted as String, contents as ReleaseContents, listed, bytes);
   }
   let title = if (version != null) `${name} ${version}` else name;
   let fullTitle = if (path != null) `${path} · ${title}` else title;
@@ -326,19 +326,28 @@ function extensionOf(path: String): String {
 }
 
 /**
- * The Files tab's panel for `file` of release `version` of the package
- * `handle`: an image shown, text numbered by line, and a link to anything
- * else. `bytes` are the file's when they were read, which they are not for
- * an image or a file larger than `MAX_FILE_SHOWN`.
+ * The Files tab's panel for `file` of release `version`, with `contents`,
+ * of the package `handle`, whose DID is `did`: an image shown, Markdown up
+ * to `MAX_README_BYTES` rendered as the README is, other text numbered by
+ * line, and a link to anything else. `bytes` are the file's when they were
+ * read, which they are not for an image or a file larger than
+ * `MAX_FILE_SHOWN`.
  */
-function fileView(handle: String, version: String, file: ReleaseFile, bytes: FixedArray<u8> | null): HTMLPartial {
+function fileView(handle: String, did: String, version: String, contents: ReleaseContents, file: ReleaseFile,
+    bytes: FixedArray<u8> | null): HTMLPartial {
   let raw = rawUrl(handle, version, file.path);
   var body: TemplateValue = html`<p class="muted">This file is too large to show here: <a href="${raw}">download it</a>.</p>`;
   if (IMAGE_TYPES.has(extensionOf(file.path))) {
     body = html`<img class="file-image" src="${raw}" alt="${file.path}">`;
   } else if (bytes != null) {
-    body = if (isText(bytes)) sourceLines(String.fromBytes(bytes))
-        else html`<p class="muted">This file is not text: <a href="${raw}">download it</a>.</p>`;
+    let extension = extensionOf(file.path);
+    if (!isText(bytes)) {
+      body = html`<p class="muted">This file is not text: <a href="${raw}">download it</a>.</p>`;
+    } else if ((extension == 'md' || extension == 'markdown') && bytes.length <= MAX_README_BYTES) {
+      body = html`<div class="prose markdown-file">${unsafeHTML(markdownFile(did, version, contents, file.path, bytes))}</div>`;
+    } else {
+      body = sourceLines(String.fromBytes(bytes));
+    }
   } else if (file.size <= MAX_FILE_SHOWN as i64) {
     body = html`<p class="muted">The file could not be read: <a href="${raw}">download it</a>.</p>`;
   }
@@ -351,6 +360,24 @@ function fileView(handle: String, version: String, file: ReleaseFile, bytes: Fix
     </div>
     ${body}
   `;
+}
+
+/**
+ * The Markdown file at `path`, whose bytes are `bytes`, of release `version`
+ * of the package `did`, as HTML in safe mode, with its links resolved from
+ * its own directory and naming the package by its DID, as the README's do.
+ */
+function markdownFile(did: String, version: String, contents: ReleaseContents, path: String, bytes: FixedArray<u8>): String {
+  let paths = new HashSet<String>();
+  for (let listed in contents.files) {
+    paths.add(listed.path);
+  }
+  let segments = path.split('/');
+  let directory = new GrowableArray<String>();
+  for (var i = 0; i < segments.length - 1; i += 1) {
+    directory.push(segments[i]);
+  }
+  return renderMarkdown(String.fromBytes(bytes), did, version, paths, join(directory, '/'));
 }
 
 /** Whether `bytes` are UTF-8 with no NUL, which a binary file almost always has. */

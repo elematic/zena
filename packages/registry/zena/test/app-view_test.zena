@@ -1575,7 +1575,7 @@ export let tests = suite('registry:app-view', () => {
           .toBytes(),
         'router.zena' => 'export let route = 1;\n'.toBytes(),
         'README.md' => readme.toBytes(),
-        'docs/guide.md' => '# Guide\n\n<b>Start</b> here.\n'.toBytes(),
+        'docs/guide.md' => '# Guide\n\n<b>Start</b> [here](../router.zena).\n'.toBytes(),
         'logo.png' => new FixedArray<u8>(4, 137 as u8),
         'data.bin' => new FixedArray<u8>(4, 0 as u8),
       };
@@ -1621,17 +1621,20 @@ export let tests = suite('registry:app-view', () => {
     equal((await fixture.get(`${raw}/nope.md`)).statusCode, 404);
 
     // A file's page is the version's page with the file in its Files tab:
-    // text as it is, numbered by line, an image shown, and anything else
-    // linked to.
+    // Markdown rendered, with its links from its own directory, other text
+    // as it is, numbered by line, an image shown, and anything else linked
+    // to.
     let guidePage = pageOf(await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/docs/guide.md'));
     let handleRaw = '/packages/router.acme.pkg.test/versions/1.0.0/raw';
     for (let expected in ['<rad-tab slot="tabs" panel="files" active>Files</rad-tab>', '<rad-tab-panel name="files" active>',
-        '<span class="line">&lt;b&gt;Start&lt;/b&gt; here.</span>', `href="${handleRaw}/docs/guide.md"`,
+        '<div class="prose markdown-file"><h1>Guide</h1>', `<a href="${files}/router.zena">here</a>`, `href="${handleRaw}/docs/guide.md"`,
         'href="/packages/router.acme.pkg.test/versions/1.0.0#files"', 'zena pkg add router.acme.pkg.test@1.0.0',
         '<title>docs/guide.md · ']) {
       isTrue(guidePage.contains(expected), `${expected} in the file's page`);
     }
-    isTrue(!guidePage.contains('panel="readme" active'), 'the README is not the active tab');
+    isTrue(!guidePage.contains('panel="readme" active') && !guidePage.contains('<b>Start'), 'the README is not the active tab');
+    let sourcePage = pageOf(await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/router.zena'));
+    isTrue(sourcePage.contains('<span class="line">export let route = 1;</span>'), sourcePage);
     let logoPage = pageOf(await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/logo.png'));
     isTrue(logoPage.contains(`src="${handleRaw}/logo.png" alt="logo.png"`), logoPage);
     let binaryPage = pageOf(await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/data.bin'));
