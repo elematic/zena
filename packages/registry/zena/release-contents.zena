@@ -21,9 +21,10 @@ import {BlobBytes} from 'pds:firestore';
 
 /**
  * The format `ReleaseContents.toBytes` writes. Contents of another are
- * derived again. 2 added each file's offset in the archive.
+ * derived again. 2 added each file's offset in the archive; 3 pointed the
+ * README's images to `rawUrl`, and its links to the files' pages.
  */
-export let CONTENTS_FORMAT = 2;
+export let CONTENTS_FORMAT = 3;
 
 /** The largest README rendered, in bytes of Markdown. A larger one is linked to instead. */
 export let MAX_README_BYTES = 256 * 1024;
@@ -163,10 +164,22 @@ export function deriveContents(did: String, version: String, archive: Cid, bytes
 }
 
 /**
- * Where the App View serves the file at `path` of release `version` of the
- * package `ref`, its handle or its DID.
+ * The page of the file at `path` of release `version` of the package
+ * `ref`, its handle or its DID: the release's page, showing the file.
  */
 export function fileUrl(ref: String, version: String, path: String): String {
+  return releaseUrl(ref, version, 'files', path);
+}
+
+/**
+ * Where the App View serves the bytes of the file at `path` of release
+ * `version` of the package `ref`, its handle or its DID.
+ */
+export function rawUrl(ref: String, version: String, path: String): String {
+  return releaseUrl(ref, version, 'raw', path);
+}
+
+function releaseUrl(ref: String, version: String, kind: String, path: String): String {
   let segments = new GrowableArray<String>();
   for (let segment in path.split('/')) {
     segments.push(percentEncode(segment, EncodeSet.Path));
@@ -175,7 +188,7 @@ export function fileUrl(ref: String, version: String, path: String): String {
   // a did:web with a port, which the path set leaves alone.
   // TODO(#1034): `ref.replaceAll('%', '%25')`, once the byte String has it.
   let escaped = join(ref.split('%'), '%25');
-  return `/packages/${escaped}/versions/${version}/files/${join(segments, '/')}`;
+  return `/packages/${escaped}/versions/${version}/${kind}/${join(segments, '/')}`;
 }
 
 /**
@@ -184,8 +197,9 @@ export function fileUrl(ref: String, version: String, path: String): String {
  * A URL with a scheme, or to another host, and a link within the page
  * (`#...`) stay as they are, so images from other sites show. A relative
  * path is resolved from the package's root, as is one that starts with
- * `/`, and points to the file the App View serves from the release's
- * archive (`fileUrl`). One that climbs out of the package's root, or names
+ * `/`: a link points to the file's page (`fileUrl`), and an image to the
+ * file itself, which the App View serves from the release's archive
+ * (`rawUrl`). One that climbs out of the package's root, or names
  * no file in the archive, is left out.
  */
 export final class PackageUrls implements UrlResolver {
@@ -223,7 +237,8 @@ export final class PackageUrls implements UrlResolver {
     if (!this.#paths.has(path)) {
       return null;
     }
-    return `${fileUrl(this.#ref, this.#version, path)}${suffix}`;
+    let target = if (isImage) rawUrl(this.#ref, this.#version, path) else fileUrl(this.#ref, this.#version, path);
+    return `${target}${suffix}`;
   }
 }
 

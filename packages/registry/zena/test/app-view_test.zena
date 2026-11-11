@@ -1575,8 +1575,9 @@ export let tests = suite('registry:app-view', () => {
           .toBytes(),
         'router.zena' => 'export let route = 1;\n'.toBytes(),
         'README.md' => readme.toBytes(),
-        'docs/guide.md' => '# Guide\n'.toBytes(),
+        'docs/guide.md' => '# Guide\n\n<b>Start</b> here.\n'.toBytes(),
         'logo.png' => new FixedArray<u8>(4, 137 as u8),
+        'data.bin' => new FixedArray<u8>(4, 0 as u8),
       };
       return packSource(files);
     };
@@ -1595,27 +1596,46 @@ export let tests = suite('registry:app-view', () => {
         !packageHtml.contains('fewer'), packageHtml);
     isTrue(packageHtml.contains('href="/packages/router.acme.pkg.test/versions/1.1.0"'), 'a link to 1.1.0');
 
-    // The README's relative links and images point to the release's files,
-    // from the package's root, by the package's DID; one that leaves the
-    // root, or names no file, is left out, with its text. An image from
-    // another site stays.
+    // The README's relative links point to the release's files' pages, and
+    // its images to the files themselves, from the package's root, by the
+    // package's DID; one that leaves the root, or names no file, is left
+    // out, with its text. An image from another site stays.
     let files = `/packages/${router}/versions/1.0.0/files`;
+    let raw = `/packages/${router}/versions/1.0.0/raw`;
     for (let expected in [`<a href="${files}/docs/guide.md#start">guide</a>`, ' up ', ' gone ',
-        `<a href="${files}/router.zena">source</a>`, `<img src="${files}/logo.png" alt="logo" />`,
+        `<a href="${files}/router.zena">source</a>`, `<img src="${raw}/logo.png" alt="logo" />`,
         '<img src="https://img.example/badge.svg"', '<a href="#router">top</a>']) {
       isTrue(packageHtml.contains(expected), `${expected} in the README`);
     }
     isTrue(!packageHtml.contains('outside.md') && !packageHtml.contains('nope.md'), 'no link out of the package');
     // The App View serves those files, by DID or by handle: an image as its
     // type, anything else as text, and neither runs on its origin.
-    let logo = await fixture.get(`${files}/logo.png`);
+    let logo = await fixture.get(`${raw}/logo.png`);
     equal(logo.statusCode, 200);
     equal(logo.type ?? '', 'image/png');
     equal(logo.getHeader('content-security-policy') ?? '', "default-src 'none'; sandbox");
     equal(logo.getHeader('x-content-type-options') ?? '', 'nosniff');
-    let guide = await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/docs/guide.md');
+    let guide = await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/raw/docs/guide.md');
     equal(guide.statusCode, 200);
     equal(guide.type ?? '', 'text/plain; charset=utf-8');
+    equal((await fixture.get(`${raw}/nope.md`)).statusCode, 404);
+
+    // A file's page is the version's page with the file in its Files tab:
+    // text as it is, numbered by line, an image shown, and anything else
+    // linked to.
+    let guidePage = pageOf(await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/docs/guide.md'));
+    let handleRaw = '/packages/router.acme.pkg.test/versions/1.0.0/raw';
+    for (let expected in ['<rad-tab slot="tabs" panel="files" active>Files</rad-tab>', '<rad-tab-panel name="files" active>',
+        '<span class="line">&lt;b&gt;Start&lt;/b&gt; here.</span>', `href="${handleRaw}/docs/guide.md"`,
+        'href="/packages/router.acme.pkg.test/versions/1.0.0#files"', 'zena pkg add router.acme.pkg.test@1.0.0',
+        '<title>docs/guide.md · ']) {
+      isTrue(guidePage.contains(expected), `${expected} in the file's page`);
+    }
+    isTrue(!guidePage.contains('panel="readme" active'), 'the README is not the active tab');
+    let logoPage = pageOf(await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/logo.png'));
+    isTrue(logoPage.contains(`src="${handleRaw}/logo.png" alt="logo.png"`), logoPage);
+    let binaryPage = pageOf(await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/data.bin'));
+    isTrue(binaryPage.contains('not text') && binaryPage.contains(`href="${handleRaw}/data.bin"`), binaryPage);
     equal((await fixture.get(`${files}/nope.md`)).statusCode, 404);
 
     // A version's page has its own README, its files with their sizes, and
@@ -1623,7 +1643,7 @@ export let tests = suite('registry:app-view', () => {
     let versionResponse = await fixture.get('/packages/router.acme.pkg.test/versions/1.1.0');
     equal(versionResponse.statusCode, 200);
     let versionHtml = pageOf(versionResponse);
-    for (let expected in ['<del>fewer</del>', 'README.md', 'router.zena', 'zena-package.json', '5 files', 'retracted',
+    for (let expected in ['<del>fewer</del>', 'README.md', 'router.zena', 'zena-package.json', '6 files', 'retracted',
         'broken', 'bytes', 'zena pkg add router.acme.pkg.test@1.1.0', 'href="/packages/router.acme.pkg.test/versions/1.1.0/files/docs/guide.md"']) {
       isTrue(versionHtml.contains(expected), `${expected} in the version page`);
     }
@@ -1697,7 +1717,7 @@ export let tests = suite('registry:app-view', () => {
     for (let version in ['1.0.0', '1.0.1']) {
       await release(fixture, ALICE, router, version, await upload(fixture, router, archiveOf(router, version)));
     }
-    let file = await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/files/router.zena');
+    let file = await fixture.get('/packages/router.acme.pkg.test/versions/1.0.0/raw/router.zena');
     equal(file.statusCode, 200);
     equal(String.fromBytes(file.body as FixedArray<u8>), 'export let route = 1;\n');
 
@@ -1707,7 +1727,7 @@ export let tests = suite('registry:app-view', () => {
     let moved = kept.files.map((f, i, all) => new ReleaseFile(f.path, f.cid, f.size, f.offset + (1 as i64)));
     await appView.derived.write(router, '1.0.1',
         new ReleaseContents(kept.archive, kept.archiveBytes, moved, kept.readmePath, kept.readmeHtml));
-    equal((await fixture.get('/packages/router.acme.pkg.test/versions/1.0.1/files/router.zena')).statusCode, 404);
+    equal((await fixture.get('/packages/router.acme.pkg.test/versions/1.0.1/raw/router.zena')).statusCode, 404);
   });
 
   test('links to a README too large to render', async (ctx) => {
