@@ -9,7 +9,6 @@
 // Resolution is a pure function of configuration (packages + target).
 // No I/O is performed.
 
-import { canonicalTarget } from './targets.zena';
 import { HashMap } from 'zena:collections';
 
 
@@ -57,8 +56,9 @@ export final class PackageConfig {
   // declared with `{"wit": "./path"}` in the manifest. Its modules are
   // WIT interfaces — `import {now} from 'wasi:clocks/monotonic-clock'` —
   // and the compiler host synthesizes their Zena declarations from the
-  // WIT source (docs/design/component-model.md, Part 2). Mutually
-  // exclusive with `root`/`exports`.
+  // WIT source (docs/design/component-model.md, Part 2). On `zena`, this
+  // points to `host-wit` so `zena:host/*` interfaces resolve alongside
+  // the standard library's `.zena` modules.
   var witRoot: String | null = null;
 
   // A package the resolution file pins (its `resolved` section), keyed by
@@ -128,12 +128,10 @@ export final class ModuleResolver {
   #packages: HashMap<String, PackageConfig>;
   #target: String;
 
-  // The legacy target name "host" is stored as "js", the name manifests
-  // list entries under.
   new(packages: HashMap<String, PackageConfig>, target: String)
-    : #packages = packages, #target = canonicalTarget(target);
+    : #packages = packages, #target = target;
 
-  // The compilation target, by its current name (e.g., "js", "zena-cli").
+  // The compilation target (e.g., "core", "js", "zena-js", "component", "zena-component").
   target: String {
     get { return this.#target; }
   }
@@ -286,7 +284,7 @@ export final class ModuleResolver {
       // its declarations — where the WIT lives, and which interface.
       // The specifier has no version on purpose; the WIT declares it.
       let witRoot = config.witRoot;
-      if (witRoot != null) {
+      if (config.exports == null && witRoot != null) {
         return new ResolvedModule(
             `wit:${witRoot as String}#${packageName}:${moduleName}`,
             packageName);
@@ -296,6 +294,11 @@ export final class ModuleResolver {
       if (config.exports != null) {
         let exports = config.exports as HashMap<String, ModuleExport>;
         if (!exports.has(moduleName)) {
+          if (witRoot != null && moduleName.startsWith("host/")) {
+            return new ResolvedModule(
+                `wit:${witRoot}#${packageName}:${moduleName}`,
+                packageName);
+          }
           throw new Error(
             `Library '${moduleName}' not found in package '${packageName}'`
           );

@@ -4,7 +4,7 @@ import {instantiate} from '../index.js';
 import {compile} from './compile-zena.js';
 
 suite('Runtime - Target JS WebAssembly Strings', () => {
-  test('string literal return and console.log with target js', async () => {
+  test('string literal return and console.log with target zena-js', async () => {
     const wasm = await compile(
       `
       export let main = (): String => {
@@ -12,7 +12,7 @@ suite('Runtime - Target JS WebAssembly Strings', () => {
         return "returned from main";
       };
     `,
-      'js',
+      'zena-js',
     );
 
     const logged: string[] = [];

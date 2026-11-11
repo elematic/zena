@@ -69,17 +69,17 @@ The CLI module is a component, and it imports four things from its
 host:
 
 - **WASI 0.3**, for files, the environment, the clock and stdio.
-- **`zena-cli:host/stack-trace`**, the `capture` function behind
+- **`zena:host/stack-trace`**, the `capture` function behind
   `Error`'s stack traces on this target.
-- **`zena-cli:host/process`**, to spawn host processes. zb runs build
+- **`zena:host/process`**, to spawn host processes. zb runs build
   commands through it, and `zena bench` runs command variants through
   it.
-- **`zena-cli:host/wasm`**, which runs another component. This is what
+- **`zena:host/wasm`**, which runs another component. This is what
   Wasm cannot do for itself: start wasmtime on another component. The
   test runner needs it to run each compiled test.
 
-The three `zena-cli:host` interfaces are declared in
-`packages/stdlib/zena/host-wit/host.wit` (package `zena-cli:host@1.0.0`)
+The `zena:host` interfaces are declared in
+`packages/stdlib/zena/host-wit/host.wit` (package `zena:host@1.0.0`)
 and implemented in the `zena-runtime` crate
 (`packages/zena-runtime/src/component.rs`), so `zena-run` provides the
 same set. File watching, which zb's watch mode needs, will be a further
@@ -334,7 +334,7 @@ reseed.
 3. **Components on WASI 0.3** (#684), which came after and moved
    everything above onto components: the CLI module, the bootstrap and
    every test are components, and the host's imports became the
-   `zena-cli:host` WIT interfaces.
+   `zena:host` WIT interfaces.
 
 4. **The language server** (#690). The language service became a
    library, with an LSP server beside it, and `zena lsp` runs the server

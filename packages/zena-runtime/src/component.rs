@@ -1,5 +1,5 @@
 //! Host side of a Zena component: WASI 0.3 through `wasmtime-wasi`, plus
-//! the `zena-cli:host` interfaces the `zena` command's target imports —
+//! the `zena:host` interfaces the `zena-component` target imports —
 //! stack traces for `Error`, process spawning behind `zena:process`, and
 //! running other components and core modules behind `zena:wasm` (a core
 //! module runs with no imports; see [`crate::core_module`]). The WIT is
@@ -36,30 +36,30 @@ pub(crate) mod bindings {
         world: "zena:runtime/command",
         imports: {
             default: trappable,
-            "zena-cli:host/process.[method]process.wait": async | trappable | store,
-            "zena-cli:host/process.[method]process.read-line": async | trappable | store,
-            "zena-cli:host/process.[method]process.stop": async | trappable | store,
-            "zena-cli:host/process.wait-signal": async | trappable | store,
-            "zena-cli:host/wasm.[method]run.wait": async | trappable | store,
-            "zena-cli:host/http-server.[method]server.listen": async | trappable | store,
-            "zena-cli:host/http-server.[static]response-writer.respond": trappable | store,
-            "zena-cli:host/extensions.load": async | trappable | store,
-            "zena-cli:host/extensions.load-trusted": async | trappable | store,
-            "zena-cli:host/extensions.drop": trappable | store,
+            "zena:host/process.[method]process.wait": async | trappable | store,
+            "zena:host/process.[method]process.read-line": async | trappable | store,
+            "zena:host/process.[method]process.stop": async | trappable | store,
+            "zena:host/process.wait-signal": async | trappable | store,
+            "zena:host/wasm.[method]run.wait": async | trappable | store,
+            "zena:host/http-server.[method]server.listen": async | trappable | store,
+            "zena:host/http-server.[static]response-writer.respond": trappable | store,
+            "zena:host/extensions.load": async | trappable | store,
+            "zena:host/extensions.load-trusted": async | trappable | store,
+            "zena:host/extensions.drop": trappable | store,
         },
         with: {
-            "zena-cli:host/process.command": super::CommandState,
-            "zena-cli:host/process.process": super::ProcessState,
-            "zena-cli:host/wasm.run": super::RunState,
-            "zena-cli:host/http-server.server": super::ServerState,
-            "zena-cli:host/http-server.response-writer": super::ResponseWriterState,
+            "zena:host/process.command": super::CommandState,
+            "zena:host/process.process": super::ProcessState,
+            "zena:host/wasm.run": super::RunState,
+            "zena:host/http-server.server": super::ServerState,
+            "zena:host/http-server.response-writer": super::ResponseWriterState,
             "wasi:http/types.request": wasmtime_wasi_http::p3::bindings::http::types::Request,
             "wasi:http/types.response": wasmtime_wasi_http::p3::bindings::http::types::Response,
         },
     });
 }
 
-use bindings::zena_cli::host::{extensions, http_server, process, secrets, wasm};
+use bindings::zena::host::{extensions, http_server, process, secrets, wasm};
 
 /// The most output a captured run keeps from each stream.
 const CAPTURE_LIMIT: usize = 64 << 20;
@@ -167,7 +167,7 @@ impl wasmtime_wasi_http::WasiHttpView for ComponentState {
 }
 
 /// A linker with everything a Zena component imports: WASI 0.3 and the
-/// `zena-cli:host` interfaces.
+/// `zena:host` interfaces.
 pub fn linker(engine: &Engine) -> Result<Linker<ComponentState>> {
     let mut linker: Linker<ComponentState> = Linker::new(engine);
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
@@ -181,7 +181,7 @@ pub fn linker(engine: &Engine) -> Result<Linker<ComponentState>> {
     // `capture` needs the store, for the backtrace: linked by hand
     // rather than through the generated trait.
     linker
-        .instance("zena-cli:host/stack-trace@1.0.0")?
+        .instance("zena:host/stack-trace@1.0.0")?
         .func_wrap(
             "capture",
             |store: StoreContextMut<'_, ComponentState>, (): ()| -> Result<(String,)> {
@@ -233,7 +233,7 @@ pub fn run_main(
 }
 
 // ============================================================================
-// zena-cli:host/process
+// zena:host/process
 // ============================================================================
 
 /// A process being configured.
@@ -995,7 +995,7 @@ impl process::HostProcessWithStore<ComponentState> for HasSelf<ComponentState> {
 }
 
 // ============================================================================
-// zena-cli:host/wasm
+// zena:host/wasm
 // ============================================================================
 
 /// How a run ended. The numbers are what the WIT enum carries.
@@ -1373,7 +1373,7 @@ fn precompile_core_module(path: &Path, debug: bool) -> anyhow::Result<()> {
 }
 
 // ============================================================================
-// zena-cli:host/http-server
+// zena:host/http-server
 // ============================================================================
 
 type ResponseBody =
@@ -1683,7 +1683,7 @@ impl wasmtime::component::StreamProducer<ComponentState> for RequestStreamProduc
 impl http_server::Host for ComponentState {}
 
 // ============================================================================
-// zena-cli:host/secrets
+// zena:host/secrets
 // ============================================================================
 
 impl secrets::Host for ComponentState {

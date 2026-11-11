@@ -22,20 +22,21 @@ function makeStdlibConfig() {
 
   let stringVirtual: HashMap<String, String> = {
     "js" => "core/string-js.zena",
-    "zena-cli" => "core/string.zena",
+    "zena-component" => "core/string.zena",
   };
   exports["core/string.zena"] = new ModuleExport(stringVirtual, null, true);
 
   // An internal module: the manifest entry is what picks its file, and
   // only the package's own modules may name it.
   let stackVirtual: HashMap<String, String> = {
-    "js" => "core/error/stack-host.zena",
+    "zena-js" => "core/error/stack-host.zena",
   };
   exports["error-stack"] = new ModuleExport(stackVirtual, null, true);
 
   let consoleVirtual: HashMap<String, String> = {
-    "js" => "console/host.zena",
-    "zena-cli" => "console/component.zena",
+    "js" => "console/none.zena",
+    "zena-js" => "console/host.zena",
+    "zena-component" => "console/component.zena",
   };
   exports["console"] = new ModuleExport(consoleVirtual);
 
@@ -45,7 +46,9 @@ function makeStdlibConfig() {
   };
   exports["fallback"] = new ModuleExport(fallbackVirtual);
 
-  return new PackageConfig("/stdlib", exports);
+  let config = new PackageConfig("/stdlib", exports);
+  config.witRoot = "/stdlib/host-wit";
+  return config;
 }
 
 // Create a user package config for testing.
@@ -82,7 +85,7 @@ function makeResolvedResolver() {
     "router" => alias,
     "wasi" => wasi,
   };
-  return new ModuleResolver(packages, "zena-cli");
+  return new ModuleResolver(packages, "zena-component");
 }
 
 export let tests = suite("Module Resolver", () => {
@@ -175,24 +178,25 @@ export let tests = suite("Module Resolver", () => {
     equal(result.packageName, "zena");
   });
 
-  test("resolves stdlib virtual module for js", (t) => {
-    let resolver = makeResolver("js");
-    let result = resolver.resolve("zena:console", "/my/file.zena");
+  test("resolves stdlib virtual module for js and zena-js", (t) => {
+    let jsResolver = makeResolver("js");
+    equal(jsResolver.resolve("zena:console", "/my/file.zena").path, "zena:console/none.zena");
+
+    let zenaJsResolver = makeResolver("zena-js");
+    let result = zenaJsResolver.resolve("zena:console", "/my/file.zena");
     equal(result.path, "zena:console/host.zena");
     equal(result.packageName, "zena");
   });
 
-  test("resolves the legacy target name host as js", (t) => {
-    // Manifests list entries under "js" only.
-    let resolver = makeResolver("host");
-    equal(resolver.target, "js");
-    let result = resolver.resolve("zena:console", "/my/file.zena");
-    equal(result.path, "zena:console/host.zena");
+  test("resolves zena:host/* WIT interfaces from host-wit", (t) => {
+    let resolver = makeResolver("zena-component");
+    let result = resolver.resolve("zena:host/stack-trace", "/my/file.zena");
+    equal(result.path, "wit:/stdlib/host-wit#zena:host/stack-trace");
     equal(result.packageName, "zena");
   });
 
-  test("resolves stdlib virtual module for zena-cli", (t) => {
-    let resolver = makeResolver("zena-cli");
+  test("resolves stdlib virtual module for zena-component", (t) => {
+    let resolver = makeResolver("zena-component");
     let result = resolver.resolve("zena:console", "/my/file.zena");
     equal(result.path, "zena:console/component.zena");
     equal(result.packageName, "zena");
@@ -263,7 +267,7 @@ export let tests = suite("Module Resolver", () => {
   });
 
   test("an internal module resolves for its own package", (t) => {
-    let resolver = makeResolver("js");
+    let resolver = makeResolver("zena-js");
     let result = resolver.resolve("zena:error-stack", "zena:core/error.zena");
     equal(result.path, "zena:core/error/stack-host.zena");
   });
@@ -271,7 +275,7 @@ export let tests = suite("Module Resolver", () => {
   test("an internal module is refused from outside its package", (t) => {
     // The name exists and picks a file per target. That is machinery for
     // the library that owns it, and not an API a program may import.
-    let resolver = makeResolver("js");
+    let resolver = makeResolver("zena-js");
     throws(() => {
       resolver.resolve("zena:error-stack", "/project/src/main.zena");
     });
@@ -282,7 +286,7 @@ export let tests = suite("Module Resolver", () => {
     let jsResult = jsResolver.resolve("./string.zena", "zena:core/index.zena");
     equal(jsResult.path, "zena:core/string-js.zena");
 
-    let cliResolver = makeResolver("zena-cli");
+    let cliResolver = makeResolver("zena-component");
     let cliResult = cliResolver.resolve("./string.zena", "zena:core/index.zena");
     equal(cliResult.path, "zena:core/string.zena");
   });
@@ -410,7 +414,7 @@ export let tests = suite("Module Resolver", () => {
       "app" => new PackageConfig(".", null),
       "lib" => new PackageConfig("packages/lib", null),
     };
-    let resolver = new ModuleResolver(packages, "zena-cli");
+    let resolver = new ModuleResolver(packages, "zena-component");
     equal(resolver.findPackageForPath("main.zena"), "app");
     equal(resolver.findPackageForPath("src/server.zena"), "app");
     equal(resolver.findPackageForPath("packages/lib/lib.zena"), "lib");

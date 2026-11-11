@@ -8,20 +8,7 @@ const pkgRoot = path.resolve(__dirname, '..');
 const stdlibDir = path.resolve(pkgRoot, 'zena');
 const manifestPath = path.resolve(pkgRoot, 'stdlib-manifest.json');
 
-export type Target =
-  | 'js'
-  | 'zena-cli'
-  | 'freestanding'
-  | 'component'
-  // The legacy spelling of 'js'.
-  | 'host';
-
-/**
- * The current name of a target. The manifest lists each entry under
- * current names only, so the legacy 'host' is looked up as 'js'.
- */
-const canonicalTarget = (target: Target): Target =>
-  target === 'host' ? 'js' : target;
+export type Target = 'core' | 'js' | 'zena-js' | 'component' | 'zena-component';
 
 interface ModuleEntry {
   /** Entry file relative to zena/. Defaults to `<name>.zena`. */
@@ -105,14 +92,14 @@ const pathToStdlibId = (relPath: string): string => {
  */
 export const resolveStdlibImport = (
   name: string,
-  target: Target = 'host',
+  target: Target = 'zena-js',
 ): string | null => {
   const entry = getManifest().modules[name];
   if (!entry) {
     return null;
   }
   if (entry.virtual) {
-    const virtualPath = entry.virtual[canonicalTarget(target)];
+    const virtualPath = entry.virtual[target];
     return virtualPath ? `zena:${virtualPath}` : null;
   }
   if (entry.path) {
@@ -150,7 +137,7 @@ export const resolveStdlibRelative = (
 export const resolveStdlibSpecifier = (
   specifier: string,
   referrer: string,
-  target: Target = 'host',
+  target: Target = 'zena-js',
 ): string | null => {
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
     if (!referrer.startsWith('zena:')) {

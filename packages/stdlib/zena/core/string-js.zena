@@ -1,5 +1,5 @@
 /**
- * The Zena String class for the JavaScript target (--target js).
+ * The Zena String class for the JavaScript targets (--target js and zena-js).
  *
  * Uses the WebAssembly JS String Builtins proposal (wasm:js-string)
  * for native WTF-16 JavaScript strings wrapped in a Wasm GC String class
@@ -13,6 +13,9 @@ import {
   __js_string_code_point_at, __js_string_from_char_code,
   __js_string_from_code_point,
 } from './js-string-builtins.zena';
+import {
+  jsStringToLower, jsStringToUpper, jsStringIndexOf, jsStringReplaceAll,
+} from './string-js-ops.zena';
 export { Encoding } from './encoding.zena';
 
 
@@ -104,20 +107,6 @@ let hangulSyllableType = (cp: i32): i32 => {
 };
 
 export opaque type StringIndex = i32;
-
-// Host delegate functions for Unicode case mapping
-@external("zena:host:string", "toLowerCase")
-declare function __js_string_to_lower(s: externref): externref;
-
-@external("zena:host:string", "toUpperCase")
-declare function __js_string_to_upper(s: externref): externref;
-
-@external("zena:host:string", "indexOf")
-declare function __js_string_index_of(s: externref, needle: externref, fromIndex: i32): i32;
-
-@external("zena:host:string", "replaceAll")
-declare function __js_string_replace_all(
-    s: externref, needle: externref, replacement: externref): externref;
 
 // Template string join helpers
 export let __concat2 = (a: String, b: String): String => a + b;
@@ -559,7 +548,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   }
 
   #indexOfFrom(needle: String, fromIndex: i32): i32 {
-    return __js_string_index_of(this.#handle, needle.#handle, fromIndex);
+    return jsStringIndexOf(this.#handle, needle.#handle, fromIndex);
   }
 
   indexOf(needle: String): inline (true, StringIndex) | inline (false, _) {
@@ -648,13 +637,8 @@ export final class String implements Hashable, Stringable, Iterable<String> {
    * empty needle matches at every position, both ends included.
    */
   replaceAll(needle: String, replacement: String): String {
-    var literal = replacement.#handle;
-    if (__js_string_index_of(literal, '$'.#handle, 0) >= 0) {
-      // In a JavaScript replacement, `$$` stands for one `$`.
-      literal = __js_string_replace_all(literal, '$'.#handle, '$$$$'.#handle);
-    }
     return new String.#fromHandle(
-        __js_string_replace_all(this.#handle, needle.#handle, literal));
+        jsStringReplaceAll(this.#handle, needle.#handle, replacement.#handle));
   }
 
   trim(): String {
@@ -713,11 +697,11 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   }
 
   toLowerCase(): String {
-    return new String.#fromHandle(__js_string_to_lower(this.#handle));
+    return new String.#fromHandle(jsStringToLower(this.#handle));
   }
 
   toUpperCase(): String {
-    return new String.#fromHandle(__js_string_to_upper(this.#handle));
+    return new String.#fromHandle(jsStringToUpper(this.#handle));
   }
 
   operator +(other: String): String {

@@ -55,7 +55,7 @@ async function stdlibProgramOf(source: String): Future<(Program, TypeInterner)> 
   let host = new PlainHost();
   host.addFile("test.zena", source);
   let compiler = makeStdlibCompiler(host);
-  let compResult = await compiler.compile({entry: "test.zena", target: 'freestanding'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'core'});
   let checkRes = checkCompilation(compResult);
   let errors = errorDiagnostics(checkRes.diagnostics);
   if (errors.length > 0) {
@@ -83,10 +83,10 @@ async function stdlibProgramOf(source: String): Future<(Program, TypeInterner)> 
  * families the first compile used.
  */
 async function compileBothWays(source: String): Future<TemplateFamilies> {
-  let withTemplates = new WatGenerator("freestanding", false, 1);
+  let withTemplates = new WatGenerator("core", false, 1);
   withTemplates.templateCheck = true;
   let wat = withTemplates.generate(await programOf(source));
-  let without = new WatGenerator("freestanding", false, 1);
+  let without = new WatGenerator("core", false, 1);
   without.templates = false;
   equal(wat, without.generate(await programOf(source)));
   return withTemplates.templateFamilies as TemplateFamilies;
@@ -95,12 +95,12 @@ async function compileBothWays(source: String): Future<TemplateFamilies> {
 /** `compileBothWays` against the standard library. */
 async function compileBothWaysWithStdlib(source: String): Future<TemplateFamilies> {
   let (program, interner) = await stdlibProgramOf(source);
-  let withTemplates = new WatGenerator("freestanding", false, 1);
+  let withTemplates = new WatGenerator("core", false, 1);
   withTemplates.templateCheck = true;
   withTemplates.interner = interner;
   let wat = withTemplates.generate(program);
   let (program2, interner2) = await stdlibProgramOf(source);
-  let without = new WatGenerator("freestanding", false, 1);
+  let without = new WatGenerator("core", false, 1);
   without.templates = false;
   without.interner = interner2;
   equal(wat, without.generate(program2));

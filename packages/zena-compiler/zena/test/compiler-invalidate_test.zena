@@ -67,7 +67,7 @@ async function newCompiler(host: PlainHost) {
 
 /** Compiles to wasm, throwing on any check error. */
 async function compileToWasm(c: Compiler, path: String) {
-  let result = await c.compile({entry: path, target: 'freestanding'});
+  let result = await c.compile({entry: path, target: 'core'});
   let checked = checkCompilation(result);
   for (let diag in checked.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
@@ -85,7 +85,7 @@ async function compileToWasm(c: Compiler, path: String) {
       if (file.ast.path == entryAst.path) { entryUnit = unit; }
     }
   }
-  return new BinaryGenerator('freestanding', false)
+  return new BinaryGenerator('core', false)
     .generate(new Program(units, entryUnit))
     .toByteArray();
 }
@@ -104,7 +104,7 @@ export let tests = suite('Compiler.invalidate', () => {
     let host = new PlainHost();
     let c = await newCompiler(host);
     await c.invalidate(heavyEntry);
-    let result = await c.compile({entry: heavyEntry, target: 'freestanding'});
+    let result = await c.compile({entry: heavyEntry, target: 'core'});
     isTrue(collisionCount(result) == 0,
       `${collisionCount(result)} node ids are claimed by more than one file`);
   });
@@ -117,11 +117,11 @@ export let tests = suite('Compiler.invalidate', () => {
     // by being identical — and pinning it would pin load order rather
     // than anything the compiler owes a caller.
     let plain = await newCompiler(new PlainHost());
-    let expected = idsOf(await plain.compile({entry: heavyEntry, target: 'freestanding'}));
+    let expected = idsOf(await plain.compile({entry: heavyEntry, target: 'core'}));
 
     let invalidated = await newCompiler(new PlainHost());
     await invalidated.invalidate(heavyEntry);
-    let actual = idsOf(await invalidated.compile({entry: heavyEntry, target: 'freestanding'}));
+    let actual = idsOf(await invalidated.compile({entry: heavyEntry, target: 'core'}));
 
     isTrue(actual.length == expected.length,
       `${actual.length} nodes after invalidate, ${expected.length} without`);
@@ -163,7 +163,7 @@ export let tests = suite('Compiler.invalidate', () => {
     let c = await newCompiler(host);
 
     host.addFile(mutableEntry, 'export let main = (): i32 => { return 1; };');
-    let clean = checkCompilation(await c.compile({entry: mutableEntry, target: 'freestanding'}));
+    let clean = checkCompilation(await c.compile({entry: mutableEntry, target: 'core'}));
     var cleanErrors = 0;
     for (let d in clean.diagnostics) {
       if (d.severity == DiagnosticSeverity.Error) { cleanErrors += 1; }
@@ -172,7 +172,7 @@ export let tests = suite('Compiler.invalidate', () => {
 
     host.addFile(mutableEntry, 'export let main = (): i32 => { return "not an i32"; };');
     await c.invalidate(mutableEntry);
-    let broken = checkCompilation(await c.compile({entry: mutableEntry, target: 'freestanding'}));
+    let broken = checkCompilation(await c.compile({entry: mutableEntry, target: 'core'}));
     var brokenErrors = 0;
     for (let d in broken.diagnostics) {
       if (d.severity == DiagnosticSeverity.Error) { brokenErrors += 1; }

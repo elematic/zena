@@ -1,5 +1,5 @@
 /**
- * `zena:host:number`: the number conversions a `--target js` module imports
+ * `zena:host:number`: the number conversions a `--target zena-js` module imports
  * (stdlib `core/number-format-js.zena` and `core/number-parse-js.zena`).
  *
  * They are JavaScript's own. The stdlib makes up the differences between

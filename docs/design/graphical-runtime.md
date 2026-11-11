@@ -9,8 +9,8 @@ Zena separates execution into targeted tools:
 
 - `zena-cli`: bundles the compiler, test orchestrator, benchmark runner, and
   documentation generator.
-- `zena-run`: runs one compiled component for the `zena-cli` target with
-  minimal host imports (WASI 0.3, and the `zena-cli:host` interfaces for stack
+- `zena-run`: runs one compiled component for the `zena-component` target with
+  minimal host imports (WASI 0.3, and the `zena:host` interfaces for stack
   traces, process spawning and running components).
 - `zfx` (`zenafx`): runs WebAssembly components that interact with the host
   window manager and GPU.

@@ -1,11 +1,11 @@
 //! `zena-run`: runs one compiled Zena component, or a core module, on
 //! wasmtime.
 //!
-//! This is the smallest host a component built for the `zena-cli` target
+//! This is the smallest host a component built for the `zena-component` target
 //! can run under: wasmtime configured for Zena's output, WASI 0.3, and
-//! the `zena-cli:host` interfaces from `zena-runtime` (stack traces, and
+//! the `zena:host` interfaces from `zena-runtime` (stack traces, and
 //! `zena:process`, `zena:wasm` and `zena:extensions` when granted). A
-//! core module — a `freestanding` build, hand-written `.wat` — runs with
+//! core module — a `core` build, hand-written `.wat` — runs with
 //! no imports, so `--dir`, `--allow-spawn`, `--allow-extensions` and the
 //! arguments do not reach it. It does
 //! not compile Zena source; `zena-cli` bundles the compiler and hands

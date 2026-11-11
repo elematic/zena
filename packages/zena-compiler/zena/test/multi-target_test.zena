@@ -7,11 +7,12 @@
  *
  * What makes that more than bookkeeping is that a specifier does not
  * name one library. `zena:memory` is the free-list allocator on
- * `freestanding` and the library that delegates to the component's
- * memory on `component`; `zena:console` is the host's on `js` and the
- * component's elsewhere; `zena:fs` exists on `component` and `zena-cli`
- * and nowhere else. So the same path means a different library on each
- * target, and the two library sets must not share a cache entry.
+ * `core` and the library that delegates to the component's
+ * memory on `component`; `zena:console` is a no-op on `js`, the host's
+ * on `zena-js`, and the component's elsewhere; `zena:fs` exists on
+ * `component` and `zena-component` and nowhere else. So the same path
+ * means a different library on each target, and the library sets must
+ * not share a cache entry.
  *
  * These tests use the real standard library, because the virtual
  * libraries are what is under test.
@@ -95,57 +96,62 @@ export let tests = suite('one compiler, several targets', () => {
     let compiler = await newCompiler();
 
     equal(compiler.forTarget('js').resolve('zena:console', '').path,
+        'zena:console/none.zena');
+    equal(compiler.forTarget('zena-js').resolve('zena:console', '').path,
         'zena:console/js.zena');
     equal(compiler.forTarget('component').resolve('zena:console', '').path,
         'zena:console/component.zena');
-    equal(compiler.forTarget('freestanding').resolve('zena:memory', '').path,
+    equal(compiler.forTarget('core').resolve('zena:memory', '').path,
         'zena:memory.zena');
     equal(compiler.forTarget('component').resolve('zena:memory', '').path,
         'zena:memory/component.zena');
 
-    // `host` is `js` under its old name, so it is the same target and
-    // not a fifth library set.
-    equal(compiler.forTarget('host').target, 'js');
-    isTrue(compiler.forTarget('host') === compiler.forTarget('js'),
-        'host and js share one CompilerTarget');
+    // `zena:host/*` resolves to the stdlib's `host-wit` WIT package without
+    // intercepting ordinary `zena:*` stdlib modules.
+    equal(compiler.forTarget('zena-component').resolve('zena:host/stack-trace', '').path,
+        `wit:${stdlibRoot}/host-wit#zena:host/stack-trace`);
+    equal(compiler.forTarget('zena-component').resolve('zena:core', '').path,
+        'zena:core/index.zena');
   });
 
-  test('an unknown target is rejected by name', async (ctx) => {
+  test('an unknown or retired target is rejected by name', async (ctx) => {
     let compiler = await newCompiler();
-    var message = '';
-    try {
-      await compiler.compile({entry: allocating, target: 'freestandng'});
-    } catch (e) {
-      message = (e as Error).message;
+    for (let bad in ['freestandng', 'freestanding', 'host', 'zena-cli']) {
+      var message = '';
+      try {
+        await compiler.compile({entry: allocating, target: bad});
+      } catch (e) {
+        message = e.message;
+      }
+      isTrue(message.contains(bad),
+          `expected '${bad}' to be named, got: ${message}`);
     }
-    isTrue(message.contains('freestandng'),
-        `expected the typo to be named, got: ${message}`);
   });
 
-  test('one compiler checks the same program on four targets', async (ctx) => {
+  test('one compiler checks the same program on five targets', async (ctx) => {
     let compiler = await newCompiler();
-    for (let target in ['js', 'freestanding', 'component', 'zena-cli']) {
+    for (let target in ['core', 'js', 'zena-js', 'component', 'zena-component']) {
       let checked = await compileAndCheck(compiler, allocating, target);
       let failure = firstError(checked);
       equal(failure, '', `${target}: ${failure}`);
       equal(checked.settings.target, target);
     }
-    // Four library sets, built on demand and kept.
-    equal(compiler.compiledTargets.length, 4);
+    // Five library sets, built on demand and kept.
+    equal(compiler.compiledTargets.length, 5);
   });
 
   test('each target keeps its own library for a shared path', async (ctx) => {
     let compiler = await newCompiler();
-    await compileAndCheck(compiler, allocating, 'js');
+    await compileAndCheck(compiler, allocating, 'zena-js');
     await compileAndCheck(compiler, allocating, 'component');
 
-    let js = compiler.forTarget('js');
+    let zenaJs = compiler.forTarget('zena-js');
     let component = compiler.forTarget('component');
 
     // The virtual library each target picked is loaded on that target
     // and absent from the other.
-    isTrue(js.getSourceFile('zena:console/js.zena') != null,
-        'js loaded the host console');
+    isTrue(zenaJs.getSourceFile('zena:console/js.zena') != null,
+        'zena-js loaded the host console');
     isTrue(component.getSourceFile('zena:console/js.zena') == null,
         'the component target did not load the host console');
     isTrue(component.getSourceFile('zena:console/component.zena') != null,
@@ -153,7 +159,7 @@ export let tests = suite('one compiler, several targets', () => {
 
     // A path both targets do load is two distinct files: same source,
     // separately scoped, because what it imports differs by target.
-    let jsEntry = js.getSourceFile(allocating) as SourceFile;
+    let jsEntry = zenaJs.getSourceFile(allocating) as SourceFile;
     let componentEntry = component.getSourceFile(allocating) as SourceFile;
     equal(jsEntry.source, componentEntry.source);
     isFalse(jsEntry === componentEntry,
@@ -180,41 +186,47 @@ export let tests = suite('one compiler, several targets', () => {
   test('a target emits the same bytes whatever else was compiled', async (ctx) => {
     // Symbol and node ids are per target, so a compile must not depend
     // on which other targets the compiler was asked for first.
-    let alone = await wasmFor(await newCompiler(), allocating, 'freestanding');
+    let alone = await wasmFor(await newCompiler(), allocating, 'core');
 
     let shared = await newCompiler();
     await compileAndCheck(shared, allocating, 'component');
-    await compileAndCheck(shared, usesFs, 'zena-cli');
+    await compileAndCheck(shared, usesFs, 'zena-component');
     // Two whole library sets' worth of work before the one under test, or
     // there would be nothing for it to have been perturbed by.
     equal(shared.compiledTargets.length, 2);
-    let after = await wasmFor(shared, allocating, 'freestanding');
+    let after = await wasmFor(shared, allocating, 'core');
 
     isTrue(bytesEqual(alone, after),
-        `freestanding output changed: ${i32ToString(alone.length)} bytes alone, ` +
+        `core output changed: ${i32ToString(alone.length)} bytes alone, ` +
         `${i32ToString(after.length)} after compiling other targets`);
   });
 
   test('targets load different files even when they emit the same bytes', async (ctx) => {
-    // `allocating.zena` reaches nothing target-specific, so `js` and
-    // `freestanding` emit the same module — they differ only in the
-    // prelude's `zena:console`, which neither program calls. The two
-    // compiles are still not the same compile, and that is what the
-    // separate file sets are for.
+    // `allocating.zena` reaches nothing target-specific, so `js`, `zena-js`,
+    // and `core` emit the same module — they differ only in the prelude's
+    // `zena:console`, which none of the compiles call.
     let compiler = await newCompiler();
     let js = await wasmFor(compiler, allocating, 'js');
-    let freestanding = await wasmFor(compiler, allocating, 'freestanding');
-    isTrue(bytesEqual(js, freestanding),
-        'a program that touches no host should build the same either way');
+    let zenaJs = await wasmFor(compiler, allocating, 'zena-js');
+    let core = await wasmFor(compiler, allocating, 'core');
+    isTrue(bytesEqual(js, core),
+        'js and core should emit identical bytes for a hostless program');
+    isTrue(bytesEqual(zenaJs, core),
+        'zena-js and core should emit identical bytes for a hostless program');
 
     let jsFiles = compiler.forTarget('js');
-    let freestandingFiles = compiler.forTarget('freestanding');
-    isTrue(jsFiles.getSourceFile('zena:console/js.zena') != null,
-        'js loaded the host console');
-    isTrue(freestandingFiles.getSourceFile('zena:console/js.zena') == null,
-        'freestanding did not load the host console');
-    isTrue(freestandingFiles.getSourceFile('zena:console/component.zena') != null,
-        'freestanding loaded the component console');
+    let zenaJsFiles = compiler.forTarget('zena-js');
+    let coreFiles = compiler.forTarget('core');
+    isTrue(jsFiles.getSourceFile('zena:console/none.zena') != null,
+        'js loaded the no-op console');
+    isTrue(jsFiles.getSourceFile('zena:console/js.zena') == null,
+        'js did not load the host console');
+    isTrue(zenaJsFiles.getSourceFile('zena:console/js.zena') != null,
+        'zena-js loaded the host console');
+    isTrue(coreFiles.getSourceFile('zena:console/js.zena') == null,
+        'core did not load the host console');
+    isTrue(coreFiles.getSourceFile('zena:console/component.zena') != null,
+        'core loaded the component console');
   });
 
   test('a check result carries forward within a target', async (ctx) => {

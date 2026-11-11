@@ -80,11 +80,11 @@ Pick the target that matches where the module will run:
 <zena-code-group class="code-group">
 
 <figure>
-<figcaption>js</figcaption>
+<figcaption>zena-js</figcaption>
 
 ```bash
-# Core Wasm GC with console imports, for @zena-lang/runtime and the browser
-zena build main.zena -o main.wasm --target js
+# Core Wasm GC with console and host runtime imports, for @zena-lang/runtime
+zena build main.zena -o main.wasm --target zena-js
 ```
 
 </figure>

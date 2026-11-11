@@ -1,0 +1,216 @@
+/**
+ * Pure-Wasm `String` search, replacement, and Unicode case mapping over
+ * `wasm:js-string` WTF-16 handles for `--target js`, requiring no
+ * `@zena-lang/runtime` imports.
+ */
+
+import {
+  __js_string_length, __js_string_concat, __js_string_substring,
+  __js_string_char_code_at, __js_string_from_char_code,
+  __js_string_from_code_point,
+} from './js-string-builtins.zena';
+import {
+  simpleCaseOf, upperSpecialAt, lowerSpecialAt, upperSpecialLength,
+  upperSpecialCodePoint, lowerSpecialLength, lowerSpecialCodePoint,
+  hasSimpleCaseMapping, isCombiningDiacritic,
+} from './case-mapping.zena';
+
+function decodeScalarAt(s: externref, len: i32, pos: i32): inline (i32, i32) {
+  let c0 = __js_string_char_code_at(s, pos);
+  if (c0 >= 0xD800 && c0 <= 0xDBFF && pos + 1 < len) {
+    let c1 = __js_string_char_code_at(s, pos + 1);
+    if (c1 >= 0xDC00 && c1 <= 0xDFFF) {
+      return (0x10000 + ((c0 - 0xD800) << 10) + (c1 - 0xDC00), pos + 2);
+    }
+  }
+  return (c0, pos + 1);
+}
+
+function decodeScalarBefore(s: externref, pos: i32): inline (i32, i32) {
+  let cLast = __js_string_char_code_at(s, pos - 1);
+  if (cLast >= 0xDC00 && cLast <= 0xDFFF && pos >= 2) {
+    let cPrev = __js_string_char_code_at(s, pos - 2);
+    if (cPrev >= 0xD800 && cPrev <= 0xDBFF) {
+      return (0x10000 + ((cPrev - 0xD800) << 10) + (cLast - 0xDC00), pos - 2);
+    }
+  }
+  return (cLast, pos - 1);
+}
+
+function codePointToJsString(cp: i32) {
+  return if (cp < 0x10000) __js_string_from_char_code(cp)
+      else __js_string_from_code_point(cp);
+}
+
+function isFinalSigma(s: externref, len: i32, pos: i32, next: i32): boolean {
+  var before = pos;
+  var precededByCased = false;
+  while (before > 0) {
+    let (cp, prev) = decodeScalarBefore(s, before);
+    if (!isCombiningDiacritic(cp)) {
+      precededByCased = hasSimpleCaseMapping(cp);
+      break;
+    }
+    before = prev;
+  }
+  if (!precededByCased) {
+    return false;
+  }
+  var after = next;
+  while (after < len) {
+    let (cp, following) = decodeScalarAt(s, len, after);
+    if (!isCombiningDiacritic(cp)) {
+      return !hasSimpleCaseMapping(cp);
+    }
+    after = following;
+  }
+  return true;
+}
+
+export function jsStringToLower(s: externref): externref {
+  let len = __js_string_length(s);
+  var built = __js_string_substring(s, 0, 0);
+  var runStart = 0;
+  var pos = 0;
+  while (pos < len) {
+    let (cp, next) = decodeScalarAt(s, len, pos);
+    var special = -1;
+    var mapped = cp;
+    if (cp < 0x80) {
+      if (cp >= 0x41 && cp <= 0x5A) {
+        mapped = cp + 0x20;
+      }
+    } else {
+      special = lowerSpecialAt(cp);
+      mapped = if (cp == 0x03A3 && isFinalSigma(s, len, pos, next)) 0x03C2
+          else simpleCaseOf(cp, false);
+    }
+    if (special >= 0) {
+      built = __js_string_concat(built, __js_string_substring(s, runStart, pos));
+      let count = lowerSpecialLength(special);
+      for (var k = 0; k < count; k += 1) {
+        built = __js_string_concat(built, codePointToJsString(lowerSpecialCodePoint(special, k)));
+      }
+      runStart = next;
+    } else if (mapped != cp) {
+      built = __js_string_concat(
+          __js_string_concat(built, __js_string_substring(s, runStart, pos)),
+          codePointToJsString(mapped));
+      runStart = next;
+    }
+    pos = next;
+  }
+  if (runStart == 0) {
+    return s;
+  }
+  return __js_string_concat(built, __js_string_substring(s, runStart, len));
+}
+
+export function jsStringToUpper(s: externref): externref {
+  let len = __js_string_length(s);
+  var built = __js_string_substring(s, 0, 0);
+  var runStart = 0;
+  var pos = 0;
+  while (pos < len) {
+    let (cp, next) = decodeScalarAt(s, len, pos);
+    var special = -1;
+    var mapped = cp;
+    if (cp < 0x80) {
+      if (cp >= 0x61 && cp <= 0x7A) {
+        mapped = cp - 0x20;
+      }
+    } else {
+      special = upperSpecialAt(cp);
+      mapped = simpleCaseOf(cp, true);
+    }
+    if (special >= 0) {
+      built = __js_string_concat(built, __js_string_substring(s, runStart, pos));
+      let count = upperSpecialLength(special);
+      for (var k = 0; k < count; k += 1) {
+        built = __js_string_concat(built, codePointToJsString(upperSpecialCodePoint(special, k)));
+      }
+      runStart = next;
+    } else if (mapped != cp) {
+      built = __js_string_concat(
+          __js_string_concat(built, __js_string_substring(s, runStart, pos)),
+          codePointToJsString(mapped));
+      runStart = next;
+    }
+    pos = next;
+  }
+  if (runStart == 0) {
+    return s;
+  }
+  return __js_string_concat(built, __js_string_substring(s, runStart, len));
+}
+
+export function jsStringIndexOf(s: externref, needle: externref, fromIndex: i32): i32 {
+  let sLen = __js_string_length(s);
+  let nLen = __js_string_length(needle);
+  var start = fromIndex;
+  if (start < 0) {
+    start = 0;
+  }
+  if (nLen == 0) {
+    return if (start > sLen) sLen else start;
+  }
+  if (start > sLen - nLen) {
+    return -1;
+  }
+  let first = __js_string_char_code_at(needle, 0);
+  let last = __js_string_char_code_at(needle, nLen - 1);
+  for (var i = start; i <= sLen - nLen; i += 1) {
+    if (__js_string_char_code_at(s, i) != first) {
+      continue;
+    }
+    if (__js_string_char_code_at(s, i + nLen - 1) != last) {
+      continue;
+    }
+    if (nLen <= 2) {
+      return i;
+    }
+    var matched = true;
+    for (var j = 1; j < nLen - 1; j += 1) {
+      if (__js_string_char_code_at(s, i + j) != __js_string_char_code_at(needle, j)) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+export function jsStringReplaceAll(
+    s: externref, needle: externref, replacement: externref): externref {
+  let sLen = __js_string_length(s);
+  let nLen = __js_string_length(needle);
+  if (nLen == 0) {
+    var out = replacement;
+    for (var i = 0; i < sLen; i += 1) {
+      out = __js_string_concat(
+          __js_string_concat(out, __js_string_substring(s, i, i + 1)),
+          replacement);
+    }
+    return out;
+  }
+  let first = jsStringIndexOf(s, needle, 0);
+  if (first < 0) {
+    return s;
+  }
+  var out = __js_string_concat(__js_string_substring(s, 0, first), replacement);
+  var lastEnd = first + nLen;
+  while (lastEnd <= sLen - nLen) {
+    let next = jsStringIndexOf(s, needle, lastEnd);
+    if (next < 0) {
+      break;
+    }
+    out = __js_string_concat(
+        __js_string_concat(out, __js_string_substring(s, lastEnd, next)),
+        replacement);
+    lastEnd = next + nLen;
+  }
+  return __js_string_concat(out, __js_string_substring(s, lastEnd, sLen));
+}

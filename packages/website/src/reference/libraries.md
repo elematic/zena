@@ -266,9 +266,9 @@ declare function now(): u64;
 ```
 
 The `@external` decorator takes two arguments: the WebAssembly import module
-name and the field name within that module. On a core-module target (`js`,
-`freestanding`) the module name is a core import namespace such as `env`; on a
-component target (`component`, `zena-cli`) it names a WIT interface. Host
+name and the field name within that module. On a core-module target (`core`,
+`js`, `zena-js`) the module name is a core import namespace such as `env`; on a
+component target (`component`, `zena-component`) it names a WIT interface. Host
 declarations omit the function body and compile directly to WebAssembly
 function imports.
 
@@ -310,8 +310,10 @@ package's choosing.
     "scanner": {"path": "lexer/scanner.zena"},
     "console": {
       "virtual": {
-        "js": "console/host.zena",
-        "component": "console/component.zena"
+        "js": "console/none.zena",
+        "zena-js": "console/js.zena",
+        "component": "console/component.zena",
+        "zena-component": "console/component.zena"
       }
     }
   },
@@ -330,8 +332,8 @@ package's choosing.
   - `path`: Overrides the entry file for a library, relative to the
     package's directory.
   - `virtual`: Target-conditional mapping. Selects different library files
-    based on the compilation target (`js`, `zena-cli`, `freestanding` or
-    `component`).
+    based on the compilation target (`core`, `js`, `zena-js`, `component`, or
+    `zena-component`).
 - `dependencies`: Each one is one of three kinds:
   - **A package on disk**, `{"path": "../utils"}`, a directory with a
     `zena-package.json` of its own.

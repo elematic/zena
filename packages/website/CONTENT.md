@@ -232,13 +232,13 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Expression orientation
     - Cheat sheet
 - **Targets and Interop**
-  - 📝 [Compile Targets](src/guide/targets.md) — `/guide/targets/`
-    - js
-    - component
-    - zena-cli
-    - freestanding
+  - ✅ [Compile Targets](src/guide/targets.md) — `/guide/targets/`
+    - The five targets
+    - Capabilities per target
+    - core
+    - js and zena-js
+    - component and zena-component
     - Choosing a target
-    - Feature differences
   - 📝 [JavaScript Interop](src/guide/javascript-interop.md) — `/guide/javascript-interop/`
     - Loading a module
     - Passing values across the boundary
@@ -553,12 +553,15 @@ To add a page: add it to the sidebar with an `outline`, then run
     - zena fmt
     - zena lsp
     - Global options
-  - 📝 [Compile Targets](src/reference/compile-targets.md) — `/reference/compile-targets/`
+  - ✅ [Compile Targets](src/reference/compile-targets.md) — `/reference/compile-targets/`
+    - Target matrix and capability flags
+    - core
     - js
+    - zena-js
     - component
-    - zena-cli
-    - freestanding
-    - Target-specific behaviour
+    - zena-component
+    - Standard library availability
+    - Target-dependent compiler flags
   - 📝 [Compiler Flags](src/reference/compiler-flags.md) — `/reference/compiler-flags/`
     - Output
     - Optimization
@@ -578,43 +581,8 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ## API
 
-- ✅ [Overview](src/api/index.md) — `/api/`
+- 📝 [Overview](src/api.md) — `/api/`
   - Libraries
-- ⚙️ zena:args — `/api/args/`
-- ⚙️ zena:assert — `/api/assert/`
-- ⚙️ zena:async — `/api/async/`
-- ⚙️ zena:bench — `/api/bench/`
-- ⚙️ zena:bigint — `/api/bigint/`
-- ⚙️ zena:cli — `/api/cli/`
-- ⚙️ zena:collections — `/api/collections/`
-- ⚙️ zena:console — `/api/console/`
-- ⚙️ zena:core — `/api/core/`
-- ⚙️ zena:crypto — `/api/crypto/`
-- ⚙️ zena:encoding — `/api/encoding/`
-- ⚙️ zena:extensions — `/api/extensions/`
-- ⚙️ zena:fetch — `/api/fetch/`
-- ⚙️ zena:fs — `/api/fs/`
-- ⚙️ zena:glob — `/api/glob/`
-- ⚙️ zena:host-setup — `/api/host-setup/`
-- ⚙️ zena:http — `/api/http/`
-- ⚙️ zena:json — `/api/json/`
-- ⚙️ zena:math — `/api/math/`
-- ⚙️ zena:memory — `/api/memory/`
-- ⚙️ zena:path — `/api/path/`
-- ⚙️ zena:process — `/api/process/`
-- ⚙️ zena:random — `/api/random/`
-- ⚙️ zena:regex — `/api/regex/`
-- ⚙️ zena:signals — `/api/signals/`
-- ⚙️ zena:simd — `/api/simd/`
-- ⚙️ zena:stream — `/api/stream/`
-- ⚙️ zena:task — `/api/task/`
-- ⚙️ zena:test — `/api/test/`
-- ⚙️ zena:time — `/api/time/`
-- ⚙️ zena:url — `/api/url/`
-- ⚙️ zena:wasi — `/api/wasi/`
-- ⚙️ zena:wasm — `/api/wasm/`
-- ⚙️ zena:web-elements — `/api/web-elements/`
-- ⚙️ zena:web-templates — `/api/web-templates/`
 
 ## Development
 
@@ -711,4 +679,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-80 of 103 pages written; 23 still placeholders.
+81 of 103 pages written; 22 still placeholders.

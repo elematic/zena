@@ -264,10 +264,10 @@ markdown-it parses the fence between them:
 <zena-code-group class="code-group">
 
 <figure>
-<figcaption>host</figcaption>
+<figcaption>zena-js</figcaption>
 
 ```bash
-zena build main.zena --target host
+zena build main.zena --target zena-js
 ```
 
 </figure>

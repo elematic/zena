@@ -8,7 +8,6 @@ import { parseJson, JsonArray, JsonValue, JsonObject, JsonParseError } from 'zen
 import { PackageConfig, ModuleExport } from './module-resolver.zena';
 import { CompilerHost } from './library-loader.zena';
 import { dirName, normalizePath } from './module-resolver.zena';
-import { canonicalTarget } from './targets.zena';
 import { HashMap } from 'zena:collections';
 
 // ============================================================================
@@ -487,10 +486,8 @@ function parseModuleExport(value: JsonValue): ModuleExport {
   if (obj.has("virtual")) {
     let virtualObj = obj["virtual"] as JsonObject;
     let virtual = new Map<String, String>();
-    // Keyed by current target names, as the resolver looks them up; a
-    // manifest that still says "host" keeps working.
     virtualObj.forEach((target, entryPath) => {
-      virtual[canonicalTarget(target)] = entryPath as String;
+      virtual[target] = entryPath as String;
     });
     return new ModuleExport(virtual, null, internal);
   }
@@ -522,15 +519,6 @@ export function withBuiltinPackages(
     let wasi = new PackageConfig("", null);
     wasi.witRoot = `${stdlibRoot}/wit`;
     all["wasi"] = wasi;
-  }
-  // The `zena` command's host interfaces (`zena-cli:host`): what the
-  // standard library's process, wasm and error-stack modules import on
-  // that host's target. Only a program that uses one of those links
-  // any of it.
-  if (!all.has("zena-cli")) {
-    let host = new PackageConfig("", null);
-    host.witRoot = `${stdlibRoot}/host-wit`;
-    all["zena-cli"] = host;
   }
   return all;
 }

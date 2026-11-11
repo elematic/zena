@@ -274,9 +274,8 @@ or SVD is a large port. The Rust runtime already provides the host
 imports behind `zena:error-stack`, `zena:process` and `zena:wasm`, so
 the path is a BLAS interface in the same WIT package, which the runtime
 implements by linking a BLAS and LAPACK, and which `zena:linalg` uses
-when the import is present and falls back from otherwise. The package is
-`zena-cli:host` today and is to be renamed, since any runtime may
-implement it ([#899](https://github.com/elematic/zena/issues/899)).
+when the import is present and falls back from otherwise. That WIT
+package is `zena:host` (`packages/stdlib/zena/host-wit/host.wit`).
 
 How a GC-stored matrix reaches the library is the first thing to settle.
 The host can read a GC array through wasmtime's `ArrayRef` without any

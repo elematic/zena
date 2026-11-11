@@ -1,7 +1,7 @@
-//! Host side of the `zena-cli` compilation target.
+//! Host side of the `zena-component` compilation target.
 //!
-//! A Zena program compiled for the `zena-cli` target is a WebAssembly
-//! component that imports WASI 0.3 and the `zena-cli:host` interfaces
+//! A Zena program compiled for the `zena-component` target is a WebAssembly
+//! component that imports WASI 0.3 and the `zena:host` interfaces
 //! (`packages/stdlib/zena/host-wit/host.wit`): stack traces for `Error`,
 //! process spawning behind `zena:process`, running other programs
 //! behind `zena:wasm`, and loading components as extensions behind
@@ -10,12 +10,12 @@
 //! ([`component`]), plus the engine configuration such a component needs
 //! ([`engine`]) and a cache of ahead-of-time compiled components and
 //! core modules so repeated runs skip Cranelift ([`cache`]). A core
-//! module — a `freestanding` Zena build, hand-written `.wat`, another
+//! module — a `core` Zena build, hand-written `.wat`, another
 //! language's `wasm32-unknown-unknown` output — runs with no imports
 //! ([`core_module`]).
 //!
 //! It is the Rust counterpart of `packages/runtime`, which does the same
-//! job for the `js` target in JavaScript. Two binaries embed it:
+//! job for the `zena-js` target in JavaScript. Two binaries embed it:
 //! `zena-run`, a small wrapper that runs one compiled component, and
 //! `zena-cli`, which runs the `zena` command's own component, the CLI
 //! module.

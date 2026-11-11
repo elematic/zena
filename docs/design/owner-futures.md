@@ -41,7 +41,7 @@ not delivered without releasing them, and the pump that lifts a typed
 WIT stream abandons elements it lifted but could not deliver.
 
 Nothing in the tree depends on either hole yet, but the next step of
-#284 does. `zena-cli:host/http-server`'s `listen` yields a
+#284 does. `zena:host/http-server`'s `listen` yields a
 `stream<tuple<request, response-writer>>`. `wasi:http`'s `consume-body`
 returns trailers as a `future<result<option<trailers>, error-code>>`,
 and `client.send` returns its response through an async result. Once
@@ -497,7 +497,7 @@ nobody reads is released by the glue.
 ## What the `wasi:http` switch builds on this
 
 With futures and streams of owners in place, #284's switch makes the
-`wasi:http` and `zena-cli:host/http-server` bindings resource classes,
+`wasi:http` and `zena:host/http-server` bindings resource classes,
 and with them:
 
 - `zena:fetch`'s `Response`, which holds the wire response: a resource

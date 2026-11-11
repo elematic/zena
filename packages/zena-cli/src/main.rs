@@ -249,7 +249,7 @@ fn main() -> Result<()> {
     if zena_runtime::core_module::is_core_module_file(&module_path)? {
         anyhow::bail!(
             "{} is a core module; the zena command's module is a component, \
-             built for the zena-cli target.",
+             built for the zena-component target.",
             module_path.display()
         );
     }

@@ -148,23 +148,19 @@ export let tests = suite("Package Manifest", () => {
         "exports": {
           "plain": {},
           "widgets": {"path": "widgets/index.zena", "internal": true},
-          "console": {"virtual": {"js": "console/js.zena", "zena-cli": "console/cli.zena"}},
-          "legacy": {"virtual": {"host": "legacy/js.zena"}}
+          "console": {"virtual": {"js": "console/none.zena", "zena-js": "console/js.zena", "zena-component": "console/cli.zena"}}
         }
       }`);
       let exports = (await loadWorkspace(host, "/ws"))["lib"].exports as HashMap<String, ModuleExport>;
-      equal(exports.size, 4);
+      equal(exports.size, 3);
       isTrue(exports["plain"].path == null);
       isFalse(exports["plain"].internal);
       equal(exports["widgets"].path as String, "widgets/index.zena");
       isTrue(exports["widgets"].internal);
       let console = exports["console"].virtual as HashMap<String, String>;
-      equal(console["js"], "console/js.zena");
-      equal(console["zena-cli"], "console/cli.zena");
-      // A virtual entry under the old target name `host` is the `js` one.
-      let legacy = exports["legacy"].virtual as HashMap<String, String>;
-      equal(legacy["js"], "legacy/js.zena");
-      isFalse(legacy.has("host"));
+      equal(console["js"], "console/none.zena");
+      equal(console["zena-js"], "console/js.zena");
+      equal(console["zena-component"], "console/cli.zena");
     });
 
     test("has no packages without a manifest", async () => {
@@ -259,9 +255,9 @@ export let tests = suite("Package Manifest", () => {
       let exports = config.exports as Map<String, ModuleExport>;
       let consoleExport = exports["console"];
       let virtual = consoleExport.virtual as Map<String, String>;
-      equal(virtual["js"], "console/js.zena");
-      equal(virtual["zena-cli"], "console/component.zena");
-      isFalse(virtual.has("host"));
+      equal(virtual["js"], "console/none.zena");
+      equal(virtual["zena-js"], "console/js.zena");
+      equal(virtual["zena-component"], "console/component.zena");
     });
 
     test("includes core/string.zena as internal virtual module", () => {
@@ -271,9 +267,10 @@ export let tests = suite("Package Manifest", () => {
       isTrue(stringExport.internal);
       let virtual = stringExport.virtual as Map<String, String>;
       equal(virtual["js"], "core/string-js.zena");
-      equal(virtual["zena-cli"], "core/string.zena");
+      equal(virtual["zena-js"], "core/string-js.zena");
+      equal(virtual["zena-component"], "core/string.zena");
       equal(virtual["component"], "core/string.zena");
-      equal(virtual["freestanding"], "core/string.zena");
+      equal(virtual["core"], "core/string.zena");
     });
 
     test("does not export console implementation files by name", () => {

@@ -210,24 +210,38 @@ export class LanguageService {
    * starting from `path` as the root of the dependency tree.
    */
   async check(path: String, source: String): Future<Array<Diagnostic>> {
+    return await this.checkForTarget(path, source, this.#targetName);
+  }
+
+  /**
+   * Like `check`, but against an explicit `target` instead of the
+   * service's default target.
+   */
+  async checkForTarget(path: String, source: String, target: String): Future<Array<Diagnostic>> {
     let turn = await this.#takeTurn();
     try {
       this.openDocument(path, source);
-      let result = await this.#compile(path);
+      let result = await this.#compiler.compile({entry: path, target});
 
-      // Scopes for every file the compile reached, so that definition
-      // and hover work in a dependency the editor navigates into.
-      for (let file in result.files) {
-        let scopes = file.scopeResult;
-        if (scopes != null) {
-          this.#scopes[normalizePath(file.path)] = scopes;
+      if (target == this.#targetName) {
+        // Scopes for every file the compile reached, so that definition
+        // and hover work in a dependency the editor navigates into.
+        for (let file in result.files) {
+          let scopes = file.scopeResult;
+          if (scopes != null) {
+            this.#scopes[normalizePath(file.path)] = scopes;
+          }
         }
+        this.#compilations[normalizePath(path)] = result;
       }
-      this.#compilations[normalizePath(path)] = result;
 
-      // Type-check all modules, carrying forward unchanged results.
-      let checked = checkCompilation(result, this.#checked);
-      this.#checked = checked;
+      // Type-check all modules, carrying forward unchanged results when
+      // checking on the service's primary target.
+      let previous = if (target == this.#targetName) { this.#checked } else { null };
+      let checked = checkCompilation(result, previous);
+      if (target == this.#targetName) {
+        this.#checked = checked;
+      }
 
       // Recovering from a parse error does not excuse it. The file was
       // analyzed anyway, so report what the parser had to work around
@@ -259,11 +273,18 @@ export class LanguageService {
    * or null when it has errors. `compile.zena` generates the code.
    */
   async checkProgram(path: String, source: String): Future<Program | null> {
+    return await this.checkProgramForTarget(path, source, this.#targetName);
+  }
+
+  /**
+   * Like `checkProgram`, but against an explicit `target`.
+   */
+  async checkProgramForTarget(path: String, source: String, target: String): Future<Program | null> {
     let turn = await this.#takeTurn();
     try {
       this.#host.setDocument(path, source);
       await this.#compiler.invalidate(path);
-      let compiled = await this.#compile(path);
+      let compiled = await this.#compiler.compile({entry: path, target});
 
       // A recovered AST holds stand-ins where the user has not finished
       // typing, so it must not reach codegen. Check here rather than
@@ -275,8 +296,11 @@ export class LanguageService {
         }
       }
 
-      let checked = checkCompilation(compiled, this.#checked);
-      this.#checked = checked;
+      let previous = if (target == this.#targetName) { this.#checked } else { null };
+      let checked = checkCompilation(compiled, previous);
+      if (target == this.#targetName) {
+        this.#checked = checked;
+      }
       for (let diagnostic in checked.diagnostics) {
         if (diagnostic.severity == DiagnosticSeverity.Error) {
           return null;
