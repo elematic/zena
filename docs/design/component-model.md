@@ -520,7 +520,7 @@ resources whose release point is not lexical.
 
 The bindgen decisions above are implemented for the interfaces named in
 `ownedResourceSpecifiers` in `wit-module-synth.zena`, starting with
-`zena-cli:host/process` and `zena-cli:host/wasm`. For those, a WIT
+`zena:host/process` and `zena:host/wasm`. For those, a WIT
 `resource` renders as a `resource class` whose
 `[Disposable.dispose](this: Own<this>)` calls the canonical
 `resource.drop`, and every position that names it spells a handle:
@@ -569,7 +569,7 @@ consumes it, `getPreopens` and `resolvePreopen` hand out
 `Unmanaged<Descriptor>`, and `zena:http`'s static file server reads
 through them. Still to switch: `wasi:http` (`zena:http`'s
 wire adapters and server, `zena:fetch`, protobuf's transports,
-google-cloud's auth) and `zena-cli:host/http-server`, whose consumers
+google-cloud's auth) and `zena:host/http-server`, whose consumers
 hold their handles in plain classes today.
 
 Three checker gaps found while probing the shapes those migrations

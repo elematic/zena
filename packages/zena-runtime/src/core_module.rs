@@ -1,9 +1,9 @@
 //! Running a core module: WebAssembly in the format that predates
 //! components, such as a hand-written `.wat` benchmark, an AssemblyScript
 //! or Rust `wasm32-unknown-unknown` build, or a Zena program built for
-//! the `freestanding` target.
+//! the `core` target.
 //!
-//! The host gives a core module no imports. WASI and the `zena-cli:host`
+//! The host gives a core module no imports. WASI and the `zena:host`
 //! interfaces are for components, and a core module that needs them is
 //! built for the wrong target. An import the module declares is linked
 //! to a function that traps when called, so a module that declares an

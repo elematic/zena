@@ -115,8 +115,8 @@ a WebAssembly Component Model dependency.
 
 ### Two-argument imports
 
-When targeting a core WebAssembly module (`--target js` or `--target
-freestanding`), `@external` takes two arguments: the module name and the
+When targeting a core WebAssembly module (`--target core`, `--target js`, or
+`--target zena-js`), `@external` takes two arguments: the module name and the
 exported field name:
 
 ```zena
@@ -137,7 +137,7 @@ During code generation, the compiler records these in the WebAssembly Import sec
 ### Three-argument component imports
 
 When compiling to a WebAssembly Component Model target (`--target component`
-or `--target zena-cli`), the module name names a WIT interface, and
+or `--target zena-component`), the module name names a WIT interface, and
 `@external` accepts an optional third argument containing comma-separated
 canonical options:
 

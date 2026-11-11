@@ -85,9 +85,9 @@ implementation size, Unicode-safe operations and zero-copy host interop. Rather
 than make one Wasm binary optimal for every host, the representation is chosen
 per compile target.
 
-- **One final `String` class per target.** On the byte targets (`zena-cli`,
-  `component`, `freestanding`), a `String` is a view onto a byte array of
-  WTF-8. On the js target it holds a JavaScript string. A program has exactly
+- **One final `String` class per target.** On the byte targets (`zena-component`,
+  `component`, `core`), a `String` is a view onto a byte array of
+  WTF-8. On the JS targets (`js`, `zena-js`) it holds a JavaScript string. A program has exactly
   one `String` class, with no subclasses, so every call on a string is direct.
   [Why not subclasses](#why-not-subclasses) below says what that gave up.
 - **The encoding is hidden.** There is no `[](i32)` operator. Strings are
@@ -191,9 +191,10 @@ Most operations call the
 (`wasm:js-string`): length, `charCodeAt`, substring, concatenation, equality
 and comparison. String literals are imported string constants, so they cost no
 code to build. `encoding` reports `WTF16`, and a `StringIndex` is a UTF-16 code
-unit offset. A few operations import a JavaScript function instead, where that
-is smaller or faster than the same work in Zena: case conversion, `indexOf` and
-`replaceAll`.
+unit offset. A few operations import a JavaScript function on `zena-js`, where that
+is smaller or faster than the same work in Zena (`indexOf`, `replaceAll`,
+`toLowerCase`, and `toUpperCase`), while plain `js` runs pure-Wasm WTF-16
+implementations so no host runtime imports are required.
 
 ## Literals
 
@@ -369,8 +370,8 @@ default locale, so it applies the Turkish rules on a Turkish system.)
 ### What Zena provides
 
 - `toLowerCase()` and `toUpperCase()` apply the default case conversion. On
-  the js target they call the host's methods, since the host already carries
-  the data. On the other targets they read tables compiled into the module,
+  `zena-js` they call the host's methods, since the host already carries
+  the data. On the other targets (including plain `js`) they read tables compiled into the module,
   and give JavaScript's result except in rare contexts around a final sigma
   ([Final sigma](#final-sigma) below).
 - `asciiLowerCase()` and `asciiUpperCase()` change only `A`–`Z` and `a`–`z`.
@@ -423,7 +424,7 @@ library on a cycle with it
 ### What it costs
 
 `toLowerCase` and `toUpperCase` have separate loops, so a program links only
-the tables of the methods it calls. Over an empty freestanding module at
+the tables of the methods it calls. Over an empty `core` module at
 `-O2`:
 
 | Calls            | Adds   |

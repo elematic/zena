@@ -1,16 +1,11 @@
 /**
  * Compile inline Zena source to WASM bytes fully in memory, using the
  * self-hosted compiler as a library: lsp.wasm (built from
- * packages/language-service/zena/lsp.zena, --target host) exports
- * init()/compileToWasm() and byte accessors. The entry source goes in as a
- * string and the bytes come back through exports — no files, no child
- * process. Only stdlib reads (and any relative imports) go through the
+ * packages/language-service/zena/lsp.zena, --target zena-js) exports
+ * init()/compileToWasm()/compileToWasmForTarget() and byte accessors. The entry
+ * source goes in as a string and the bytes come back through exports — no files,
+ * no child process. Only stdlib reads (and any relative imports) go through the
  * `compiler.read_file` callback.
- *
- * This used to load api.wasm, a second --target host build of the compiler
- * that existed for this helper and for the wit-parser's Node tests. Those are
- * Zena tests now, and lsp.wasm already compiles for the host target, so the
- * extra build was retired.
  *
  * `@zena-lang/language-service` wraps the same module with a typed API, which
  * this cannot import: that package depends on this one, so the dependency
@@ -42,9 +37,19 @@ const stdlibRoot = join(repoRoot, 'packages', 'stdlib', 'zena');
 interface LspExports extends WebAssembly.Exports {
   init: (stdlibRoot: unknown) => Promise<void>;
   compileToWasm: (path: unknown, source: unknown) => Promise<unknown>;
+  compileToWasmForTarget: (
+    path: unknown,
+    source: unknown,
+    target: unknown,
+  ) => Promise<unknown>;
   getByteArrayLength: (bytes: unknown) => number;
   getByteArrayByte: (bytes: unknown, index: number) => number;
   check: (path: unknown, source: unknown) => Promise<unknown>;
+  checkForTarget: (
+    path: unknown,
+    source: unknown,
+    target: unknown,
+  ) => Promise<unknown>;
   getDiagnosticCount: (diagnostics: unknown) => number;
   getDiagnosticLine: (diagnostics: unknown, index: number) => number;
   getDiagnosticColumn: (diagnostics: unknown, index: number) => number;
@@ -130,11 +135,16 @@ const errorsOf = async (
   {exports, writeString, readString}: Service,
   path: string,
   source: string,
+  target?: string,
 ): Promise<string> => {
-  const diagnostics = await exports.check(
-    writeString(path),
-    writeString(source),
-  );
+  const diagnostics =
+    target !== undefined
+      ? await exports.checkForTarget(
+          writeString(path),
+          writeString(source),
+          writeString(target),
+        )
+      : await exports.check(writeString(path), writeString(source));
   const lines: string[] = [];
   for (let i = 0; i < exports.getDiagnosticCount(diagnostics); i++) {
     // 0 is the error severity; a warning is not why a compile failed.
@@ -163,21 +173,25 @@ let counter = 0;
 
 export const compile = async (
   source: string,
-  _target?: string,
+  target?: string,
 ): Promise<Uint8Array> => {
   const zena = await languageService();
   const {exports, writeString} = zena;
   // A path of its own per call: the service keys documents by path, and two
   // sources compiled in one process have nothing to do with each other.
   const path = `/inline/test-${counter++}.zena`;
-  const bytes = await exports.compileToWasm(
-    writeString(path),
-    writeString(source),
-  );
+  const bytes =
+    target !== undefined
+      ? await exports.compileToWasmForTarget(
+          writeString(path),
+          writeString(source),
+          writeString(target),
+        )
+      : await exports.compileToWasm(writeString(path), writeString(source));
   if (!bytes) {
     // compileToWasm says only that it failed; the reason comes from checking
     // the same document, which also folds in parse errors.
-    const errors = await errorsOf(zena, path, source);
+    const errors = await errorsOf(zena, path, source, target);
     throw new Error(
       `Zena compilation failed:\n${
         errors === ''

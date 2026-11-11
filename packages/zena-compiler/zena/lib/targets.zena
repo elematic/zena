@@ -1,61 +1,57 @@
-// Compilation targets.
+// Compilation targets and their capability flags.
 //
-// A target names the *host* a program is compiled for, and the output form
-// follows from it. There is no separate flag for "core module or
-// component": WASI p2 and p3 are WIT interfaces and reachable only from a
-// component, while the JS runtime's `console.*` and `zena-cli`'s `env.*`
-// hooks are reachable only from a core module — so three of the eight
-// combinations a second flag would offer cannot be built at all.
+// Each `--target` names a concrete host environment and breaks down into
+// a fixed combination of `TargetFeatures`:
 //
-// See docs/design/component-emission.md, Part 3.
+//   Target          | component | jsStrings | wasi  | zenaJsHost | zenaComponentHost
+//   ----------------|-----------|-----------|-------|------------|------------------
+//   core            | false     | false     | false | false      | false
+//   js              | false     | true      | false | false      | false
+//   zena-js         | false     | true      | false | true       | false
+//   component       | true      | false     | true  | false      | false
+//   zena-component  | true      | false     | true  | false      | true
 //
-//   js            core module, `@zena-lang/runtime` imports
-//   zena-cli      component, WASI 0.3 plus the `zena-cli:host` interfaces
-//                 the zena command's host provides (stack traces, process
-//                 spawning, running components)
-//   freestanding  core module, nothing beyond what the program declares
-//                 with `@external`
-//   component     component, WASI 0.3 and application worlds: what any
-//                 component host can run
-//
-// What a target selects is a set of standard-library implementations, and
-// therefore an import set: `ModuleResolver` picks the `virtual` entry
-// named by the target, and a module with no entry for it does not resolve.
-// That is what makes `freestanding`'s floor structural rather than a
-// matter of discipline — nothing can supply a host import behind the
-// program's back.
+// - `core`: core WebAssembly module with WTF-8 byte-backed strings and no
+//   implicit host imports beyond `@external` declarations the program uses.
+// - `js`: core WebAssembly module for any JavaScript engine supporting
+//   `wasm:js-string` builtins and imported string constants, with zero
+//   `@zena-lang/runtime` imports.
+// - `zena-js`: extends `js` with `@zena-lang/runtime` host imports (console,
+//   stack traces, host `URL`, number formatting/parsing, `zena:js`,
+//   `zena:fetch`, `zena:time`, `zena:random`).
+// - `component`: WebAssembly Component Model output targeting WASI 0.3 and
+//   application WIT worlds, runnable on any WASI 0.3 host.
+// - `zena-component`: extends `component` with `zena:host` WIT interfaces
+//   provided by `zena-runtime` (stack traces, `zena:process`, `zena:wasm`,
+//   `zena:extensions`, `zena:http` server). Default target of `zena build`.
 
+/**
+ * The capability flags a compilation target enables.
+ */
+export type TargetFeatures = {
+  /** Emit a WebAssembly Component rather than a core module. */
+  component: boolean,
+  /** Use WTF-16 `externref` strings, `wasm:js-string` builtins, and imported string constants. */
+  jsStrings: boolean,
+  /** Expose WASI 0.3 standard library modules (`cli`, `fs`, `fetch`, `time`, `random`). */
+  wasi: boolean,
+  /** Enable `@zena-lang/runtime` JavaScript host imports (`console`, stack traces, host `URL`, etc.). */
+  zenaJsHost: boolean,
+  /** Enable `zena:host` component interfaces (`stack-trace`, `process`, `wasm`, `extensions`, `http-server`). */
+  zenaComponentHost: boolean,
+};
 
 /** The targets a program can be built for, in `--target`'s own spelling. */
 export function targetNames(): FixedArray<String> {
-  return ["js", "zena-cli", "freestanding", "component"];
+  return ["core", "js", "zena-js", "component", "zena-component"];
 }
 
-/** Legacy spellings still accepted by `--target`: `host` predates `js`. */
-function legacyTargetNames(): FixedArray<String> {
-  return ["host"];
-}
-
-/**
- * The current name of a target: `host` becomes `js`, and any other name
- * is returned as it is. Module resolution works in current names only,
- * so a manifest lists each entry once.
- */
-export function canonicalTarget(target: String): String {
-  if (target == "host") {
-    return "js";
-  }
-  return target;
-}
+/** The target used when `--target` is omitted. */
+export let defaultTarget = "zena-component";
 
 /** Whether `target` is a target name the compiler knows. */
 export function isKnownTarget(target: String): boolean {
   for (let t in targetNames()) {
-    if (t == target) {
-      return true;
-    }
-  }
-  for (let t in legacyTargetNames()) {
     if (t == target) {
       return true;
     }
@@ -72,10 +68,59 @@ export function knownTargetsDescription(): String {
     }
     out = `${out}'${t}'`;
   }
-  for (let t in legacyTargetNames()) {
-    out = `${out}, '${t}' (legacy)`;
-  }
   return out;
+}
+
+/**
+ * The capability flags enabled by `target`. Throws on an unknown target.
+ */
+export function targetFeatures(target: String): TargetFeatures {
+  if (target == "core") {
+    return {
+      component: false,
+      jsStrings: false,
+      wasi: false,
+      zenaJsHost: false,
+      zenaComponentHost: false,
+    };
+  }
+  if (target == "js") {
+    return {
+      component: false,
+      jsStrings: true,
+      wasi: false,
+      zenaJsHost: false,
+      zenaComponentHost: false,
+    };
+  }
+  if (target == "zena-js") {
+    return {
+      component: false,
+      jsStrings: true,
+      wasi: false,
+      zenaJsHost: true,
+      zenaComponentHost: false,
+    };
+  }
+  if (target == "component") {
+    return {
+      component: true,
+      jsStrings: false,
+      wasi: true,
+      zenaJsHost: false,
+      zenaComponentHost: false,
+    };
+  }
+  if (target == "zena-component") {
+    return {
+      component: true,
+      jsStrings: false,
+      wasi: true,
+      zenaJsHost: false,
+      zenaComponentHost: true,
+    };
+  }
+  throw new Error(`Unknown target '${target}' (expected ${knownTargetsDescription()})`);
 }
 
 /**
@@ -83,15 +128,30 @@ export function knownTargetsDescription(): String {
  * A component is the only form that can reach WASI p2 or p3.
  */
 export function targetEmitsComponent(target: String): boolean {
-  return target == "component" || target == "zena-cli";
+  return targetFeatures(target).component;
 }
 
 /**
- * Whether the target uses WebAssembly JS String builtins (wasm:js-string)
- * and imported string constants.
+ * Whether the target uses WebAssembly JS String builtins (`wasm:js-string`)
+ * and imported string constants (`js` and `zena-js`).
  */
 export function targetUsesJsStrings(target: String): boolean {
-  return canonicalTarget(target) == "js";
+  return targetFeatures(target).jsStrings;
+}
+
+/** Whether the target provides WASI 0.3 interfaces (`component` and `zena-component`). */
+export function targetUsesWasi(target: String): boolean {
+  return targetFeatures(target).wasi;
+}
+
+/** Whether the target links `@zena-lang/runtime` host imports (`zena-js`). */
+export function targetUsesZenaJsHost(target: String): boolean {
+  return targetFeatures(target).zenaJsHost;
+}
+
+/** Whether the target links `zena:host` WIT interfaces (`zena-component`). */
+export function targetUsesZenaComponentHost(target: String): boolean {
+  return targetFeatures(target).zenaComponentHost;
 }
 
 /**
@@ -100,4 +160,3 @@ export function targetUsesJsStrings(target: String): boolean {
  * `importedStringConstants` the module must be compiled with.
  */
 export let defaultImportedStringConstants = "_";
-

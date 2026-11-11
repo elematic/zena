@@ -1,0 +1,40 @@
+/**
+ * Host-delegated `String` operations for `--target zena-js`, backed by
+ * `@zena-lang/runtime`'s `zena:host:string` imports.
+ */
+
+@external("zena:host:string", "toLowerCase")
+declare function __js_string_to_lower(s: externref): externref;
+
+@external("zena:host:string", "toUpperCase")
+declare function __js_string_to_upper(s: externref): externref;
+
+@external("zena:host:string", "indexOf")
+declare function __js_string_index_of(s: externref, needle: externref, fromIndex: i32): i32;
+
+@external("zena:host:string", "replaceAll")
+declare function __js_string_replace_all(
+    s: externref, needle: externref, replacement: externref): externref;
+
+export function jsStringToLower(s: externref): externref {
+  return __js_string_to_lower(s);
+}
+
+export function jsStringToUpper(s: externref): externref {
+  return __js_string_to_upper(s);
+}
+
+export function jsStringIndexOf(s: externref, needle: externref, fromIndex: i32): i32 {
+  return __js_string_index_of(s, needle, fromIndex);
+}
+
+export function jsStringReplaceAll(
+    s: externref, needle: externref, replacement: externref): externref {
+  var literal = replacement;
+  let dollar = '$'.handle;
+  if (__js_string_index_of(literal, dollar, 0) >= 0) {
+    // In a JavaScript replacement, `$$` stands for one `$`.
+    literal = __js_string_replace_all(literal, dollar, '$$$$'.handle);
+  }
+  return __js_string_replace_all(s, needle, literal);
+}

@@ -17,10 +17,10 @@ test('external function import and call from Node.js', async () => {
   execSync(`mkdir -p "${dirname(wasmFile)}"`);
 
   // A core module with only the import the program declares: the
-  // freestanding target. The default target is a component now, which
+  // core target. The default target is a component now, which
   // Node cannot instantiate as a plain module.
   execSync(
-    `"${join(repoRoot, 'target', 'release', 'zena-cli')}" build "${zenaFile}" --target freestanding -o "${wasmFile}"`,
+    `"${join(repoRoot, 'target', 'release', 'zena-cli')}" build "${zenaFile}" --target core -o "${wasmFile}"`,
     {stdio: 'pipe', cwd: repoRoot},
   );
 
@@ -46,51 +46,45 @@ test('external function import and call from Node.js', async () => {
   assert.equal(callCount, 1);
 });
 
-test('console.log and return string in Node.js (target host)', async () => {
+test('return string with zero runtime imports in Node.js (target js)', async () => {
   const zenaFile = join(pkgDir, 'test-files', 'console-log-and-return.zena');
-  const wasmHostFile = join(pkgDir, 'test', 'console-log-and-return-host.wasm');
+  const wasmPureJsFile = join(
+    pkgDir,
+    'test',
+    'console-log-and-return-pure-js.wasm',
+  );
   const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
   const compilerWasm = join(pkgDir, 'zena', 'out', 'cli.wasm');
 
   const zenaFileRel = relative(repoRoot, zenaFile);
-  const wasmHostFileRel = relative(repoRoot, wasmHostFile);
+  const wasmPureJsFileRel = relative(repoRoot, wasmPureJsFile);
 
-  execSync(`mkdir -p "${dirname(wasmHostFile)}"`);
+  execSync(`mkdir -p "${dirname(wasmPureJsFile)}"`);
 
-  // Compile for target "host" using zena-cli run on cli.wasm
+  // Compile for target "js" using zena-cli run on cli.wasm
   execSync(
-    `"${zenaCli}" run --dir "." --dir "packages/stdlib/zena::/stdlib" "${compilerWasm}" -- build "${zenaFileRel}" -o "${wasmHostFileRel}" -t host`,
+    `"${zenaCli}" run --dir "." --dir "packages/stdlib/zena::/stdlib" "${compilerWasm}" -- build "${zenaFileRel}" -o "${wasmPureJsFileRel}" -t js`,
     {stdio: 'pipe', cwd: repoRoot},
   );
 
-  const hostBits = readFileSync(wasmHostFile);
+  const jsBits = readFileSync(wasmPureJsFile);
+  const module = new (WebAssembly.Module as any)(jsBits, {
+    builtins: ['js-string'],
+    importedStringConstants: '_',
+  }) as WebAssembly.Module;
+  const instance = new WebAssembly.Instance(module, {});
+  const main = instance.exports.main as Function;
+  const getHandle = instance.exports.$stringGetHandle as Function;
+  const retVal = getHandle(main());
 
-  // Intercept console.log to capture logged messages from @zena-lang/runtime
-  const originalLog = console.log;
-  let loggedMsg = '';
-  console.log = (msg: any) => {
-    loggedMsg = String(msg);
-  };
-
-  try {
-    const wasmModule = await instantiate(hostBits);
-    const wasmInstance =
-      wasmModule instanceof WebAssembly.Instance
-        ? wasmModule
-        : wasmModule.instance;
-    const main = wasmInstance.exports.main as Function;
-    const retRef = main();
-
-    // With target host (alias for js), strings are native JS strings - no reader needed!
-    assert.equal(typeof retRef, 'string');
-    assert.equal(retRef, 'success');
-    assert.equal(loggedMsg, 'hello from integration test');
-  } finally {
-    console.log = originalLog;
-  }
+  // With target js, strings wrap native JS string handles ($stringGetHandle)
+  // and console.log is a no-op requiring zero host imports beyond
+  // wasm:js-string and string constants.
+  assert.equal(typeof retVal, 'string');
+  assert.equal(retVal, 'success');
 });
 
-test('console.log and return string in Node.js (target js)', async () => {
+test('console.log and return string in Node.js (target zena-js)', async () => {
   const zenaFile = join(pkgDir, 'test-files', 'console-log-and-return.zena');
   const wasmJsFile = join(pkgDir, 'test', 'console-log-and-return-js.wasm');
   const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
@@ -101,9 +95,9 @@ test('console.log and return string in Node.js (target js)', async () => {
 
   execSync(`mkdir -p "${dirname(wasmJsFile)}"`);
 
-  // Compile for target "js" using zena-cli run on cli.wasm
+  // Compile for target "zena-js" using zena-cli run on cli.wasm
   execSync(
-    `"${zenaCli}" run --dir "." --dir "packages/stdlib/zena::/stdlib" "${compilerWasm}" -- build "${zenaFileRel}" -o "${wasmJsFileRel}" -t js`,
+    `"${zenaCli}" run --dir "." --dir "packages/stdlib/zena::/stdlib" "${compilerWasm}" -- build "${zenaFileRel}" -o "${wasmJsFileRel}" -t zena-js`,
     {stdio: 'pipe', cwd: repoRoot},
   );
 
@@ -138,7 +132,7 @@ test('console.log and return string in Node.js (target js)', async () => {
 // `importedStringConstants` name.
 const esmStringConstants = 'wasm:js/string-constants';
 
-test('string literals from the --imported-string-constants module (zc, target js)', async () => {
+test('string literals from the --imported-string-constants module (zc, target zena-js)', async () => {
   const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
   const compilerWasm = join(pkgDir, 'zena', 'out', 'cli.wasm');
   const zenaFileRel = relative(
@@ -149,7 +143,7 @@ test('string literals from the --imported-string-constants module (zc, target js
 
   execSync(`mkdir -p "${dirname(wasmFile)}"`);
   execSync(
-    `"${zenaCli}" run --dir "." --dir "packages/stdlib/zena::/stdlib" "${compilerWasm}" -- build "${zenaFileRel}" -o "${relative(repoRoot, wasmFile)}" -t js --imported-string-constants ${esmStringConstants}`,
+    `"${zenaCli}" run --dir "." --dir "packages/stdlib/zena::/stdlib" "${compilerWasm}" -- build "${zenaFileRel}" -o "${relative(repoRoot, wasmFile)}" -t zena-js --imported-string-constants ${esmStringConstants}`,
     {stdio: 'pipe', cwd: repoRoot},
   );
 
@@ -180,7 +174,7 @@ test('string literals from the --imported-string-constants module (zena build, r
 
   execSync(`mkdir -p "${dirname(wasmFile)}"`);
   execSync(
-    `"${zenaCli}" build "${zenaFileRel}" -t js --imported-string-constants ${esmStringConstants} -o "${relative(repoRoot, wasmFile)}"`,
+    `"${zenaCli}" build "${zenaFileRel}" -t zena-js --imported-string-constants ${esmStringConstants} -o "${relative(repoRoot, wasmFile)}"`,
     {stdio: 'pipe', cwd: repoRoot},
   );
 
@@ -236,10 +230,8 @@ test('--imported-string-constants rejects an empty name and a target without str
     /--imported-string-constants names a module, and the name is empty/,
   );
   assert.match(
-    stderrOf(
-      `-t freestanding --imported-string-constants ${esmStringConstants}`,
-    ),
-    /the target is 'freestanding', which imports none/,
+    stderrOf(`-t core --imported-string-constants ${esmStringConstants}`),
+    /the target is 'core', which imports none/,
   );
 });
 
@@ -261,8 +253,8 @@ test('--compact-imports groups imports, and only on a core module', () => {
 
   // Nothing Node embeds reads the encoding yet, so this asserts only
   // that the string constants stopped repeating their module and type.
-  const plain = build('-t js', 'compact-imports-plain');
-  const compact = build('-t js --compact-imports', 'compact-imports');
+  const plain = build('-t zena-js', 'compact-imports-plain');
+  const compact = build('-t zena-js --compact-imports', 'compact-imports');
   assert.ok(
     compact.length < plain.length,
     `${compact.length} bytes compact, ${plain.length} plain`,
@@ -275,13 +267,13 @@ test('--compact-imports groups imports, and only on a core module', () => {
         {stdio: 'pipe', cwd: repoRoot},
       ),
     (err: {stderr: Buffer}) =>
-      /the target is 'zena-cli', which emits a component/.test(
+      /the target is 'zena-component', which emits a component/.test(
         String(err.stderr),
       ),
   );
 });
 
-test('console.log and return a status in zena-cli (target zena-cli, a component)', async () => {
+test('console.log and return a status in zena-cli (target zena-component, a component)', async () => {
   const zenaFile = join(pkgDir, 'test-files', 'console-log-and-exit-code.zena');
   const wasmCliFile = join(
     pkgDir,
@@ -295,13 +287,13 @@ test('console.log and return a status in zena-cli (target zena-cli, a component)
 
   execSync(`mkdir -p "${dirname(wasmCliFile)}"`);
 
-  // Compile for target "zena-cli" using zena-cli build
+  // Compile for target "zena-component" (default) using zena-cli build
   execSync(`"${zenaCli}" build "${zenaFileRel}" -o "${wasmCliFileRel}"`, {
     stdio: 'pipe',
     cwd: repoRoot,
   });
 
-  // Verify target "zena-cli" using zena-cli run
+  // Verify target "zena-component" using zena-cli run
   const cliOutput = execSync(`"${zenaCli}" run "${wasmCliFileRel}"`, {
     encoding: 'utf-8',
     cwd: repoRoot,

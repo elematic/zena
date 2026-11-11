@@ -6,7 +6,7 @@
  * (docs/design/component-emission.md, 1.3). Its source is fixed —
  * `component-runtime/memory.zena`, under the standard library root but
  * in neither manifest — so this is a small, deterministic nested
- * compile, on the `freestanding` target of the compiler that is already
+ * compile, on the `core` target of the compiler that is already
  * running the enclosing build. Drivers call it once per component
  * build and hand the bytes to `BinaryGenerator`, or pass the path to a
  * copy they built earlier; a driver that does neither gets a loud error
@@ -50,7 +50,7 @@ let cachedByStdlibRoot = new Map<String, ByteBuffer>();
  *
  * It compiles on the compiler running the enclosing build, which
  * already has the host and the standard library root it needs — only
- * the target differs. On `freestanding`, `zena:memory` is the real
+ * the target differs. On `core`, `zena:memory` is the real
  * free-list allocator rather than the module that delegates to the
  * component's memory, which is the whole reason this is a second
  * compile rather than part of the first.
@@ -64,7 +64,7 @@ export async function compileComponentRuntimeModule(
   }
   let compResult = await compiler.compile({
     entry: `${stdlibRoot}/${runtimeEntry}`,
-    target: "freestanding",
+    target: "core",
   });
   let checkResults = checkCompilation(compResult);
   for (let diag in checkResults.diagnostics) {
@@ -89,7 +89,7 @@ export async function compileComponentRuntimeModule(
       }
     }
   }
-  let bytes = new BinaryGenerator("freestanding", false)
+  let bytes = new BinaryGenerator("core", false)
       .generate(new Program(units, entryUnit));
   cachedByStdlibRoot[stdlibRoot] = bytes;
   return bytes;

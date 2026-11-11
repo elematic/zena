@@ -1,7 +1,7 @@
 # `component-runtime/`
 
 Not libraries. `memory.zena` here is a compilation **entry point**: the
-compiler builds it on its own for the `freestanding` target and embeds
+compiler builds it on its own for the `core` target and embeds
 the result as a component's first core module, the one that owns linear
 memory and the allocator. It is in neither standard library manifest, so
 nothing can `import` it, and it has a directory of its own so that

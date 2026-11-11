@@ -34,7 +34,9 @@ import { performance } from '../../time.zena';
 import {
   componentAbiUnitId, componentDriverUnitId
 } from '../component-emitter.zena';
-import { targetEmitsComponent, targetUsesJsStrings } from '../../targets.zena';
+import {
+  targetEmitsComponent, targetUsesJsStrings, targetUsesZenaComponentHost
+} from '../../targets.zena';
 import { isHostBoundaryLibrary, isWebUiProtocolLibrary } from '../../stdlib-manifest.zena';
 import {
   isComponentEntryPath, componentSyncExportSuffix, componentEntryRunName,
@@ -444,7 +446,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
   var typeIdGenerator = makeTypeIdGenerator(1);
 
-  new(this.program, this.wasm, this.target = "freestanding") {
+  new(this.program, this.wasm, this.target = "core") {
     this.wasm.target = this.target;
     var idGen: IdGenerator<TypeId> | null = null;
     let {entryPoint} = program;
@@ -961,14 +963,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // Leaving the driver unrooted here means `prepareComponentEntry`
     // finds no `componentPoll` in the function map, builds no entry,
     // and the export loops reach the async ramp directly.
-    // Only a component has an entry to lift: a freestanding core module
-    // links the driver's unit through the console it shares with the
-    // component target, and must not root it.
+    // Only a component has an entry to lift: a `core` module links the
+    // driver's unit through the console it shares with the component
+    // target, and must not root it.
     let entry = prog.entryPoint;
     let asyncMain = entry != null &&
         hasAsyncMain((entry as CompilationUnit).ast);
     if (entry != null && targetEmitsComponent(this.target) &&
-        (this.target == "zena-cli" || asyncMain)) {
+        (targetUsesZenaComponentHost(this.target) || asyncMain)) {
       anyDoorReached = true;
     }
     if (!anyDoorReached) {

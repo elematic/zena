@@ -3,8 +3,8 @@ import {numberImports} from './number-format.js';
 export {numberImports};
 
 /**
- * `zena:host:string`: the `String` methods a `--target js` module calls
- * (stdlib `core/string-js.zena`), JavaScript's own, each with the receiver
+ * `zena:host:string`: the `String` methods a `--target zena-js` module calls
+ * (stdlib `core/string-js-host.zena`), JavaScript's own, each with the receiver
  * as the first argument. Arrows rather than `Function.prototype.call`
  * bound to each method: V8 calls an arrow from Wasm faster, by about a
  * quarter in `split`'s tight loop of `indexOf` calls.
@@ -18,7 +18,7 @@ export const stringImports = {
 };
 
 /**
- * `zena:host:url`: the host's WHATWG `URL`, which a `--target js` module's
+ * `zena:host:url`: the host's WHATWG `URL`, which a `--target zena-js` module's
  * `zena:url` uses in place of its own parser (stdlib `url/url-js.zena`):
  * `URL.parse` itself, and `get_<component>` and `set_<component>` for each
  * accessor on `URL.prototype`, with the `URL` as the first argument.
@@ -33,7 +33,7 @@ for (const name of Object.getOwnPropertyNames(URL.prototype)) {
 
 /**
  * `zena:host:random`: the host's `crypto.getRandomValues`, which a
- * `--target js` module's `zena:random` draws from (stdlib
+ * `--target zena-js` module's `zena:random` draws from (stdlib
  * `random/source-js.zena`), one 32-bit word per call.
  */
 const randomWord = new Uint32Array(1);

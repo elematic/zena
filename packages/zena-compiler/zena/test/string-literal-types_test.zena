@@ -7,7 +7,7 @@ import { checkCompilation, createCompiler } from '../lib/compiler.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 
 /**
- * `source` compiled for `freestanding` against a standard library of
+ * `source` compiled for `core` against a standard library of
  * stubs, in which nothing names an array of strings. It may import
  * `./things.zena`, which declares two module variables.
  */
@@ -36,6 +36,7 @@ async function compileToBinary(source: String) {
   host.addFile("zena:core/hashable.zena", "export interface Hashable {}");
   host.addFile("zena:async", "export class Future<T> {}");
   host.addFile("zena:console", "export let console = null;");
+  host.addFile("zena:console/component.zena", "export let console = null;");
   host.addFile("things.zena",
       "export final class Thing { n: i32; new(this.n); } " +
       "export let first = new Thing(1); " +
@@ -44,7 +45,7 @@ async function compileToBinary(source: String) {
 
   let packages = new Map<String, PackageConfig>();
   let compiler = createCompiler(host, {stdlibRoot: "/stdlib", packages});
-  let compResult = await compiler.compile({entry: "test.zena", target: 'freestanding'});
+  let compResult = await compiler.compile({entry: "test.zena", target: 'core'});
   let checkRes = checkCompilation(compResult);
   let errs = errorDiagnostics(checkRes.diagnostics);
   isTrue(errs.length == 0, if (errs.length > 0) errs[0].message else "");
@@ -62,7 +63,7 @@ async function compileToBinary(source: String) {
       }
     }
   }
-  return new BinaryGenerator("freestanding").generate(new Program(units, entryUnit));
+  return new BinaryGenerator("core").generate(new Program(units, entryUnit));
 }
 
 export let tests = suite('string literal types', () => {

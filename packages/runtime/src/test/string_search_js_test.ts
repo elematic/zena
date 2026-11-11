@@ -1,5 +1,5 @@
 /**
- * `String` search on the js target, where `indexOf` and `replaceAll` are
+ * `String` search on the zena-js target, where `indexOf` and `replaceAll` are
  * calls to the `zena:host:string` imports (`stringImports`), and
  * `contains`, `split` and `replace` are built on `indexOf`.
  *
@@ -11,7 +11,7 @@ import {instantiate} from '../index.js';
 import {compile} from './compile-zena.js';
 
 const exportsOf = async (source: string) => {
-  const wasm = await compile(source, 'js');
+  const wasm = await compile(source, 'zena-js');
   const res = await instantiate(wasm);
   const instance = res instanceof WebAssembly.Instance ? res : res.instance;
   return {wasm, exports: instance.exports as Record<string, Function>};

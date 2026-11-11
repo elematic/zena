@@ -12,9 +12,9 @@ zena-run --precompile prog.wasm        # write prog.cwasm ahead of time and exit
 zena-run --no-cache prog.wasm          # compile in memory, write nothing
 ```
 
-This is the smallest host a component built for the `zena-cli`
+This is the smallest host a component built for the `zena-component`
 compilation target can run under. Plain `wasmtime run` cannot run such a
-component: beside WASI 0.3 it imports the `zena-cli:host@1.0.0`
+component: beside WASI 0.3 it imports the `zena:host@1.0.0`
 interfaces — `stack-trace` for `Error`'s stack traces, `process` when it
 uses `zena:process`, `wasm` when it uses `zena:wasm` to run other
 components, and `extensions` when it uses `zena:extensions` to load
@@ -28,7 +28,7 @@ repository; `zena-run` needs only the component. A component built for
 the portable `component` target runs here too, and under `wasmtime run`.
 
 A core module runs here as well, with no imports: a program built for
-the `freestanding` target, a hand-written `.wat` file, or another
+the `core` target, a hand-written `.wat` file, or another
 language's `wasm32-unknown-unknown` build. `zena-run` tells the two
 kinds apart from the file. A core module gets no WASI, so `--dir`,
 `--allow-spawn`, `--allow-extensions` and the arguments do not reach it,
@@ -49,7 +49,7 @@ Behavior matches `zena run prog.wasm`:
 To produce a component, build with the compiler:
 
 ```bash
-zena build prog.zena -o prog.wasm    # zena-cli
+zena build prog.zena -o prog.wasm    # zena-component
 zena-run prog.wasm
 ```
 

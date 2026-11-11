@@ -41,7 +41,7 @@ import {
 } from './scope/scope-builder.zena';
 import { Symbol, makeSymbolIdGenerator } from './scope/symbol.zena';
 import {
-  canonicalTarget, isKnownTarget, knownTargetsDescription, targetEmitsComponent
+  isKnownTarget, knownTargetsDescription, targetEmitsComponent
 } from './targets.zena';
 import { performance } from './time.zena';
 
@@ -74,7 +74,7 @@ export final class CompilationResult(
  * analysis and import wiring over that set.
  */
 export final class CompilerTarget {
-  /** The target, by its current name — "host" is stored as "js". */
+  /** The target name (e.g., "core", "js", "zena-js", "component", "zena-component"). */
   target: String;
 
   /** The options of the compiler this belongs to. */
@@ -154,7 +154,7 @@ export final class CompilerTarget {
     // time it gets here it names this one. Reaching a target's library
     // set directly with another target's request would compile the
     // wrong libraries and say it had compiled the right ones.
-    if (canonicalTarget(options.target) != this.target) {
+    if (options.target != this.target) {
       throw new Error(
           `Cannot compile for '${options.target}' on the '${this.target}' ` +
           `library set; call Compiler.compile, which routes by target.`);
@@ -682,11 +682,10 @@ export function makeCompilerTarget(
     throw new Error(
         `Unknown target '${target}' (expected ${knownTargetsDescription()})`);
   }
-  let canonical = canonicalTarget(target);
   let packages = withBuiltinPackages(options.stdlibRoot, options.packages);
   packages["zena"] = buildStdlibConfig(options.stdlibRoot);
-  let resolver = new ModuleResolver(packages, canonical);
+  let resolver = new ModuleResolver(packages, target);
   let loader = new LibraryLoader(
       host, resolver, options.recoverFromParseErrors ?? false);
-  return new CompilerTarget(canonical, options, resolver, loader);
+  return new CompilerTarget(target, options, resolver, loader);
 }

@@ -216,7 +216,7 @@ if (linted.length > 0) {
       );
       if (
         unchecked &&
-        !/(^|[-/])js\.zena$/.test(unchecked[1]) &&
+        !/(^|[-/])js(-[a-z]+)?\.zena$/.test(unchecked[1]) &&
         !unchecked[2].includes("'zena:js'")
       ) {
         errors.push(

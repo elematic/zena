@@ -79,7 +79,7 @@ and an import without one fails the load, with no exception, not even
 for an interface of types alone. A binding says where the interface
 comes from:
 
-- `host`: a WASI or `zena-cli:host` interface, served by the runtime.
+- `host`: a WASI or `zena:host` interface, served by the runtime.
   The extension gets no preopened directories, arguments or
   environment, and its own `zena:process`, `zena:wasm` and
   `zena:extensions` calls trap, since it holds no grant, bound or not.
@@ -357,7 +357,7 @@ is synchronous blocks the same way.
 The program's imported resources are defined when the program is
 linked, before anything is loaded: `linker_for` walks the program's
 component type, and for every import whose instance name is neither
-`wasi:…` nor `zena-cli:host/…` it checks the shape, defines the
+`wasi:…` nor `zena:host/…` it checks the shape, defines the
 resource as a host type whose representation is an extension's handle,
 defines `attach` to mint one, and defines each method as a concurrent
 host function. The method reads the handle from `self`, finds the

@@ -29,7 +29,7 @@ const formatSource = `
 
 let formatModule: Uint8Array | undefined;
 const formatExports = async () => {
-  formatModule ??= await compile(formatSource, 'js');
+  formatModule ??= await compile(formatSource, 'zena-js');
   const res = await instantiate(formatModule);
   const instance = res instanceof WebAssembly.Instance ? res : res.instance;
   return instance.exports as Record<string, Function>;
@@ -125,7 +125,7 @@ suite('Runtime - number conversion on the js target', () => {
   const parseExports = async () => {
     parseModule ??= await compile(
       `export let parse = (s: String): f64 => parseF64(s);`,
-      'js',
+      'zena-js',
     );
     const res = await instantiate(parseModule);
     const instance = res instanceof WebAssembly.Instance ? res : res.instance;

@@ -88,9 +88,10 @@ Each key under `exports` declares a library that dependents can import as `<pack
     "url": {"path": "url/index.zena"},
     "console": {
       "virtual": {
-        "js": "console/host.zena",
+        "js": "console/none.zena",
+        "zena-js": "console/js.zena",
         "component": "console/component.zena",
-        "zena-cli": "console/cli.zena"
+        "zena-component": "console/component.zena"
       }
     }
   }
@@ -99,7 +100,7 @@ Each key under `exports` declares a library that dependents can import as `<pack
 
 - **`{}` (empty object)**: Resolves to `<source>/<library-name>.zena`, such as `src/array.zena`.
 - **`{"path": "..."}`**: Resolves to the specified entry file relative to the `source` directory. Other files in the package reached via relative imports (`import {helper} from './internal.zena'`) remain private and cannot be imported directly by dependents.
-- **`{"virtual": {...}}`**: Maps compilation targets (`js`, `component`, `zena-cli`, `freestanding`) to target-specific entry files. When compiling with `--target component`, an import of `pkg:console` resolves to `console/component.zena`.
+- **`{"virtual": {...}}`**: Maps compilation targets (`core`, `js`, `zena-js`, `component`, `zena-component`) to target-specific entry files. When compiling with `--target component`, an import of `pkg:console` resolves to `console/component.zena`.
 
 ### Open vs. closed packages
 

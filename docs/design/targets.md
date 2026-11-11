@@ -1,253 +1,228 @@
 # Compilation Targets in Zena
 
-This document describes the compilation targets supported by the Zena compiler,
-comparing their module representations, standard library virtualization, host
-boundary contracts, binary sizes, and test coverage across the repository.
+This document describes Zena's five compilation targets, the capability flags
+each target enables, their standard library resolution, host contracts, binary
+sizes, and test coverage across the repository.
 
 ---
 
 ## 1. Overview
 
-A compilation target in Zena defines:
+`zena build` selects a compilation target with `--target <name>` (or `-t
+<name>`). The five targets organize into three base WebAssembly environments,
+with Zena-hosted variants for JavaScript and the Component Model:
 
-1. **Module Kind**: A core WebAssembly GC module (`wasm32`) or a WebAssembly
-   Component (Component Model).
-2. **String Strategy**: Native JavaScript string handles (`wasm:js-string`)
-   for `js`, or WebAssembly GC `ByteArray`-backed UTF-8 views for all other targets
-   (`freestanding`, `component`, `zena-cli`). In component targets, linear memory
-   is only used at external component boundary crossings when lowered/lifted by
-   the Canonical ABI.
-3. **Standard Library Resolution**: Which physical library files back virtual
-   module specifiers (`core/string.zena`, `zena:console`, `zena:error-stack`,
-   `zena:time`, `zena:fs`). `zena:core` itself is a normal library with a single
-   shared entry point (`core/index.zena`), minimizing checker divergence across targets.
-4. **Host Contract**: What imports the host must provide at instantiation time,
-   and what runtime helpers the guest module exports.
+| Target                         | Module Kind  | String Representation                                     | Host Runtime                            |
+| :----------------------------- | :----------- | :-------------------------------------------------------- | :-------------------------------------- |
+| **`core`**                     | Core Wasm GC | UTF-8/WTF-8 `ByteArray` views                             | Any core Wasm GC engine (no imports)    |
+| **`js`**                       | Core Wasm GC | `externref` JS string handle (`wasm:js-string`)           | Any JS engine with JS String Builtins   |
+| **`zena-js`**                  | Core Wasm GC | `externref` JS string handle (`wasm:js-string`)           | JS engine + `@zena-lang/runtime`        |
+| **`component`**                | Component    | UTF-8/WTF-8 `ByteArray` views (lowered via Canonical ABI) | Any WASI 0.3 component host             |
+| **`zena-component`** (default) | Component    | UTF-8/WTF-8 `ByteArray` views (lowered via Canonical ABI) | `zena-runtime` (`zena-cli`, `zena-run`) |
 
-The target is set per compilation via `--target <name>` (or `-t <name>`) on
-`zena build`. The canonical target resolver lives in
-[`packages/zena-compiler/zena/lib/targets.zena`](file:///Users/justin/Projects/Zena/zena/packages/zena-compiler/zena/lib/targets.zena).
+Target definitions and capability predicates live in
+`packages/zena-compiler/zena/lib/targets.zena`.
 
 ---
 
-## 2. Target Comparison Matrix
+## 2. Capability Flags (`TargetFeatures`)
 
-| Target                     | Alias  | Module Kind  | String Representation                                                     | Virtualized Standard Library                                                              | Intended Host Environment                                                      |
-| :------------------------- | :----- | :----------- | :------------------------------------------------------------------------ | :---------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------- |
-| **`js`**                   | `host` | Core Wasm-GC | Wasm GC `String` class wrapping `#handle: externref` via `wasm:js-string` | `core/string-js.zena`, `console/js.zena`, `core/error/stack-host.zena`                    | Web browsers, Node.js, `@zena-lang/runtime`                                    |
-| **`freestanding`**         | —      | Core Wasm-GC | Wasm GC `String` class wrapping UTF-8 `ByteArray` views                   | `core/string.zena`, `console/component.zena`                                              | Bare WebAssembly GC runtimes, micro-benchmarks, embedders with no host imports |
-| **`component`**            | —      | Component    | Wasm GC `String` class wrapping UTF-8 `ByteArray` views                   | `core/string.zena`, `console/component.zena`, `time/component.zena`, `fs/component.zena`  | Standard WASI Preview 2 / Preview 3 runtimes, Wasmtime, `jco`                  |
-| **`zena-cli`** _(default)_ | —      | Component    | Wasm GC `String` class wrapping UTF-8 `ByteArray` views                   | `core/string.zena`, `console/component.zena`, `cli/component.zena`, `time/component.zena` | `zena-cli` and `zena-run` (Rust/wasmtime host embedding `zena-cli:host` WIT)   |
+Inside the compiler, each `--target` value decomposes into five boolean
+capability flags (`TargetFeatures`):
 
----
+| Flag                | `core`  |  `js`   | `zena-js` | `component` | `zena-component` |
+| :------------------ | :-----: | :-----: | :-------: | :---------: | :--------------: |
+| `component`         | `false` | `false` |  `false`  |   `true`    |      `true`      |
+| `jsStrings`         | `false` | `true`  |  `true`   |   `false`   |     `false`      |
+| `wasi`              | `false` | `false` |  `false`  |   `true`    |      `true`      |
+| `zenaJsHost`        | `false` | `false` |  `true`   |   `false`   |     `false`      |
+| `zenaComponentHost` | `false` | `false` |  `false`  |   `false`   |      `true`      |
 
-## 3. Target Specifications & Host Contracts
+What each flag enables:
 
-### A. JavaScript Target (`--target js`, alias `host`)
-
-The `js` target is optimized for execution inside JavaScript engines
-(V8/Node.js, JavaScriptCore/Bun/Safari, SpiderMonkey/Firefox).
-
-#### String Architecture
-
-- Rather than embedding a UTF-8/UTF-16 transcoder or linear memory allocator,
-  `String` compiles as a standard WebAssembly GC class backed by a native
-  JavaScript string handle:
-  ```zena
-  export final class String implements Hashable {
-    #handle: externref;
-    new #fromHandle(handle: externref) : #handle = handle;
-    handle: externref { get { return this.#handle; } }
-    length: i32 { get { return __js_string_length(this.#handle); } }
-  }
-  ```
-- Operations (`concat`, `substring`, `equals`, `compare`, `charCodeAt`,
-  `fromCharCode`, etc.) delegate to the **WebAssembly JS String Builtins
-  proposal** under import module `"wasm:js-string"`.
-- String literals in source code do not emit data segments. Instead, the
-  compiler emits imported string constants under module name `"_"`, or
-  the module `--imported-string-constants` names:
-  ```wat
-  (import "_" "Hello, World!" (global $raw_str (ref extern)))
-  ```
-  In `$__start`, literals are wrapped once into GC `String` instances and cached
-  in globals.
-
-#### Host Requirements
-
-A host executing a `--target js` module must supply:
-
-1. **`wasm:js-string` builtins**: Native string imports (`length`, `concat`,
-   `equals`, `compare`, `substring`, `charCodeAt`, `codePointAt`,
-   `fromCharCode`, `fromCodePoint`). When running in JavaScript engines without
-   native support,
-   [`@zena-lang/runtime`](file:///Users/justin/Projects/Zena/zena/packages/runtime/src/index.ts)
-   provides default fallback implementations.
-2. **String constants module (`"_"` by default)**: The host compiles the
-   module with that name as its `importedStringConstants`, and the engine
-   supplies each literal. ESM integration hosts fix the name to
-   `wasm:js/string-constants`; see
-   [host-interop.md](./host-interop.md#string-literals-and-imported-constants).
-3. **Console import (`"console"`)**: When `console.log(...)` is reachable, the
-   module imports `@external("console", "log_string")` taking an `externref`.
-4. **Runtime helpers exported by guest**: The module exports three helper
-   functions for host interop:
-   - `$stringCreate(handle: externref): (ref $String)`: Wraps a host JS string
-     into a Zena `String`.
-   - `$stringGetHandle(s: (ref $String)): externref`: Unwraps a Zena `String` to
-     its host JS string handle.
-   - `$stringGetLength(s: (ref $String)): i32`: Returns the length in UTF-16
-     code units.
+- **`component`** (`targetEmitsComponent`): Encodes the output as a WebAssembly
+  Component with a synthesized runtime memory core module (`cabi_realloc`) and
+  Canonical ABI adapters at external world boundaries. Allows `--wit`,
+  `--world`, and `--extension-wit`; disallows `--compact-imports`.
+- **`jsStrings`** (`targetUsesJsStrings`): Represents `String` as a GC struct
+  holding `#handle: externref` (`core/string-js.zena`), emits `wasm:js-string`
+  builtin calls, imports string literals as `externref` constants (module `"_"`
+  by default, configurable via `--imported-string-constants`), and exports
+  `$stringCreate`, `$stringGetHandle`, and `$stringGetLength` when `String`
+  crosses module boundaries.
+- **`wasi`** (`targetHasWasi`): Resolves WASI 0.3 standard library bindings
+  (`zena:console`, `zena:cli`, `zena:fs`, `zena:time`, `zena:random`,
+  `zena:fetch`, `zena:http/wasi`, `zena:wasi`) and includes `console` in the
+  standard prelude.
+- **`zenaJsHost`** (`targetUsesZenaJsHost`): Enables `@zena-lang/runtime` host
+  imports (`zena:host:string`, `zena:host:number`, `zena:host:url`,
+  `zena:host:random`, `env` stack trace hooks, `console`, `time`, `js`, `web`),
+  unlocks `zena:js`, `zena:fetch`, `zena:time`, and `zena:random` on JS, and
+  includes `console` in the standard prelude.
+- **`zenaComponentHost`** (`targetUsesZenaComponentHost`): Enables the
+  `zena:host@1.0.0` WIT package (`packages/stdlib/zena/host-wit/host.wit`)
+  implemented by the Rust `zena-runtime` crate, including `stack-trace`,
+  `process`, `wasm`, `extensions`, and `http-server`, and links `zena:host-setup`
+  into the runtime module list.
 
 ---
 
-### B. Freestanding Target (`--target freestanding`)
+## 3. Virtualized Standard Library Resolution
 
-The `freestanding` target produces a minimal core WebAssembly GC module with
-zero host imports beyond user-declared `@external` functions.
+`zena:core` has one shared entry library (`core/index.zena`) across all five
+targets, keeping prelude type checking consistent while delegating
+target-dependent submodules through virtual specifiers in
+`packages/stdlib/stdlib-manifest.json`:
 
-#### Characteristics
-
-- `String` is backed by a WebAssembly GC `ByteArray` (`(array (mut i8))`)
-  storing UTF-8 bytes with `#start` and `#end` offsets.
-- String literals are emitted as data segments and initialized in `$__start`.
-- No standard I/O, filesystem, process, or timer imports are included.
-- Used for cross-language benchmarks (comparing Zena directly against
-  AssemblyScript `-O3z` and Rust `no_std`), embedded Wasm runtimes without host
-  facilities, or pure compute modules.
-
----
-
-### C. Standard Component Target (`--target component`)
-
-The `component` target packages the program into a WebAssembly Component
-following the Component Model specification.
-
-#### Characteristics
-
-- Internally, strings use the standard WebAssembly GC `ByteArray` representation.
-- Types crossing external component boundaries are lowered and lifted via the Component
-  Model Canonical ABI (allocating into linear memory via `cabi_realloc`).
-- Targets standard WASI Preview 2 / Preview 3 interfaces (`wasi:cli`, `wasi:io`,
-  `wasi:clocks`, `wasi:filesystem`).
-- Can be inspected using `wasm-tools component wit` and run in any standard
-  component host.
+| Module                                                 | `core`                       | `js`                          | `zena-js`                     | `component`                  | `zena-component`               |
+| :----------------------------------------------------- | :--------------------------- | :---------------------------- | :---------------------------- | :--------------------------- | :----------------------------- |
+| `zena:string`                                          | `core/string.zena`           | `core/string-js.zena`         | `core/string-js.zena`         | `core/string.zena`           | `core/string.zena`             |
+| `zena:string-js-ops`                                   | —                            | `core/string-js-pure.zena`    | `core/string-js-host.zena`    | —                            | —                              |
+| `zena:string-builder`                                  | `core/string-builder.zena`   | `core/string-builder-js.zena` | `core/string-builder-js.zena` | `core/string-builder.zena`   | `core/string-builder.zena`     |
+| `zena:number-format`                                   | `core/number-format.zena`    | `core/number-format.zena`     | `core/number-format-js.zena`  | `core/number-format.zena`    | `core/number-format.zena`      |
+| `zena:number-parse`                                    | `core/number-parse.zena`     | `core/number-parse.zena`      | `core/number-parse-js.zena`   | `core/number-parse.zena`     | `core/number-parse.zena`       |
+| `zena:error-stack`                                     | `core/error/stack-none.zena` | `core/error/stack-none.zena`  | `core/error/stack-host.zena`  | `core/error/stack-none.zena` | `core/error/stack-hooked.zena` |
+| `zena:console`                                         | —                            | `console/none.zena`           | `console/js.zena`             | `console/component.zena`     | `console/component.zena`       |
+| `zena:memory`                                          | `memory/default.zena`        | `memory/default.zena`         | `memory/default.zena`         | `memory/component.zena`      | `memory/component.zena`        |
+| `zena:url` (internal)                                  | `url/url.zena`               | `url/url.zena`                | `url/url-js.zena`             | `url/url.zena`               | `url/url.zena`                 |
+| `zena:random`                                          | —                            | —                             | `random/source-js.zena`       | `random/source-wasi.zena`    | `random/source-wasi.zena`      |
+| `zena:time`                                            | —                            | —                             | `time/js.zena`                | `time/component.zena`        | `time/component.zena`          |
+| `zena:fetch`                                           | —                            | —                             | `fetch/js.zena`               | `fetch/component.zena`       | `fetch/component.zena`         |
+| `zena:js`                                              | —                            | —                             | `js.zena`                     | —                            | —                              |
+| `zena:cli` / `zena:fs`                                 | —                            | —                             | —                             | `*/component.zena`           | `*/component.zena`             |
+| `zena:process` / `wasm` / `extensions` / `http-server` | —                            | —                             | —                             | —                            | `*/component.zena`             |
 
 ---
 
-### D. CLI Target (`--target zena-cli`, default)
+## 4. Target Specifications and Host Contracts
 
-The default target for the `zena` compiler CLI. It produces a WebAssembly
-Component tailored for `zena-cli` and `zena-run`.
+### A. Core Target (`--target core`)
 
-#### Characteristics
+Produces a standalone core WebAssembly GC module with zero implicit host
+imports. Only `@external` declarations written in user code produce Wasm import
+entries.
 
-- Links in WASI 0.3 plus the custom `zena-cli:host` WIT interfaces
-  ([`packages/stdlib/zena/host-wit/host.wit`](file:///Users/justin/Projects/Zena/zena/packages/stdlib/zena/host-wit/host.wit)):
-  - `zena-cli:host/stack-trace`: Native stack trace extraction for `Error`.
-  - `zena-cli:host/process`: Process spawning (`zena:process`).
-  - `zena-cli:host/wasm`: Dynamic in-process WebAssembly module execution
-    (`zena:wasm`).
-- Powers all command-line tools (`zena`, `zb`, `zenadoc`, `zena-formatter`).
+- `String` is backed by a GC `ByteArray` (`(array (mut i8))`) storing WTF-8
+  bytes with `#start` and `#end` offsets.
+- String literals are packed into a passive data segment and initialized once.
+- `Error` stack traces are disabled (`stack-none.zena`), and `console` is absent
+  from the prelude.
+- Used for standalone Wasm GC runtimes, embedded guests, cross-language
+  benchmarks (`benchmarks/zena/`), and the synthesized runtime memory core
+  module embedded inside component builds.
+
+### B. JavaScript Target (`--target js`)
+
+Produces a core WebAssembly GC module for any JavaScript engine supporting the
+JS String Builtins proposal (`wasm:js-string` and `importedStringConstants`),
+requiring zero imports from `@zena-lang/runtime`.
+
+```js
+const {instance} = await WebAssembly.instantiate(
+  bytes,
+  {},
+  {builtins: ['js-string'], importedStringConstants: '_'},
+);
+```
+
+- `String` wraps a native JS string handle (`externref`). Basic operations call
+  `wasm:js-string` builtins; string search (`indexOf`, `replaceAll`) and Unicode
+  case conversion (`toLowerCase`, `toUpperCase`) run in pure Wasm over UTF-16
+  code units and embedded case tables (`core/string-js-pure.zena`).
+- Number formatting/parsing (`core/number-format.zena`, `core/number-parse.zena`)
+  and WHATWG `URL` (`url/url.zena`) use Zena's portable implementations.
+- `Error` stack traces use `stack-none.zena`, and `console` resolves to a no-op
+  implementation (`console/none.zena`) so portable code calling `console.log`
+  compiles and instantiates with an empty `{}` import object.
+- Host-dependent libraries (`zena:js`, `zena:fetch`, `zena:time`, `zena:random`)
+  are unavailable on `js` and require `zena-js`.
+
+### C. Zena JavaScript Target (`--target zena-js`)
+
+Adds `@zena-lang/runtime` host integration on top of `js`.
+
+- Delegates `indexOf`, `replaceAll`, `toLowerCase`, and `toUpperCase` to host
+  JS string methods (`zena:host:string`), number conversions to JS `String`,
+  `toPrecision`, and `parseFloat` (`zena:host:number`), and `URL` to host WHATWG
+  `URL` (`zena:host:url`), keeping those parsers and tables out of the Wasm
+  binary.
+- Enables lazy V8/JS `Error` stack traces (`env.captureStackTrace` /
+  `env.formatStackTrace`), `console` (`console.log_string`, etc.), `zena:js`
+  (`Promise` and host-async interop), `zena:time`, `zena:random`, and
+  `zena:fetch`.
+- Instantiated with `instantiate(bytes)` or `createImports()` from
+  `@zena-lang/runtime`.
+
+### D. Component Target (`--target component`)
+
+Produces a portable WebAssembly Component targeting standard WASI 0.3 worlds or
+custom WIT worlds (`--wit`, `--world`).
+
+- Internally uses GC `ByteArray` WTF-8 strings, lowering and lifting across
+  component boundaries through the Canonical ABI (`cabi_realloc`).
+- Imports only standard WASI 0.3 interfaces (`wasi:cli`, `wasi:filesystem`,
+  `wasi:clocks`, `wasi:random`, `wasi:http`) or interfaces declared in the
+  selected WIT world.
+- Runs directly under `wasmtime run -S p3=y` or any WASI 0.3 component host, as
+  well as `zena-run` and `zena-cli run`.
+
+### E. Zena Component Target (`--target zena-component`, default)
+
+Produces a WebAssembly Component targeting WASI 0.3 plus the `zena:host@1.0.0`
+WIT interfaces (`packages/stdlib/zena/host-wit/host.wit`) supplied by the Rust
+`zena-runtime` crate (`zena-cli`, `zena-run`, or custom Rust embedders):
+
+- `zena:host/stack-trace@1.0.0`: Wasm backtrace capture for `Error`.
+- `zena:host/process@1.0.0`: Subprocess spawning (`zena:process`, gated on
+  `Grant::spawn` / `--allow-spawn`).
+- `zena:host/wasm@1.0.0`: Child component and core module execution and `.cwasm`
+  precompilation (`zena:wasm`, gated on `Grant::spawn`).
+- `zena:host/extensions@1.0.0`: Long-lived component extensions
+  (`zena:extensions`, gated on `Grant::extensions` / `--allow-extensions`).
+- `zena:host/http-server@1.0.0`: Inbound HTTP/1.1 server (`zena:http`).
 
 ---
 
-## 4. Module Size & Overhead Comparison
+## 5. Binary Size Trade-offs
 
-Measurements taken with `-O2` optimization across identical source workloads:
+Measured at `-O2` across minimal workloads:
 
-| Workload           | Source                                                           | `--target js` | `--target freestanding` | `--target component` | `--target zena-cli` |
-| :----------------- | :--------------------------------------------------------------- | :-----------: | :---------------------: | :------------------: | :-----------------: |
-| **`minimal`**      | `export function main(): i32 { return 42; }`                     |   **37 B**    |        **37 B**         |         92 B         |       6.9 KB        |
-| **`hello-world`**  | `export function main(): String { return "Hello World"; }`       |   **224 B**   |        **326 B**        |        3.4 KB        |       7.3 KB        |
-| **`console-main`** | `export function main(): void { console.log("Hello, World!"); }` |   **275 B**   |     _N/A (no I/O)_      |        6.6 KB        |       8.3 KB        |
-
-### Analysis of Trade-offs
-
-1. **Zero-overhead baseline**: For programs without string allocations or I/O,
-   both `freestanding` and `js` produce identical 37-byte modules (1 type, 1
-   function, 1 export).
-2. **String handling efficiency**: For string-heavy programs, `--target js`
-   produces the smallest binaries because string literals are imported rather
-   than encoded as UTF-8 data segments with Wasm array initialization loops.
-3. **Component Model boundary tax**: Components (`component` and `zena-cli`)
-   carry a baseline overhead of 3KB–7KB due to the canonical ABI adapter
-   sections, memory allocator (`cabi_realloc`), and WASI Preview 2/3 stream
-   wrappers.
+- **Arithmetic-only (`export function main(): i32 { return 42; }`)**: `core`,
+  `js`, and `zena-js` emit identical 37-byte core modules (one type, one
+  function, one export).
+- **String-heavy workloads on JS**: `zena-js` omits Zena's Unicode case tables,
+  float formatting/parsing tables, and URL/IDNA tables by calling the JS host;
+  `js` links only the portable routines reachable from the program so the module
+  runs without `@zena-lang/runtime`.
+- **Components (`component` and `zena-component`)**: Include Canonical ABI
+  adapters, the runtime memory core module (`cabi_realloc`), and WASI 0.3 stream
+  plumbing (~3–8 KB baseline).
 
 ---
 
-## 5. Testing Strategy & Coverage
+## 6. Test Coverage
 
-Each compilation target is validated through dedicated test suites across the
-monorepo:
-
-### A. Testing `--target js`
-
-1. **Portable Semantics Suite**
-   ([`packages/zena-compiler/zena/test/portable_semantics.zena`](file:///Users/justin/Projects/Zena/zena/packages/zena-compiler/zena/test/portable_semantics.zena)):
-   - **All 614 semantics tests** in `tests/language/semantics/` are compiled
-     with `target: 'js'`, verifying parsing, type checking, and scope analysis
-     against the JS target prelude and standard library.
-2. **Runtime Test Suite**
-   ([`packages/runtime/src/test/`](file:///Users/justin/Projects/Zena/zena/packages/runtime/src/test/)):
-   - `js_strings_test.ts`: Directly tests string operations under
-     `wasm:js-string` (concatenation, slicing, case conversions, comparisons,
-     equality, splitting).
-   - `console_test.ts`: Verifies direct string handle logging and reader
-     fallbacks.
-   - `string_writer_test.ts`: Tests host-to-Wasm string transfers via
-     `$stringCreate`.
-   - `time_test.ts` & `to_promise_test.ts`: Tests JS event loop parking and
-     `Promise` interop.
-3. **Language Service & In-Memory Compiler**
-   ([`packages/language-service/`](file:///Users/justin/Projects/Zena/zena/packages/language-service/)):
-   - `lsp.wasm` is built using `zena-cli build zena/lsp.zena --target host -o
-lsp.wasm`.
-   - All language service tests (`packages/language-service/test/lsp_test.js`)
-     execute this module in Node.js.
-   - `packages/runtime/src/test/compile-zena.ts` runs `lsp.wasm` in-memory to
-     compile test cases.
-4. **Compiler Subsystem Tests**:
-   - `multi-target_test.zena`: Tests resolver caching and library isolation for
-     `target: 'js'`.
-   - `virtual-library_test.zena`: Asserts public API signatures of virtual
-     modules for `target: 'js'`.
-   - `codegen-wat_test.zena`: Verifies WAT emission for JS console imports and
-     string globals.
-   - `external-functions-test.ts`: End-to-end Node.js tests compiling with `-t
-js` and `-t host`.
-
-### B. Testing `--target zena-cli`
-
-1. **Portable Execution Suite**
-   ([`packages/zena-compiler/zena/test/portable_execution.zena`](file:///Users/justin/Projects/Zena/zena/packages/zena-compiler/zena/test/portable_execution.zena)):
-   - Compiles every execution test under `tests/language/execution/` with
-     `target: 'zena-cli'` and executes it via `zena-cli run` on Wasmtime.
-2. **Standard Library Test Suite**
-   ([`packages/stdlib/tests/`](file:///Users/justin/Projects/Zena/zena/packages/stdlib/tests/)):
-   - Runs under `zena-cli test tests`, exercising CLI and WASI capabilities
-     (filesystem, environment, regex, collections, async).
-3. **CLI & Tooling Tests**:
-   - Compiler self-hosting and fixpoint parity check (`npm run test:fixpoint`).
-
-### C. Testing `--target freestanding`
-
-1. **Cross-Language Benchmarks**
-   ([`benchmarks/zena/build.zena`](file:///Users/justin/Projects/Zena/zena/benchmarks/zena/build.zena)):
-   - All 15 workloads in `benchmarks/workloads/` compile with `-O2 --target
-freestanding` and run size/speed benchmarks.
-2. **Unit Tests**:
-   - `external-functions-test.ts` verifies standalone module instantiation with
-     minimal host imports.
-   - Multi-target unit tests verify clean emission without host scaffold.
-
-### D. Testing `--target component`
-
-1. **Component E2E Suite**
-   ([`packages/zena-compiler/src/scripts/component-e2e.ts`](file:///Users/justin/Projects/Zena/zena/packages/zena-compiler/src/scripts/component-e2e.ts)):
-   - Tests WIT world synthesis, component encoding, and execution in Wasmtime.
-2. **Multi-Target Suite**
-   ([`multi-target_test.zena`](file:///Users/justin/Projects/Zena/zena/packages/zena-compiler/zena/test/multi-target_test.zena)):
-   - Validates virtual module resolution (`zena:console` ->
-     `console/component.zena`).
+- **`zena-js` & `js` in Node.js**:
+  - `packages/zena-compiler/zena/test/portable_semantics.zena` checks all
+    `tests/language/semantics/` files against `zena-js`.
+  - `packages/language-service/` compiles `lsp.wasm` with `--target zena-js` and
+    exposes `compileToWasmForTarget` / `checkForTarget`.
+  - `packages/runtime/src/test/` tests `@zena-lang/runtime` imports on `zena-js`
+    and zero-import `WebAssembly.instantiate(bytes, {}, ...)` execution on `js`
+    (`pure_js_target_test.ts`).
+- **`zena-component`**:
+  - `packages/zena-compiler/zena/test/portable_execution.zena` compiles and runs
+    all `tests/language/execution/` tests with `zena-component`.
+  - `packages/stdlib/tests/` and `packages/zena-cli/tests/` exercise WASI 0.3
+    and `zena:host@1.0.0` interfaces.
+  - `npm run test:fixpoint -w @zena-lang/zena-compiler` verifies Stage B ≡
+    Stage C self-hosted compiler parity.
+- **`component`**:
+  - `packages/zena-compiler/src/scripts/component-e2e.ts` compiles WIT fixtures
+    with `--target component` and runs them under `wasmtime`.
+- **`core`**:
+  - `benchmarks/zena/` compiles all benchmark workloads with `-O2 --target core`.
+  - `packages/zena-compiler/src/scripts/external-functions-test.ts` and
+    `packages/zena-compiler/zena/test/binary-size_test.zena` verify core module
+    imports and binary sizes across `core`, `js`, `zena-js`, `component`, and
+    `zena-component`.

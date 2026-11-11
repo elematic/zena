@@ -127,7 +127,7 @@ async function compileFor(path: String, target: String) {
   let program = await programFor(c, path, target);
   if (target == 'component') {
     // On the same compiler as the program: the runtime module is the
-    // `freestanding` target of this compile, not a compile of its own.
+    // `core` target of this compile, not a compile of its own.
     generator.runtimeMemoryModule = await compileComponentRuntimeModule(c, stdlibRoot);
     // The test `wasi` package's WIT, as the CLI passes its WIT-backed
     // packages' sources: the encoder emits those interfaces' true
@@ -749,13 +749,13 @@ export function reset(): boolean { return true; }
 
   test('a resource of an interface in the owned list renders as a resource class',
       async (ctx) => {
-    // `zena-cli:host/process` is in `ownedResourceSpecifiers`: its
+    // `zena:host/process` is in `ownedResourceSpecifiers`: its
     // `command` and `process` resources are resource classes whose
     // dispose consumes the receiver, the constructor and `spawn` hand
     // back owners, and nothing carries a moved flag — lowering an own
     // disowns the wrapper instead.
     let source = await synthesizeWitModule(disk,
-        `wit:${stdlibRoot}/host-wit#zena-cli:host/process`,
+        `wit:${stdlibRoot}/host-wit#zena:host/process`,
         await readWitSource(disk, `${stdlibRoot}/host-wit`));
     isTrue(source.contains('export resource class Command {'),
       `command is not a resource class:\n${source}`);
@@ -781,7 +781,7 @@ export function reset(): boolean { return true; }
     // class` handle inside a tuple is `Unmanaged<T>`, disowned as it
     // is lifted, for the program to adopt what it keeps.
     let wasm = await synthesizeWitModule(disk,
-        `wit:${stdlibRoot}/host-wit#zena-cli:host/wasm`,
+        `wit:${stdlibRoot}/host-wit#zena:host/wasm`,
         await readWitSource(disk, `${stdlibRoot}/host-wit`));
     isTrue(wasm.contains('export resource class Run {'),
       `run is not a resource class:\n${wasm}`);
@@ -815,7 +815,7 @@ export function reset(): boolean { return true; }
 
   test('the HTTP resources render as resource classes, with owners in tuples',
       async (ctx) => {
-    // `wasi:http/types` and `zena-cli:host/http-server` joined the list
+    // `wasi:http/types` and `zena:host/http-server` joined the list
     // with `zena:http`'s and `zena:fetch`'s migration. A tuple in a bare
     // position carries owners: `new` hands back the request it made,
     // `consume-body` a trailers future of an owned `fields`, and
@@ -838,7 +838,7 @@ export function reset(): boolean { return true; }
       `copy-all's entries changed:\n${types}`);
 
     let server = await synthesizeWitModule(disk,
-        `wit:${stdlibRoot}/host-wit#zena-cli:host/http-server`,
+        `wit:${stdlibRoot}/host-wit#zena:host/http-server`,
         `${await readWitSource(disk, `${stdlibRoot}/host-wit`)}\n${wit}`);
     isTrue(server.contains('listen(): Stream<(Own<Request>, Own<ResponseWriter>)> {'),
       `listen does not yield owned pairs:\n${server}`);
@@ -1064,15 +1064,15 @@ export function reset(): boolean { return true; }
     // target knowledge has leaked into codegen, where the design says
     // there is none.
     let component = await compileFor(`${fixtures}/scalars.zena`, 'component');
-    let core = await compileFor(`${fixtures}/scalars.zena`, 'freestanding');
+    let core = await compileFor(`${fixtures}/scalars.zena`, 'core');
     let embedded = sectionPayload(component, 1);
     equal(embedded.length, core.length,
       `the embedded core module is ${i32ToString(embedded.length)} bytes and ` +
-      `the freestanding module is ${i32ToString(core.length)}`);
+      `the core module is ${i32ToString(core.length)}`);
     for (var i = 0; i < core.length; i += 1) {
       if (embedded[i] != core[i]) {
         throw new Error(
-          `the embedded core module differs from the freestanding module at ` +
+          `the embedded core module differs from the core module at ` +
           `byte ${i32ToString(i)}`);
       }
     }

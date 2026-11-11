@@ -55,63 +55,66 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
   // the same pages would corrupt each other, so the component entry
   // keeps no allocation state at all.
   let memoryVirtual: HashMap<String, String> = {
+    "core" => "memory.zena",
     "js" => "memory.zena",
-    "zena-cli" => "memory/component.zena",
-    "freestanding" => "memory.zena",
+    "zena-js" => "memory.zena",
     "component" => "memory/component.zena",
+    "zena-component" => "memory/component.zena",
   };
   exports["memory"] = new ModuleExport(memoryVirtual);
 
   let consoleVirtual = new Map<String, String>();
-  consoleVirtual["js"] = "console/js.zena";
-  consoleVirtual["zena-cli"] = "console/component.zena";
-  // The component console prints over p3 stdio. `freestanding` shares
-  // it: a freestanding build is a component's core module without the
-  // wrapper, and the two must load the same prelude for the wrapper to
-  // embed exactly the module the freestanding build emits.
+  consoleVirtual["js"] = "console/none.zena";
+  consoleVirtual["zena-js"] = "console/js.zena";
+  consoleVirtual["zena-component"] = "console/component.zena";
+  // The component console prints over p3 stdio. `core` shares it: a
+  // `core` build is a component's core module without the wrapper, and
+  // the two must load the same prelude for the wrapper to embed exactly
+  // the module the `core` build emits.
   consoleVirtual["component"] = "console/component.zena";
-  consoleVirtual["freestanding"] = "console/component.zena";
+  consoleVirtual["core"] = "console/component.zena";
   exports["console"] = new ModuleExport(consoleVirtual);
 
   // Virtual module: wasi → the guest side of the Component Model. The
   // canonical ABI's string marshaling and allocator, the async-import
   // driver that turns the subtask protocol into a `Future`, and the
   // guest half of `stream<u8>`. Only a component has any of that
-  // beneath it, so the component target resolves it, and `freestanding`
-  // with it: a freestanding build is a component's core module without
-  // the wrapper, and its prelude's console is the component's. The
+  // beneath it, so the component target resolves it, and `core` with
+  // it: a `core` build is a component's core module without the
+  // wrapper, and its prelude's console is the component's. The
   // component runtime's own memory entry sits beside these files
   // without being one of them.
   exports["wasi"] = new ModuleExport(null, "wasi/index.zena");
 
   // Virtual module: error-stack → the `Error` stack-trace hooks. The host
   // hooks trade in `anyref`/`externref`, which have no Component Model
-  // representation, so a component (and a freestanding module, which has
-  // no host to call) gets the null implementation instead. Every module
-  // pulls this in through `zena:error`, so it is the one import that a
-  // target cannot opt out of by writing less code — see
+  // representation, so a component (and a `core` or `js` module, which
+  // assumes no Zena host) gets the null implementation instead. Every
+  // module pulls this in through `zena:error`, so it is the one import
+  // that a target cannot opt out of by writing less code — see
   // docs/design/component-emission.md, Part 2.
   let errorStackVirtual = new Map<String, String>();
-  errorStackVirtual["js"] = "core/error/stack-host.zena";
-  // The zena command's host formats the backtrace over its own
-  // interface, installed at run time by `zena:host-setup` (below); a
-  // portable component has no host to ask.
-  errorStackVirtual["zena-cli"] = "core/error/stack-hooked.zena";
-  errorStackVirtual["freestanding"] = "core/error/stack-none.zena";
+  errorStackVirtual["core"] = "core/error/stack-none.zena";
+  errorStackVirtual["js"] = "core/error/stack-none.zena";
+  errorStackVirtual["zena-js"] = "core/error/stack-host.zena";
+  // `zena-runtime` formats the backtrace over `zena:host/stack-trace`,
+  // installed at run time by `zena:host-setup` (below); a portable
+  // component has no host to ask.
   errorStackVirtual["component"] = "core/error/stack-none.zena";
+  errorStackVirtual["zena-component"] = "core/error/stack-hooked.zena";
   // Internal: `zena:core` is the only thing that reaches it, through
   // `core/error.zena` and its own entry point. The manifest entry is
   // what picks the file per target, which is the only reason the name
   // exists at all.
   exports["error-stack"] = new ModuleExport(errorStackVirtual, null, true);
 
-  // Virtual module: host-setup → what a program on the zena command's
-  // host needs installed before it runs: the host as the source of
-  // `Error`'s stack traces, and the blocking wait. A runtime module of
-  // the zena-cli target (prelude.zena's getTargetRuntimeModules), whose
-  // `installHost` the component entry calls before `main`.
+  // Virtual module: host-setup → what a program on `zena-runtime` needs
+  // installed before it runs: the host as the source of `Error`'s stack
+  // traces. A runtime module of the `zena-component` target
+  // (`prelude.zena`'s `getTargetRuntimeModules`), whose `installHost`
+  // the component entry calls before `main`.
   let hostSetupVirtual: HashMap<String, String> = {
-    "zena-cli" => "host-setup.zena",
+    "zena-component" => "host-setup.zena",
   };
   exports["host-setup"] = new ModuleExport(hostSetupVirtual);
 
@@ -119,84 +122,83 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
   // both component targets. The 0.3 filesystem is asynchronous
   // throughout, and so is the API.
   let fsVirtual: HashMap<String, String> = {
-    "zena-cli" => "fs/component.zena",
     "component" => "fs/component.zena",
+    "zena-component" => "fs/component.zena",
   };
   exports["fs"] = new ModuleExport(fsVirtual);
 
   // Virtual module: cli → arguments, environment and exit, over
   // wasi:cli 0.3.
   let cliVirtual: HashMap<String, String> = {
-    "zena-cli" => "cli/component.zena",
     "component" => "cli/component.zena",
+    "zena-component" => "cli/component.zena",
   };
   exports["cli"] = new ModuleExport(cliVirtual);
 
-  // Virtual module: process → host process spawning, on the zena
-  // command's host only, which links it for trusted invocations; see
-  // the library header.
+  // Virtual module: process → host process spawning, on `zena-component`
+  // only, which links it for trusted invocations; see the library header.
   let processVirtual: HashMap<String, String> = {
-    "zena-cli" => "process/component.zena",
+    "zena-component" => "process/component.zena",
   };
   exports["process"] = new ModuleExport(processVirtual);
 
-  // Virtual module: wasm → running other Wasm modules, on zena-cli only:
-  // it needs the zena_wasm host imports. Granted with
-  // process spawning and linked by the same hosts; see the library
-  // header.
+  // Virtual module: wasm → running other Wasm modules, on `zena-component`
+  // only: it needs the `zena:host/wasm` host imports. Granted with
+  // process spawning and linked by the same hosts; see the library header.
   let wasmVirtual: HashMap<String, String> = {
-    "zena-cli" => "wasm/component.zena",
+    "zena-component" => "wasm/component.zena",
   };
   exports["wasm"] = new ModuleExport(wasmVirtual);
 
-  // Virtual module: components → loading other components as long-lived
-  // installations, over the zena command's host. On the component
+  // Virtual module: extensions → loading other components as long-lived
+  // installations, over `zena:host/extensions`. On the `component`
   // target too, so a program built against a declared world can load
-  // them where that host runs it.
+  // them where `zena-runtime` runs it.
   let extensionsVirtual: HashMap<String, String> = {
-    "zena-cli" => "extensions/component.zena",
     "component" => "extensions/component.zena",
+    "zena-component" => "extensions/component.zena",
   };
   exports["extensions"] = new ModuleExport(extensionsVirtual);
 
-  // Virtual module: js → JavaScript-host interop, currently the
-  // host-async completion registry. Only the JS-hosted targets have an
-  // embedder that pushes completions back in through the module's
-  // exports; the component targets' futures ride the canonical ABI's
-  // waitables instead.
-  let jsVirtual: HashMap<String, String> = {"js" => "js/index.zena"};
+  // Virtual module: js → `@zena-lang/runtime` interop, currently the
+  // host-async completion registry. Only `zena-js` has an embedder that
+  // pushes completions back in through the module's exports; the
+  // component targets' futures ride the canonical ABI's waitables instead.
+  let jsVirtual: HashMap<String, String> = {"zena-js" => "js/index.zena"};
   exports["js"] = new ModuleExport(jsVirtual);
 
   // Modules: web-templates and web-elements → the Wasm Web UI protocol
   // (docs/design/wasm-web-ui.md). One source serves every target;
   // what differs per host is behind one internal virtual file each: the
-  // DOM host's imports and string crossings on the js target, and their
-  // stand-ins elsewhere, which throw or do nothing. The `webui_*` exports
-  // are shared files that only a js-target compile roots.
+  // DOM host's imports and string crossings on `js` and `zena-js`, and
+  // their stand-ins elsewhere, which throw or do nothing. The `webui_*`
+  // exports are shared files that only a JS-string compile roots.
   exports["web-templates"] = new ModuleExport(null, "web-templates/index.zena");
   let htmlHostVirtual: HashMap<String, String> = {
+    "core" => "web-templates/host-none.zena",
     "js" => "web-templates/host-js.zena",
-    "zena-cli" => "web-templates/host-none.zena",
+    "zena-js" => "web-templates/host-js.zena",
     "component" => "web-templates/host-none.zena",
-    "freestanding" => "web-templates/host-none.zena",
+    "zena-component" => "web-templates/host-none.zena",
   };
   exports["web-templates/host.zena"] = new ModuleExport(htmlHostVirtual, null, true);
   exports["web-elements"] = new ModuleExport(null, "web-elements/index.zena");
   let elementsHostVirtual: HashMap<String, String> = {
+    "core" => "web-elements/host-none.zena",
     "js" => "web-elements/host-js.zena",
-    "zena-cli" => "web-elements/host-none.zena",
+    "zena-js" => "web-elements/host-js.zena",
     "component" => "web-elements/host-none.zena",
-    "freestanding" => "web-elements/host-none.zena",
+    "zena-component" => "web-elements/host-none.zena",
   };
   exports["web-elements/host.zena"] = new ModuleExport(elementsHostVirtual, null, true);
 
-  // Virtual module: fetch → HTTP requests. The JS-hosted targets go
-  // through the host's own fetch(); the component targets speak
+  // Virtual module: fetch → HTTP requests. `zena-js` goes through
+  // `@zena-lang/runtime`'s `fetch()` import; the component targets speak
   // wasi:http through the bindings synthesized from the stdlib's WIT.
   let fetchVirtual: HashMap<String, String> = {
-    "js" => "fetch/host.zena",
-    "zena-cli" => "fetch/component.zena",
+    "zena-js" => "fetch/host.zena",
     "component" => "fetch/component.zena",
+    "zena-component" => "fetch/component.zena",
   };
   exports["fetch"] = new ModuleExport(fetchVirtual);
 
@@ -209,29 +211,29 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
 
 
   // Virtual module: time → sleeping and the monotonic clock, over a
-  // host import on JS and wasi:clocks 0.3 on component targets.
+  // `@zena-lang/runtime` import on `zena-js` and wasi:clocks 0.3 on
+  // component targets.
   let timeVirtual = new Map<String, String>();
-  timeVirtual["js"] = "time/host.zena";
-  timeVirtual["zena-cli"] = "time/component.zena";
+  timeVirtual["zena-js"] = "time/host.zena";
   timeVirtual["component"] = "time/component.zena";
+  timeVirtual["zena-component"] = "time/component.zena";
   exports["time"] = new ModuleExport(timeVirtual);
 
   // Virtual module: random → the host's cryptographically secure
   // generator. The public file is the same on every target that has a
   // generator; what differs is the internal `random/source.zena` it
-  // imports. A freestanding module has no host to ask, so it has no
-  // entry, and importing `zena:random` there reports the library
-  // unavailable on that target.
+  // imports. `core` and `js` assume no host generator, so importing
+  // `zena:random` there reports the library unavailable on that target.
   let randomVirtual: HashMap<String, String> = {
-    "js" => "random/index.zena",
-    "zena-cli" => "random/index.zena",
+    "zena-js" => "random/index.zena",
     "component" => "random/index.zena",
+    "zena-component" => "random/index.zena",
   };
   exports["random"] = new ModuleExport(randomVirtual);
   let randomSourceVirtual: HashMap<String, String> = {
-    "js" => "random/source-js.zena",
-    "zena-cli" => "random/source-wasi.zena",
+    "zena-js" => "random/source-js.zena",
     "component" => "random/source-wasi.zena",
+    "zena-component" => "random/source-wasi.zena",
   };
   exports["random/source.zena"] = new ModuleExport(randomSourceVirtual, null, true);
 
@@ -246,52 +248,64 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
   // Its twenty-three members have no module name of their own: they are
   // private files of this library, reached through this entry point or by
   // relative import from inside it. `error-stack`, `string`,
-  // `string-builder`, `number-format` and `number-parse` are the
-  // exceptions, and they are virtual — the manifest is what picks a file
-  // per target, so a relative import would nail one of them.
+  // `string-js-ops`, `string-builder`, `number-format` and `number-parse`
+  // are the exceptions, and they are virtual — the manifest is what picks
+  // a file per target, so a relative import would nail one of them.
   exports["core"] = new ModuleExport(null, "core/index.zena");
   let stringVirtual: HashMap<String, String> = {
+    "core" => "core/string.zena",
     "js" => "core/string-js.zena",
-    "zena-cli" => "core/string.zena",
+    "zena-js" => "core/string-js.zena",
     "component" => "core/string.zena",
-    "freestanding" => "core/string.zena",
+    "zena-component" => "core/string.zena",
   };
   exports["core/string.zena"] = new ModuleExport(stringVirtual, null, true);
-  // A js `String` is a JavaScript string, so its builder concatenates
+  let stringJsOpsVirtual: HashMap<String, String> = {
+    "js" => "core/string-js-pure.zena",
+    "zena-js" => "core/string-js-host.zena",
+  };
+  exports["core/string-js-ops.zena"] =
+      new ModuleExport(stringJsOpsVirtual, null, true);
+  // A JS `String` is a JavaScript string, so its builder concatenates
   // JavaScript strings instead of copying bytes.
   let stringBuilderVirtual: HashMap<String, String> = {
+    "core" => "core/string-builder.zena",
     "js" => "core/string-builder-js.zena",
-    "zena-cli" => "core/string-builder.zena",
+    "zena-js" => "core/string-builder-js.zena",
     "component" => "core/string-builder.zena",
-    "freestanding" => "core/string-builder.zena",
+    "zena-component" => "core/string-builder.zena",
   };
   exports["core/string-builder.zena"] =
       new ModuleExport(stringBuilderVirtual, null, true);
-  // The js host formats numbers itself; see core/number-format-js.zena.
+  // `zena-js` delegates number formatting and parsing to `@zena-lang/runtime`;
+  // `js` and the byte targets use the pure-Zena implementations.
   let numberFormatVirtual: HashMap<String, String> = {
-    "js" => "core/number-format-js.zena",
-    "zena-cli" => "core/number-format.zena",
+    "core" => "core/number-format.zena",
+    "js" => "core/number-format.zena",
+    "zena-js" => "core/number-format-js.zena",
     "component" => "core/number-format.zena",
-    "freestanding" => "core/number-format.zena",
+    "zena-component" => "core/number-format.zena",
   };
   exports["core/number-format.zena"] =
       new ModuleExport(numberFormatVirtual, null, true);
   let numberParseVirtual: HashMap<String, String> = {
-    "js" => "core/number-parse-js.zena",
-    "zena-cli" => "core/number-parse.zena",
+    "core" => "core/number-parse.zena",
+    "js" => "core/number-parse.zena",
+    "zena-js" => "core/number-parse-js.zena",
     "component" => "core/number-parse.zena",
-    "freestanding" => "core/number-parse.zena",
+    "zena-component" => "core/number-parse.zena",
   };
   exports["core/number-parse.zena"] =
       new ModuleExport(numberParseVirtual, null, true);
   exports["url"] = new ModuleExport(null, "url/index.zena");
-  // `URL` itself: the WHATWG parser on most targets, the host's `URL` on
-  // js. The library's other files reach it by relative import.
+  // `URL` itself: the WHATWG parser in Zena on most targets (including
+  // pure `js`), and `@zena-lang/runtime`'s host `URL` on `zena-js`.
   let urlVirtual: HashMap<String, String> = {
-    "js" => "url/url-js.zena",
-    "zena-cli" => "url/url.zena",
+    "core" => "url/url.zena",
+    "js" => "url/url.zena",
+    "zena-js" => "url/url-js.zena",
     "component" => "url/url.zena",
-    "freestanding" => "url/url.zena",
+    "zena-component" => "url/url.zena",
   };
   exports["url/url.zena"] = new ModuleExport(urlVirtual, null, true);
   exports["bench"] = new ModuleExport(null, "bench/index.zena");
@@ -300,7 +314,12 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
   exports["simd"] = new ModuleExport(null, "simd/index.zena");
   exports["string"] = new ModuleExport(null, "string/index.zena");
 
-  return new PackageConfig(stdlibRoot, exports);
+  let config = new PackageConfig(stdlibRoot, exports);
+  // `zena:host/*` WIT interfaces (`stack-trace`, `process`, `wasm`,
+  // `extensions`, `http-server`, `secrets`) live under `host-wit/` and
+  // resolve alongside the standard library's `.zena` modules.
+  config.witRoot = `${stdlibRoot}/host-wit`;
+  return config;
 }
 
 // ============================================================================

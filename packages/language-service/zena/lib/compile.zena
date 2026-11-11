@@ -8,13 +8,19 @@ import { BinaryGenerator } from 'zena-compiler:codegen/binary-generator';
 import { LanguageService } from './service.zena';
 
 /** A document compiled to a module, or null when it does not compile. */
-export async function compileToWasm(service: LanguageService, path: String, source: String): Future<ByteArray | null> {
+export async function compileToWasm(
+  service: LanguageService,
+  path: String,
+  source: String,
+  target: String | null = null
+): Future<ByteArray | null> {
   try {
-    let program = await service.checkProgram(path, source);
+    let effectiveTarget = target ?? service.targetName;
+    let program = await service.checkProgramForTarget(path, source, effectiveTarget);
     if (program == null) {
       return null;
     }
-    return new BinaryGenerator(service.targetName, false, true).generate(program).toByteArray();
+    return new BinaryGenerator(effectiveTarget, false, true).generate(program).toByteArray();
   } catch (e) {
     console.error(`compileToWasm failed: ${e.message}\n${e.getStackTrace() ?? ''}`);
     return null;

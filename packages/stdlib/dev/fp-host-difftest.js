@@ -1,13 +1,13 @@
-// Differential test of the js target's number conversions against the
+// Differential test of the zena-js target's number conversions against the
 // byte targets'.
 //
-// On `--target js`, `core/number-format-js.zena` and
+// On `--target zena-js`, `core/number-format-js.zena` and
 // `core/number-parse-js.zena` hand most of the work to JavaScript's own
 // `String`, `toPrecision` and `parseFloat` (`numberImports` in
 // `@zena-lang/runtime`). The results must be the ones the byte targets'
 // `core/string-convert.zena` gives. This runs a corpus through the same
-// Zena program built twice, for the default (byte) target and for js, and
-// compares the strings exactly; the js build runs here, in node, with the
+// Zena program built twice, for the default (byte) target and for zena-js, and
+// compares the strings exactly; the zena-js build runs here, in node, with the
 // runtime's imports. Where Zena's result is meant to be JavaScript's, it
 // also compares the byte targets' with JavaScript's directly.
 //
@@ -293,7 +293,7 @@ execFileSync(
     '-o',
     'scratch/fp-host-js.wasm',
     '--target',
-    'js',
+    'zena-js',
   ],
   {cwd: root, stdio: ['ignore', 'inherit', 'inherit']},
 );

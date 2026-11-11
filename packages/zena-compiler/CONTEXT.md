@@ -111,7 +111,7 @@ The compiler keeps a `CompilerTarget` per target
 node id generators, and the scope building and import wiring over it.
 
 The library sets are separate because a specifier does not name one
-library. `zena:memory` is the free-list allocator on `freestanding` and
+library. `zena:memory` is the free-list allocator on `core` and
 the library that delegates to the component's memory on `component`, so
 a library importing it has a different dependency on each target, and
 therefore a different wiring and a different check. What one compiler
@@ -131,7 +131,7 @@ bytes (`-g`, `-O`) belong to the generator and never affect sharing.
 
 `compileComponentRuntimeModule` is the first caller to use this: a
 component build's second core module is compiled at the enclosing
-compiler's `freestanding` target rather than on a compiler of its own.
+compiler's `core` target rather than on a compiler of its own.
 `zena/test/multi-target_test.zena` covers the whole arrangement.
 
 ### Nothing is shared between targets yet, and what it would take
@@ -158,23 +158,23 @@ shareable.
 How much that buys, counting libraries in the union of two targets'
 closures:
 
-| pair                          | shareable |
-| ----------------------------- | --------- |
-| `freestanding` vs `component` | 36 / 45   |
-| `js` vs `component`           | 4 / 47    |
-| `js` vs `freestanding`        | 4 / 46    |
+| pair                     | shareable |
+| ------------------------ | --------- |
+| `core` vs `component`    | 36 / 45   |
+| `zena-js` vs `component` | 4 / 47    |
+| `zena-js` vs `core`      | 4 / 46    |
 
 The pair that matters for a component build — its own target and the
-`freestanding` one its runtime memory module needs — shares 80%.
+`core` one its runtime memory module needs — shares 80%.
 
-The `js` column collapses because of one import. `core/error.zena`
+The `zena-js` column collapses because of one import. `core/error.zena`
 declares `Error` and imports `zena:error-stack`, which is virtual
-(`stack-host` on `js`, `stack-none` on `freestanding` and `component`).
+(`stack-host` on `zena-js`, `stack-none` on `core`, `js`, and `component`).
 `Error` is a prelude name and a well-known type, so every library that
-mentions it inherits the divergence. `freestanding` and `component` both
+mentions it inherits the divergence. `core` and `component` both
 resolve `error-stack` to `stack-none`, which is why that pair is
 unaffected. Moving the stack-trace dependency out from under the library
-that declares `Error` would take `js` vs `component` to roughly 36/46 —
+that declares `Error` would take `zena-js` vs `component` to roughly 36/46 —
 worth more than the keying work itself.
 
 ## WebAssembly Code Generation Constraints

@@ -1,4 +1,4 @@
-//! `zena-cli:host/extensions`: loading components as extensions, long-lived
+//! `zena:host/extensions`: loading components as extensions, long-lived
 //! instances a program calls through objects, and which call the program
 //! through objects the program made for each of them. The design is in
 //! docs/design/runtime-components.md.
@@ -81,13 +81,13 @@ use wasmtime::{
 use wasmtime_wasi::WasiCtxBuilder;
 use wit_parser::{ManglingAndAbi, Resolve};
 
-use crate::component::bindings::zena_cli::host::extensions;
+use crate::component::bindings::zena::host::extensions;
 use crate::component::{ComponentState, linker, translate};
 use crate::engine::{EPOCH_TICK, NO_DEADLINE};
 
 /// Whether an import's instance name is one the host serves itself.
 pub(crate) fn is_host_interface(name: &str) -> bool {
-    name.starts_with("wasi:") || name.starts_with("zena-cli:host/")
+    name.starts_with("wasi:") || name.starts_with("zena:host/")
 }
 
 /// Where one of an extension's imports comes from.

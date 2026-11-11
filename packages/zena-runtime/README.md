@@ -1,10 +1,10 @@
 # zena-runtime
 
-The host side of the `zena-cli` compilation target, as a Rust library on
+The host side of the `zena-component` compilation target, as a Rust library on
 wasmtime. It is the counterpart of `packages/runtime`, which does the same
-job for the `js` target in JavaScript.
+job for the `zena-js` target in JavaScript.
 
-A component compiled for `zena-cli` imports two things from whatever runs
+A component compiled for `zena-component` imports two things from whatever runs
 it:
 
 - **WASI 0.3**, for stdio, files, clocks, arguments and environment,
@@ -31,7 +31,7 @@ it:
   internet, and connected to at those same addresses, so a second lookup
   cannot answer differently. A server that reads URLs other people chose
   sets it; the App View's image does.
-- **The `zena-cli:host@1.0.0` interfaces**, declared in
+- **The `zena:host@1.0.0` interfaces**, declared in
   `packages/stdlib/zena/host-wit/host.wit` and implemented in
   `src/component.rs` with `bindgen!`:
   - `stack-trace`: `capture`, which formats the wasm backtrace at the
@@ -147,7 +147,7 @@ read the guest's exit status (`exit_code`) or print the wasm backtrace
 spawn processes and run components (`spawn`), or load components as
 extensions (`extensions`), or both.
 
-A core module — a `freestanding` build, a hand-written `.wat` benchmark,
+A core module — a `core` build, a hand-written `.wat` benchmark,
 an AssemblyScript or Rust `wasm32-unknown-unknown` build — runs through
 `core_module`: `is_core_module_file` tells it from a component by the
 file itself, and `call_export` instantiates it with every import linked
