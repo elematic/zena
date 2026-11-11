@@ -37,7 +37,7 @@
 import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {dedent, join} from 'zena:core';
-import {getEnv} from 'zena:cli';
+import {exit, getEnv} from 'zena:cli';
 import {mkdir, readFile, writeFile} from 'zena:fs';
 import {Server} from 'zena:http';
 import {JsonObject, parseJson} from 'zena:json';
@@ -197,7 +197,12 @@ export async function main(): Future<void> {
   // again; another PORT moves all three.
   let appViewPort = readPort((name) => getEnv(name), new GrowableArray<String>()) as i32;
   let world = new FakePds();
-  world.start(appViewPort + 1);
+  try {
+    world.start(appViewPort + 1);
+  } catch (e) {
+    stopForPort('the stand-in PLC directory and PDS', appViewPort + 1, appViewPort, e);
+    throw e;
+  }
   world.account(MAINTAINER, null).password = PASSWORD;
   // Real accounts, such as one signing in to the web app, resolve through
   // the public directory; the demo's own accounts never reach it.
@@ -232,11 +237,20 @@ export async function main(): Future<void> {
     }
     return null;
   });
-  let running = await serve(config);
+  let running = try {
+    await serve(config)
+  } catch (e) {
+    stopForPort('the App View', appViewPort, appViewPort, e);
+    throw e;
+  };
   await createScopes(running.service.appView, getEnv('DEMO_SCOPES') ?? '');
   let upstream = dnsOverHttpsUpstream(getEnv('APP_VIEW_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query');
-  let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords, upstream),
-      (appViewPort + 2) as u16);
+  let dns = try {
+    new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords, upstream), (appViewPort + 2) as u16)
+  } catch (e) {
+    stopForPort('the DNS-over-HTTPS resolver', appViewPort + 2, appViewPort, e);
+    throw e;
+  };
   dns.start();
 
   let dnsUrl = `http://127.0.0.1:${dns.port as i32}/dns-query`;
@@ -308,6 +322,21 @@ export async function main(): Future<void> {
   }
   console.log('\nCtrl-C stops the App View and forgets everything it held in memory.');
   await world.done();
+}
+
+/**
+ * Says why `what` could not start on `port`, and exits. Most often a demo
+ * started before is still running and holds it, with the two ports
+ * after `appViewPort`'s.
+ */
+function stopForPort(what: String, port: i32, appViewPort: i32, e: Error): void {
+  console.error(dedent`
+    Could not start ${what} on port ${`${port}`}: ${e.message}
+    If another demo is running, it holds the port: stop it, or start this one
+    with PORT set to another port, which moves all three the demo uses
+    (${`${appViewPort}`}, ${`${appViewPort + 1}`} and ${`${appViewPort + 2}`} now).
+  `);
+  exit(1);
 }
 
 /** `scope:name` of the package published from the copy of `dir`, or its name. */
