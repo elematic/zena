@@ -196,7 +196,10 @@ markdown-alert-<kind>">`.
 - **`heading-anchors` (`AstTransformer`)**: extracts plain text from each
   `Heading`'s inline children, normalizes it to a lowercase hyphenated slug,
   deduplicates collisions within the document (`slug`, `slug-1`, `slug-2`), and
-  populates `heading.id`.
+  populates `heading.id`, after an optional prefix that keeps the IDs apart
+  from the page's own (the App View uses `user-content-`, as GitHub does).
+  With `HtmlRenderOptions.headingLinks`, the renderer ends each heading that
+  has an `id` with a `#` link to it.
 - **`gfm`**: convenience bundle returning all of the extensions above so callers
   can pass `gfmExtensions()` to `parse` and `renderHtml`.
 

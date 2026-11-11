@@ -445,6 +445,31 @@ export let tests = suite(
         );
 
         test(
+          'prefixesIds, after making them unique',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(headingAnchorsExtension('user-content-'));
+            equal(
+              markdownToHtml('# Heading here\n# Heading here\n', { extensions: exts }),
+              '<h1 id="user-content-heading-here">Heading here</h1>\n<h1 id="user-content-heading-here-1">Heading here</h1>\n'
+            );
+          }
+        );
+
+        test(
+          'linksEachHeadingWithAnIdToItself, with headingLinks',
+          (ctx) => {
+            let exts = new GrowableArray<MarkdownExtension>(1);
+            exts.push(headingAnchorsExtension());
+            equal(
+              markdownToHtml('# Heading `here`\n\nText\n', { extensions: exts, headingLinks: true }),
+              '<h1 id="heading-here">Heading <code>here</code><a class="heading-link" href="#heading-here" aria-label="Link to this heading">#</a></h1>\n<p>Text</p>\n'
+            );
+            equal(markdownToHtml('# Heading\n', { headingLinks: true }), '<h1>Heading</h1>\n');
+          }
+        );
+
+        test(
           'duplicateHeadersMakeUniqueIds and caseIsIgnoredWhenComparingIds',
           (ctx) => {
             let exts = new GrowableArray<MarkdownExtension>(1);

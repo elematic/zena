@@ -12,7 +12,7 @@ import {HtmlRenderContext, MarkdownExtension, NodeRenderer} from './plugin.zena'
 /**
  * Options controlling HTML rendering and sanitization.
  */
-export type HtmlRenderOptions = {safe?: boolean, escapeRawHtml?: boolean, softBreak?: String, indent?: i32, extensions?: GrowableArray<MarkdownExtension>, resolver?: UrlResolver};
+export type HtmlRenderOptions = {safe?: boolean, escapeRawHtml?: boolean, softBreak?: String, indent?: i32, extensions?: GrowableArray<MarkdownExtension>, resolver?: UrlResolver, headingLinks?: boolean};
 
 /**
  * Rewrites the URL of each link, image and autolink before it is rendered,
@@ -51,6 +51,10 @@ final class KeepUrls implements UrlResolver {
    */
 /** Extensions supplying `NodeRenderer` implementations. */
 /** Rewrites or removes link and image URLs (`UrlResolver`). */
+/**
+   * When `true`, a heading with an `id` ends with a `#` link to itself,
+   * `<a class="heading-link">`, for a reader to copy (default `false`).
+   */
 
 /**
  * Renders `doc` to an HTML string.
@@ -120,12 +124,14 @@ export final class HtmlRenderer implements HtmlRenderContext {
   var #indentLevel = 0;
   #renderers = new GrowableArray<NodeRenderer>(4);
   var #resolver: UrlResolver = new KeepUrls();
+  var #headingLinks = false;
 
   new(options: HtmlRenderOptions = {}) {
     let {safe: safe = false, escapeRawHtml: escapeRawHtml = false, softBreak: softBreak = '\n', indent: indent = 0, extensions: extensions = new GrowableArray<MarkdownExtension>(
       0
-    ), resolver: resolver = new KeepUrls()} = options;
+    ), resolver: resolver = new KeepUrls(), headingLinks: headingLinks = false} = options;
     this.#resolver = resolver;
+    this.#headingLinks = headingLinks;
     this.safe = safe;
     this.escapeRawHtml = escapeRawHtml;
     this.#softBreak = softBreak;
@@ -194,6 +200,11 @@ export final class HtmlRenderer implements HtmlRenderContext {
         };
         this.sb.append('>');
         this.renderInlines(inlines);
+        if (id != null && this.#headingLinks) {
+          this.sb.append('<a class="heading-link" href="#');
+          this.escapeAttribute(id);
+          this.sb.append('" aria-label="Link to this heading">#</a>');
+        };
         this.sb.append('</h');
         this.sb.appendI32(level);
         this.sb.append('>\n');

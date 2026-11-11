@@ -62,9 +62,9 @@ export let tests = suite('registry/release-contents', () => {
     equal(contents.readmePath as String, 'Readme.MD');
     let html = contents.readmeHtml as String;
     let files = `/packages/${DID}/versions/1.0.0/files`;
-    for (let expected in ['<strong>requests</strong>', `<a href="${files}/docs/guide.md#start">guide</a>`,
+    for (let expected in ['<strong>requests</strong>', `<a href="${files}/docs/guide.md#user-content-start">guide</a>`,
         `<img src="/packages/${DID}/versions/1.0.0/raw/logo.png" alt="logo" />`, '<img src="https://img.example/badge.svg"',
-        '<a href="#router">top</a>', ' up ', ' gone ']) {
+        '<a href="#user-content-router">top</a>', ' up ', ' gone ']) {
       isTrue(html.contains(expected), `${expected} in ${html}`);
     }
     isTrue(!html.contains('<script>') && !html.contains('outside.md') && !html.contains('nope.md'), html);
@@ -76,12 +76,16 @@ export let tests = suite('registry/release-contents', () => {
       paths.add(path);
     }
     let html = renderMarkdown('# Guide\n\n[back](../README.md) [more](more.md#top) [also](./more.md) ' +
-        '![logo](../logo.png) [source](/router.zena) [out](../../outside.md) [gone](nope.md) <b>raw</b>\n',
+        '![logo](../logo.png) [source](/router.zena#L2) [out](../../outside.md) [gone](nope.md) <b>raw</b> [up](#guide)\n',
         DID, '1.0.0', paths, 'docs');
     let files = `/packages/${DID}/versions/1.0.0/files`;
-    for (let expected in ['<h1>Guide</h1>', `<a href="${files}/README.md">back</a>`,
-        `<a href="${files}/docs/more.md#top">more</a>`, `<a href="${files}/docs/more.md">also</a>`,
-        `<img src="/packages/${DID}/versions/1.0.0/raw/logo.png" alt="logo" />`, `<a href="${files}/router.zena">source</a>`,
+    // Headings have IDs apart from the page's, each linked from its heading;
+    // links to headings, here or in another Markdown file, follow them.
+    for (let expected in [
+        '<h1 id="user-content-guide">Guide<a class="heading-link" href="#user-content-guide" aria-label="Link to this heading">#</a></h1>',
+        `<a href="${files}/README.md">back</a>`, '<a href="#user-content-guide">up</a>',
+        `<a href="${files}/docs/more.md#user-content-top">more</a>`, `<a href="${files}/docs/more.md">also</a>`,
+        `<img src="/packages/${DID}/versions/1.0.0/raw/logo.png" alt="logo" />`, `<a href="${files}/router.zena#L2">source</a>`,
         ' out ', ' gone ']) {
       isTrue(html.contains(expected), `${expected} in ${html}`);
     }
