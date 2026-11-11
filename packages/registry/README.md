@@ -52,7 +52,7 @@ From the repository root:
 npm test -w @zena-lang/registry                  # its tests, through wireit
 npm run test:emulator -w @zena-lang/registry     # the store tests against the Firestore emulator
 npm run demo -w @zena-lang/registry              # an App View to try zena against, on this machine
-npm run demo:publish -w @zena-lang/registry      # the same, with zena-lang:wit-parser published in it
+npm run demo:publish -w @zena-lang/registry      # or: the same, with zena-lang:wit-parser published in it
 ./target/release/zena-cli test "packages/registry/zena/test/*_test.zena"
 APP_VIEW_DOMAIN=pkg.test ./target/release/zena-cli run packages/registry/zena/main.zena   # serve on $PORT, default 2583
 ```
@@ -143,9 +143,11 @@ zena run main.zena
 
 ### The repository's packages
 
-`npm run demo:publish -w @zena-lang/registry` starts the demo with the
-scope `zena-lang` and the repository's packages published in it, as
-their maintainers will publish them on a registry:
+`npm run demo:publish -w @zena-lang/registry` runs in place of
+`npm run demo`, not after it: it starts a demo of its own, on the same
+ports, so stop one that is running first. Its demo has the scope
+`zena-lang` and the repository's packages published in it, as their
+maintainers will publish them on a registry:
 
 - `DEMO_SCOPES` creates `zena-lang`, owned by the demo's maintainer.
   The App View reserves the name, so only the operator can create it
