@@ -604,6 +604,10 @@ selection installs both when two ranges ask for them, and the lockfile
 reports a move from 0.1.3 to 0.2.0 as one version removed and another
 added, not as one version raised.
 
+Which versions of the language a release works with is a range of the
+same kind, which `zena pkg publish` records in the release record
+([language-versions.md](language-versions.md)).
+
 Versions and ranges are a library of their own, the package `semver`
 (`zena-lang:semver`): parsing and printing, ordering, and whether a
 version is in a range. The package manager's resolver and the App
