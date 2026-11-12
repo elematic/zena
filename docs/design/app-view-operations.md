@@ -156,6 +156,7 @@ package-manager.md, "Reports and takedowns".
 | -------------------------------------------- | ------------------------------------------- |
 | See every account                            | `/admin`                                    |
 | See every private entry                      | the scope and package pages, as an admin    |
+| See which `zena` published each release      | the package page, as an admin               |
 | Read and close reports                       | no                                          |
 | Take down a release, package or organization | no                                          |
 | Restore what was taken down                  | no                                          |

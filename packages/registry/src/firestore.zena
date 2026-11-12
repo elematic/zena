@@ -23,8 +23,13 @@
  *   (`limitName`); and `counts/{subject} {limit} {period}`: `count`, how
  *   many actions or creations a count has had, and for a day's count
  *   `expiresAt`, two days on, which the database's TTL policy deletes it
- *   at; and `scopeCreators/{did}`: `addedBy` and `addedAt`, each account
- *   the admins listed as one that may create scopes.
+ *   at; `scopeCreators/{did}`: `addedBy` and `addedAt`, each account
+ *   the admins listed as one that may create scopes; and
+ *   `publications/{pkg}/releases/{version}`: `cid`, `publisher`,
+ *   `publisherClient`, `heldAt`, `completer`, `completerClient` and
+ *   `completedAt`, how each release was published, with the clients'
+ *   user-agents absent for none. A held release's `client` is its
+ *   publisher's.
  */
 
 import {Future} from 'zena:async';
@@ -44,7 +49,7 @@ import {
 } from 'pds/firestore';
 import {
   ALL_TIME, ClaimedName, ClaimedScope, AppViewAccount, AppViewStore, Count, LIMITS, Limit, Limits, PackageSummary,
-  PendingChange, PendingRelease, ScopeCreator, limitName
+  PendingChange, PendingRelease, Publication, ScopeCreator, limitName
 } from './app-view.zena';
 import {PlcLog} from './plc-directory.zena';
 
@@ -222,11 +227,50 @@ export final class FirestoreAppViewStore implements AppViewStore {
   }
 
   async holdRelease(pkg: String, release: PendingRelease): Future<boolean> {
-    return await claim(this.#db, this.#held(pkg).doc(recordId(release.version)), new Fields()
+    let fields = new Fields()
         .set('cbor', bytesValue(release.record as ByteArray))
         .string('cid', release.cid.toString())
         .string('publisher', release.publisher)
-        .integer('heldAt', release.heldAt));
+        .integer('heldAt', release.heldAt);
+    let client = release.client;
+    if (client != null) {
+      fields.string('client', client);
+    }
+    return await claim(this.#db, this.#held(pkg).doc(recordId(release.version)), fields);
+  }
+
+  /** Publications, at `publications/<pkg>/releases/<version>`. */
+  #published(pkg: String): CollectionReference {
+    return this.#root.collection('publications').doc(pkg).collection('releases');
+  }
+
+  async putPublication(pkg: String, publication: Publication): Future<void> {
+    let fields = new Fields()
+        .string('cid', publication.cid.toString())
+        .string('publisher', publication.publisher)
+        .integer('heldAt', publication.heldAt)
+        .string('completer', publication.completer)
+        .integer('completedAt', publication.completedAt);
+    let publisherClient = publication.publisherClient;
+    if (publisherClient != null) {
+      fields.string('publisherClient', publisherClient);
+    }
+    let completerClient = publication.completerClient;
+    if (completerClient != null) {
+      fields.string('completerClient', completerClient);
+    }
+    await this.#published(pkg).doc(recordId(publication.version)).set(fields);
+  }
+
+  async publications(pkg: String): Future<Array<Publication>> {
+    let all = new GrowableArray<Publication>();
+    for (let snapshot in await this.#published(pkg).get()) {
+      let publication = publicationAt(snapshot);
+      if (publication != null) {
+        all.push(publication);
+      }
+    }
+    return all;
   }
 
   async heldRelease(pkg: String, version: String): Future<PendingRelease | null> {
@@ -468,7 +512,31 @@ function pendingAt(snapshot: DocumentSnapshot, version: String | null): PendingR
   }
   let id = snapshot.id;
   let key = version ?? (if (id.startsWith('%')) id.sliceBytes(1, id.length) else id);
-  return new PendingRelease(key, record, cid, publisher, heldAt);
+  let held = new PendingRelease(key, record, cid, publisher, heldAt);
+  held.client = stringAt(snapshot, 'client');
+  return held;
+}
+
+/** The publication `snapshot` holds, at the version its ID names; null when it holds none. */
+function publicationAt(snapshot: DocumentSnapshot): Publication | null {
+  let cid = cidAt(snapshot);
+  let publisher = stringAt(snapshot, 'publisher');
+  let completer = stringAt(snapshot, 'completer');
+  if (cid == null || publisher == null || completer == null) {
+    return null;
+  }
+  var heldAt = 0 as i64;
+  if (let (true, micros) = snapshot.getInteger('heldAt')) {
+    heldAt = micros;
+  }
+  var completedAt = 0 as i64;
+  if (let (true, micros) = snapshot.getInteger('completedAt')) {
+    completedAt = micros;
+  }
+  let id = snapshot.id;
+  let version = if (id.startsWith('%')) id.sliceBytes(1, id.length) else id;
+  return new Publication(version, cid, publisher, stringAt(snapshot, 'publisherClient'), heldAt, completer,
+      stringAt(snapshot, 'completerClient'), completedAt);
 }
 
 /** The document ID of the held change to the record at `collection/rkey`. */
