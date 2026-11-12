@@ -250,7 +250,9 @@ so its slots are its leaves:
 
 An inline field cannot be optional, since an inline value has no absent
 form, nor a union, nor a record with optional fields, for the reasons a
-nested one cannot.
+nested one cannot. A record with an inline field cannot have other
+optional fields either: the tuple of its fields has no position for
+their presence word (#1094).
 
 ## Unions of inline records
 

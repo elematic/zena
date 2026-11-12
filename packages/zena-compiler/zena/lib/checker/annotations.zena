@@ -975,10 +975,15 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
     // inside one of them may not, unless `inline` applies to it too.
     let inlineFields = ctx.inlineRecordFields;
     ctx.inlineRecordFields = false;
+    var anyInlineField = false;
+    var anyOptionalField = false;
     for (let prop in properties) {
       let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation, inlineFields);
       if (inlineFields && isInlineType(resolved)) {
+        anyInlineField = true;
         checkInlineRecordField(ctx, resolved, prop.optional, prop.typeAnnotation.loc);
+      } else if (prop.optional) {
+        anyOptionalField = true;
       }
       rejectSecondClassStorage(ctx, resolved, "a record field", prop.typeAnnotation.loc);
       rejectAffineStructuralMember(ctx, resolved, "a record member", prop.typeAnnotation.loc);
@@ -990,6 +995,12 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
         optionals ??= new Set<String>();
         optionals.add(prop.name.name);
       }
+    }
+    // Such a record is laid out as the tuple of its fields (#1094), which
+    // has no position for a presence word.
+    if (anyInlineField && anyOptionalField) {
+      ctx.error("An inline record with inline fields cannot have optional fields yet: their presence has no slot.",
+          DiagnosticCode.TypeMismatch, loc);
     }
     var row: TypeParameterType | null = null;
     if (spreads != null) {
