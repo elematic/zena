@@ -2,8 +2,8 @@
 
 **Status: Implemented for top-level functions and constructors, and
 for top-level functions' record results** (`ir/explode.zena`). Boxed
-tuple parameters explode too ([Tuples](#tuples)); tuple results and
-held tuple variables do not yet. The later phases below are not
+tuple parameters and results explode too ([Tuples](#tuples)); held
+tuple variables do not yet. The later phases below are not
 implemented.
 
 A function that takes a record parameter also gets a version whose
@@ -498,6 +498,16 @@ binds a record. An element read in the body is a `struct_get` off that
 `struct_new`, which simplify's allocation forwarding answers from the
 operand, and dead-code elimination then deletes the tuple.
 
+A tuple result explodes as a record result does ([Results](#results)):
+reachability records the calls whose result is a tuple beside those
+whose result is a record, and a tuple literal return has the elements
+on hand. A call's result is only read for its elements when it is
+`f()[i]`, the source of `let (...) = f()`, a `match (f())` or
+`if (let ... = f())` whose patterns take it apart, or any of the uses a
+record result counts. In the standard library, `takeBuffer` in
+`wasi/abi.zena` now returns its pair as two wasm results to the callers
+that destructure it.
+
 ## Verification
 
 - `zena/test/zir-backend_test.zena`:
@@ -756,7 +766,7 @@ Not yet covered:
 ## Later phases
 
 - The `inline` parameter guarantee above.
-- Tuple results and held tuple variables, as for records (#373).
+- Held tuple variables, as for records (#373).
 - Weighting call sites, for example by loop depth, for a function with
   few unpacked and many heap callers, whose heap callers each pay the
   forwarder's up-front field reads.

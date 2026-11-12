@@ -1,0 +1,84 @@
+// @mode: run
+// @result: 1
+// A tuple result returned from the arms of an `if` or `match` is returned
+// as its elements: the arms' elements are merged instead of their tuples.
+// An arm that is not a literal (a heap tuple, a value block, a call) gives
+// its elements too. Every shape must compute the same thing.
+
+type V = (i32, i32);
+
+var kept: V = (0, 0);
+
+function pick(p: i32): V {
+  return if (p > 0) (p, 1) else (0, p);
+}
+
+function classify(p: i32): V {
+  return match (p) {
+    case 0: (0, 0)
+    case 1: kept
+    case _: if (p > 10) (10, p) else (p, p * 2)
+  };
+}
+
+function viaBlock(p: i32): V {
+  return if (p > 0) {
+    let d = p * 3;
+    (d, d + 1)
+  } else {
+    pick(-p)
+  };
+}
+
+function nestedReturn(p: i32): V {
+  if (p < 0) {
+    return (-1, -1);
+  }
+  return match (p) {
+    case 5: pick(5)
+    case _: (p, 0)
+  };
+}
+
+export let main = (): i32 => {
+  let (x, y) = pick(3);
+  if (x != 3 || y != 1) {
+    return 0;
+  }
+  let (x2, y2) = pick(-2);
+  if (x2 != 0 || y2 != -2) {
+    return 0;
+  }
+  kept = (7, 8);
+  let c1 = classify(1);
+  if (c1[0] != 7 || c1[1] != 8) {
+    return 0;
+  }
+  let c0 = classify(0);
+  if (c0[0] != 0 || c0[1] != 0) {
+    return 0;
+  }
+  let c4 = classify(4);
+  if (c4[0] != 4 || c4[1] != 8) {
+    return 0;
+  }
+  let c20 = classify(20);
+  if (c20[0] != 10 || c20[1] != 20) {
+    return 0;
+  }
+  let b = viaBlock(2);
+  if (b[0] != 6 || b[1] != 7) {
+    return 0;
+  }
+  let bn = viaBlock(-4);
+  if (bn[0] != 4 || bn[1] != 1) {
+    return 0;
+  }
+  let r5 = nestedReturn(5);
+  let r6 = nestedReturn(6);
+  let rn = nestedReturn(-3);
+  if (r5[0] != 5 || r6[0] != 6 || r6[1] != 0 || rn[1] != -1) {
+    return 0;
+  }
+  return 1;
+};
