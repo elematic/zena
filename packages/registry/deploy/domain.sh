@@ -8,7 +8,7 @@
 # is mapped again, and answers nothing until its new certificate is
 # provisioned.
 #
-#   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 npm run deploy:domain -w @zena-lang/registry
+#   PDS_ENV=staging npm run deploy:domain -w @zena-lang/registry
 #
 # Domain mappings are a beta command, so this needs gcloud's beta
 # component: `gcloud components install beta`, or a gcloud that has it.
@@ -72,7 +72,7 @@ echo "==> Records for $PDS_DOMAIN"
 find_parent_zone
 if [ -z "$PARENT_ZONE" ]; then
   echo "    zena-lang.dev. is not a Cloud DNS zone in $PARENT_PROJECT, so add this record where"
-  echo "    zena-lang.dev's DNS is kept (or set ZENA_DNS_PARENT_PROJECT and ZENA_DNS_PARENT_ZONE,"
+  echo "    zena-lang.dev's DNS is kept (or set DNS_PARENT_PROJECT and DNS_PARENT_ZONE in $SETTINGS,"
   echo "    and run this again):"
   echo "      ${PDS_DOMAIN}.  CNAME  ghs.googlehosted.com."
 elif gcloud dns record-sets describe "${PDS_DOMAIN}." --type CNAME --zone "$PARENT_ZONE" \

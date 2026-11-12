@@ -7,7 +7,7 @@
 # as (deploy:setup lets the gcloud account that ran it). For the commands
 # that change the live service's data:
 #
-#   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 packages/registry/deploy/operator.sh \
+#   PDS_ENV=staging packages/registry/deploy/operator.sh \
 #     create-scope zena --owner did:plc:... [--recovery-key did:key:...]
 #   ... operator.sh sync-handles
 #   ... operator.sh sync-indexes

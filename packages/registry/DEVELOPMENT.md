@@ -262,11 +262,20 @@ trusts it by its DID, `did:web:<domain>`, and its online rotation key.
 `deploy/env.sh` names what the two share: a Firestore database, under
 one tenant, a bucket, a service account with roles on those alone, a
 rotation key, a signing key, a session secret, and a Cloud DNS zone
-delegated from `zena-lang.dev`'s for its handle records. With `gcloud`
-signed in to the project:
+delegated from `zena-lang.dev`'s for its handle records. Each
+environment's settings are checked in to the operator's private deploy
+repository, as `staging.sh` and `production.sh`, shaped as
+`deploy/environments/example.sh` is: the project, the domains, where the
+rotation key is, the offline key's `did:key` and the admins. This
+repository names neither the project nor the admins. `ZENA_DEPLOY_SETTINGS`
+is the directory of a checkout of it. Nothing else comes from your shell,
+so changing production is a pull request there; a `ZENA_GCP_PROJECT` or
+another variable the settings once came from stops the scripts when it
+disagrees with the file. Below, `<project>` is the settings' `PROJECT`.
+With `gcloud` signed in to the project:
 
 ```sh
-export ZENA_GCP_PROJECT=meta-garage-420114 PDS_ENV=staging
+export ZENA_DEPLOY_SETTINGS=~/zena-team/deploy PDS_ENV=staging
 npm run deploy:setup -w @zena-lang/registry    # once: the resources, the key and the zone
 npm run deploy -w @zena-lang/registry          # builds the image with Cloud Build, and deploys both services
 npm run deploy:domain -w @zena-lang/registry   # once: maps both names, with gcloud's beta component
@@ -278,11 +287,9 @@ npm run deploy:smoke -w @zena-lang/registry    # after every deploy
 `deploy:setup` is idempotent, and makes the keys and the session secret
 only when there are none; run it again after pulling a change that adds
 a resource, such as the App View's signing key, before `deploy`. When
-`zena-lang.dev`'s DNS is not a Cloud DNS zone in the project, or in
-`ZENA_DNS_PARENT_PROJECT`, it prints the `NS` records that delegate the
-environment's domain, to add where that DNS is kept. Back up staging's
-key with
-`gcloud secrets versions access latest --secret zena-pkg-staging-rotation-key`.
+`zena-lang.dev`'s DNS is not a Cloud DNS zone in the project, or in the
+settings' `DNS_PARENT_PROJECT`, it prints the `NS` records that delegate the
+environment's domain, to add where that DNS is kept.
 `deploy` gives padstone the `did:key` of the App View's rotation key
 (`PDS_TRUSTED_APP_VIEWS`), which the App View's module reads
 (`registry/main`'s `did-key`), and checks that padstone answers
@@ -301,7 +308,7 @@ service account, which `deploy:setup` lets the gcloud account that ran it
 act as:
 
 ```sh
-PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 packages/registry/deploy/operator.sh create-scope zena-lang --owner did:plc:...
+PDS_ENV=staging packages/registry/deploy/operator.sh create-scope zena-lang --owner did:plc:...
 ```
 
 The App View limits the storage releases take: 4 MiB for one release, 64
@@ -312,12 +319,12 @@ packages created (docs/design/package-manager.md, "Limits on creating
 accounts"). `set-limit` raises one for a package, a scope's organization
 and its packages, or a caller.
 
-`zena` uses staging with two variables, which `deploy/staging.env` sets;
+`zena` uses staging with two variables, which `deploy/try-staging.sh` sets;
 it also clears `ZENA_DNS_OVER_HTTPS`, which a shell that ran the demo
 still points at the demo's own resolver:
 
 ```sh
-source packages/registry/deploy/staging.env   # ZENA_REGISTRY and ZENA_PLC_DIRECTORY
+source packages/registry/deploy/try-staging.sh   # ZENA_REGISTRY and ZENA_PLC_DIRECTORY
 export ZENA_CONFIG_DIR=$(mktemp -d)           # optional: a staging sign-in apart from your usual one
 ```
 
@@ -350,7 +357,7 @@ packages there:
 3. Deploy, with `gcloud` signed in to the project:
 
    ```sh
-   export ZENA_GCP_PROJECT=meta-garage-420114 PDS_ENV=staging
+   export ZENA_DEPLOY_SETTINGS=~/zena-team/deploy PDS_ENV=staging
    npm run deploy:setup -w @zena-lang/registry   # when a change adds a resource; it changes nothing otherwise
    npm run deploy -w @zena-lang/registry
    npm run deploy:smoke -w @zena-lang/registry
@@ -368,7 +375,7 @@ packages there:
    order, so that zebra's `../workflow` is workflow's copy, with its DID:
 
    ```sh
-   source packages/registry/deploy/staging.env
+   source packages/registry/deploy/try-staging.sh
    export ZENA_CONFIG_DIR=~/.config/zena-staging
    alias zena="$PWD/target/release/zena-cli"
    zena pkg login <your handle>
@@ -397,6 +404,33 @@ packages there:
    same variables, `zena pkg add zena-lang:wit-parser` and a program
    that imports it, as in "The repository's packages".
 
+### Resetting staging
+
+Staging's data can be thrown away; production's cannot. A reset deletes
+every account, with staging's own PLC directory, which is in the same
+database:
+
+```sh
+export ZENA_DEPLOY_SETTINGS=~/zena-team/deploy PDS_ENV=staging
+gcloud firestore bulk-delete --database=zena-pkg-staging --project <project>
+gcloud storage rm "gs://<project>-zena-pkg-staging/**"
+gcloud dns record-sets list --zone zena-pkg-staging --filter 'type=TXT' --project <project>
+# for each _atproto. record:
+gcloud dns record-sets delete <name> --type TXT --zone zena-pkg-staging --project <project>
+gcloud secrets delete zena-pkg-staging-smoke-token --project <project>
+npm run deploy:setup -w @zena-lang/registry   # makes a KMS rotation key the settings ask for
+npm run deploy -w @zena-lang/registry
+packages/registry/deploy/smoke.sh setup       # the canary and its token, again
+```
+
+A handle record left behind no longer blocks its name, but points at a
+DID that is gone. The smoke token's secret goes with the account it
+was for, and `smoke.sh setup` refuses to run while it exists. Then
+create the scope `zena-lang` again (step 4 of "A new staging"). A reset
+is also the only way to change where staging's online rotation key is
+(`ROTATION_KMS`), since the App View cannot sign for accounts made with
+another key.
+
 ### Backups and alerts
 
 Releases are permanent, so `deploy:setup` keeps the database from
@@ -409,9 +443,9 @@ new database beside the old one:
 ```sh
 gcloud firestore backups list --location us-central1
 gcloud firestore databases restore --source-backup <backup> --destination-database zena-pkg-restored
-gcloud firestore databases clone --source-database projects/meta-garage-420114/databases/zena-pkg \
+gcloud firestore databases clone --source-database projects/<project>/databases/zena-pkg \
   --snapshot-time 2026-11-08T10:20:00Z --destination-database zena-pkg-restored
-gcloud storage restore gs://meta-garage-420114-zena-pkg/pkg/<did>/<cid>
+gcloud storage restore gs://<project>-zena-pkg/pkg/<did>/<cid>
 ```
 
 To serve from a restored database, set `DATABASE` in `deploy/env.sh` to
@@ -421,8 +455,8 @@ it, and `deploy`.
 `deploy:smoke` checks an environment as its clients see it, with no
 browser and no personal account (`dev/smoke.zena`): both names' health,
 DID documents and descriptions, the site's home page, assets and OAuth
-client, and the canary package `zena-lang:smoke` (`ZENA_SMOKE_SCOPE`
-names another scope): its DID document, its repository on padstone, its
+client, and the canary package `zena-lang:smoke` (the settings' `SMOKE_SCOPE`
+names its scope): its DID document, its repository on padstone, its
 page, and a new workspace that adds it and runs a program importing it.
 Then it publishes a new version as the automation account `smoke-ci`,
 which the App View holds until a person approves it, checks that it is
@@ -446,14 +480,15 @@ recovery keys its owners gave, the operator's offline key, and the App
 View's online key, which signs its operations
 (docs/design/package-manager.md, "Keys").
 
-- **The online key** is in Cloud KMS for production
-  (`APP_VIEW_ROTATION_KMS_KEY`): an HSM-protected secp256k1 key that
-  `deploy:setup` makes and the service account may only sign with. It
-  cannot be read or backed up. Staging keeps the secret
-  `zena-pkg-staging-rotation-key` (`APP_VIEW_ROTATION_KEY`), which its
-  accounts were made with; `ZENA_ROTATION_KMS=1` moves it to Cloud KMS,
-  which leaves the App View unable to sign for the accounts it already
-  has, so do that only for a staging whose data was reset.
+- **The online key** is in Cloud KMS (`APP_VIEW_ROTATION_KMS_KEY`), in
+  both environments (the settings' `ROTATION_KMS=1`): an HSM-protected
+  secp256k1 key that `deploy:setup` makes and the service account may
+  only sign with. It cannot be read or backed up. With `ROTATION_KMS=0`,
+  staging uses the secret `zena-pkg-staging-rotation-key`
+  (`APP_VIEW_ROTATION_KEY`) instead. Changing where the key is leaves the
+  App View unable to sign for the accounts it already has, so change it
+  only together with a reset of staging, then run `deploy:setup` to make
+  the new key, and `deploy`.
 - **The offline key** is the operator's, made on a machine you trust,
   and never on the server:
 
@@ -463,7 +498,8 @@ View's online key, which signs its operations
 
   It prints the private key, to keep offline (on paper, or in a password
   manager you trust), and its `did:key`, which deploys as
-  `APP_VIEW_OFFLINE_ROTATION_KEY` from `ZENA_OFFLINE_ROTATION_KEY`.
+  `APP_VIEW_OFFLINE_ROTATION_KEY` from the settings'
+  `OFFLINE_ROTATION_KEY`.
   `deploy` refuses production without it, and so does the App View
   itself, however it is started: with Firestore and the public PLC
   directory it stops at start without the key, unless
