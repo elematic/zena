@@ -207,57 +207,6 @@ function binPathPrefix(packageDir: String) {
   return `node_modules/.bin:${up.toString()}node_modules/.bin`;
 }
 
-function isSafeShellByte(b: i32) {
-  return (b >= 48 && b <= 57) ||
-    (b >= 65 && b <= 90) ||
-    (b >= 97 && b <= 122) ||
-    b == 43 || b == 44 || b == 45 || b == 46 ||
-    b == 47 || b == 58 || b == 61 || b == 64 || b == 95;
-}
-
-/** Quotes one argument for safe interpolation into `sh -c`. */
-export function shellQuote(arg: String): String {
-  if (arg == '') {
-    return "''";
-  }
-  var allSafe = true;
-  for (var i = 0; i < arg.length; i += 1) {
-    if (!isSafeShellByte(arg.getByteAt(i))) {
-      allSafe = false;
-      break;
-    }
-  }
-  if (allSafe) {
-    return arg;
-  }
-  let sb = new StringBuilder(arg.length + 4);
-  sb.appendByte(39);
-  for (var i = 0; i < arg.length; i += 1) {
-    let b = arg.getByteAt(i);
-    if (b == 39) {
-      sb.append("'\\''");
-    } else {
-      sb.appendByte(b);
-    }
-  }
-  sb.appendByte(39);
-  return sb.toString();
-}
-
-/** Appends shell-quoted CLI arguments after `--` to `command`. */
-export function appendExtraArgs(command: String, extraArgs: Array<String>): String {
-  if (extraArgs.length == 0) {
-    return command;
-  }
-  let sb = new StringBuilder();
-  sb.append(command);
-  for (let arg in extraArgs) {
-    sb.appendByte(32);
-    sb.append(shellQuote(arg));
-  }
-  return sb.toString();
-}
-
 /**
  * Runs one script's command and collects its outputs. The child runs
  * through `sh -c` in the package directory with node_modules/.bin on

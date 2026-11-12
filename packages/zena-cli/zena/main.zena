@@ -674,15 +674,14 @@ async function build(
       return 2;
     }
   }
-  return await buildScript(
-    argument,
+  return await buildScript(argument, {
     jobs,
-    args.getFlag('watch'),
-    args.getFlag('force'),
-    !args.getFlag('no-cache'),
-    options.verbose || args.getFlag('verbose'),
+    watch: args.getFlag('watch'),
+    force: args.getFlag('force'),
+    useCache: !args.getFlag('no-cache'),
+    verbose: options.verbose || args.getFlag('verbose'),
     extraArgs,
-  );
+  });
 }
 
 /**
@@ -729,6 +728,15 @@ async function buildFile(
   return 0;
 }
 
+type BuildScriptOptions = {
+  jobs: i32,
+  watch: boolean,
+  force: boolean,
+  useCache: boolean,
+  verbose: boolean,
+  extraArgs: Array<String>,
+};
+
 /**
  * Runs a build target with zebra: `test` is a script of the package the
  * user is in, and `./packages/zebra:test` a script of another package, in
@@ -738,13 +746,9 @@ async function buildFile(
  */
 async function buildScript(
   argument: String,
-  jobs: i32 = 0,
-  watch: boolean = false,
-  force: boolean = false,
-  useCache: boolean = true,
-  verbose: boolean = false,
-  extraArgs: Array<String>? = null,
-): Future<i32> {
+  options: BuildScriptOptions,
+) {
+  let {jobs, watch, force, useCache, verbose, extraArgs} = options;
   var packagePath = '.';
   var script = argument;
   if (argument.startsWith('.')) {
@@ -777,28 +781,20 @@ async function buildScript(
   var outcome: BuildOutcome | null = null;
   try {
     outcome = if (watch)
-      await watchTarget(
-        root.value,
-        entry,
-        jobs,
+      await watchTarget(root.value, entry, {
+        parallelism: jobs,
         force,
         useCache,
-        150 as i64,
-        null,
         verbose,
         extraArgs,
-      )
+      })
     else
-      await buildTarget(
-        root.value,
-        entry,
-        jobs,
+      await buildTarget(root.value, entry, {
+        parallelism: jobs,
         force,
         useCache,
-        null,
-        null,
         extraArgs,
-      );
+      });
   } catch (e) {
     console.error(`Error: ${e.message}`);
     return 1;

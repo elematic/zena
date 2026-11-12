@@ -194,7 +194,7 @@ export let tests = suite('zebra end to end', () => {
     }`);
     let entry = new ScriptRef('', 'both');
 
-    let parallel = await buildTarget(root, entry, 2);
+    let parallel = await buildTarget(root, entry, {parallelism: 2});
     isTrue(parallel.result.allSucceeded, 'a and b should overlap under -j 2');
 
     // Under -j 1 on a fresh workspace, independent scripts never overlap:
@@ -217,7 +217,7 @@ export let tests = suite('zebra end to end', () => {
         }
       }
     }`);
-    let serial = await buildTarget(serialRoot, entry, 1);
+    let serial = await buildTarget(serialRoot, entry, {parallelism: 1});
     isTrue(serial.result.allSucceeded, 'serial build under -j 1 should succeed');
     let orderLog = await readFile(withRoot(serialRoot, 'order.log'));
     isTrue(
@@ -257,7 +257,7 @@ export let tests = suite('zebra end to end', () => {
     }`);
     let entry = new ScriptRef('', 'all');
 
-    let first = await buildTarget(root, entry, 2);
+    let first = await buildTarget(root, entry, {parallelism: 2});
     isTrue(first.result.allSucceeded, 'first build with shared service succeeds');
     isTrue(sourceOf(first.result, ':svc') == StepSource.Ran);
     isTrue(sourceOf(first.result, ':a') == StepSource.Ran);
@@ -267,7 +267,7 @@ export let tests = suite('zebra end to end', () => {
     equal(await readFile(withRoot(root, 'b.out')), 'port=8080\n');
 
     // Second build: dependents are fresh, so the service never starts.
-    let second = await buildTarget(root, entry, 2);
+    let second = await buildTarget(root, entry, {parallelism: 2});
     isTrue(second.result.allSucceeded);
     isTrue(sourceOf(second.result, ':svc') == StepSource.Fresh);
     isTrue(sourceOf(second.result, ':a') == StepSource.Fresh);
@@ -276,7 +276,7 @@ export let tests = suite('zebra end to end', () => {
 
     // Changing the service's declared file invalidates dependents and restarts it.
     await write(root, 'svc.cfg', 'port=9090\n');
-    let third = await buildTarget(root, entry, 2);
+    let third = await buildTarget(root, entry, {parallelism: 2});
     isTrue(third.result.allSucceeded);
     isTrue(sourceOf(third.result, ':svc') == StepSource.Ran);
     isTrue(sourceOf(third.result, ':a') == StepSource.Ran);
@@ -509,7 +509,7 @@ export let tests = suite('zebra end to end', () => {
     isTrue(sourceOf(settle.result, 'packages/app:build') == StepSource.Fresh);
 
     let warmHasher = new FileHasher(root);
-    let warm = await buildTarget(root, entry, 0, false, true, warmHasher);
+    let warm = await buildTarget(root, entry, {hasherOut: warmHasher});
     isTrue(warm.result.allSucceeded);
     isTrue(sourceOf(warm.result, 'packages/lib:build') == StepSource.Fresh);
     isTrue(sourceOf(warm.result, 'packages/app:build') == StepSource.Fresh);
@@ -554,7 +554,7 @@ export let tests = suite('zebra end to end', () => {
 
     // Deleting the output with --no-cache (`useCache = false`) reruns the step.
     await unlink(withRoot(root, 'packages/app/out/app.txt'));
-    let rerunNoCache = await buildTarget(root, entry, 0, false, false);
+    let rerunNoCache = await buildTarget(root, entry, {useCache: false});
     isTrue(rerunNoCache.result.allSucceeded);
     isTrue(sourceOf(rerunNoCache.result, 'packages/lib:build') == StepSource.Fresh);
     isTrue(sourceOf(rerunNoCache.result, 'packages/app:build') == StepSource.Ran);
@@ -689,7 +689,7 @@ export let tests = suite('zebra end to end', () => {
     isTrue(sourceOf(second.result, 'packages/app:build') == StepSource.Fresh);
 
     // force = true reruns every step even when fresh and cached.
-    let forced = await buildTarget(root, entry, 0, true, true);
+    let forced = await buildTarget(root, entry, {force: true});
     isTrue(forced.result.allSucceeded);
     isTrue(sourceOf(forced.result, 'packages/lib:build') == StepSource.Ran);
     isTrue(sourceOf(forced.result, 'packages/app:build') == StepSource.Ran);
@@ -697,7 +697,7 @@ export let tests = suite('zebra end to end', () => {
     // Deleting lib's state.json with useCache = false reruns lib instead of
     // restoring from DiskCache, while app stays fresh via early cutoff.
     await unlink(withRoot(root, 'packages/lib/.zebra/state.json'));
-    let noCache = await buildTarget(root, entry, 0, false, false);
+    let noCache = await buildTarget(root, entry, {useCache: false});
     isTrue(noCache.result.allSucceeded);
     isTrue(sourceOf(noCache.result, 'packages/lib:build') == StepSource.Ran);
     isTrue(sourceOf(noCache.result, 'packages/app:build') == StepSource.Fresh);
@@ -709,14 +709,9 @@ export let tests = suite('zebra end to end', () => {
     let entry = new ScriptRef('', 'build');
 
     var observed = 0;
-    let finalOutcome = await watchTarget(
-      root,
-      entry,
-      0,
-      false,
-      true,
-      20 as i64,
-      async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
+    let finalOutcome = await watchTarget(root, entry, {
+      pollIntervalMs: 20,
+      onIteration: async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
         observed = iteration;
         isTrue(outcome.result.allSucceeded);
         if (iteration == 1) {
@@ -737,7 +732,7 @@ export let tests = suite('zebra end to end', () => {
         equal(await readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v2\nhello-v2\n');
         return false;
       },
-    );
+    });
     equal(observed, 3);
     isTrue(finalOutcome.result.allSucceeded);
   });
@@ -770,14 +765,9 @@ export let tests = suite('zebra end to end', () => {
     var pid1 = '';
     var pid2 = '';
     var observed = 0;
-    await watchTarget(
-      root,
-      new ScriptRef('', 'app'),
-      0,
-      false,
-      true,
-      20 as i64,
-      async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
+    await watchTarget(root, new ScriptRef('', 'app'), {
+      pollIntervalMs: 20,
+      onIteration: async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
         observed = iteration;
         isTrue(outcome.result.allSucceeded);
         if (iteration == 1) {
@@ -806,7 +796,7 @@ export let tests = suite('zebra end to end', () => {
         equal(await readFile(withRoot(root, 'svc.log')), 'start\nstop\nstart\n');
         return false;
       },
-    );
+    });
     equal(observed, 3);
     // Exiting watch mode stops all remaining pinned services.
     equal(await readFile(withRoot(root, 'svc.log')), 'start\nstop\nstart\nstop\n');
@@ -828,14 +818,9 @@ export let tests = suite('zebra end to end', () => {
     await write(root, 'srv.conf', 'v1');
 
     var observed = 0;
-    await watchTarget(
-      root,
-      new ScriptRef('', 'serve'),
-      0,
-      false,
-      true,
-      20 as i64,
-      async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
+    await watchTarget(root, new ScriptRef('', 'serve'), {
+      pollIntervalMs: 20,
+      onIteration: async (iteration: i32, outcome: BuildOutcome): Future<boolean> => {
         observed = iteration;
         isTrue(outcome.result.allSucceeded);
         isTrue(sourceOf(outcome.result, ':serve') == StepSource.Ran);
@@ -864,7 +849,7 @@ export let tests = suite('zebra end to end', () => {
         );
         return false;
       },
-    );
+    });
     equal(observed, 3);
     equal(
       await readFile(withRoot(root, 'serve.log')),
@@ -1109,7 +1094,7 @@ export let tests = suite('zebra end to end', () => {
 
     // 1. Cold build parses the 3 reachable config files and writes the plan snapshot.
     let stats1 = new PlanLoadStats();
-    let r1 = await buildTarget(root, entry, 0, false, true, null, stats1);
+    let r1 = await buildTarget(root, entry, {planStatsOut: stats1});
     isTrue(r1.result.allSucceeded, 'cold build succeeds');
     isFalse(stats1.fromSnapshot, 'first run resolves configs fresh');
     equal(stats1.filesParsed, 3);
@@ -1118,7 +1103,7 @@ export let tests = suite('zebra end to end', () => {
 
     // 2. Warm build reuses the plan snapshot with zero config files parsed.
     let stats2 = new PlanLoadStats();
-    let r2 = await buildTarget(root, entry, 0, false, true, null, stats2);
+    let r2 = await buildTarget(root, entry, {planStatsOut: stats2});
     isTrue(r2.result.allSucceeded, 'warm build succeeds');
     isTrue(stats2.fromSnapshot, 'warm build loads plan snapshot');
     equal(stats2.filesParsed, 0);
@@ -1128,7 +1113,7 @@ export let tests = suite('zebra end to end', () => {
     // 3. Editing zena-lock.json invalidates the zebra.json step (without changing zebra.json).
     await write(root, 'zena-lock.json', '{"resolved": {"pkg": "v2"}}\n');
     let stats3 = new PlanLoadStats();
-    let r3 = await buildTarget(root, entry, 0, false, true, null, stats3);
+    let r3 = await buildTarget(root, entry, {planStatsOut: stats3});
     isTrue(r3.result.allSucceeded);
     isTrue(stats3.fromSnapshot, 'lockfile change keeps plan snapshot valid');
     isTrue(sourceOf(r3.result, 'packages/legacy:build') == StepSource.Fresh);
@@ -1146,7 +1131,7 @@ export let tests = suite('zebra end to end', () => {
       }
     }`);
     let stats4 = new PlanLoadStats();
-    let r4 = await buildTarget(root, entry, 0, false, true, null, stats4);
+    let r4 = await buildTarget(root, entry, {planStatsOut: stats4});
     isTrue(r4.result.allSucceeded);
     isFalse(stats4.fromSnapshot, 'config edit invalidates plan snapshot');
     equal(await readFile(withRoot(root, 'packages/legacy/out.txt')), 'legacy-2\n');
@@ -1163,7 +1148,7 @@ export let tests = suite('zebra end to end', () => {
       }
     }`);
     let stats5 = new PlanLoadStats();
-    let r5 = await buildTarget(root, entry, 0, false, true, null, stats5);
+    let r5 = await buildTarget(root, entry, {planStatsOut: stats5});
     isTrue(r5.result.allSucceeded);
     isFalse(stats5.fromSnapshot, 'new zebra.json invalidates plan snapshot');
     equal(await readFile(withRoot(root, 'packages/legacy/out.txt')), 'native-zebra\n');
@@ -1211,7 +1196,7 @@ export let tests = suite('zebra end to end', () => {
 
     // 2. Warm build hits plan snapshot and stays fresh.
     let stats2 = new PlanLoadStats();
-    let r2 = await buildTarget(root, entry, 0, false, true, null, stats2);
+    let r2 = await buildTarget(root, entry, {planStatsOut: stats2});
     isTrue(stats2.fromSnapshot);
     equal(stats2.filesParsed, 0);
     isTrue(sourceOf(r2.result, 'packages/app:build') == StepSource.Fresh);
@@ -1371,10 +1356,9 @@ export let tests = suite('zebra end to end', () => {
 
     // 1. Cold filtered run: dependency runs with 0 extra args and is saved fresh;
     // entry runs with quoted extra args (preserving single quotes and `$HOME` literally).
-    let r1 = await buildTarget(root, entry, 0, false, true, null, null, [
-      '--filter',
-      "it's $HOME",
-    ]);
+    let r1 = await buildTarget(root, entry, {
+      extraArgs: ['--filter', "it's $HOME"],
+    });
     isTrue(r1.result.allSucceeded);
     isTrue(sourceOf(r1.result, 'packages/lib:build') == StepSource.Ran);
     isTrue(sourceOf(r1.result, 'packages/app:test') == StepSource.Ran);
@@ -1393,7 +1377,7 @@ export let tests = suite('zebra end to end', () => {
     equal(await readFile(withRoot(root, 'packages/app/last-run.txt')), '0||\n');
 
     // 3. Filtered run over an already-fresh entry still executes with extraArgs...
-    let r3 = await buildTarget(root, entry, 0, false, true, null, null, ['variables']);
+    let r3 = await buildTarget(root, entry, {extraArgs: ['variables']});
     isTrue(r3.result.allSucceeded);
     isTrue(sourceOf(r3.result, 'packages/lib:build') == StepSource.Fresh);
     isTrue(sourceOf(r3.result, 'packages/app:test') == StepSource.Ran);
@@ -1406,10 +1390,9 @@ export let tests = suite('zebra end to end', () => {
 
     // 5. Passing extraArgs to a command-less group target fails cleanly.
     await rejects(async () => {
-      await buildTarget(root, new ScriptRef('', 'build'), 0, false, true, null, null, [
-        '--filter',
-        'x',
-      ]);
+      await buildTarget(root, new ScriptRef('', 'build'), {
+        extraArgs: ['--filter', 'x'],
+      });
     });
   });
 });

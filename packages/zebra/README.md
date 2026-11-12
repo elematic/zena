@@ -34,7 +34,9 @@ zena build --migrate [--dry-run] [-f|--force] [<package-dir>...]
 import { buildTarget, reportBuild } from 'zena-lang:zebra/runner';
 import { ScriptRef } from 'zena-lang:zebra/wireit-config';
 
-let outcome = await buildTarget('.', new ScriptRef('packages/app', 'build'));
+let outcome = await buildTarget('.', new ScriptRef('packages/app', 'build'), {
+  parallelism: 4,
+});
 let exitCode = reportBuild(outcome);
 ```
 
@@ -92,14 +94,14 @@ A dependency contributes the digest of its _outputs_ to dependents' cache keys r
 ## Libraries
 
 - `zebra` (`zebra/main`) — CLI entry point (`main`).
-- `zebra/runner` — `buildTarget`, `watchTarget`, `reportBuild`, `reportMigration`, `formatBuildReport`, and `BuildOutcome`.
+- `zebra/runner` — `buildTarget`, `watchTarget`, `BuildOptions`, `WatchOptions`, `reportBuild`, `reportMigration`, `formatBuildReport`, and `BuildOutcome`.
 - `zebra/zebra-config` — `zena-package.json` and `zebra.json` parsing (`ZebraWorkspace`), synthesized `source` filesets, and Wireit migration (`migrateWorkspaceToZebra`, `convertPackageJsonToZebraJson`, `mergeWireitIntoZenaPackageJson`).
 - `zebra/wireit-config` — `package.json` Wireit parsing (`WireitWorkspace`) and shared script configuration types (`ScriptConfig`, `ScriptRef`, `DependencySpec`, `ServiceConfig`, `EnvBinding`, `ConfigError`, `refKey`, `resolveDependency`).
 - `zebra/plan-cache` — `.zebra/plans/` snapshot serialization and `stat`-verified warm plan loading (`loadOrCollectConfigs`, `PlanLoadStats`, `ConfigProbe`).
 - `zebra/builder` — Translates `ScriptConfig` closures into `workflow` steps and execution callbacks (`planScripts`, `StepExecution`, `lockfileCandidates`).
 - `zebra/disk-cache` and `zebra/state-json` — `.zebra/` blob/manifest storage (`DiskCache`, `stateDirOf`) and JSON serialization for state, manifests, and hash memos.
 - `zebra/fs-walk` and `zebra/fs-util` — Input glob discovery (`FileHasher`, `expandGlobs`, `hashFile`, `validateGlobs`, `splitBase`) and workspace path utilities.
-- `zebra/colors`, `zebra/layout`, and `zebra/animation` — Terminal color formatting, Clack-style rail layout (`RailLayout`), and interactive spinner animation (`Spinner`).
+- `zebra/colors`, `zebra/layout`, `zebra/animation`, and `zebra/shell` — Terminal color formatting, Clack-style rail layout (`RailLayout`), interactive spinner animation (`Spinner`), and POSIX shell argument quoting (`shellQuote`, `appendShellArgs`).
 
 ## License
 

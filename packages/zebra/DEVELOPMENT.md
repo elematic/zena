@@ -21,7 +21,8 @@ packages/zebra/
 │   ├── state-json.zena         # JSON serialization for .zebra/ state & manifests
 │   ├── colors.zena             # Terminal ANSI color & width helpers
 │   ├── layout.zena             # Clack-style rail output formatting
-│   └── animation.zena          # Interactive terminal spinner
+│   ├── animation.zena          # Interactive terminal spinner
+│   └── shell.zena              # POSIX shell argument quoting helpers
 └── test/                       # Zena test suites and fixtures
     ├── *_test.zena             # Unit and end-to-end tests
     └── fixtures/

@@ -103,13 +103,13 @@ export let tests = suite('zebra example workspace', () => {
 
     let entry = new ScriptRef('site', 'build');
     let coldStats = new PlanLoadStats();
-    let first = await buildTarget(root, entry, 0, false, true, null, coldStats);
+    let first = await buildTarget(root, entry, {planStatsOut: coldStats});
     isTrue(first.result.allSucceeded, 'migrated zebra.json build succeeds');
     equal(coldStats.filesParsed, 2);
     isTrue((await readFile(withRoot(root, 'site/out/index.html'))).contains('Hello from zebra!'));
 
     let warmStats = new PlanLoadStats();
-    let second = await buildTarget(root, entry, 0, false, true, null, warmStats);
+    let second = await buildTarget(root, entry, {planStatsOut: warmStats});
     isTrue(warmStats.fromSnapshot, 'second build hits plan snapshot');
     equal(warmStats.filesParsed, 0);
     isTrue(sourceOf(second.result, 'greeting:build') == StepSource.Fresh);
