@@ -1,0 +1,85 @@
+// @mode: run
+// @result: 1
+// Generators and async functions take tuples like any function: a tuple
+// parameter read before and after a suspension, a tuple literal passed to
+// a call inside the body, a tuple from the heap, and an async method.
+// Every shape must compute the same thing.
+import { Future, Completer } from 'zena:async';
+
+type V = (i32, i32);
+
+function area(p: V): i32 {
+  return p[0] * p[1];
+}
+
+let span = gen (p: V): Iterator<i32> => {
+  yield p[0];
+  yield p[1];
+  yield area(p);
+};
+
+let walk = gen (n: i32): Iterator<i32> => {
+  for (var i = 0; i < n; i += 1) {
+    yield area((i, 2));
+  }
+};
+
+let total = async (p: V, c: Completer<i32>): Future<i32> => {
+  let before = p[0];
+  let v = await c.future;
+  return before + p[1] + v + area(p);
+};
+
+let viaAwait = async (c: Completer<i32>): Future<i32> => {
+  let v = await c.future;
+  return area((v, 3));
+};
+
+class Grid {
+  async scaled(p: V, c: Completer<i32>): Future<i32> {
+    let v = await c.future;
+    return p[0] * v + p[1];
+  }
+}
+
+let heap: V = (2, 5);
+
+let sum = (it: Iterator<i32>): i32 => {
+  var s = 0;
+  for (let v in it) {
+    s = s * 100 + v;
+  }
+  return s;
+};
+
+export let main = async (): Future<i32> => {
+  // 3, 4, 12
+  if (sum(span((3, 4))) != 30412 || sum(span(heap)) != 20510) {
+    return 0;
+  }
+  // 0, 2, 4
+  if (sum(walk(3)) != 204) {
+    return 0;
+  }
+  let c1 = new Completer<i32>();
+  let f1 = total((1, 2), c1);
+  c1.complete(10);
+  // 1 + 2 + 10 + 2
+  if (await f1 != 15) {
+    return 0;
+  }
+  let c2 = new Completer<i32>();
+  let f2 = viaAwait(c2);
+  c2.complete(4);
+  if (await f2 != 12) {
+    return 0;
+  }
+  let c3 = new Completer<i32>();
+  let g = new Grid();
+  let f3 = g.scaled((2, 3), c3);
+  c3.complete(5);
+  if (await f3 != 13) {
+    return 0;
+  }
+  return 1;
+};

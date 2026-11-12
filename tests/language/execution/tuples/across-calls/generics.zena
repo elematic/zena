@@ -1,0 +1,109 @@
+// @mode: run
+// @result: 1
+// Generic functions, a method's own type parameters, and the constructors
+// and methods of a generic class take tuples as their elements in each
+// instantiation, including a tuple type that mentions a type parameter,
+// a tuple passed on to another method of the same instantiation, and a
+// subclass's `super(...)` with a literal, its own tuple passed on, or a
+// tuple from the heap. Every shape must compute the same thing.
+
+function first<T>(p: (T, T)): T {
+  return p[0];
+}
+
+function relay<T>(p: (T, i32)): i32 {
+  return first<i32>((p[1], p[1] + 1)) + count<T>(p);
+}
+
+function count<T>(p: (T, i32)): i32 {
+  return p[1];
+}
+
+var bodies = 0;
+
+class Box<T> {
+  value: T;
+  x: i32;
+  y: i32;
+
+  new(value: T, init: (i32, i32)) : value = value, x = init[0], y = init[1] {
+    bodies += init[0];
+  }
+
+  area(p: (i32, i32)): i32 {
+    return p[0] * p[1];
+  }
+
+  pick(p: (T, T)): T {
+    return p[1];
+  }
+
+  route(p: (i32, i32)): i32 {
+    return this.area(p) + 1;
+  }
+
+  swap<U>(p: (U, T)): (T, U) {
+    return (p[1], p[0]);
+  }
+}
+
+final class IntBox extends Box<i32> {
+  new(v: i32) : super(v, (v, v + 1));
+}
+
+class Relay<T> extends Box<T> {
+  new(value: T, init: (i32, i32)) : super(value, init);
+}
+
+final class FromHeap extends Box<String> {
+  new(held: (i32, i32)) : super('h', held);
+}
+
+export let main = (): i32 => {
+  if (first<i32>((1, 2)) != 1 || first<String>(('a', 'b')) != 'a') {
+    return 0;
+  }
+  // 3 + 3, 5 + 5
+  if (relay<String>(('s', 3)) != 6 || relay<boolean>((true, 5)) != 10) {
+    return 0;
+  }
+  let ints = new Box<i32>(1, (2, 7));
+  let strings = new Box<String>('s', (3, 4));
+  if (ints.value != 1 || ints.x != 2 || ints.y != 7) {
+    return 0;
+  }
+  if (strings.value != 's' || strings.x != 3 || strings.y != 4) {
+    return 0;
+  }
+  if (ints.area((3, 4)) != 12 || strings.area((2, 5)) != 10) {
+    return 0;
+  }
+  if (ints.pick((7, 8)) != 8 || strings.pick(('p', 'q')) != 'q') {
+    return 0;
+  }
+  if (ints.route((2, 3)) != 7 || strings.route((1, 1)) != 2) {
+    return 0;
+  }
+  let (a, b) = strings.swap<i32>((9, 'z'));
+  if (a != 'z' || b != 9) {
+    return 0;
+  }
+  let ib = new IntBox(4);
+  if (ib.value != 4 || ib.x != 4 || ib.y != 5) {
+    return 0;
+  }
+  let r = new Relay<String>('r', (5, 7));
+  if (r.value != 'r' || r.x != 5 || r.y != 7) {
+    return 0;
+  }
+  let held = (6, 1);
+  let fh = new FromHeap(held);
+  if (fh.value != 'h' || fh.x != 6 || fh.y != 1) {
+    return 0;
+  }
+  // 2 + 3 + 4 + 5 + 6: each Box body ran once.
+  if (bodies != 20) {
+    return 0;
+  }
+  return 1;
+};

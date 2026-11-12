@@ -1,0 +1,44 @@
+// @mode: run
+// @result: 123456
+// Passing a tuple literal as its elements keeps the evaluation order:
+// arguments left to right, and each literal's elements as written,
+// including a spread.
+
+var log = 0;
+
+function note(n: i32): i32 {
+  log = log * 10 + n;
+  return n;
+}
+
+function source(n: i32): (i32, i32) {
+  log = log * 10 + n;
+  return (n, n);
+}
+
+function sum(x: i32, p: (i32, i32), y: i32): i32 {
+  return x + p[0] + p[1] + y;
+}
+
+function sum3(x: i32, p: (i32, i32, i32), y: i32): i32 {
+  return x + p[0] + p[1] + p[2] + y;
+}
+
+export let main = (): i32 => {
+  let first = sum(note(1), (note(2), note(3)), note(4));
+  if (first != 10) {
+    return -1;
+  }
+  log = 0;
+  let second = sum3(note(1), (...source(2), note(3)), note(4));
+  if (second != 12) {
+    return -2;
+  }
+  log = 0;
+  let third = sum3(note(1), (note(2), ...source(3)), note(4)) +
+      sum(note(5), (1, 1), note(6));
+  if (third != 26) {
+    return -3;
+  }
+  return log;
+};

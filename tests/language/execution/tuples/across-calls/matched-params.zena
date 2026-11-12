@@ -1,0 +1,68 @@
+// @mode: run
+// @result: 1
+// A tuple parameter that is matched against tuple patterns, with literal
+// elements, bindings and holes, reads only its elements, so it is passed
+// as them; one matched against a pattern that binds the whole tuple needs
+// the tuple. Every shape must compute the same thing.
+
+function classify(p: (i32, i32)): i32 {
+  return match (p) {
+    case (0, 0): 0
+    case (0, let y): y
+    case (let x, 0): x * 10
+    case (let x, let y): x * 100 + y
+  };
+}
+
+function sign(p: (i32, String)): String {
+  return match (p) {
+    case (0, _): 'zero'
+    case (_, let s): s
+  };
+}
+
+function nested(p: (i32, (i32, i32))): i32 {
+  return match (p) {
+    case (let a, (let b, let c)): a + b * c
+  };
+}
+
+function firstZero(p: (i32, i32)): i32 {
+  if (let (0, y) = p) {
+    return y;
+  }
+  return -1;
+}
+
+function whole(p: (i32, i32)): (i32, i32) {
+  return match (p) {
+    case (0, _) as t: t
+    case _: (p[1], p[0])
+  };
+}
+
+export let main = (): i32 => {
+  if (classify((0, 0)) != 0 || classify((0, 4)) != 4 ||
+      classify((3, 0)) != 30 || classify((2, 5)) != 205) {
+    return 0;
+  }
+  let held = (7, 8);
+  if (classify(held) != 708) {
+    return 0;
+  }
+  if (sign((0, 'n')) != 'zero' || sign((1, 'pos')) != 'pos') {
+    return 0;
+  }
+  if (nested((1, (2, 3))) != 7) {
+    return 0;
+  }
+  if (firstZero((0, 6)) != 6 || firstZero((1, 6)) != -1) {
+    return 0;
+  }
+  let (a, b) = whole((0, 9));
+  let (c, d) = whole((1, 2));
+  if (a != 0 || b != 9 || c != 2 || d != 1) {
+    return 0;
+  }
+  return 1;
+};

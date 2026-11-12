@@ -42,7 +42,7 @@ import {
   AssignmentExpression, BinaryExpression, BlockStatement, CallExpression,
   ClassDeclaration, Expression,
   ExpressionStatement, FunctionExpression, FunctionDeclaration, IfExpression, MatchCase,
-  IndexExpression, MatchExpression, ReturnStatement,
+  IndexExpression, LetPatternCondition, LogicalPattern, MatchExpression, ReturnStatement,
   VariableDeclaration, IdentifierPattern, Identifier, MemberExpression,
   MethodDefinition, Parameter, RecordLiteral, RecordPattern, TupleLiteral, TuplePattern,
   SpreadElement, SuperInitializer, Node, hasEnsuresClause,
@@ -1770,7 +1770,8 @@ function usesOnlyFields(dc: DemandContext, owner: Node,
 
 /**
  * `ident.field`, `ident[0]` (a tuple's element), `let {...} = ident` or
- * `let (...) = ident`, `{...ident}` in a record literal,
+ * `let (...) = ident`, `match (ident)` or `if (let (...) = ident)` with
+ * tuple patterns (`takesTupleApart`), `{...ident}` in a record literal,
  * `g(..., ident, ...)` for a top-level function `g`, or
  * `super(..., ident, ...)` (or `super.name(...)`) to the constructor
  * keyed `superKey`, outside any nested function: a closure would capture
@@ -1804,6 +1805,16 @@ function isFieldUse(dc: DemandContext, ident: Identifier, owner: Node,
     // A tuple's element, read with `struct_get`, which simplify answers
     // from the struct the core builds on entry.
     accepted = (parent.object as Node) === (ident as Node) && !parent.optional;
+  } else if (parent is MatchExpression) {
+    // Matching a tuple against tuple patterns reads its elements, each
+    // with `struct_get` as an index does.
+    accepted = (parent.discriminant as Node) === (ident as Node);
+    for (let c in parent.cases) {
+      accepted = accepted && takesTupleApart(c.pattern);
+    }
+  } else if (parent is LetPatternCondition) {
+    accepted = (parent.init as Node) === (ident as Node) &&
+        takesTupleApart(parent.pattern);
   } else if (parent is VariableDeclaration) {
     let pattern = parent.pattern;
     accepted = (parent.init as Node) === (ident as Node) &&
@@ -1840,6 +1851,25 @@ function isFieldUse(dc: DemandContext, ident: Identifier, owner: Node,
     forwards.push(forward);
   }
   return true;
+}
+
+/**
+ * Whether `pattern`, matched against a tuple, reads only its elements: a
+ * tuple pattern (whatever its elements bind), `_`, or an or-pattern of
+ * those. A pattern that binds the whole value (`let t`, `(...) as t`)
+ * needs the tuple.
+ */
+function takesTupleApart(pattern: Node): boolean {
+  if (pattern is TuplePattern) {
+    return true;
+  }
+  if (pattern is Identifier) {
+    return pattern.name == "_";
+  }
+  if (pattern is LogicalPattern) {
+    return takesTupleApart(pattern.left) && takesTupleApart(pattern.right);
+  }
+  return false;
 }
 
 /** Whether `bin` is `==` or `!=` between two record or tuple operands. */
