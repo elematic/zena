@@ -1,8 +1,11 @@
 // @mode: run
-// @skip: a tuple of a subclass passed as a tuple of its superclass fails to lower with "call argument type" (#483)
-// @result: 3
+// @result: 0
 // The checker lets a tuple of a subclass stand for a tuple of its
-// superclass, element by element.
+// superclass, element by element (#483): as an argument, a return value,
+// a binding, a nested tuple, a nullable tuple, an array element and a
+// field. Wasm structs declare one supertype, so the conversion copies the
+// elements into the wanted tuple; tuples have no identity, so the copy is
+// unseen. `is`, `as` and narrowing go the other way, element by element.
 
 class Animal {
   legs(): i32 {
@@ -14,6 +17,9 @@ class Bird extends Animal {
   legs(): i32 {
     return 2;
   }
+  name(): String {
+    return 'bird';
+  }
 }
 
 let count = (pair: (Animal, i32)): i32 => {
@@ -21,7 +27,56 @@ let count = (pair: (Animal, i32)): i32 => {
   return animal.legs() + extra;
 };
 
+function widen(pair: (Bird, i32)): (Animal, i32) {
+  return pair;
+}
+
+function deep(t: (i32, (Animal, Animal))): i32 {
+  return t[0] + t[1][0].legs() + t[1][1].legs();
+}
+
+function maybe(t: (Animal, i32) | null): i32 {
+  if (t == null) {
+    return -1;
+  }
+  return count(t);
+}
+
+function onlyBirds(t: (Bird, i32)): String {
+  return t[0].name();
+}
+
+class Pen {
+  pair: (Animal, i32);
+  new(this.pair);
+}
+
 export let main = (): i32 => {
+  var failures = 0;
   let bird: (Bird, i32) = (new Bird(), 1);
-  return count(bird);
+  if (count(bird) != 3) { failures += 1; }
+  if (count(widen(bird)) != 3) { failures += 2; }
+  let held: (Animal, i32) = bird;
+  if (held[0].legs() != 2 || held[1] != 1) { failures += 4; }
+  let nested: (i32, (Bird, Bird)) = (1, (new Bird(), new Bird()));
+  if (deep(nested) != 5) { failures += 8; }
+  let some: (Bird, i32) | null = bird;
+  let none: (Bird, i32) | null = null;
+  if (maybe(some) != 3 || maybe(none) != -1) { failures += 16; }
+  let pairs: Array<(Animal, i32)> = [bird, (new Animal(), 0)];
+  if (pairs[0][0].legs() + pairs[1][0].legs() != 6) { failures += 32; }
+  let pen = new Pen(bird);
+  if (pen.pair[0].legs() != 2) { failures += 64; }
+  // A tuple held as `(Animal, i32)` is a `(Bird, i32)` when its element
+  // is a Bird: `is` tests the elements, `as` and narrowing copy.
+  let animal: (Animal, i32) = (new Animal(), 2);
+  if (!(held is (Bird, i32)) || animal is (Bird, i32)) { failures += 128; }
+  let back = held as (Bird, i32);
+  if (back[0].name() != 'bird' || back[1] != 1) { failures += 256; }
+  if (held is (Bird, i32)) {
+    if (onlyBirds(held) != 'bird') { failures += 512; }
+  } else {
+    failures += 512;
+  }
+  return failures;
 };

@@ -1038,6 +1038,13 @@ export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
     if (conforms) {
       return value;
     }
+    // A tuple to a tuple of other element types is a new tuple, each
+    // element cast to its target type (#483): the two structs are
+    // unrelated, so a cast of the tuple itself would always trap.
+    let copied = cx.copyTuple(value, srcVt, dstVt, 'tuple cast');
+    if (copied >= 0) {
+      return copied;
+    }
     // The `extern` and `any` hierarchies are disjoint, so a cast between
     // them is a conversion, never a `ref.cast`. Both conversions are
     // total: `x as externref` wraps any GC reference, and `e as anyref`

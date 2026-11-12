@@ -19,7 +19,7 @@ import {
   ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64,
   ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, ValTypeRefNull,
   ValTypeRefExtern, ValTypeExternRef,
-  ValTypeStructRef, ValTypeNullRef, ValTypeVoid, isRefValType,
+  ValTypeStructRef, ValTypeNullRef, ValTypeVoid, isRefValType, refTargetOf,
 } from '../wasm.zena';
 import {
   substituteTypeParamsInFunctionContext, typeToValTypeWithSub,
@@ -1588,10 +1588,75 @@ export final class LoweringContext {
       let nn = new ValTypeRefExtern() as ValType;
       return this.b.emit(IrOp.ref_as_non_null, nn, value, -1);
     }
+    let copied = this.copyTuple(value, have, want, reason);
+    if (copied >= 0) {
+      return copied;
+    }
     if (!isRefValType(have) || !isValSubtype(want, have)) {
       this.failConformance(value, want, reason);
     }
     return this.b.emit(IrOp.ref_cast, want, value, this.b.internType(want));
+  }
+
+  /**
+   * `value`, a tuple of struct `have`'s, as a tuple of `want`'s: a new
+   * tuple built from its elements, each conformed to `want`'s element
+   * type. The checker lets a tuple stand for a tuple of supertypes
+   * element by element, but a wasm struct declares one supertype, so
+   * `(Bird, i32)` and `(Animal, i32)` are unrelated structs (#483).
+   * Tuples have no identity, so the copy cannot be observed. A null
+   * passes through when `want` takes one. -1 when either side is not a
+   * tuple, or the two have different elements.
+   */
+  copyTuple(value: i32, have: ValType, want: ValType, reason: String): i32 {
+    let from = refTargetOf(have);
+    let to = refTargetOf(want);
+    if (!(from is WasmStruct) || !(to is WasmStruct) || !from.isTuple ||
+        !to.isTuple || from.fields.length != to.fields.length) {
+      return -1;
+    }
+    for (var i = 0; i < from.fields.length; i += 1) {
+      if (from.fields[i].name != to.fields[i].name) {
+        return -1;
+      }
+    }
+    let toVt = new ValTypeRef(to) as ValType;
+    if (have is ValTypeRefNull && want is ValTypeRefNull) {
+      let isNull = this.b.emit(IrOp.ref_is_null, new ValTypeI32() as ValType,
+          value, -1);
+      let nullB = this.b.newBlock();
+      let copyB = this.b.newBlock();
+      let mergeB = this.b.newBlock();
+      this.b.brIf(isNull, nullB, new Array<i32>(), copyB, new Array<i32>());
+      this.b.switchTo(copyB);
+      let copy = this.copyTupleElements(this.stripNonNull(value), from, to, reason);
+      let result = this.b.blockParam(mergeB, want);
+      this.b.br(mergeB, oneValue(copy));
+      this.b.switchTo(nullB);
+      this.b.br(mergeB, oneValue(this.b.emit(IrOp.ref_null, want, -1, -1)));
+      this.b.switchTo(mergeB);
+      this.reachable = true;
+      return result;
+    }
+    // A nullable source into a non-null slot: the checker proved it
+    // non-null, as conformToSlot's re-assert assumes.
+    let source = if (have is ValTypeRefNull) this.stripNonNull(value) else value;
+    let copy = this.copyTupleElements(source, from, to, reason);
+    return if (want is ValTypeRefNull) copy else this.conformToSlot(copy, toVt, reason);
+  }
+
+  /** A tuple of struct `to` built from the elements of `value`, of `from`. */
+  copyTupleElements(value: i32, from: WasmStruct, to: WasmStruct,
+      reason: String): i32 {
+    let elements = new Array<i32>();
+    for (var i = 0; i < from.fields.length; i += 1) {
+      let name = from.fields[i].name as String;
+      let element = this.b.emit(IrOp.struct_get, from.fields[i].type, value,
+          this.b.addRef(new IrRefField(from, name)));
+      elements.push(this.conformToSlot(element, to.fields[i].type, reason));
+    }
+    return this.b.emit(IrOp.struct_new, new ValTypeRef(to) as ValType,
+        this.b.pushArgList(elements), this.b.addRef(new IrRefType(to)));
   }
 
   /**
@@ -1644,6 +1709,10 @@ export final class LoweringContext {
       if (packed >= 0) {
         return packed;
       }
+    }
+    let copied = this.copyTuple(value, have, bindingVt, 'binding value type');
+    if (copied >= 0) {
+      return copied;
     }
     if (isRefValType(have) && isValSubtype(bindingVt, have)) {
       return this.b.emit(IrOp.ref_cast, bindingVt, value,

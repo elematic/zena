@@ -1394,6 +1394,14 @@ var i = 0;
 let x = t[i]; // ❌ var is not compile-time known
 ```
 
+A tuple of subtypes is a subtype, element by element, and `is` and `as`
+test each element:
+
+```zena
+let wider: (Animal, i32) = (new Bird(), 1); // ✅
+wider is (Bird, i32); // true: the first element is a Bird
+```
+
 A union of tuples needs a literal at the start of each tuple to tell them
 apart: all booleans or all integers of one type, a different value in each:
 

@@ -4990,6 +4990,25 @@ This restriction exists because tuples have a fixed structure where each
 position may have a different type. The compiler must know the index at
 compile time to determine the result type.
 
+#### Tuple Subtyping
+
+A tuple type is a subtype of another of the same length when each of its
+elements is a subtype of the other's element in that position. So a
+tuple of a subclass stands for a tuple of its superclass:
+
+```zena
+let pair: (Bird, i32) = (new Bird(), 1);
+let wider: (Animal, i32) = pair;  // ✅
+
+wider is (Bird, i32);   // true: the first element is a Bird
+wider as (Bird, i32);   // a (Bird, i32); traps when an element is not
+```
+
+`is` and `as` against a tuple type test each element, and an `is` test
+narrows the tuple like any other value. An element that would become an
+interface value (`(Bird, i32)` as `(Named, i32)`) is not supported yet
+(#1132).
+
 #### Tuple Element Narrowing
 
 Tuple elements support type narrowing just like variables. Since tuples are
