@@ -1,81 +1,32 @@
-# The Zena package manager
+# package-manager
 
-The client side of Zena packages published on atproto, as designed in
-[docs/design/package-manager.md](../../docs/design/package-manager.md). The
-`zena` commands that fetch and publish packages are built on it.
+Client libraries for Zena packages published on AT Protocol: package manifests (`zena-package.json`), lockfiles (`zena-lock.json`), semantic versions, deterministic CAR source archives, dependency resolution, and registry queries.
 
-Import its libraries as `package-manager/<library>`, from a file outside a
-package in this repository's workspace or from a package that lists it in its
-`zena-package.json` dependencies.
+## Usage
+
+```zena
+import {readManifest} from 'package-manager/manifest';
+import {parseVersion, parseVersionRange} from 'package-manager/version';
+
+let manifest = readManifest('{"name": "hello", "version": "1.0.0"}');
+let version = parseVersion(manifest.version ?? '0.0.0');
+let range = parseVersionRange('^1.0.0');
+let matches = range.allows(version);
+```
 
 ## Libraries
 
-- `package-manager/version`: semantic versions without build metadata, and
-  their precedence.
-- `package-manager/records`: the profile, release, retraction and maintainers
-  records, an organization's members record and the private membership
-  entries it commits to, read from the atproto data model with the checks
-  their lexicons describe, and written back. Also the rules for package
-  names.
-- `package-manager/registry-methods`: the NSIDs of the App View's XRPC
-  methods, which the App View serves and `zena` calls. A test checks them
-  against the App View's lexicons.
-- `package-manager/files`: which files a package publishes: its manifest's
-  `files` patterns, or by default every file but tests, and always the
-  manifest, README and license, never hidden files, `node_modules` or the
-  lockfile.
-- `package-manager/archive`: source archives, the CAR files that hold a
-  release's source. Packing is deterministic, so the same files always have
-  the same CID, and unpacking accepts only what packing writes.
-- `package-manager/resolution`: the packages a workspace's lockfile,
-  `zena-lock.json`, pins, writing it, and what writing it changes in the
-  pins already there (`diffPins`), including releases changed in place.
-- `package-manager/cache`: the package cache, where each source archive is
-  unpacked into `sources/<CID>` for the compiler to read.
-- `package-manager/fetch`: fetching pinned packages into the cache, which
-  `zena pkg fetch` does. The release record's proof is checked against the
-  account's signing key, the record and the source archive against the
-  CIDs the lockfile pins, and the release's dependencies against
-  the names it maps.
-- `package-manager/resolve`: minimal version selection, from the
-  requirements in all of a workspace's manifests to what its lockfile pins.
-- `package-manager/workspace`: a workspace's packages, read from disk: the
-  root's manifest, the packages it lists, and the ones they depend on by
-  path.
-- `package-manager/manifest`: reading a package's `zena-package.json`, and
-  rewriting its dependencies while keeping the rest of the file.
-- `package-manager/registry`: finding packages: a DID, a handle or
-  `scope:name` to a DID, a package's versions and retractions, its profile, and
-  its releases with their proofs.
-- `package-manager/testing/fake-pds`: a PLC directory, DNS-over-HTTPS
-  resolver and PDS for package accounts, served in the same program, for
-  testing what finds and fetches packages. It signs what it serves, so the
-  proofs clients check are real. Accounts with a password can sign in and
-  get service-auth tokens.
-
-## Lexicons
-
-`lexicons/dev/zena-lang/` holds the lexicons, to be published at
-`zena-lang.dev`:
-
-- `package/`: a package's records: profile, releases, retractions, the
-  maintainers record, and attestations, which maintainers write to their
-  own repositories. `package-manager/records` reads and checks the first
-  three, and their lexicons state only constraints it checks.
-- `org/`: an organization's members and team records, and the private
-  entries their commitments stand for.
-- `registry/`: the App View's methods, the registry's
-  ([docs/design/package-manager.md](../../docs/design/package-manager.md),
-  "The App View's methods").
-- `authPublish.json`: the OAuth permission set `zena pkg login` asks for:
-  writing attestations and calling the App View's methods.
-
-`zena/test/lexicons_test.zena` checks that each file is named by its NSID,
-that its references resolve, and that the permission set covers every App View
-method.
-
-## Tests
-
-```sh
-npm test -w @zena-lang/package-manager
-```
+- `package-manager/version`: semantic versions without build metadata, version ranges, and their precedence.
+- `package-manager/manifest`: reading a package's `zena-package.json`, and rewriting its dependencies while keeping the rest of the file.
+- `package-manager/workspace`: a workspace's packages, read from disk: the root's manifest, the packages it lists, and the ones they depend on by path.
+- `package-manager/files`: which files a package publishes: its manifest's `files` patterns, or by default every file but tests, and always the manifest, README, and license, never hidden files, `node_modules`, or the lockfile.
+- `package-manager/archive`: source archives, the CAR files that hold a release's source. Packing is deterministic, so the same files always have the same CID, and unpacking accepts only what packing writes.
+- `package-manager/records`: the profile, release, retraction, and maintainers records, an organization's members record, and the private membership entries it commits to, read from the atproto data model with the checks their lexicons describe, and written back. Also the rules for package names.
+- `package-manager/registry-methods`: the NSIDs of the App View's XRPC methods.
+- `package-manager/registry`: finding packages: resolving a DID, a handle, or `scope:name` to a DID, a package's versions and retractions, its profile, and its releases with their proofs.
+- `package-manager/resolve`: minimal version selection, from the requirements in all of a workspace's manifests to what its lockfile pins.
+- `package-manager/resolution`: the packages a workspace's lockfile, `zena-lock.json`, pins, writing it, and what writing it changes in the pins already there (`diffPins`), including releases changed in place.
+- `package-manager/cache`: the package cache, where each source archive is unpacked into `sources/<CID>` for the compiler to read.
+- `package-manager/fetch`: fetching pinned packages into the cache. The release record's proof is checked against the account's signing key, the record and the source archive against the CIDs the lockfile pins, and the release's dependencies against the names it maps.
+- `package-manager/validate`: checking a package directory and its manifest before publishing.
+- `package-manager/testing/fake-pds`: an in-process PLC directory, DNS-over-HTTPS resolver, and PDS for package accounts, for testing code that finds and fetches packages.

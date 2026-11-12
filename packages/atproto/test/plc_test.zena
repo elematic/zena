@@ -1,0 +1,184 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {Future} from 'zena:async';
+import {p256} from 'zena:crypto';
+import {hex} from 'zena:encoding';
+import {readFile} from 'zena:fs';
+import {App, Server} from 'zena:http';
+import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
+import {KeyType, PublicKey, formatDidKey, parseDidKey, publicKeyFor} from 'atproto/didkey';
+import {parseDidDocument} from 'atproto/did';
+import {
+  PlcError, PlcOperation, checkNextOperation, didDocument, didOfGenesis, genesisOperation, submitPlcOperation,
+  undoOperation
+} from 'atproto/plc';
+
+let FIXTURES = 'packages/atproto/test/fixtures/plc/operations.json';
+
+async function cases() {
+  return (parseJson(await readFile(FIXTURES)) as JsonObject)['cases'] as JsonArray;
+}
+
+/** The message `call` throws as a `PlcError`, or '' when it throws nothing. */
+function plcError(call: () => void) {
+  try {
+    call();
+  } catch (e) {
+    return if (e is PlcError) e.message else `another error: ${e.message}`;
+  }
+  return '';
+}
+
+export let tests = suite('atproto/plc', () => {
+  test('derives the DIDs pds.js derived from its genesis operations', async (ctx) => {
+    let all = await cases();
+    equal(all.length, 2);
+    for (var i = 0; i < all.length; i += 1) {
+      let c = all[i] as JsonObject;
+      let operation = PlcOperation.fromJson(c['operation']);
+      equal(didOfGenesis(operation), c['did'] as String);
+      // The first rotation key signed it.
+      isTrue(operation.isSignedBy(parseDidKey(operation.rotationKeys[0])));
+      isTrue(!operation.isSignedBy(parseDidKey(operation.rotationKeys[1])));
+      // Its JSON reads back as the same operation.
+      isTrue(PlcOperation.fromJson(parseJson(stringify(operation.toJson()))).cid().equals(operation.cid()));
+    }
+  });
+
+  test('signs a genesis operation of its own, which makes a DID', async (ctx) => {
+    let rotation = hex.decode(((await cases())[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+    let signing = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+    let rotationKey = publicKeyFor(KeyType.P256, rotation);
+    let operation = genesisOperation(publicKeyFor(KeyType.P256, signing), [rotationKey],
+        'router.acme.pkg.zena-lang.dev', 'https://pkg.zena-lang.dev');
+    equal(operation.rotationKeys[0], formatDidKey(rotationKey));
+    equal(operation.alsoKnownAs[0], 'at://router.acme.pkg.zena-lang.dev');
+    equal(operation.services['atproto_pds'].endpoint, 'https://pkg.zena-lang.dev');
+
+    let signed = operation.signedWith((bytes) => p256.sign(rotation, bytes));
+    let did = didOfGenesis(signed);
+    isTrue(did.startsWith('did:plc:') && did.length == 32, did);
+
+    // Unsigned, signed by a key it does not list, or changed after signing,
+    // it makes no DID.
+    isTrue(plcError(() => { didOfGenesis(operation); }).contains('not signed'));
+    let stranger = operation.signedWith((bytes) => p256.sign(signing, bytes));
+    isTrue(plcError(() => { didOfGenesis(stranger); }).contains('rotation keys'));
+    let json = signed.toJson();
+    (json['alsoKnownAs'] as JsonArray)[0] = 'at://someone.else';
+    isTrue(plcError(() => { didOfGenesis(PlcOperation.fromJson(json)); }).contains('rotation keys'));
+    // An operation that follows another makes no DID.
+    let next = new PlcOperation(signed.rotationKeys, signed.verificationMethods, signed.alsoKnownAs,
+        signed.services, signed.cid().toString()).signedWith((bytes) => p256.sign(rotation, bytes));
+    isTrue(plcError(() => { didOfGenesis(next); }).contains('follows another'));
+  });
+
+  test('checks that an operation may follow a DID\'s log', async (ctx) => {
+    let rotation = hex.decode(((await cases())[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+    let other = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+    let genesis = genesisOperation(publicKeyFor(KeyType.P256, other), [publicKeyFor(KeyType.P256, rotation)],
+        'router.acme.pkg.test', 'https://pkg.test').signedWith((bytes) => p256.sign(rotation, bytes));
+    let did = didOfGenesis(genesis);
+    let none = new GrowableArray<PlcOperation>();
+    equal(plcError(() => { checkNextOperation(did, none, genesis); }), '');
+    isTrue(plcError(() => { checkNextOperation('did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', none, genesis); }).contains('makes'));
+
+    let log = new GrowableArray<PlcOperation>();
+    log.push(genesis);
+    isTrue(plcError(() => { checkNextOperation(did, log, genesis); }).contains('must follow'));
+    let aka = new GrowableArray<String>();
+    aka.push('at://renamed.acme.pkg.test');
+    let unsigned = new PlcOperation(genesis.rotationKeys, genesis.verificationMethods, aka, genesis.services,
+        genesis.cid().toString());
+    let next = unsigned.signedWith((bytes) => p256.sign(rotation, bytes));
+    equal(plcError(() => { checkNextOperation(did, log, next); }), '');
+    let stranger = unsigned.signedWith((bytes) => p256.sign(other, bytes));
+    isTrue(plcError(() => { checkNextOperation(did, log, stranger); }).contains('rotation keys'));
+  });
+
+  test('undoes the operations after one, with a key that ranks above their signer', async (ctx) => {
+    // Ranked first, an offline key; then the online key, which signs.
+    let offline = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+    let online = hex.decode(((await cases())[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+    let signing = hex.decode('0101010101010101010101010101010101010101010101010101010101010101');
+    let genesis = genesisOperation(publicKeyFor(KeyType.P256, signing),
+        [publicKeyFor(KeyType.P256, offline), publicKeyFor(KeyType.P256, online)],
+        'router.acme.pkg.test', 'https://pkg.test').signedWith((bytes) => p256.sign(online, bytes));
+    // A stolen online key moves the account elsewhere.
+    let moved = new PlcOperation(genesis.rotationKeys, genesis.verificationMethods, genesis.alsoKnownAs,
+        genesis.services, genesis.cid().toString()).signedWith((bytes) => p256.sign(online, bytes));
+    let log = new GrowableArray<PlcOperation>();
+    log.push(genesis);
+    log.push(moved);
+    let cid = genesis.cid().toString();
+
+    let undo = undoOperation(log, cid, publicKeyFor(KeyType.P256, offline))
+      .signedWith((bytes) => p256.sign(offline, bytes));
+    equal(undo.prev as String, cid);
+    equal(stringify(undo.toJson()['rotationKeys']), stringify(genesis.toJson()['rotationKeys']));
+    isTrue(undo.isSignedBy(publicKeyFor(KeyType.P256, offline)), 'signed by the offline key');
+
+    // The online key cannot undo its own operation, a stranger's key is not
+    // a rotation key, and the last operation has nothing after it.
+    isTrue(plcError(() => { undoOperation(log, cid, publicKeyFor(KeyType.P256, online)); }).contains('not above'));
+    isTrue(plcError(() => { undoOperation(log, cid, publicKeyFor(KeyType.P256, signing)); }).contains('not one of'));
+    isTrue(plcError(() => { undoOperation(log, moved.cid().toString(), publicKeyFor(KeyType.P256, offline)); })
+      .contains('nothing after'));
+    isTrue(plcError(() => { undoOperation(log, 'bafyreinope', publicKeyFor(KeyType.P256, offline)); })
+      .contains('not in the log'));
+  });
+
+  test('gives the DID document an operation describes', async (ctx) => {
+    let rotation = hex.decode(((await cases())[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+    let signing = publicKeyFor(KeyType.P256, hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721'));
+    let genesis = genesisOperation(signing, [publicKeyFor(KeyType.P256, rotation)], 'router.acme.pkg.test',
+        'https://pkg.test').signedWith((bytes) => p256.sign(rotation, bytes));
+    let did = didOfGenesis(genesis);
+    let document = parseDidDocument(parseJson(stringify(didDocument(did, genesis))), did);
+    equal(document.handle as String, 'router.acme.pkg.test');
+    equal(document.pds as String, 'https://pkg.test');
+    equal(formatDidKey(document.signingKey as PublicKey), formatDidKey(signing));
+  });
+
+  test('refuses operations that are not plc_operations', (ctx) => {
+    isTrue(plcError(() => { PlcOperation.fromJson(parseJson('{"type": "create"}')); }).contains('plc_operation'));
+    isTrue(plcError(() => { PlcOperation.fromJson(parseJson('[]')); }).contains('not a JSON object'));
+  });
+
+  test('sends an operation to a PLC directory, which may refuse it', async (ctx): Future<void> => {
+    let received = new JsonObject();
+    let app = new App();
+    app.use(async (req, res, next): Future<void> => {
+      received['path'] = req.path;
+      let body = parseJson(await req.text()) as JsonObject;
+      received['body'] = body;
+      res.type = 'application/json';
+      if ((body['alsoKnownAs'] as JsonArray).length == 0) {
+        res.statusCode = 400;
+        res.body = '{"message":"no handle"}';
+      } else {
+        res.body = '';
+      }
+    });
+    let server = new Server(app, 0 as u16);
+    server.start();
+    let directory = `http://127.0.0.1:${server.port as i32}`;
+    let c = (await cases())[0] as JsonObject;
+    let operation = PlcOperation.fromJson(c['operation']);
+    let did = c['did'] as String;
+    await submitPlcOperation(directory, did, operation);
+    equal(received['path'] as String, `/${did}`);
+    isTrue(PlcOperation.fromJson(received['body']).cid().equals(operation.cid()));
+
+    let empty = new PlcOperation(operation.rotationKeys, operation.verificationMethods,
+        new GrowableArray<String>(), operation.services, null, operation.sig);
+    var refused = '';
+    try {
+      await submitPlcOperation(directory, did, empty);
+    } catch (e) {
+      refused = if (e is PlcError) e.message else `another error: ${e.message}`;
+    }
+    isTrue(refused.contains('HTTP 400') && refused.contains('no handle'), refused);
+    server.close();
+  });
+});

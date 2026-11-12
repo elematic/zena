@@ -1,6 +1,6 @@
 # The image of both services: the App View, registry.wasm, built from
-# zena/main.zena, and padstone, pds.wasm, built from
-# packages/pds/zena/main.zena; the zena-run host binary, which runs them;
+# src/main.zena, and padstone, pds.wasm, built from
+# packages/pds/src/main.zena; the zena-run host binary, which runs them;
 # and the web app (packages/pds-web), which the App View serves from /web.
 # It runs the App View; padstone's service runs pds.wasm instead
 # (deploy.sh).

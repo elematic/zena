@@ -14,7 +14,7 @@
 #   ... operator.sh set-limit router.acme.pkg-staging.zena-lang.dev packageBytes 134217728
 #   ... operator.sh set-limit acme.pkg-staging.zena-lang.dev scopeActions default
 #
-# It runs packages/registry/zena/main.zena with the repository's zena-cli,
+# It runs packages/registry/src/main.zena with the repository's zena-cli,
 # so build that first (npm run build -w @zena-lang/zena-cli). The access
 # token lasts an hour, which is more than any of these takes.
 
@@ -49,4 +49,4 @@ export GOOGLE_OAUTH_ACCESS_TOKEN
 
 echo "running $1 against $PDS_ENV as $SERVICE_ACCOUNT_EMAIL"
 cd ../../..
-exec ./target/release/zena-cli run packages/registry/zena/main.zena -- "$@"
+exec ./target/release/zena-cli run packages/registry/src/main.zena -- "$@"

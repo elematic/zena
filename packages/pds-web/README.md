@@ -2,7 +2,7 @@
 
 The stylesheet, script, and static documentation (`/docs/`) of the App
 View's web pages. The dynamic pages are rendered on the server, by the App
-View written in Zena (`packages/registry/zena/web`), as `zena:http` routes
+View written in Zena (`packages/registry/src/web`), as `zena:http` routes
 using its `html` tag:
 
 - `/`: the landing page, with a hero search form (`?q=`), every package,

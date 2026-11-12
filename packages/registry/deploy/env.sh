@@ -22,7 +22,7 @@
 # and a Cloud DNS zone. Everything an environment owns has its name, and
 # staging's are production's with -staging after them.
 #
-# The App View's online rotation key (packages/pds/zena/signer.zena) is in
+# The App View's online rotation key (packages/pds/src/signer.zena) is in
 # Cloud KMS for production, which signs with it and never lets it out.
 # Staging keeps the secret its accounts were made with, since an App View
 # whose key changed could no longer sign their operations; ZENA_ROTATION_KMS=1
@@ -31,7 +31,7 @@
 # Cloud KMS in both: replacing it only changes the App View's DID document. The
 # operator's offline rotation key, ranked above the online one, is
 # ZENA_OFFLINE_ROTATION_KEY: its did:key, from
-# `zena-cli run packages/registry/zena/main.zena -- generate-key`, whose private
+# `zena-cli run packages/registry/src/main.zena -- generate-key`, whose private
 # key is kept offline. Production needs it. ZENA_ADMIN_DIDS lists the DIDs
 # of the App View's admins, who see everything it holds in the web app,
 # separated by spaces or commas.

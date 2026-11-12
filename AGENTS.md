@@ -204,7 +204,7 @@ in the root `CLAUDE.md`.
 - **`packages/package-manager`**: The package manager's libraries: records, source archives, fetching, version selection, manifests and workspaces, and the registry's lexicons (`@zena-lang/package-manager`).
 - **`packages/pds`**: An AT Protocol PDS written in Zena, ported from pds.js, with managed accounts for the App Views it trusts (`@zena-lang/pds`). (See [pds.md](docs/design/pds.md)).
 - **`packages/registry`**: The Zena App View, the package manager's service: the registry methods, the site, and the service that runs them with the PDS (`@zena-lang/registry`). (See [package-manager.md](docs/design/package-manager.md)).
-- **`packages/pds-web`**: The stylesheet and script of the App View's web pages, which the App View renders on the server (`packages/registry/zena/web`): Radica's design tokens and the few Radica elements the pages use (`@zena-lang/pds-web`).
+- **`packages/pds-web`**: The stylesheet and script of the App View's web pages, which the App View renders on the server (`packages/registry/src/web`): Radica's design tokens and the few Radica elements the pages use (`@zena-lang/pds-web`).
 - **`packages/language-service`**: Language service library, `lsp.zena` / `lsp.wasm`, and the JS API around it (`@zena-lang/language-service`). Published.
 - **`packages/zenadoc`**: API documentation extraction — reads a package's source and emits JSON describing its public API (`@zena-lang/zenadoc`). (See [zenadoc.md](docs/design/zenadoc.md)).
 - **`packages/codemirror`**: Zena support for CodeMirror 6 (`@zena-lang/codemirror`). Published.
@@ -472,7 +472,7 @@ script and everything after it, so keep inputs to what the script reads:
 - **Manifests.** A compile reads every `zena-package.json` in the
   workspace, but its output depends only on the root manifest and the
   manifests of the packages it reaches. List those
-  (`../atproto/zena/zena-package.json`), never a glob over all of them.
+  (`../atproto/zena-package.json`), never a glob over all of them.
   The root `check:workspace` script fails `npm test` when any manifest
   cannot be read.
 - **Sources.** List the directories a compile's imports reach, such as a
