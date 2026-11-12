@@ -2,7 +2,7 @@
 title: 'WebAssembly Playground'
 description: 'An embeddable browser playground evolving from Zena into a language-agnostic WebAssembly IDE with pluggable build workers, LSP, and preview.'
 status: 'In progress'
-statusType: 'warning'
+statusType: 'success'
 lead: 'Starting as the Zena playground, this project is growing into a general WebAssembly playground driven by a standard build worker, language server, console output, and preview protocol that any Wasm-compiled toolchain can plug into.'
 ---
 

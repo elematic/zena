@@ -2,7 +2,7 @@
 title: 'Zena CLI & Host Runtime'
 description: 'Shared Wasmtime host crates and WIT interfaces extending WASI with process management, sandboxed Wasm plugins, stack traces, and caching.'
 status: 'In progress'
-statusType: 'warning'
+statusType: 'success'
 lead: 'The Zena CLI, zena-runtime crate, and zena:host WIT interfaces extend standard WASI with practical host capabilities—spawning processes, running sandboxed Wasm plugins, caching AOT code, and formatting stack traces.'
 ---
 

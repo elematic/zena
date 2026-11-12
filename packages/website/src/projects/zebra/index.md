@@ -2,7 +2,7 @@
 title: 'Zebra'
 description: 'The Zena Build and Run tool: a Wireit-inspired task graph, content-addressed build cache, and dev service supervisor, with planned WebAssembly build rules.'
 status: 'In progress'
-statusType: 'warning'
+statusType: 'success'
 lead: "Zebra is the Zena Build and Run tool—an incremental task runner, build cache, and dev service supervisor inspired by Google's Wireit and written in Zena."
 ---
 

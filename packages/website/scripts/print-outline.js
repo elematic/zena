@@ -13,6 +13,7 @@ import {existsSync} from 'node:fs';
 import {writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import projects from '../src/_data/projects.js';
 import sidebar from '../src/_data/sidebar.js';
 
 const SRC = fileURLToPath(new URL('../src/', import.meta.url));
@@ -23,13 +24,9 @@ const SECTION_TITLES = {
   '/reference/': 'Reference',
   '/api/': 'API',
   '/development/': 'Development',
-  '/projects/zebra/': 'Projects — Zebra',
-  '/projects/zenafx/': 'Projects — ZenaFX',
-  '/projects/pds/': 'Projects — AT Protocol PDS',
-  '/projects/wasm-web-ui/': 'Projects — Wasm Web UI',
-  '/projects/playground/': 'Projects — WebAssembly Playground',
-  '/projects/runtime/': 'Projects — Zena CLI & Host Runtime',
-  '/projects/ssg/': 'Projects — Static Site Generator',
+  ...Object.fromEntries(
+    projects.map((project) => [project.link, `Projects — ${project.title}`]),
+  ),
 };
 
 /** Mirrors the path mapping in scaffold-docs.js. */

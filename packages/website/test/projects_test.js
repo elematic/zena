@@ -70,6 +70,23 @@ describe('projects section navigation, sidebars, and content', () => {
         /^status:\s*['"]?Draft['"]?/m,
         `Expected ${mdPath} not to be a Draft placeholder`,
       );
+      assert.equal(
+        source.match(/^status:\s*'([^']+)'/m)?.[1],
+        project.status,
+        `Expected ${project.slug}/index.md status to match projects.js`,
+      );
+      assert.equal(
+        source.match(/^statusType:\s*'([^']+)'/m)?.[1],
+        project.statusType,
+        `Expected ${project.slug}/index.md statusType to match projects.js`,
+      );
+      if (project.status === 'In progress') {
+        assert.equal(
+          project.statusType,
+          'success',
+          `Expected "In progress" project ${project.slug} to use green success badge`,
+        );
+      }
 
       const headings = [...source.matchAll(/^## (.+)$/gm)].map((m) =>
         m[1].trim(),
@@ -125,7 +142,7 @@ describe('projects section navigation, sidebars, and content', () => {
           content: `
             <main class="main">
               <div class="prose">
-                <h1>Zebra<span class="badge warning">In progress</span></h1>
+                <h1>Zebra<span class="badge success">In progress</span></h1>
                 <p class="lead">Zebra is the Zena Build and Run tool.</p>
                 <h2 id="build-and-run-model">Build and run model</h2>
                 <p>Targets run incrementally.</p>

@@ -2,7 +2,7 @@
 title: 'Package Manager'
 description: 'An AT Protocol package manager and registry App View for managing package, scope, team, and organization accounts, permission delegation, and release publishing, with planned WebAssembly plugins.'
 status: 'In progress'
-statusType: 'warning'
+statusType: 'success'
 lead: 'A package manager and registry built on the AT Protocol—managing accounts for packages, scopes, teams, and organizations, delegated publishing permissions, and a registry App View.'
 ---
 

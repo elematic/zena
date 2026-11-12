@@ -2,7 +2,7 @@
 title: 'AT Protocol PDS'
 description: 'An extendable, multi-tenant AT Protocol Personal Data Server written in Zena for custom account models, permission delegation, and content policies.'
 status: 'In progress'
-statusType: 'warning'
+statusType: 'success'
 lead: 'An extendable, multi-tenant AT Protocol Personal Data Server written in Zena—built for systems that customize account creation, permission delegation, and allowed content, including accounts that represent documents, packages, and other objects.'
 ---
 

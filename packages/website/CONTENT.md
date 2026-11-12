@@ -725,7 +725,7 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Incremental steps, resident workers, and graph queries
     - Current status and roadmap
 
-## /projects/package-manager/
+## Projects — Package Manager
 
 - **Package Manager**
   - ✅ [Overview](src/projects/package-manager/index.md) — `/projects/package-manager/`

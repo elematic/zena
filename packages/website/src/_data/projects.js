@@ -10,7 +10,7 @@ export default [
     title: 'Zebra',
     link: '/projects/zebra/',
     status: 'In progress',
-    statusType: 'warning',
+    statusType: 'success',
     tagline:
       'Build and run tool inspired by Wireit, with planned Wasm build rules',
     summary:
@@ -22,7 +22,7 @@ export default [
     title: 'Package Manager',
     link: '/projects/package-manager/',
     status: 'In progress',
-    statusType: 'warning',
+    statusType: 'success',
     tagline:
       'AT Protocol package manager and registry, with planned Wasm plugins',
     summary:
@@ -45,7 +45,7 @@ export default [
     title: 'AT Protocol PDS',
     link: '/projects/pds/',
     status: 'In progress',
-    statusType: 'warning',
+    statusType: 'success',
     tagline: 'Extendable, multi-tenant AT Protocol Personal Data Server',
     summary:
       'Multi-tenant PDS designed for systems that customize account creation, permission delegation, and allowed content—including accounts that represent packages, documents, organizations, and other objects.',
@@ -67,7 +67,7 @@ export default [
     title: 'WebAssembly Playground',
     link: '/projects/playground/',
     status: 'In progress',
-    statusType: 'warning',
+    statusType: 'success',
     tagline: 'In-browser editor, worker protocol, and sandboxed preview',
     summary:
       'Growing from the Zena playground into a general WebAssembly playground with a standard build worker, LSP, console output, and multi-file preview protocol that any Wasm-compiled compiler can plug into.',
@@ -78,7 +78,7 @@ export default [
     title: 'Zena CLI & Host Runtime',
     link: '/projects/runtime/',
     status: 'In progress',
-    statusType: 'warning',
+    statusType: 'success',
     tagline: 'Wasmtime host crate and WIT interfaces extending WASI',
     summary:
       'Shared Rust host crates and zena:host WIT interfaces for spawning processes, loading capability-sandboxed Wasm plugins, caching compiled components, and formatting Wasm stack traces.',
