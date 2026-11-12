@@ -1,20 +1,23 @@
 /**
  * The App View's admin page, for the DIDs in `APP_VIEW_ADMIN_DIDS`: every account
- * the App View made, by scope. An admin signs in as anyone does; the scope and
- * package pages then name every private member for them too
- * (`AppView.getEntries`).
+ * the App View made, by scope, and who may create scopes. An admin signs in as
+ * anyone does; the scope and package pages then name every private member for
+ * them too (`AppView.getEntries`). The page changes nothing: the list of who
+ * may create scopes changes through `putScopeCreator`, from `zena pkg admin`.
  */
 
 import {HashMap} from 'zena:collections';
 import {GrowableArray} from 'zena:core';
 import {HTMLPartial, Router, TemplateValue, html} from 'zena:http';
+import {formatTimestamp} from 'zena:time';
 import {compareKeys} from 'atproto/mst';
 import {AccountKind} from 'pds/storage';
-import {AppViewAccount, AppView} from '../../app-view.zena';
+import {AppViewAccount, AppView, ScopeCreation, ScopeCreator} from '../../app-view.zena';
+import {personLink} from '../partials/person.zena';
 import {page} from '../layout.zena';
 import {count, each, when} from '../partials/common.zena';
-import {contextOf} from '../session.zena';
-import {People} from '../people.zena';
+import {PageContext, contextOf} from '../session.zena';
+import {People, Person} from '../people.zena';
 
 /** One scope's accounts: its organization, its packages and its automation accounts. */
 final class ScopeAccounts {
@@ -48,6 +51,12 @@ export function adminPage(router: Router, appView: AppView, people: People): voi
       return;
     }
     let scopes = byScope(await appView.listAccounts(who.did));
+    let creators = await appView.scopeCreators();
+    let dids = new GrowableArray<String>();
+    for (let creator in creators) {
+      dids.push(creator.did);
+    }
+    let named = await people.each(dids);
     var packages = 0;
     var automation = 0;
     for (let scope in scopes) {
@@ -64,8 +73,32 @@ export function adminPage(router: Router, appView: AppView, people: People): voi
         </p>
       </div>
       ${if (scopes.length == 0) html`<p class="muted">The App View holds nothing yet.</p>` else table(scopes)}
+      ${creatorsSection(context, appView.config.scopeCreation, creators, named)}
     `);
   });
+}
+
+/** Who may create scopes: anyone, or the admins and the accounts listed, with who listed each and when. */
+function creatorsSection(context: PageContext, creation: ScopeCreation, creators: Array<ScopeCreator>,
+    named: HashMap<String, Person>): HTMLPartial {
+  let rule = if (creation == ScopeCreation.Listed) {
+    html`<p class="muted">Only the App View's admins and the accounts listed here may create a scope. Change the
+      list with <code>zena pkg admin allow</code> and <code>zena pkg admin deny</code>.</p>`
+  } else {
+    html`<p class="muted">Anyone may create a scope (<code>APP_VIEW_SCOPE_CREATORS=anyone</code>), so this list
+      decides nothing.</p>`
+  };
+  return html`
+    <h2>Who may create scopes</h2>
+    ${rule}
+    ${if (creators.length == 0) html`<p class="muted">No one is listed.</p>` else html`
+      <ul class="plain">${each(creators, (creator) => html`
+        <li>${personLink(context, named[creator.did])}
+          <span class="mono muted">${creator.did}</span>
+          <span class="muted">listed by <span class="mono">${creator.addedBy}</span>
+            on ${formatTimestamp(creator.addedAt * (1000 as i64)).sliceBytes(0, 10)}</span></li>`)}
+      </ul>`}
+  `;
 }
 
 function table(scopes: Array<ScopeAccounts>): HTMLPartial {

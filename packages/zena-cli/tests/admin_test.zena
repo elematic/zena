@@ -1,0 +1,60 @@
+/**
+ * `zena pkg admin`, against `tests/fixtures/publish-stack.zena` with a
+ * registry that lets only its admins, Bob, and the accounts they list
+ * create scopes: Bob lists Alice, who creates a scope, and takes her off
+ * the list again.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {JsonObject, parseJson} from 'zena:json';
+import {Scratch, ZenaCommand, described, fakePdsOrigin, read, startFakePds, stopFakePds, write} from './cli-support.zena';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
+
+export let tests = suite('zena pkg admin', () => {
+  test('lets an admin list who may create scopes on a registry that lists them', async (ctx) => {
+    let scratch = await Scratch.create('admin');
+    let stack = await startFakePds(scratch, 'publish-stack.zena', null,
+        [('STACK_SCOPE_CREATORS', 'listed'), ('STACK_ADMINS', BOB)]);
+    try {
+      await fakePdsOrigin(scratch, stack);
+      let addresses = parseJson(await read(scratch.at('pds/stack.json'))) as JsonObject;
+      let person = (who: String) =>
+        new ZenaCommand(scratch.at('lib'), scratch.host('cache'))
+          .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
+          .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
+          .set('ZENA_REGISTRY', addresses['registry'] as String)
+          .set('ZENA_CONFIG_DIR', scratch.host(`config-${who}`));
+      await write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}\n');
+      let alice = person('alice');
+      isTrue((await alice.run(['pkg', 'login', ALICE, '--password-stdin'], 'app-password\n')).succeeded(), 'alice signs in');
+      let bob = person('bob');
+      isTrue((await bob.run(['pkg', 'login', BOB, '--password-stdin'], 'bob-password\n')).succeeded(), 'bob signs in');
+
+      let refused = await alice.run(['pkg', 'scope', 'create', 'acme', '--yes']);
+      isTrue(!refused.succeeded() && refused.stderr.contains('NotAllowed'), described(refused));
+      let notAdmin = await alice.run(['pkg', 'admin', 'allow', ALICE]);
+      isTrue(!notAdmin.succeeded() && notAdmin.stderr.contains('Forbidden'), described(notAdmin));
+
+      let allowed = await bob.run(['pkg', 'admin', 'allow', ALICE]);
+      isTrue(allowed.succeeded() && allowed.stdout.contains('may now create scopes'), described(allowed));
+      let listed = await bob.run(['pkg', 'admin', 'list']);
+      isTrue(listed.succeeded() && listed.stdout.contains('only its admins and these accounts') &&
+          listed.stdout.contains(ALICE) && listed.stdout.contains(`listed by ${BOB}`), described(listed));
+      let created = await alice.run(['pkg', 'scope', 'create', 'acme', '--yes']);
+      isTrue(created.succeeded(), described(created));
+
+      let denied = await bob.run(['pkg', 'admin', 'deny', ALICE]);
+      isTrue(denied.succeeded() && denied.stdout.contains('may no longer create scopes'), described(denied));
+      let again = await alice.run(['pkg', 'scope', 'create', 'other', '--yes']);
+      isTrue(!again.succeeded() && again.stderr.contains('NotAllowed'), described(again));
+      let usage = await bob.run(['pkg', 'admin', 'grant', ALICE]);
+      isTrue(!usage.succeeded() && usage.stderr.contains('usage: zena pkg admin'), described(usage));
+    } finally {
+      await stopFakePds(stack);
+      await scratch.remove();
+    }
+  });
+});

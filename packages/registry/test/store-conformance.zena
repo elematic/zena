@@ -15,7 +15,7 @@ import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto/plc';
 import {MemberEntry, OWNER} from 'package-manager/records';
 import {AccountKind} from 'pds/storage';
 import {
-  ALL_TIME, AppViewAccount, AppViewStore, Count, Limit, PackageSummary, PendingChange, PendingRelease
+  ALL_TIME, AppViewAccount, AppViewStore, Count, Limit, PackageSummary, PendingChange, PendingRelease, ScopeCreator
 } from 'registry/app-view';
 import {PlcLog} from 'registry/plc-directory';
 
@@ -46,6 +46,27 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     equal((await store.nameInScope('acme', 'router')) as String, ALICE);
     await store.releaseName('acme', 'router', ALICE);
     isNull(await store.nameInScope('acme', 'router'));
+  });
+
+  test('keeps who may create scopes, and who listed them when', async (ctx) => {
+    let store = make();
+    isNull(await store.scopeCreator(ALICE));
+    equal((await store.scopeCreators()).length, 0);
+    await store.putScopeCreator(new ScopeCreator(ALICE, BOB, 1792800000000000 as i64));
+    let kept = (await store.scopeCreator(ALICE)) as ScopeCreator;
+    equal(kept.did, ALICE);
+    equal(kept.addedBy, BOB);
+    equal(kept.addedAt, 1792800000000000 as i64);
+    await store.putScopeCreator(new ScopeCreator(BOB, BOB, 1792800000000001 as i64));
+    equal((await store.scopeCreators()).length, 2);
+    await store.deleteScopeCreator(ALICE);
+    isNull(await store.scopeCreator(ALICE));
+    let left = await store.scopeCreators();
+    equal(left.length, 1);
+    equal(left[0].did, BOB);
+    // Deleting one that is not listed changes nothing.
+    await store.deleteScopeCreator(ALICE);
+    equal((await store.scopeCreators()).length, 1);
   });
 
   test('keeps the accounts the App View holds, with their kinds, scopes and names', async (ctx) => {

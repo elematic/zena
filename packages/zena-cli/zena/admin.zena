@@ -1,0 +1,84 @@
+/**
+ * `zena pkg admin allow <person>`, `zena pkg admin deny <person>` and
+ * `zena pkg admin list`: who may create scopes on a registry that lets only
+ * its admins and the accounts they list (`scopeCreation` is `listed` in
+ * `describeRegistry`), as during a preview. Only the registry's admins may
+ * run them. Inside a scope, its owners decide who belongs, so the list is
+ * the only gate on who brings packages onto the registry.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { Future } from 'zena:async';
+import { JsonArray, JsonObject } from 'zena:json';
+import { Box } from 'zena:core';
+import { XrpcClient } from 'atproto/xrpc';
+import { LIST_SCOPE_CREATORS, PUT_SCOPE_CREATOR } from 'package-manager/registry-methods';
+import { Options } from './env.zena';
+import { packageResolver } from './fetch.zena';
+import { personDid } from './members.zena';
+import { PublishError, Registry, findRegistry, registryClient, runCommand, saveIfRefreshed, signedIn } from './publish.zena';
+
+export async function adminCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await runCommand(async (): Future<void> => {
+    let action = if (args.rest.length > 0) args.rest[0] else '';
+    let usage = 'usage: zena pkg admin allow <person> | deny <person> | list';
+    if (action == 'list') {
+      if (args.rest.length != 1) {
+        throw new PublishError(usage);
+      }
+    } else if ((action != 'allow' && action != 'deny') || args.rest.length != 2) {
+      throw new PublishError(usage);
+    }
+    let session = await signedIn();
+    let registry = await findRegistry(args);
+    if (action == 'list') {
+      await list(registry, await registryClient(session, registry, LIST_SCOPE_CREATORS));
+      await saveIfRefreshed(session);
+      return;
+    }
+    let person = args.rest[1];
+    let did = await personDid(person);
+    let input = new JsonObject();
+    input['did'] = did;
+    input['allowed'] = new Box<boolean>(action == 'allow');
+    let client = await registryClient(session, registry, PUT_SCOPE_CREATOR);
+    await client.procedure(PUT_SCOPE_CREATOR, input);
+    if (action == 'allow') {
+      console.log(`${person} (${did}) may now create scopes on ${registry.origin}.`);
+    } else {
+      console.log(`${person} (${did}) may no longer create scopes on ${registry.origin}; the scopes it created stay.`);
+    }
+    if (!registry.listsScopeCreators) {
+      console.log(`${registry.origin} lets anyone create a scope, so the list decides nothing there yet.`);
+    }
+    await saveIfRefreshed(session);
+  });
+}
+
+/** Prints who the registry lists as ones that may create scopes, with who listed each and when. */
+async function list(registry: Registry, client: XrpcClient): Future<void> {
+  let answer = (await client.query(LIST_SCOPE_CREATORS)) as JsonObject;
+  let creators = answer['creators'] as JsonArray;
+  if (registry.listsScopeCreators) {
+    console.log(`On ${registry.origin}, only its admins and these accounts may create scopes:`);
+  } else {
+    console.log(`${registry.origin} lets anyone create a scope; the list decides nothing there yet:`);
+  }
+  if (creators.length == 0) {
+    console.log('  (none)');
+  }
+  for (var i = 0; i < creators.length; i += 1) {
+    let creator = creators[i] as JsonObject;
+    let did = creator['did'] as String;
+    console.log(`  ${await handleOf(did)} ${did}, listed by ${creator['addedBy'] as String} at ${creator['addedAt'] as String}`);
+  }
+}
+
+/** `did`'s handle when it resolves back to `did`, or `(no handle)`. */
+async function handleOf(did: String): Future<String> {
+  try {
+    return (await packageResolver().resolve(did)).handle ?? '(no handle)';
+  } catch (e) {
+    return '(no handle)';
+  }
+}

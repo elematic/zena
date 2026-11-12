@@ -23,7 +23,8 @@
  *   (`limitName`); and `counts/{subject} {limit} {period}`: `count`, how
  *   many actions or creations a count has had, and for a day's count
  *   `expiresAt`, two days on, which the database's TTL policy deletes it
- *   at.
+ *   at; and `scopeCreators/{did}`: `addedBy` and `addedAt`, each account
+ *   the admins listed as one that may create scopes.
  */
 
 import {Future} from 'zena:async';
@@ -43,7 +44,7 @@ import {
 } from 'pds/firestore';
 import {
   ALL_TIME, ClaimedName, ClaimedScope, AppViewAccount, AppViewStore, Count, LIMITS, Limit, Limits, PackageSummary,
-  PendingChange, PendingRelease, limitName
+  PendingChange, PendingRelease, ScopeCreator, limitName
 } from './app-view.zena';
 import {PlcLog} from './plc-directory.zena';
 
@@ -357,6 +358,31 @@ export final class FirestoreAppViewStore implements AppViewStore {
       return null;
     });
   }
+
+  async putScopeCreator(creator: ScopeCreator): Future<void> {
+    await this.#root.collection('scopeCreators').doc(creator.did).set(new Fields()
+      .string('addedBy', creator.addedBy)
+      .integer('addedAt', creator.addedAt));
+  }
+
+  async deleteScopeCreator(did: String): Future<void> {
+    await this.#root.collection('scopeCreators').doc(did).delete();
+  }
+
+  async scopeCreator(did: String): Future<ScopeCreator | null> {
+    return scopeCreatorFrom(await this.#root.collection('scopeCreators').doc(did).get());
+  }
+
+  async scopeCreators(): Future<Array<ScopeCreator>> {
+    let all = new GrowableArray<ScopeCreator>();
+    for (let snapshot in await this.#root.collection('scopeCreators').get()) {
+      let creator = scopeCreatorFrom(snapshot);
+      if (creator != null) {
+        all.push(creator);
+      }
+    }
+    return all;
+  }
 }
 
 /** The limits a `limits/{did}` document sets, each a field named for its limit. */
@@ -368,6 +394,18 @@ function limitsFrom(snapshot: DocumentSnapshot): Limits {
     }
   }
   return limits;
+}
+
+/** The listing `snapshot` holds, or null when it holds none. */
+function scopeCreatorFrom(snapshot: DocumentSnapshot): ScopeCreator | null {
+  let addedBy = stringAt(snapshot, 'addedBy');
+  if (addedBy == null) {
+    return null;
+  }
+  if (let (true, addedAt) = snapshot.getInteger('addedAt')) {
+    return new ScopeCreator(snapshot.id, addedBy, addedAt);
+  }
+  return null;
 }
 
 /** A staging PLC directory's operations in Firestore, for `tenant`. */

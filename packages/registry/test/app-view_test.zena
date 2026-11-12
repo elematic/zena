@@ -32,7 +32,7 @@ import {Range, Version} from 'zena-lang:semver';
 import {MemoryHandleRecords} from 'registry/handles';
 import {
   ClaimedName, ClaimedScope, AppViewAccount, AppViewConfig, AppViewError, AppViewStore, MemoryAppViewStore, PENDING_MICROS, AppView,
-  Count, Limit, Limits, PackageSummary, PendingChange, PendingRelease, limitName, limitNamed
+  Count, Limit, Limits, PackageSummary, PendingChange, PendingRelease, ScopeCreation, ScopeCreator, limitName, limitNamed
 } from 'registry/app-view';
 import {MAX_README_BYTES, ReleaseContents, ReleaseFile} from 'registry/release-contents';
 import {nowMicros} from 'pds/xrpc/common';
@@ -356,6 +356,10 @@ final class StaleAppViewStore implements AppViewStore {
   async addCounts(counts: Array<Count>, nowMicros: i64): Future<Count | null> {
     return await this.#inner.addCounts(counts, nowMicros);
   }
+  async putScopeCreator(creator: ScopeCreator): Future<void> { await this.#inner.putScopeCreator(creator); }
+  async deleteScopeCreator(did: String): Future<void> { await this.#inner.deleteScopeCreator(did); }
+  async scopeCreator(did: String): Future<ScopeCreator | null> { return await this.#inner.scopeCreator(did); }
+  async scopeCreators(): Future<Array<ScopeCreator>> { return await this.#inner.scopeCreators(); }
 }
 
 /** A day, in microseconds. */
@@ -2085,6 +2089,40 @@ export let tests = suite('registry/app-view', () => {
     isTrue(router.contains(carol) && router.contains('(private)'), router);
     // Signed out, /admin asks to sign in.
     isTrue(pageOf(await fixture.get('/admin')).contains('Sign in as one of'), 'admin, signed out');
+  });
+
+  test('lets only the accounts its admins list create scopes, when it lists them', async (ctx) => {
+    let fixture = new Fixture();
+    let appView = fixture.appView as AppView;
+    let describe = '/xrpc/dev.zena-lang.registry.describeRegistry';
+    equal(json(await fixture.get(describe))['scopeCreation'] as String, 'anyone');
+    appView.config.scopeCreation = ScopeCreation.Listed;
+    equal(json(await fixture.get(describe))['scopeCreation'] as String, 'listed');
+    equal(errorOf(await createOrganization(fixture, ALICE, 'acme')), 'NotAllowed');
+
+    // Only an admin lists anyone, or sees who is listed.
+    let listAlice = `{"did": "${ALICE}", "allowed": true}`;
+    equal(errorOf(await fixture.call(ALICE, 'putScopeCreator', listAlice)), 'Forbidden');
+    equal(errorOf(await fixture.query(ALICE, 'listScopeCreators', '')), 'Forbidden');
+    appView.config.admins.add(BOB);
+    // An admin creates scopes without being listed.
+    ok(await createOrganization(fixture, BOB, 'bobs'));
+    ok(await fixture.call(BOB, 'putScopeCreator', listAlice));
+    let listed = ok(await fixture.query(BOB, 'listScopeCreators', ''))['creators'] as JsonArray;
+    equal(listed.length, 1);
+    let entry = listed[0] as JsonObject;
+    equal(entry['did'] as String, ALICE);
+    equal(entry['addedBy'] as String, BOB);
+    isTrue((entry['addedAt'] as String).endsWith('Z'), entry['addedAt'] as String);
+    ok(await createOrganization(fixture, ALICE, 'acme'));
+    let admin = pageOf(await fixture.get('/admin', await webCookie(fixture, BOB)));
+    isTrue(admin.contains('Who may create scopes') && admin.contains(ALICE), admin);
+
+    ok(await fixture.call(BOB, 'putScopeCreator', `{"did": "${ALICE}", "allowed": false}`));
+    equal(errorOf(await createOrganization(fixture, ALICE, 'other')), 'NotAllowed');
+    equal((ok(await fixture.query(BOB, 'listScopeCreators', ''))['creators'] as JsonArray).length, 0);
+    equal(errorOf(await fixture.call(BOB, 'putScopeCreator', '{"did": "alice", "allowed": true}')), 'InvalidRequest');
+    equal(errorOf(await fixture.call(BOB, 'putScopeCreator', `{"did": "${ALICE}"}`)), 'InvalidRequest');
   });
 
   test('refuses calls without a valid, unused token for the method', async (ctx) => {

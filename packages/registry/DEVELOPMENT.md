@@ -311,6 +311,19 @@ act as:
 PDS_ENV=staging packages/registry/deploy/operator.sh create-scope zena-lang --owner did:plc:...
 ```
 
+Both environments let only their admins and the accounts they list
+create scopes (the settings' `SCOPE_CREATORS=listed`). To let someone
+create one, signed in with `zena pkg login` as an admin:
+
+```sh
+zena pkg admin allow <their handle or DID>   # with ZENA_REGISTRY naming the environment
+zena pkg admin list                          # who is listed, by whom, and when
+zena pkg admin deny <their handle or DID>    # their scopes stay
+```
+
+The change applies at once, with no deploy. Inside a scope, its owners
+add whoever they like, so the list only decides who brings new scopes.
+
 The App View limits the storage releases take: 4 MiB for one release, 64
 MiB for a package's releases, those waiting for approval included, and
 256 MiB for the releases of a scope's packages. It also counts each day's

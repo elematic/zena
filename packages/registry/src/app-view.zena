@@ -359,6 +359,39 @@ export interface AppViewStore {
    * call. A store may forget a day's counts once the day is over.
    */
   addCounts(counts: Array<Count>, nowMicros: i64): Future<Count | null>;
+  /** Lists `creator.did` among the accounts that may create scopes, in place of any listing before. */
+  putScopeCreator(creator: ScopeCreator): Future<void>;
+  /** Takes `did` off that list. */
+  deleteScopeCreator(did: String): Future<void>;
+  /** `did`'s listing, or null when it is not listed. */
+  scopeCreator(did: String): Future<ScopeCreator | null>;
+  /** Every account listed, in no order. */
+  scopeCreators(): Future<Array<ScopeCreator>>;
+}
+
+/**
+ * An account the App View's admins have listed as one that may create
+ * scopes, which matters while the App View lets only those
+ * (`ScopeCreation.Listed`): who listed it, and when, in microseconds since
+ * the epoch.
+ */
+export final class ScopeCreator {
+  did: String;
+  addedBy: String;
+  addedAt: i64;
+
+  new(this.did, this.addedBy, this.addedAt);
+}
+
+/**
+ * Who may create a scope (`APP_VIEW_SCOPE_CREATORS`): anyone, or only the
+ * App View's admins and the accounts they list, as during a preview.
+ * Inside a scope, its owners decide who belongs, so the list gates what
+ * comes onto the App View without a check on each publish.
+ */
+export enum ScopeCreation {
+  Anyone,
+  Listed
 }
 
 /**
@@ -436,6 +469,7 @@ export final class MemoryAppViewStore implements AppViewStore {
   #limits = new HashMap<String, Limits>();
   /** Each count by its key (`Count.key`). */
   #counts = new HashMap<String, i64>();
+  #scopeCreators = new HashMap<String, ScopeCreator>();
 
   async putAccount(account: AppViewAccount): Future<void> {
     this.#accounts[account.did] = account;
@@ -692,6 +726,29 @@ export final class MemoryAppViewStore implements AppViewStore {
     }
     return null;
   }
+
+  async putScopeCreator(creator: ScopeCreator): Future<void> {
+    this.#scopeCreators[creator.did] = creator;
+  }
+
+  async deleteScopeCreator(did: String): Future<void> {
+    this.#scopeCreators.delete(did);
+  }
+
+  async scopeCreator(did: String): Future<ScopeCreator | null> {
+    if (let (true, creator) = this.#scopeCreators.get(did)) {
+      return creator;
+    }
+    return null;
+  }
+
+  async scopeCreators(): Future<Array<ScopeCreator>> {
+    let all = new GrowableArray<ScopeCreator>();
+    this.#scopeCreators.forEach((did, creator) => {
+      all.push(creator);
+    });
+    return all;
+  }
 }
 
 /** An account `#prepareAccount` made ready, with the DID it will have. */
@@ -776,6 +833,8 @@ export final class AppViewConfig {
   var packages: i64 = 1000;
   /** Scope names no one may take. */
   reservedScopes = new HashSet<String>();
+  /** Who may create a scope (`APP_VIEW_SCOPE_CREATORS`). */
+  var scopeCreation = ScopeCreation.Anyone;
   /**
    * The DIDs of the App View's admins (`APP_VIEW_ADMIN_DIDS`), who sign in as
    * themselves, as anyone does, and may see every account the App View holds
@@ -1042,6 +1101,10 @@ export final class AppView {
    */
   async createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
       : Future<Created> {
+    if (!(await this.mayCreateScopes(caller))) {
+      throw new AppViewError(403, 'NotAllowed',
+          `only the accounts this registry's admins have listed may create scopes on it, and ${caller} is not one`);
+    }
     if (this.config.reservedScopes.has(name)) {
       throw new AppViewError(400, 'NameTaken', `'${name}' cannot be a scope`);
     }
@@ -1883,6 +1946,52 @@ export final class AppView {
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of this App View`);
     }
     return await this.#store.accounts();
+  }
+
+  /**
+   * Whether `did` may create a scope: anyone may, unless the App View lets
+   * only its admins and the accounts they list (`ScopeCreation.Listed`).
+   */
+  async mayCreateScopes(did: String): Future<boolean> {
+    return this.config.scopeCreation == ScopeCreation.Anyone || this.isAppViewAdmin(did) ||
+        (await this.#store.scopeCreator(did)) != null;
+  }
+
+  /**
+   * `putScopeCreator`: lists `did` among the accounts that may create
+   * scopes, or with `allowed` false takes it off the list. Admins only.
+   * Scopes it created before stay.
+   */
+  async putScopeCreator(caller: String, did: String, allowed: boolean, nowMicros: i64): Future<void> {
+    if (!this.isAppViewAdmin(caller)) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of this App View`);
+    }
+    if (!isValidDid(did)) {
+      throw new AppViewError(400, 'InvalidRequest', `'${did}' is not a DID`);
+    }
+    if (allowed) {
+      await this.#store.putScopeCreator(new ScopeCreator(did, caller, nowMicros));
+    } else {
+      await this.#store.deleteScopeCreator(did);
+    }
+  }
+
+  /** `listScopeCreators`: the accounts listed as ones that may create scopes, earliest first. Admins only. */
+  async listScopeCreators(caller: String): Future<Array<ScopeCreator>> {
+    if (!this.isAppViewAdmin(caller)) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of this App View`);
+    }
+    return await this.scopeCreators();
+  }
+
+  /** The accounts listed as ones that may create scopes, earliest first, for the admin page. */
+  async scopeCreators(): Future<Array<ScopeCreator>> {
+    let all = new GrowableArray<ScopeCreator>();
+    for (let creator in await this.#store.scopeCreators()) {
+      all.push(creator);
+    }
+    all.sort((a, b) => if (a.addedAt < b.addedAt) -1 else if (a.addedAt > b.addedAt) 1 else 0);
+    return all;
   }
 
   /** The account the App View made with the DID `did`, or null. */

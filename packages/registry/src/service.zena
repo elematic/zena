@@ -74,6 +74,9 @@
  *   passes spaces, since `gcloud --set-env-vars` splits on commas.
  * - `APP_VIEW_RESERVED_SCOPES`: scope names no one may take,
  *   comma-separated, beside the App View's own.
+ * - `APP_VIEW_SCOPE_CREATORS`: who may create a scope: `anyone`, the
+ *   default, or `listed`, the admins and the accounts they list with
+ *   `putScopeCreator` (`zena pkg admin allow`), as during a preview.
  * - `APP_VIEW_PRIVATE_READS`: `1` lets the App View read PDSes at
  *   addresses on this machine or a private network, as a stack on one
  *   machine needs (tests, demos). Off by default, so a DID document cannot
@@ -126,7 +129,7 @@ import {Sessions} from 'pds/sessions';
 import {KmsSigner, LocalSigner, Signer} from 'pds/signer';
 import {SigningKey} from 'pds/storage';
 import {REQUEST_BODY_LIMIT} from 'pds/xrpc/common';
-import {AppViewConfig, AppViewStore, MemoryAppViewStore, AppView} from './app-view.zena';
+import {AppViewConfig, AppViewStore, MemoryAppViewStore, AppView, ScopeCreation} from './app-view.zena';
 import {FirestoreAppViewStore, FirestorePlcLog} from './firestore.zena';
 import {DerivedObjects} from './release-contents.zena';
 import {CloudDnsRecords, HandleRecords, MemoryHandleRecords} from './handles.zena';
@@ -171,6 +174,8 @@ export final class AppViewSettings {
   var admins: Array<String> = [];
   /** Whether the App View may read PDSes on this machine or a private network (`APP_VIEW_PRIVATE_READS`). */
   var privateReads = false;
+  /** Who may create a scope (`APP_VIEW_SCOPE_CREATORS`). */
+  var scopeCreation = ScopeCreation.Anyone;
   records: RecordsChoice;
 
   new(this.domain, this.serviceDid, this.rotationKey, this.reservedScopes, this.records);
@@ -378,6 +383,10 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
       }
     }
   }
+  let creatorsText = value('APP_VIEW_SCOPE_CREATORS') ?? 'anyone';
+  if (creatorsText != 'anyone' && creatorsText != 'listed') {
+    problems.push(`APP_VIEW_SCOPE_CREATORS is anyone or listed, not ${creatorsText}`);
+  }
   let admins = new GrowableArray<String>();
   let adminText = value('APP_VIEW_ADMIN_DIDS');
   if (adminText != null) {
@@ -440,6 +449,7 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
   settings.admins = admins;
   settings.offlineRotationKey = offlineKey;
   settings.privateReads = privateReads == '1';
+  settings.scopeCreation = if (creatorsText == 'listed') ScopeCreation.Listed else ScopeCreation.Anyone;
 
   var plcStaging = false;
   let plcMode = value('APP_VIEW_PLC') ?? 'public';
@@ -561,6 +571,7 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   appViewConfig.siteUrl = settings.siteUrl;
   appViewConfig.offlineRotationKey = settings.offlineRotationKey;
   appViewConfig.privateReads = settings.privateReads;
+  appViewConfig.scopeCreation = settings.scopeCreation;
   for (let did in settings.admins) {
     appViewConfig.admins.add(did);
   }

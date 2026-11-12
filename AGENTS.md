@@ -352,6 +352,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
     shows a release, or changes to who belongs, waiting for approval and,
     with `--yes`, approves them. **`pkg retract <version> [--reason]`**
     marks a release so that choosing a version skips it.
+  - **`pkg admin allow|deny <person>`** and **`pkg admin list`**: who may
+    create scopes on a registry that lets only its admins and the accounts
+    they list (`APP_VIEW_SCOPE_CREATORS=listed`). Its admins only.
   - **`pkg ci create <scope>/<name>`** makes an automation account for CI
     to publish as, and prints its token, which `pkg publish` calls the
     registry with from `ZENA_REGISTRY_TOKEN`; **`pkg ci token

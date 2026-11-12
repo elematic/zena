@@ -18,7 +18,9 @@
  *   a deleted scope's record would be.
  *
  * With `STACK_WEB_DIR` naming a directory it can read, the App View serves
- * it as the web app's assets. Run from the repository root with
+ * it as the web app's assets. `STACK_ADMINS` names the App View's admins,
+ * separated by spaces, and `STACK_SCOPE_CREATORS=listed` lets only them and
+ * the accounts they list create scopes. Run from the repository root with
  * `--dir <scratch>::/out`, it writes
  * `/out/stack.json` (`{"plc", "dns", "registry"}`), then `/out/plc.txt` (the PLC
  * directory's origin), and serves until it is killed.
@@ -34,6 +36,7 @@ import {MemoryHandleRecords, dnsOverHttpsApp} from 'registry/handles';
 import {MEMBERS_TYPE, MemberEntry, Members} from 'package-manager/records';
 import {FakePds, KEY, didDocument} from 'package-manager/testing/fake-pds';
 import {InMemory, PdsConfig} from 'pds/service';
+import {ScopeCreation} from 'registry/app-view';
 import {AppViewSettings, RecordsInMemory, ServiceConfig, serve} from 'registry/service';
 
 export async function main(): Future<i32> {
@@ -57,6 +60,13 @@ export async function main(): Future<i32> {
   let registry = new AppViewSettings('pkg.test', null, null, new GrowableArray<String>(), new RecordsInMemory());
   // The maintainers' PDS is on this machine.
   registry.privateReads = true;
+  let admins = getEnv('STACK_ADMINS');
+  if (admins != null) {
+    registry.admins = admins.split(' ');
+  }
+  if (getEnv('STACK_SCOPE_CREATORS') == 'listed') {
+    registry.scopeCreation = ScopeCreation.Listed;
+  }
   let pds = new PdsConfig(0 as u16, new InMemory(), 0);
   pds.plcDirectory = world.plcDirectory;
   let config = new ServiceConfig(pds, registry, world.plcDirectory, world.dnsOverHttps);
