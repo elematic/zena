@@ -1185,6 +1185,19 @@ caller as its only owner. Like `zena pkg publish`, it names the handle it
 would create, `acme.pkg.zena-lang.dev`, and stops, and `--yes` creates
 it. It prints the scope's DID and handle.
 
+**Who may create a scope.** Anyone, by default. An App View that is not
+open to everyone yet, as during a preview, sets
+`APP_VIEW_SCOPE_CREATORS=listed`: then only its admins and the accounts
+they list may create a scope, and `createOrganization` refuses anyone else
+with `NotAllowed`. Admins change the list with `zena pkg admin allow` and
+`deny` (`putScopeCreator`) and see it with `zena pkg admin list`
+(`listScopeCreators`) and on `/admin`, at once, with no deploy. The list
+gates scopes only: inside a scope its owners decide who belongs, so a
+member or an automation account publishes without being listed, and a
+listed owner vouches for whoever they add. `describeRegistry` says which
+rule applies (`scopeCreation`). Taking an account off the list leaves the
+scopes it created.
+
 Publishing does not create scopes. A publish that names a scope the App View
 does not have stops, and says to create it with `zena pkg scope create`. If
 publishing created it, a mistyped `--scope` would make a scope no one
@@ -1890,7 +1903,9 @@ once the attestations the previous record requires reach the log.
 
 | Method                    | Caller                                                        | What it does                                                        |
 | ------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `createOrganization`      | anyone the App View's limits allow                            | creates a scope, with the caller as its only owner                  |
+| `createOrganization`      | anyone the App View's limits allow, or only those it lists    | creates a scope, with the caller as its only owner                  |
+| `putScopeCreator`         | the App View's admins                                         | lists an account as one that may create scopes, or unlists it       |
+| `listScopeCreators`       | the App View's admins                                         | returns the accounts listed, with who listed each and when          |
 | `createPackage`           | an organization's admins, or a team they allow                | creates a package with its profile and maintainers record           |
 | `createAutomationAccount` | an organization's admins                                      | creates an account for CI and returns its token once                |
 | `uploadArtifact`          | a package's maintainers                                       | stores an artifact, or one part of it, as a blob of the package     |

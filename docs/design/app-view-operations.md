@@ -100,6 +100,7 @@ session, because the App View holds nothing that can write there
 | Operation                                            | Who                                        | Exists                                                                              |
 | ---------------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------- |
 | Create a scope                                       | a person the App View allows               | `zena pkg scope create`; `createOrganization`                                       |
+| List who may create scopes, while only those may     | App View admins                            | `zena pkg admin`; `putScopeCreator`, `listScopeCreators`; seen on `/admin`          |
 | Approve a scope request                              | App View admins                            | no; `create-scope` for the operator                                                 |
 | Claim a scope by domain or GitHub org                | a person                                   | no                                                                                  |
 | See a scope's members and teams                      | members; owners and admins see all         | `/scopes/<name>`; `zena pkg scope members`, `getEntries`                            |
@@ -161,6 +162,7 @@ package-manager.md, "Reports and takedowns".
 | Delete a release for a legal notice          | no                                          |
 | Refuse a maintainer's requests               | no                                          |
 | Reserve scope names                          | `APP_VIEW_RESERVED_SCOPES`, by the operator |
+| Let only listed accounts create scopes       | `APP_VIEW_SCOPE_CREATORS`, by the operator  |
 | Label what was taken down, and why           | no; needs the labeler                       |
 | See a log of admin actions                   | no                                          |
 

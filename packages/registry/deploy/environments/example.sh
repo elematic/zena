@@ -43,6 +43,9 @@ OFFLINE_ROTATION_KEY=
 # The App View's admins, separated by spaces: they see everything it holds
 # in the web app.
 ADMIN_DIDS=did:plc:exampleexampleexampleex
+# Who may create a scope: anyone, or listed, only the admins and the
+# accounts they list with `zena pkg admin allow`, as during a preview.
+SCOPE_CREATORS=listed
 
 # Backups (setup.sh): 1 adds a weekly backup kept 14 weeks to the daily ones.
 WEEKLY_BACKUPS=0

@@ -1,0 +1,46 @@
+/**
+ * The App View methods only its admins (`APP_VIEW_ADMIN_DIDS`) may call:
+ * the list of accounts that may create scopes while the App View lets only
+ * those (`APP_VIEW_SCOPE_CREATORS=listed`).
+ */
+
+import {Future} from 'zena:async';
+import {Router} from 'zena:http';
+import {JsonArray, JsonObject} from 'zena:json';
+import {formatTimestamp} from 'zena:time';
+import {LIST_SCOPE_CREATORS, PUT_SCOPE_CREATOR} from 'package-manager/registry-methods';
+import {AppView} from '../app-view.zena';
+import {fail, jsonBody, nowMicros} from 'pds/xrpc/common';
+import {registryProcedure, registryQuery} from './common.zena';
+
+/** Adds the admins' methods to `router`. */
+export function adminRoutes(router: Router, appView: AppView): void {
+  registryProcedure(router, appView, PUT_SCOPE_CREATOR, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    let did = input['did'];
+    let allowed = input['allowed'];
+    if (!(did is String) || !(allowed is Box<boolean>)) {
+      fail(res, 400, 'InvalidRequest', 'did and allowed are required');
+      return null;
+    }
+    await appView.putScopeCreator(caller, did, allowed.value, nowMicros());
+    return new JsonObject();
+  });
+
+  registryQuery(router, appView, LIST_SCOPE_CREATORS, async (req, res, caller): Future<JsonObject | null> => {
+    let creators = new JsonArray();
+    for (let creator in await appView.listScopeCreators(caller)) {
+      let entry = new JsonObject();
+      entry['did'] = creator.did;
+      entry['addedBy'] = creator.addedBy;
+      entry['addedAt'] = formatTimestamp(creator.addedAt * (1000 as i64));
+      creators.push(entry);
+    }
+    let answer = new JsonObject();
+    answer['creators'] = creators;
+    return answer;
+  });
+}

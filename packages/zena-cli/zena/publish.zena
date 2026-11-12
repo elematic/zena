@@ -79,6 +79,8 @@ export final class Registry {
   did: String;
   /** The domain its scopes' handles are under. */
   domain: String;
+  /** Whether only its admins and the accounts they list may create scopes (`scopeCreation` is `listed`). */
+  var listsScopeCreators = false;
 
   new(origin: String, did: String, domain: String) : origin = origin, did = did, domain = domain;
 }
@@ -263,7 +265,9 @@ export async function findRegistry(args: ParsedArgs): Future<Registry> {
   let described = (await new XrpcClient(origin).query(DESCRIBE_REGISTRY)) as JsonObject;
   let did = described['did'] as String;
   await checkRegistryDid(origin, did);
-  return new Registry(origin, did, described['domain'] as String);
+  let registry = new Registry(origin, did, described['domain'] as String);
+  registry.listsScopeCreators = described['scopeCreation'] == 'listed';
+  return registry;
 }
 
 /**
