@@ -36,6 +36,7 @@ const LINTED = /^packages\/.*\.zena$/;
 const NOT_LINTED = [
   // Inputs the compiler's own tests compile, many deliberately unidiomatic.
   /^packages\/zena-compiler\/test-files\//,
+  /^packages\/zena-lint\/test\/fixtures\//,
 ];
 const SUBJECT = /^(\[[a-z0-9][a-z0-9.-]*\])+ \S/;
 

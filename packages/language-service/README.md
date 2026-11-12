@@ -1,20 +1,45 @@
-# @zena-lang/language-service
+# `language-service`
 
-The Zena language service and compiler, compiled to WebAssembly, with a
-JavaScript API around it.
+The Zena language service and Language Server Protocol (LSP) implementation: diagnostics, lint findings and quick fixes, hover, completions, go-to-definition, document symbols, and formatting.
 
-One package holds both `lsp.wasm` and the wrapper that calls into it, so the
-two can't drift: the getters the API reads are the getters that build exported.
+Also published to npm as `@zena-lang/language-service` with a WebAssembly build (`lsp.wasm`) and a JavaScript/TypeScript API.
 
-```sh
-npm i @zena-lang/language-service
+## Usage in Zena
+
+```zena
+import { createLanguageService } from 'language-service';
+import { LspServer } from 'language-service/server';
+import { readFile } from 'zena:fs';
+
+async function readOrNull(path: String): Future<String | null> {
+  try {
+    return await readFile(path);
+  } catch (e) {
+    return null;
+  }
+}
+
+let service = createLanguageService('/stdlib', readOrNull, 'zena-component');
+let diagnostics = await service.check('/workspace/main.zena', 'export let x = 42;');
 ```
 
-## Usage
+### Zena Libraries
 
-The module never touches the filesystem or the network by itself. You supply
-the Wasm and a `readFile` hook, so the same code runs in Node, in a browser,
-in a Web Worker, and in an editor extension host.
+- `language-service` / `language-service/service` — `LanguageService` (`createLanguageService`, `check`, `lint`, `hover`, `completions`, `definition`, `documentSymbols`)
+- `language-service/server` — `LspServer` JSON-RPC request/notification handler (`LspServer`, `MessageReader`, `frame`, `offsetOf`, `positionOf`)
+- `language-service/protocol` — LSP JSON serializers and error codes
+- `language-service/framing` — `Content-Length` message framing (`MessageReader`, `frame`)
+- `language-service/positions` — UTF-16 line/character positions to and from byte offsets (`offsetOf`, `positionOf`)
+- `language-service/hover` — hover type and doc-comment formatting
+- `language-service/completion` — identifier, member, and keyword completions
+- `language-service/symbols` — document symbol outline (`documentSymbols`, `DocumentSymbol`, `SymbolKind`)
+- `language-service/compile` — in-memory compilation to WebAssembly bytes (`compileToWasm`)
+- `language-service/host` — overlay `CompilerHost` serving open documents in place of disk files (`DocumentHost`)
+- `language-service/analysis` — per-document checked AST and scope analysis
+
+## Usage in JavaScript / TypeScript (`@zena-lang/language-service`)
+
+The WebAssembly module never touches the filesystem or the network by itself. Supply the Wasm binary and a `readFile` hook to run in Node, a browser, a Web Worker, or an editor extension host:
 
 ```ts
 import {createLanguageService} from '@zena-lang/language-service';
@@ -37,21 +62,9 @@ for (const d of await service.check('main.zena', 'let x: i32 = "hello";')) {
 }
 ```
 
-`readFile` may return a string or a promise of one: the compiler reads
-files asynchronously, so a browser host can fetch a library when the
-compiler first asks for it. The methods that analyze a document
-(`check`, `lint`, `hover`, `completions`, `definition`, `documentSymbols`,
-`compileToWasm`) return promises.
+### In a Browser
 
-`wasm` accepts a URL, a string, a `Response`, bytes, or an already-compiled
-`WebAssembly.Module`. It defaults to `lspWasmUrl`, which resolves `lsp.wasm`
-relative to this module — bundlers that understand
-`new URL(..., import.meta.url)` emit it as an asset automatically.
-
-### In a browser
-
-There is no filesystem, so serve the stdlib from a bundled map and let
-`createVirtualFileReader` resolve module specifiers against it:
+Serve the standard library from a bundled map and let `createVirtualFileReader` resolve module specifiers against it:
 
 ```ts
 import {
@@ -65,57 +78,23 @@ const service = await createLanguageService({
 });
 ```
 
-Every method is synchronous, and a full check is slow enough to drop frames.
-Run it in a Web Worker — or use
-[`@zena-lang/playground`](https://www.npmjs.com/package/@zena-lang/playground),
-which already does.
+### JavaScript API
 
-## API
+`createLanguageService(options)` returns a `ZenaLanguageService` bound to one Wasm instance:
 
-`createLanguageService(options)` returns a `ZenaLanguageService` bound to one
-Wasm instance:
+| Method                            | Returns                           |
+| --------------------------------- | --------------------------------- |
+| `check(path, source?)`            | `Promise<Diagnostic[]>`           |
+| `lint(path, source?)`             | `Promise<LintFinding[]>`          |
+| `hover(path, offset, source?)`    | `Promise<HoverInfo \| null>`      |
+| `completions(path, offset, src?)` | `Promise<CompletionItem[]>`       |
+| `definition(path, offset, src?)`  | `Promise<DefinitionInfo \| null>` |
+| `documentSymbols(path, source?)`  | `Promise<DocumentSymbolInfo[]>`   |
+| `format(source)`                  | `string`                          |
+| `compileToWasm(path, source?)`    | `Promise<Uint8Array \| null>`     |
+| `openDocument(path, source)`      | shadows `readFile` for `path`     |
+| `closeDocument(path)`             | drops the shadow                  |
 
-| Method                            | Returns                       |
-| --------------------------------- | ----------------------------- |
-| `check(path, source?)`            | `Diagnostic[]`                |
-| `hover(path, offset, source?)`    | `HoverInfo \| null`           |
-| `completions(path, offset, src?)` | `CompletionItem[]`            |
-| `definition(path, offset, src?)`  | `DefinitionInfo \| null`      |
-| `documentSymbols(path, source?)`  | `DocumentSymbolInfo[]`        |
-| `format(source)`                  | `string`                      |
-| `compileToWasm(path, source?)`    | `Uint8Array \| null`          |
-| `openDocument(path, source)`      | shadows `readFile` for `path` |
-| `closeDocument(path)`             | drops the shadow              |
+## License
 
-Analysis is stateful: `check()` parses and types a document, and the position
-queries read back from that analysis. Passing `source` to a query checks first,
-so a query for a document that was never checked still works.
-
-`service.exports` is the raw Wasm exports, for anything not wrapped here.
-
-## Building
-
-The analysis is a library in `zena/lib/`, which `zena/lsp.zena` wraps in
-the flat exports this API calls. The same library, with the protocol, is
-the language server that `zena lsp` runs over stdin and stdout for other
-editors.
-
-| File              | What                                                              |
-| ----------------- | ----------------------------------------------------------------- |
-| `service.zena`    | `LanguageService`: the compiler, open documents, go to definition |
-| `host.zena`       | The compiler host that serves open documents in place of files    |
-| `analysis.zena`   | What the features share about a checked file                      |
-| `hover.zena`      | Hover                                                             |
-| `completion.zena` | Completions                                                       |
-| `symbols.zena`    | Document symbols, the outline                                     |
-| `compile.zena`    | Compiling a document to a module, for the playground              |
-| `server.zena`     | `LspServer`: the protocol's requests and notifications            |
-| `protocol.zena`   | The protocol's JSON, and its error codes                          |
-| `positions.zena`  | Protocol positions (UTF-16) to and from byte offsets              |
-| `framing.zena`    | `Content-Length` framing of messages                              |
-
-`lsp.wasm` is built from `zena/lsp.zena` by the Zena compiler:
-
-```sh
-npm run build -w @zena-lang/language-service
-```
+MIT
