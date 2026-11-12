@@ -11,6 +11,13 @@ import {AstTransformer, BlockContinue, BlockLineState, BlockParserFactory, Custo
 import {InlineParser} from './inline-parser.zena';
 import {trimSpaces, normalizeLinkLabel, unescapeString, scanLinkDestination, scanLinkTitle, scanLinkLabel} from './scanner.zena';
 
+/**
+ * How many blocks may be open at once, the document included: quotes,
+ * lists and list items nest no deeper. markdown-it's default preset allows
+ * the same depth.
+ */
+let MAX_BLOCK_NESTING = 100;
+
 enum OpenBlockKind {
   Doc,
   Quote,
@@ -218,7 +225,10 @@ export final class DocumentBlockParser {
       }
 
       let matchedBlock = this.#openBlocks[matchedCount - 1];
-      let started = this.#tryStartNewBlock(
+      // Past MAX_BLOCK_NESTING, a marker that would open another block is
+      // text: every walk over the tree recurses through the blocks, and a
+      // deeper document would overflow the stack.
+      let started = this.#openBlocks.length <= MAX_BLOCK_NESTING && this.#tryStartNewBlock(
         state,
         matchedBlock,
         currentTip,
