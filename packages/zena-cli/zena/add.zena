@@ -24,18 +24,19 @@
 import { ParsedArgs } from 'zena:args';
 import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
-import { OrderedHashMap } from 'zena:collections';
+import { HashSet, OrderedHashMap } from 'zena:collections';
 import { exists, readFile, writeFile } from 'zena:fs';
 import { Cid } from 'atproto/cid';
 import { IdentityResolver } from 'atproto/identity';
 import { writeDependencies } from 'package-manager/manifest';
 import { isValidLocalName, parsePackageVersion } from 'package-manager/records';
 import {
-  DEFAULT_DOMAIN, fetchProfile, isScopedIdentifier, listVersions, networkReleases, resolveIdentifier, scopedHandle,
+  DEFAULT_DOMAIN, fetchProfile, isScopedIdentifier, listVersions, NetworkSource, resolveIdentifier, scopedHandle,
   scopedName
 } from 'package-manager/registry';
 import {
-  Pin, PinAdded, PinChange, PinChangedInPlace, PinRemoved, PinVersionChanged, diffPins, readPins, writeLockfile
+  Pin, PinAdded, PinChange, PinChangedInPlace, PinRemoved, PinVersionChanged, diffPins, packageKey, readPins,
+  writeLockfile
 } from 'package-manager/resolution';
 import { Requirement, resolve } from 'package-manager/resolve';
 import { Range, Version } from 'zena-lang:semver';
@@ -125,9 +126,16 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
 
   requirements[name] = new Requirement(did, Range.parse(`^${chosen.toString()}`));
   console.log(`Adding ${name} to ${target.manifestPath()}: ${did} ${chosen.toString()}`);
-  return await resolveWriteAndFetch(workspace, target, resolver, args.getFlag('allow-changed'), options);
+  // The version chosen is kept, as a pin is, where the ranges allow it.
+  let chosenKey = packageKey(did, chosen);
+  return await resolveWriteAndFetch(workspace, target, resolver, args, options, (pin) => true, chosenKey);
 }
 
+/**
+ * Selects versions again without keeping the lockfile's pins of the named
+ * dependencies, or of any package when none is named, so that each range
+ * gets the highest version it can. The manifests do not change.
+ */
 export async function updateCommand(args: ParsedArgs, options: Options): Future<i32> {
   let workspace = await readWorkspace(workspaceRoot().value, new DiskFiles());
   let target = workspace.packageAt(userCwd().value);
@@ -136,37 +144,18 @@ export async function updateCommand(args: ParsedArgs, options: Options): Future<
     console.log(`Nothing to update: ${target.manifestPath()} declares no published dependencies.`);
     return 0;
   }
+  let dids = new HashSet<String>();
   for (let name in args.rest) {
-    if (!requirements.has(name)) {
+    if (let (true, requirement) = requirements.get(name)) {
+      dids.add(requirement.did);
+    } else {
       console.error(`Error: ${target.manifestPath()} has no published dependency named '${name}'.`);
       return 1;
     }
   }
-  let resolver = packageResolver();
-  let updated = new OrderedHashMap<String, Requirement>();
-  let entries = new GrowableArray<(String, Requirement)>();
-  requirements.forEach((name, requirement) => {
-    entries.push((name, requirement));
-  });
-  for (let (name, requirement) in entries) {
-    if (args.rest.length == 0 || args.rest.contains(name)) {
-      let document = await resolver.resolveDid(requirement.did);
-      let versions = await listVersions(document);
-      let latest = versions.latest(requirement.minimum.major);
-      if (latest != null && latest.compareTo(requirement.minimum) > 0) {
-        let raised = Range.parse(`^${latest.toString()}`);
-        console.log(`Updating ${name}: ${requirement.range.text} -> ${raised.text}`);
-        updated[name] = new Requirement(requirement.did, raised);
-      }
-    }
-  }
-  if (updated.size == 0) {
-    console.log('Every dependency is at its latest version.');
-  }
-  updated.forEach((name, requirement) => {
-    requirements[name] = requirement;
-  });
-  return await resolveWriteAndFetch(workspace, target, resolver, args.getFlag('allow-changed'), options);
+  let named = args.rest.length > 0;
+  return await resolveWriteAndFetch(workspace, target, packageResolver(), args, options,
+      (pin) => named && !dids.has(pin.did));
 }
 
 /**
@@ -227,19 +216,50 @@ function nameTaken(workspace: Workspace, target: WorkspacePackage, name: String,
 
 /**
  * Selects versions for the whole workspace, with `target`'s changed
- * requirements, writes `target`'s manifest and the lockfile, prints what
- * changed in its pins, and fetches what it pins. Nothing is written when
- * selection fails, or when a pinned release changed in place and
- * `allowChanged` is false.
+ * requirements, keeping the pins `keep` accepts, and the version `also`
+ * names, where the ranges allow,
+ * writes `target`'s manifest and the lockfile, prints what changed in its
+ * pins, and fetches what it pins. A version lowered to share it with
+ * another package is a warning, and so, with `--duplicates warn` or the
+ * root manifest's `"duplicates": "warn"`, is a package selected at two
+ * versions. Nothing is written when selection fails, when a pinned release
+ * changed in place and `--allow-changed` is not given, or when a package
+ * has two versions under `--duplicates error`.
  */
 async function resolveWriteAndFetch(workspace: Workspace, target: WorkspacePackage,
-    resolver: IdentityResolver, allowChanged: boolean, options: Options): Future<i32> {
+    resolver: IdentityResolver, args: ParsedArgs, options: Options, keep: (pin: Pin) => boolean,
+    also: String | null = null): Future<i32> {
+  var duplicates = workspace.root.manifest.duplicates;
+  if (let (true, given) = args.getOption('duplicates')) {
+    duplicates = given;
+  }
+  if (duplicates != 'allow' && duplicates != 'warn' && duplicates != 'error') {
+    console.error(`Error: --duplicates is allow, warn or error, not '${duplicates}'.`);
+    return 2;
+  }
   let requirements = target.manifest.requirements;
   let lockfilePath = workspace.lockfilePath();
   let before = if (await exists(lockfilePath)) readPins(await readFile(lockfilePath)) else new GrowableArray<Pin>();
-  let resolution = await resolve(workspace.requirements(), networkReleases(resolver));
+  let preferred = new HashSet<String>();
+  for (let pin in before) {
+    if (keep(pin)) {
+      preferred.add(pin.key);
+    }
+  }
+  if (also != null) {
+    preferred.add(also);
+  }
+  let resolution = await resolve(workspace.requirements(), new NetworkSource(resolver), preferred);
   let changes = diffPins(before, resolution);
-  if (!allowChanged && refuseChangedInPlace(changes)) {
+  if (!args.getFlag('allow-changed') && refuseChangedInPlace(changes)) {
+    return 1;
+  }
+  let twice = resolution.duplicates();
+  if (twice.size > 0 && duplicates == 'error') {
+    twice.forEach((did, versions) => {
+      console.error(`Error: ${did} would be installed at ${listVersionsOf(versions)}.`);
+    });
+    console.error('Nothing was written: --duplicates error refuses a package at two versions.');
     return 1;
   }
   let lockfile = writeLockfile(resolution, workspace.pinsByPackage(resolution));
@@ -249,9 +269,35 @@ async function resolveWriteAndFetch(workspace: Workspace, target: WorkspacePacka
     console.log('zena-lock.json is unchanged.');
   }
   for (let change in changes) {
+    if (let PinVersionChanged {pin, now} = change) {
+      if (now.version.compareTo(pin.version) < 0) {
+        // Selection lowers a version only to install one where it would
+        // otherwise install two.
+        console.error(`warning: ${describeChange(change)}, to share one version with another package`);
+        continue;
+      }
+    }
     console.log(describeChange(change));
   }
+  twice.forEach((did, versions) => {
+    let line = `${did} is installed at ${listVersionsOf(versions)}, for ranges no one version is in`;
+    if (duplicates == 'warn') {
+      console.error(`warning: ${line}`);
+    } else {
+      console.log(line);
+    }
+  });
   return await fetchAndReport(readPins(lockfile), options);
+}
+
+/** `versions` as `1.1.5 and 1.9.0`. */
+function listVersionsOf(versions: GrowableArray<Version>): String {
+  var text = '';
+  for (var i = 0; i < versions.length; i += 1) {
+    let separator = if (i == 0) '' else if (i == versions.length - 1) ' and ' else ', ';
+    text = `${text}${separator}${versions[i].toString()}`;
+  }
+  return text;
 }
 
 /**

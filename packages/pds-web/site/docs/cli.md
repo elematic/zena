@@ -24,7 +24,9 @@ Adds a published package to the current package's `zena-package.json`, selects v
 zena pkg update [<local-name>...]
 ```
 
-Raises the specified dependencies (or all dependencies when none are named) to the latest non-retracted version within their current major version, updates `zena-lock.json`, and fetches any new archives.
+Selects versions again for the specified dependencies (or all dependencies when none are named), taking the latest non-retracted version their ranges allow instead of the version `zena-lock.json` pins, updates `zena-lock.json`, and fetches any new archives. The manifests do not change.
+
+`zena pkg add` and `zena pkg update` both take `--duplicates allow|warn|error`: what to do when no one version of a package is in every range that asks for it, so that two are installed. `allow`, the default, lists them; `warn` prints a warning; `error` refuses and writes nothing. `"duplicates"` in the workspace root's `zena-package.json` sets the default.
 
 ### `zena pkg fetch`
 

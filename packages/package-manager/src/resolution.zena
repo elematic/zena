@@ -181,21 +181,43 @@ export final class Resolution {
 
   /**
    * The key of the version selected for a dependency on `did` with
-   * `range`, or null when none was. Minimal version selection selects one
-   * version per package and major version, that of the range's minimum.
+   * `range`: the highest selected version of `did` in the range, or null
+   * when none is.
    */
   keyOf(did: String, range: Range): String | null {
-    let minimum = range.minimum();
-    if (minimum == null) {
-      return null;
-    }
+    var found: ResolvedPackage | null = null;
     for (let key in this.packages.keys()) {
       let pkg = this.packages[key];
-      if (pkg.did == did && pkg.version.major == minimum.major) {
-        return key;
+      if (pkg.did == did && range.includes(pkg.version)) {
+        let current = found;
+        if (current == null || pkg.version.compareTo(current.version) > 0) {
+          found = pkg;
+        }
       }
     }
-    return null;
+    return found?.key;
+  }
+
+  /** Each package selected at more than one version, with its versions in order. */
+  duplicates(): OrderedHashMap<String, GrowableArray<Version>> {
+    let byPackage = new OrderedHashMap<String, GrowableArray<Version>>();
+    for (let key in this.packages.keys()) {
+      let pkg = this.packages[key];
+      if (let (true, versions) = byPackage.get(pkg.did)) {
+        versions.push(pkg.version);
+      } else {
+        let versions = new GrowableArray<Version>();
+        versions.push(pkg.version);
+        byPackage[pkg.did] = versions;
+      }
+    }
+    let out = new OrderedHashMap<String, GrowableArray<Version>>();
+    byPackage.forEach((did, versions) => {
+      if (versions.length > 1) {
+        out[did] = versions;
+      }
+    });
+    return out;
   }
 }
 
@@ -248,7 +270,11 @@ export sealed class PinChange {
   case PinAdded(now: ResolvedPackage)
   /** A package the lockfile pinned, and no longer does. */
   case PinRemoved(pin: Pin)
-  /** A package pinned at another version of the same major version, higher or lower. */
+  /**
+   * A package pinned at another version of the same major version, higher
+   * or lower: the one version of that major version the lockfile pinned
+   * and the one the resolution selects instead.
+   */
   case PinVersionChanged(pin: Pin, now: ResolvedPackage)
   /**
    * A package at the version it was pinned at, with another release
@@ -260,38 +286,65 @@ export sealed class PinChange {
 }
 
 /**
- * What writing `after` changes in the pins `before`: a change for each
- * package `after` selects, in its order, and then each package `before`
- * pins that `after` does not, in theirs. A package whose pin stays the
- * same has no change.
+ * What writing `after` changes in the pins `before`, in `after`'s order
+ * and then `before`'s: a version both have with other CIDs was changed in
+ * place; a package and major version with one version before and another
+ * after changed version; any other version only one of them has was added
+ * or removed. A pin that stays the same has no change.
  */
 export function diffPins(before: GrowableArray<Pin>, after: Resolution): GrowableArray<PinChange> {
-  // Minimal version selection pins one version per package and major
-  // version, so a pin's counterpart is the one at the same major version.
   let pinned = new HashMap<String, Pin>();
+  // The versions only `before` or only `after` has, by package and major version.
+  let gone = new HashMap<String, GrowableArray<Pin>>();
+  let fresh = new HashMap<String, GrowableArray<ResolvedPackage>>();
   for (let pin in before) {
-    pinned[`${pin.did}@${pin.version.major}`] = pin;
+    pinned[pin.key] = pin;
+    if (!after.packages.has(pin.key)) {
+      append(gone, slotOf(pin.did, pin.version), pin);
+    }
   }
-  let selected = new HashSet<String>();
-  after.packages.forEach((key, pkg) => {
-    selected.add(`${pkg.did}@${pkg.version.major}`);
-  });
-  let changes = new GrowableArray<PinChange>();
   after.packages.forEach((key, now) => {
-    if (let (true, pin) = pinned.get(`${now.did}@${now.version.major}`)) {
-      if (pin.version.compareTo(now.version) != 0) {
-        changes.push(new PinVersionChanged(pin, now));
-      } else if (!pin.release.equals(now.release) || !pin.source.equals(now.source)) {
-        changes.push(new PinChangedInPlace(pin, now));
-      }
-    } else {
-      changes.push(new PinAdded(now));
+    if (!pinned.has(key)) {
+      append(fresh, slotOf(now.did, now.version), now);
     }
   });
+  let changes = new GrowableArray<PinChange>();
+  let paired = new HashSet<String>();
+  after.packages.forEach((key, now) => {
+    if (let (true, pin) = pinned.get(key)) {
+      if (!pin.release.equals(now.release) || !pin.source.equals(now.source)) {
+        changes.push(new PinChangedInPlace(pin, now));
+      }
+      return;
+    }
+    let slot = slotOf(now.did, now.version);
+    if (let (true, pins) = gone.get(slot)) {
+      if (pins.length == 1 && fresh[slot].length == 1) {
+        changes.push(new PinVersionChanged(pins[0], now));
+        paired.add(pins[0].key);
+        return;
+      }
+    }
+    changes.push(new PinAdded(now));
+  });
   for (let pin in before) {
-    if (!selected.has(`${pin.did}@${pin.version.major}`)) {
+    if (!after.packages.has(pin.key) && !paired.has(pin.key)) {
       changes.push(new PinRemoved(pin));
     }
   }
   return changes;
+}
+
+function slotOf(did: String, version: Version): String {
+  return `${did}@${version.major}`;
+}
+
+function append<T>(map: HashMap<String, GrowableArray<T>>, key: String, value: T): void {
+  if (let (true, values) = map.get(key)) {
+    values.push(value);
+  } else {
+    let values = new GrowableArray<T>();
+    values.push(value);
+    map[key] = values;
+  }
 }

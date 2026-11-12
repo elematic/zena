@@ -58,8 +58,9 @@ When you publish `packages/server` with `zena pkg publish`, the CLI replaces `{"
 ## Version selection
 
 - Every dependency gives the versions it accepts as a range, in npm's syntax: `^1.4.2` accepts `1.4.2` or any later `1.x` release, and `zena pkg add` writes ranges of that form.
-- Selection starts from the lowest version in each range. Within one major version (`1.x`), the version selected for the workspace is the highest of those lowest versions that any package in the workspace's dependency graph asks for, as Go's minimal version selection does. Selection that chooses among all the versions in each range, installing as few as it can, is planned.
-- Different major versions (`1.x` and `2.x`) are selected separately and can coexist in the same build when different parts of the dependency graph require them.
+- Selection installs as few versions of each package as the ranges asking for it allow: one version when one is in every range, and the highest such version. Two packages asking for `^1.0.0` and `~1.1.0` share `1.1.x`.
+- When no one version is in every range, as for `^1.0.0` and `^2.0.0`, selection installs more than one, and each package uses the highest selected version in its own range. `zena pkg add` and `zena pkg update` list such packages, and `--duplicates warn` or `error` makes them a warning or an error.
+- Once `zena-lock.json` pins a version, `zena pkg add` keeps it while the ranges allow; it lowers a version only to share one with another package, and says so with a warning.
 - New releases published upstream never enter your build automatically; versions only change when you run `zena pkg add` or `zena pkg update`.
 
 ## `zena-lock.json`

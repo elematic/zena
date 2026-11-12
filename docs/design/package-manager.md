@@ -803,9 +803,13 @@ say which releases they skipped for their age.
 
 > **Current status**: ranges are implemented in manifests, release
 > records and the lockfile, which is keyed by DID and version and has its
-> `workspace` section (#1086). Selection is still minimal version
-> selection over each range's lowest version: the highest of those per
-> package and major version (#1087 replaces it).
+> `workspace` section (#1086). Selection's first phase, its warnings and
+> `--duplicates` are implemented (#1087); `zena pkg add` also keeps the
+> version it was asked for where the ranges allow. Not yet: the second
+> phase (#1089), overrides, `exclude` and `minimumReleaseAge` (#1088),
+> `--resolution lowest` (#1090), and the type checker naming versions
+> (#1091). The warning for a lowered version does not suggest an
+> override until overrides exist.
 
 ### The lockfile
 

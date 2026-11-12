@@ -13,7 +13,7 @@ import {isValidDid, isValidHandle} from 'atproto/syntax';
 import {
   PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, RETRACTION_TYPE, isValidLocalName
 } from './records.zena';
-import {CheckedRelease, ReleaseSource} from './resolve.zena';
+import {CheckedRelease, PackageSource, Versions} from './resolve.zena';
 import {Version} from 'zena-lang:semver';
 
 /** The domain `scope:name` is looked up in when no `scopes` entry names one. */
@@ -98,48 +98,6 @@ export async function resolveIdentifier(identifier: String, scopes: OrderedHashM
   return identity.did;
 }
 
-/** The versions a package's repository lists, and which of them are retracted. */
-export final class Versions {
-  releases: GrowableArray<Version>;
-  /** The retracted versions, as text. */
-  retracted: HashSet<String>;
-
-  new(releases: GrowableArray<Version>, retracted: HashSet<String>) : releases = releases, retracted = retracted;
-
-  /**
-   * The highest version that is not retracted, in major version `major` when
-   * it is given. Pre-releases count only with `prereleases`.
-   */
-  latest(major: i64 = -1, prereleases: boolean = false): Version | null {
-    var best: Version | null = null;
-    for (let version in this.releases) {
-      if (this.retracted.has(version.toString())) {
-        continue;
-      }
-      if (major >= 0 && version.major != major) {
-        continue;
-      }
-      if (version.isPrerelease && !prereleases) {
-        continue;
-      }
-      let current = best;
-      if (current == null || version.compareTo(current) > 0) {
-        best = version;
-      }
-    }
-    return best;
-  }
-
-  has(version: Version): boolean {
-    for (let listed in this.releases) {
-      if (listed.compareTo(version) == 0) {
-        return true;
-      }
-    }
-    return false;
-  }
-}
-
 /**
  * The versions the package `document` describes lists. The list is its
  * PDS's word: whatever is chosen from it is fetched again with its proof.
@@ -172,20 +130,21 @@ export async function fetchProfile(document: DidDocument): Future<Profile | null
 }
 
 /**
- * A `ReleaseSource` that fetches each release from its package's PDS with
- * its proof, resolving each DID once.
+ * A `PackageSource` that reads each package's versions and releases from
+ * its PDS, releases with their proofs, resolving each DID once.
  */
-export function networkReleases(resolver: IdentityResolver): ReleaseSource {
-  let documents = new HashMap<String, DidDocument>();
-  return async (did: String, version: Version): Future<CheckedRelease> => {
-    var document: DidDocument | null = null;
-    if (let (true, known) = documents.get(did)) {
-      document = known;
-    } else {
-      let resolved = await resolver.resolveDid(did);
-      documents[did] = resolved;
-      document = resolved;
-    }
+export final class NetworkSource implements PackageSource {
+  #resolver: IdentityResolver;
+  #documents = new HashMap<String, DidDocument>();
+
+  new(resolver: IdentityResolver) : #resolver = resolver;
+
+  async versions(did: String): Future<Versions> {
+    return await listVersions(await this.#document(did));
+  }
+
+  async release(did: String, version: Version): Future<CheckedRelease> {
+    let document = await this.#document(did);
     let text = version.toString();
     let proof = await getVerifiedRecord(document, RELEASE_TYPE, text);
     let record = proof.record;
@@ -194,5 +153,14 @@ export function networkReleases(resolver: IdentityResolver): ReleaseSource {
       throw new RegistryError(`${did} has no release ${text}`);
     }
     return new CheckedRelease(Release.fromValue(record, text), cid);
-  };
+  }
+
+  async #document(did: String): Future<DidDocument> {
+    if (let (true, known) = this.#documents.get(did)) {
+      return known;
+    }
+    let resolved = await this.#resolver.resolveDid(did);
+    this.#documents[did] = resolved;
+    return resolved;
+  }
 }

@@ -49,12 +49,15 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
           pins.contains('"did:plc:jsonjsonjsonjsonjsonjson@2.1.0"') && pins.contains('"workspace"'), pins);
       succeeds('zena run', await zena.run(['run', 'prog.zena']));
 
-      // Update to the latest version that is not retracted: 1.5.0, not 1.6.0.
+      // Update to the latest version in the range that is not retracted:
+      // 1.5.0, not 1.6.0. The range stays as it was.
       let update = await zena.run(['pkg', 'update']);
       succeeds('zena pkg update', update);
       isTrue(update.stdout.contains('1.4.2 -> 1.5.0'), described(update));
       let updated = await read(manifest);
-      isTrue(updated.contains('1.5.0') && !updated.contains('1.6.0'), updated);
+      equal(updated, text);
+      let raised = await read(lockfile);
+      isTrue(raised.contains('"did:plc:routerrouterrouterrouter@1.5.0"') && !raised.contains('1.6.0'), raised);
       succeeds('zena run', await zena.run(['run', 'prog.zena']));
 
       // Give the workspace a package, lib, and add json 2.0.0 to it from its
@@ -83,6 +86,46 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
       isTrue(!(await zena.run(['pkg', 'add', 'acme:nothing'])).succeeded(),
           'zena pkg add accepted a package that does not exist');
       equal(await read(manifest), root);
+    } finally {
+      await stopFakePds(pds);
+      await scratch.remove();
+    }
+  });
+
+  test('report, warn about or refuse a package at two versions', async (ctx) => {
+    let scratch = await Scratch.create('add-twice');
+    let pds = await startFakePds(scratch, 'add-pds.zena');
+    try {
+      let plc = await fakePdsOrigin(scratch, pds);
+      let zena = new ZenaCommand(scratch.at('workspace'), scratch.host('cache'))
+        .set('ZENA_PLC_DIRECTORY', plc)
+        .set('ZENA_DNS_OVER_HTTPS', dnsBeside(plc));
+      let manifest = scratch.at('workspace/zena-package.json');
+      let lockfile = scratch.at('workspace/zena-lock.json');
+      // Router needs json 2.1.0 exactly, and the workspace asks for 2.0.0
+      // exactly: no one version is in both.
+      await write(manifest, '{"name": "app"}\n');
+      isTrue((await zena.run(['pkg', 'add', 'acme:router@1.4.2'])).succeeded(), 'added router');
+      let dependencies = '"dependencies": {' +
+          '"acme:router": {"did": "did:plc:routerrouterrouterrouter", "version": "^1.4.2"}, ' +
+          '"json": {"did": "did:plc:jsonjsonjsonjsonjsonjson", "version": "2.0.0"}}';
+      await write(manifest, `{"name": "app", ${dependencies}}\n`);
+      let pins = await read(lockfile);
+
+      let refused = await zena.run(['pkg', 'update', '--duplicates', 'error']);
+      isTrue(!refused.succeeded() && refused.stderr.contains('would be installed at 2.0.0 and 2.1.0'), described(refused));
+      equal(await read(lockfile), pins);
+
+      let warned = await zena.run(['pkg', 'update', '--duplicates', 'warn']);
+      isTrue(warned.succeeded() && warned.stderr.contains('warning: did:plc:jsonjsonjsonjsonjsonjson is installed at 2.0.0 and 2.1.0'),
+          described(warned));
+      let both = await read(lockfile);
+      isTrue(both.contains('jsonjson@2.0.0') && both.contains('jsonjson@2.1.0'), both);
+
+      // The root manifest can make it an error for every command.
+      await write(manifest, `{"name": "app", "duplicates": "error", ${dependencies}}\n`);
+      let byManifest = await zena.run(['pkg', 'update']);
+      isTrue(!byManifest.succeeded() && byManifest.stderr.contains('would be installed at'), described(byManifest));
     } finally {
       await stopFakePds(pds);
       await scratch.remove();
