@@ -2951,9 +2951,8 @@ export final class FunctionLowerer {
         let d = if (superSpec != null && sIdx < superSpec.params.length)
             superSpec.params[sIdx] else null;
         sIdx += 1;
-        if (d != null && this.#isExactRecordLiteral(si.args[i], d)) {
-          let fields = this.#lowerRecordLiteralFields(
-              si.args[i] as RecordLiteral, d);
+        let fields = if (d != null) this.#exactLiteralFields(si.args[i], d) else null;
+        if (d != null && fields != null) {
           let record = this.#packRecord(d, fields);
           this.#cx().explodedRecords[record] = new ExplodedRecord(d, fields);
           superArgs.push(record);
@@ -4121,8 +4120,8 @@ export final class FunctionLowerer {
     if (leafRecord != null && leafLayout != null) {
       values = this.#leavesToSlots(leafRecord, leafLayout,
           this.#recordExprLeaves(expr, leafRecord));
-    } else if (this.#isExactRecordLiteral(expr, d)) {
-      values = this.#lowerRecordLiteralFields(expr as RecordLiteral, d);
+    } else if (this.#isExactLiteral(expr, d)) {
+      values = this.#exactLiteralFields(expr, d) as GrowableArray<i32>;
     } else {
       // A returned `if` or `match` merges its arms' fields instead of
       // their records (MergeState.fields), and gives back a record held
@@ -4619,9 +4618,9 @@ export final class FunctionLowerer {
    * explodes, another held var) is held once lowered.
    */
   #lowerHeldWrite(expr: Expression, d: RecordDispatchInfo): i32 {
-    if (this.#isExactRecordLiteral(expr, d)) {
-      return this.#cx().heldRecord(d,
-          this.#lowerRecordLiteralFields(expr as RecordLiteral, d));
+    let literalFields = this.#exactLiteralFields(expr, d);
+    if (literalFields != null) {
+      return this.#cx().heldRecord(d, literalFields);
     }
     let value = this.#lowerExpressionCtx(expr,
         new ValTypeRef(d.fatPtrType) as ValType);
@@ -6819,13 +6818,25 @@ export final class FunctionLowerer {
     if (!(bt is TupleType)) {
       this.#bail('inline tuple in value position');
     }
+    let st = this.#tupleStruct(bt);
+    return this.b.emit(IrOp.struct_new, new ValTypeRef(st) as ValType,
+        this.b.pushArgList(this.#lowerTupleLiteralFields(tl, bt, st)),
+        this.b.addRef(new IrRefType(st)));
+  }
+
+  /**
+   * A tuple literal's element values, one per field of `st`, the struct
+   * of its type `bt`: what the tuple is built from, or what an exploded
+   * parameter is passed as.
+   */
+  #lowerTupleLiteralFields(tl: TupleLiteral, bt: TupleType,
+      st: WasmStruct): GrowableArray<i32> {
     // One wasm type per element; a zero-width one has no field, and its
     // value is lowered for its effects only.
     let elementVts = new Array<ValType>();
     for (let el in bt.elementTypes) {
       elementVts.push(typeToValTypeWithSub(this.wasm, el, this.func));
     }
-    let st = this.#tupleStruct(bt);
     let spreadIndices = tl.spreadIndices;
     if (spreadIndices == null && tl.elements.length != elementVts.length) {
       this.#bail('tuple literal arity');
@@ -6869,8 +6880,7 @@ export final class FunctionLowerer {
     if (pos != elementVts.length || args.length != st.fields.length) {
       this.#bail('tuple literal arity');
     }
-    return this.b.emit(IrOp.struct_new, new ValTypeRef(st) as ValType,
-        this.b.pushArgList(args), this.b.addRef(new IrRefType(st)));
+    return args;
   }
 
   /**
@@ -7294,13 +7304,7 @@ export final class FunctionLowerer {
 
   /** A record value: the struct built from `args`, packed with its vtable. */
   #packRecord(dispatch: RecordDispatchInfo, args: GrowableArray<i32>): i32 {
-    let instance = this.b.emit(IrOp.struct_new,
-        new ValTypeRef(dispatch.concreteType) as ValType,
-        this.b.pushArgList(args),
-        this.b.addRef(new IrRefType(dispatch.concreteType)));
-    return this.b.emit(IrOp.iface_pack,
-        new ValTypeRef(dispatch.fatPtrType) as ValType, instance,
-        this.b.addRef(new IrRefGlobal(dispatch.vtableGlobal)));
+    return this.#cx().packRecord(dispatch, args);
   }
 
   /**
@@ -10972,10 +10976,7 @@ export final class FunctionLowerer {
     this.#lowerVariableDeclaration(vd);
   }
   hostExactLiteralFields(e: Expression, d: RecordDispatchInfo): GrowableArray<i32> | null {
-    if (!this.#isExactRecordLiteral(e, d)) {
-      return null;
-    }
-    return this.#lowerRecordLiteralFields(e as RecordLiteral, d);
+    return this.#exactLiteralFields(e, d);
   }
   hostPackHeldRecord(d: RecordDispatchInfo, values: GrowableArray<i32>): i32 {
     let record = this.#packRecord(d, values);
@@ -11325,7 +11326,7 @@ export final class FunctionLowerer {
     for (var i = 0; i < spec.params.length; i += 1) {
       let d = spec.params[i];
       let arg = argExprs[i];
-      if (d != null && (this.#isExactRecordLiteral(arg, d) ||
+      if (d != null && (this.#isExactLiteral(arg, d) ||
           this.#explodedRecordOf(arg, d) != null ||
           (arg is CallExpression &&
               this.wasm.fieldsOnlyResultCalls.has((arg as Node).id as i32)))) {
@@ -11364,8 +11365,37 @@ export final class FunctionLowerer {
     return record;
   }
 
-  /** A record literal of exactly `d`'s record type, with no adaptation. */
-  #isExactRecordLiteral(arg: Expression, d: RecordDispatchInfo): boolean {
+  /**
+   * The field values of `arg` for `d` when it is a literal of exactly
+   * `d`'s type (`#isExactLiteral`); else null.
+   */
+  #exactLiteralFields(arg: Expression, d: RecordDispatchInfo): GrowableArray<i32> | null {
+    if (!this.#isExactLiteral(arg, d)) {
+      return null;
+    }
+    if (d.isTuple) {
+      let bt = baseType(this.#substitutedNodeType(arg) as Type) as TupleType;
+      return this.#lowerTupleLiteralFields(arg as TupleLiteral, bt, d.concreteType);
+    }
+    return this.#lowerRecordLiteralFields(arg as RecordLiteral, d);
+  }
+
+  /**
+   * A record literal of exactly `d`'s record type, with no adaptation,
+   * or, for a tuple's dispatch, a tuple literal of a type with its struct.
+   */
+  #isExactLiteral(arg: Expression, d: RecordDispatchInfo): boolean {
+    if (d.isTuple) {
+      if (!(arg is TupleLiteral)) {
+        return false;
+      }
+      let t = this.#substitutedNodeType(arg);
+      if (t == null) {
+        return false;
+      }
+      let bt = baseType(t);
+      return bt is TupleType && this.#tupleStruct(bt) === d.concreteType;
+    }
     if (!(arg is RecordLiteral)) {
       return false;
     }
@@ -11421,9 +11451,9 @@ export final class FunctionLowerer {
         args.push(this.#conformToSlot(value, paramVt, 'call argument type'));
         continue;
       }
-      if (this.#isExactRecordLiteral(arg, d)) {
-        for (let value in this.#lowerRecordLiteralFields(
-            arg as RecordLiteral, d)) {
+      let literalFields = this.#exactLiteralFields(arg, d);
+      if (literalFields != null) {
+        for (let value in literalFields) {
           args.push(value);
         }
         continue;
@@ -12245,8 +12275,9 @@ export final class FunctionLowerer {
 
   /** The fields of `arg`, a record of `d`'s shape, in `d.fields` order. */
   #recordArgFields(arg: Expression, d: RecordDispatchInfo, record: RecordType): GrowableArray<i32> {
-    if (this.#isExactRecordLiteral(arg, d)) {
-      return this.#lowerRecordLiteralFields(arg as RecordLiteral, d);
+    let literalFields = this.#exactLiteralFields(arg, d);
+    if (literalFields != null) {
+      return literalFields;
     }
     if (arg is IfExpression || arg is MatchExpression) {
       // The arms merge their fields, and the record the merge rebuilds
