@@ -1,0 +1,73 @@
+// @mode: run
+// @result: 1
+// Static methods take tuples as their elements like functions do, and a
+// tuple parameter passed on to a method (`this.m(p)`, `Grid.m(p)`) stays
+// elements-only when that method's parameter is, unless the call
+// dispatches through the vtable. Every shape must compute the same thing.
+
+type V = (i32, i32);
+
+class Grid {
+  scale: i32;
+  new(this.scale);
+
+  static sum(p: V): i32 {
+    return p[0] + p[1];
+  }
+
+  area(p: V): i32 {
+    return this.#scaled(p) + Grid.sum(p);
+  }
+
+  #scaled(p: V): i32 {
+    let (x, y) = p;
+    return x * y * this.scale;
+  }
+}
+
+// A forward to a method some subclass overrides dispatches, so the
+// tuple is passed whole.
+class Shape {
+  measure(p: V): i32 {
+    return this.area(p);
+  }
+
+  area(p: V): i32 {
+    return p[0] * p[1];
+  }
+}
+
+class Half extends Shape {
+  area(p: V): i32 {
+    return (p[0] * p[1]) >> 1;
+  }
+}
+
+function total(p: V): i32 {
+  return Grid.sum(p) * 10;
+}
+
+export let main = (): i32 => {
+  if (Grid.sum((5, 6)) != 11) {
+    return 0;
+  }
+  let g = new Grid(2);
+  // 3 * 4 * 2 + 3 + 4
+  if (g.area((3, 4)) != 31) {
+    return 0;
+  }
+  if (total((1, 2)) != 30) {
+    return 0;
+  }
+  let shapes = new GrowableArray<Shape>();
+  shapes.push(new Shape());
+  shapes.push(new Half());
+  var measured = 0;
+  for (let s in shapes) {
+    measured = measured * 100 + s.measure((4, 5));
+  }
+  if (measured != 2010) {
+    return 0;
+  }
+  return 1;
+};

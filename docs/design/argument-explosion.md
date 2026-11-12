@@ -355,6 +355,9 @@ is one of:
 - `p[0]`, an element of a tuple;
 - `let {...} = p` or `let (...) = p`, and a destructuring parameter's
   own pattern;
+- `match (p)` or `if (let ... = p)` on a tuple, when every pattern takes
+  the tuple apart: a tuple pattern, whatever its elements bind, `_`, or
+  an or-pattern of those. `let t` or `(...) as t` binds the tuple whole;
 - `{...p, ...}` in a record literal. A spread copies the fields of the
   source's static type, each read through `recordDispatchRead`, which
   answers from the fields of a record held as them, presence words
@@ -372,9 +375,9 @@ is one of:
   places), when the parameter has the result's record type and the
   function's result explodes (see [Results](#results)).
 
-Any other use (stored, matched, captured, passed to anything else)
-means the function needs the record. Demand
-starts optimistic and only turns to "needs the record" on evidence, so a
+Any other use (stored, matched any other way, captured, passed to
+anything else) means the function needs the record. Demand starts
+optimistic and only turns to "needs the record" on evidence, so a
 function that passes its record to itself, or to a mutually recursive
 partner, is fields-only.
 
@@ -753,9 +756,7 @@ Not yet covered:
 ## Later phases
 
 - The `inline` parameter guarantee above.
-- Tuple results and held tuple variables, as for records, and a tuple
-  parameter that is matched (`match (p) { case (a, b): ... }`) counting
-  as fields-only (#373).
+- Tuple results and held tuple variables, as for records (#373).
 - Weighting call sites, for example by loop depth, for a function with
   few unpacked and many heap callers, whose heap callers each pay the
   forwarder's up-front field reads.

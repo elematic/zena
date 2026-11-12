@@ -847,6 +847,69 @@ export let tests = suite('zir backend', () => {
         'a constructor, a method and a specialization take the elements');
   });
 
+  test('a matched tuple parameter is passed as its elements', async (ctx) => {
+    // Matching against tuple patterns, and a let-condition, read only the
+    // elements; a pattern that binds the whole tuple needs it.
+    let result = await compileWithZir(dedentRaw`
+        function classify(p: (i32, i32)): i32 {
+          return match (p) {
+            case (0, let y): y
+            case (let x, let y): x * 100 + y
+          };
+        }
+        function firstZero(p: (i32, i32)): i32 {
+          if (let (0, y) = p) {
+            return y;
+          }
+          return -1;
+        }
+        function whole(p: (i32, i32)): i32 {
+          return match (p) {
+            case (0, _) as t: t[1]
+            case _: p[0]
+          };
+        }
+        export let main = (): i32 => classify((2, 5)) + firstZero((0, 6));
+        export let other = (): i32 => whole((1, 2));
+        `);
+    assertNoAllocation(result, '$main', 'the matched tuples are never built');
+    let cores = growable<String>(['call $classify.core', 'call $firstZero.core']);
+    assertFunctionUses(result, '$main', cores,
+        'a match and a let-condition read only the elements');
+    assertNoAllocation(result, '$classify.core',
+        'the core matches the elements it was given');
+    isTrue(!result.contains('(func $whole.core'),
+        'a pattern that binds the whole tuple needs the tuple');
+  });
+
+  test('generators, async functions and static methods take tuples as elements', async (ctx) => {
+    let result = await compileWithZirStdlib(dedentRaw`
+        import { Future } from 'zena:async';
+        function area(p: (i32, i32)): i32 { return p[0] * p[1]; }
+        let span = gen (p: (i32, i32)): Iterator<i32> => {
+          yield p[0];
+          yield area(p);
+        };
+        let total = async (p: (i32, i32)): Future<i32> => p[0] + p[1];
+        class Grid {
+          static sum(p: (i32, i32)): i32 { return p[0] + p[1]; }
+        }
+        export let main = (): i32 => {
+          var s = 0;
+          for (let v in span((3, 4))) {
+            s += v;
+          }
+          total((1, 2));
+          return s + Grid.sum((5, 6));
+        };
+        `);
+    let forwarders = growable<String>(['call $span\n', 'call $total\n']);
+    assertNoAllocation(result, '$main', 'the tuple literals are never built');
+    assertFunctionOmits(result, '$main', forwarders,
+        'a generator and an async function are called through their cores');
+    isTrue(result.contains('.sum.core'), 'the static method has a core');
+  });
+
   test('a record literal passed to a constructor is passed as its fields', async (ctx) => {
     // The named-arguments idiom for a class: `P`'s constructor only reads
     // fields of its record parameter, so `new P({x: 3})` calls the
