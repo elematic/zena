@@ -190,6 +190,8 @@ export let tests = suite('registry/service', () => {
       ('APP_VIEW_DID', 'did:web:other.test'),
       ('PDS_PUBLIC_URL', 'http://localhost:2583'),
       ('APP_VIEW_HANDLE_RECORDS', 'memory'),
+      // A server on one machine, whose accounts no one will keep.
+      ('APP_VIEW_ALLOW_NO_OFFLINE_KEY', '1'),
     ]));
     if (let InFirestore {blobs} = pdsOf(local).storage) {
       isTrue(blobs is InDirectory && blobs.path == '/var/pds/blobs', 'the directory');
@@ -251,6 +253,39 @@ export let tests = suite('registry/service', () => {
     isTrue(notVersion.contains('is a key version'), notVersion);
     let badOffline = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_OFFLINE_ROTATION_KEY', 'zQ3sh')]);
     isTrue(badOffline.contains('APP_VIEW_OFFLINE_ROTATION_KEY is not a did:key'), badOffline);
+  });
+
+  test('refuses to make accounts in the public PLC directory without the offline key', (ctx) => {
+    let production: Array<(String, String)> = [
+      ('PDS_STORAGE', 'firestore'), ('PDS_JWT_SECRET', KEY), ('PDS_TENANT', 'pkg'),
+      ('PDS_BLOB_BUCKET', 'zena-blobs'), ('APP_VIEW_DOMAIN', 'pkg.example.dev'),
+      ('APP_VIEW_ROTATION_KEY', KEY), ('APP_VIEW_HANDLE_RECORDS', 'cloud-dns'),
+      ('APP_VIEW_DNS_ZONE', 'zone'),
+    ];
+    let with = (name: String, value: String) => {
+      let pairs = new GrowableArray<(String, String)>();
+      for (let pair in production) {
+        pairs.push(pair);
+      }
+      pairs.push((name, value));
+      return pairs;
+    };
+    let refused = refusal(production);
+    isTrue(refused.contains('needs APP_VIEW_OFFLINE_ROTATION_KEY'), refused);
+    isTrue(refusal(with('APP_VIEW_PLC_DIRECTORY', 'https://plc.directory')).contains('needs APP_VIEW_OFFLINE_ROTATION_KEY'),
+        'the public directory named');
+    let offline = formatDidKey(publicKeyFor(KeyType.Secp256k1, new FixedArray<u8>(32, 3 as u8)));
+    let withKey = refusal(with('APP_VIEW_OFFLINE_ROTATION_KEY', offline));
+    equal(withKey, '', withKey);
+    // On purpose, or where no account outlives the deployment, it starts.
+    let allowed = refusal(with('APP_VIEW_ALLOW_NO_OFFLINE_KEY', '1'));
+    equal(allowed, '', allowed);
+    let staging = refusal(with('APP_VIEW_PLC', 'staging'));
+    equal(staging, '', staging);
+    let standIn = refusal(with('APP_VIEW_PLC_DIRECTORY', 'http://plc.test'));
+    equal(standIn, '', standIn);
+    let bad = refusal(with('APP_VIEW_ALLOW_NO_OFFLINE_KEY', 'yes'));
+    isTrue(bad.contains('APP_VIEW_ALLOW_NO_OFFLINE_KEY is 1 or 0, not yes'), bad);
   });
 
   test("reads the App View's own signing key, as the rotation key is read", async (ctx) => {
@@ -426,6 +461,7 @@ export let tests = suite('registry/service', () => {
       ('APP_VIEW_SESSION_SECRET', OTHER_KEY),
       ('APP_VIEW_ROTATION_KEY', KEY),
       ('APP_VIEW_SIGNING_KEY', OTHER_KEY),
+      ('APP_VIEW_OFFLINE_ROTATION_KEY', formatDidKey(publicKeyFor(KeyType.Secp256k1, new FixedArray<u8>(32, 3 as u8)))),
       ('APP_VIEW_HANDLE_RECORDS', 'memory'),
     ]));
     equal(deployed.port as i32, 8080);
