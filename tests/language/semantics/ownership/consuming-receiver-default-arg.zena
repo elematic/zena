@@ -1,0 +1,25 @@
+// @mode: check
+
+// A consuming method with a default parameter consumes its receiver once,
+// whether the call gives the argument or leaves it to the default.
+
+import { Disposable, Own } from 'zena:core';
+
+resource class Body {
+  #length: i32;
+  new(length: i32) : #length = length;
+
+  [Disposable.dispose](this: Own<this>): void {}
+
+  /** Consumes the body, as reading a response's body does. */
+  read(this: Own<this>, limit: i32 = -1): i32 {
+    return if (limit >= 0 && this.#length > limit) limit else this.#length;
+  }
+}
+
+let defaulted = (b: Own<Body>): i32 => b.read();
+let given = (b: Own<Body>): i32 => b.read(10);
+
+export function main(): i32 {
+  return defaulted(new Body(3)) + given(new Body(30));
+}
