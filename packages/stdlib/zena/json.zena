@@ -503,10 +503,17 @@ function appendUtf8(out: StringBuilder, code: i32) {
   }
 }
 
+/**
+ * How deep objects and arrays may nest in a document `parseJson` reads.
+ * DAG-CBOR's decoder (`atproto/cbor`) allows the same.
+ */
+let MAX_DEPTH = 256;
+
 class JsonParser {
   #input: String;
   #len: i32;
   var #pos: i32 = 0;
+  var #depth = 0;
   #allowComments: boolean;
   #trackLocations: boolean;
   var #line = 1;
@@ -547,12 +554,17 @@ class JsonParser {
 
   #parseValue(): JsonValue {
     let b = this.#peekByte();
-    
-    if (b == 123) {  // '{'
-      return this.#parseObject();
-    }
-    if (b == 91) {   // '['
-      return this.#parseArray();
+
+    if (b == 123 || b == 91) {  // '{' or '['
+      // Each level is a frame of this recursion, so a deeper document
+      // would overflow the stack, which ends the program, not the parse.
+      this.#depth += 1;
+      if (this.#depth > MAX_DEPTH) {
+        this.#error(`the value is nested more than ${MAX_DEPTH} deep`);
+      }
+      let value: JsonValue = if (b == 123) this.#parseObject() else this.#parseArray();
+      this.#depth -= 1;
+      return value;
     }
     if (b == 34) {   // '"'
       return this.#parseString();
@@ -1021,6 +1033,10 @@ class JsonParser {
 
 // === Public API ===
 
+/**
+ * Parses `input` as one JSON value, throwing `JsonParseError` for text
+ * that is not JSON and for objects and arrays nested more than 256 deep.
+ */
 export function parseJson(input: String, options: JsonOptions | null = null): JsonValue {
   let parser = new JsonParser(input, options);
   return parser.parse();
