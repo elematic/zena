@@ -39,7 +39,7 @@ else moved.
   "version": "1.4.2",
   "exports": {"server": {}},
   "dependencies": {
-    "router": {"did": "did:plc:routerrouterrouterrouter", "version": "1.4.2"},
+    "router": {"did": "did:plc:routerrouterrouterrouter", "version": "^1.4.2"},
     "lib": {"path": "./packages/lib"}
   },
   "workspace": {"packages": ["packages/*"]},
@@ -232,9 +232,10 @@ names a package in a scope `<scope>:<name>`, and any other by the name
 its profile suggests ([import-names.md](import-names.md)). A dependency is
 one of these kinds:
 
-- **A published package**, by DID and the lowest version this package
-  needs: `{"did": "did:plc:...", "version": "1.4.2"}`. `zena pkg add` writes
-  these.
+- **A published package**, by DID and the range of versions this
+  package accepts, in npm's syntax: `{"did": "did:plc:...", "version":
+"^1.4.2"}` (package-manager.md, "Version ranges"). `zena pkg add`
+  writes these.
 - **A package on disk**, by its directory: `{"path": "./packages/lib"}`.
   This is how workspace packages depend on each other, and it can also
   point outside the workspace, as to a package in a sibling checkout
@@ -289,20 +290,21 @@ another, and the imports read whatever name the manifest has
 The lockfile sits beside the workspace root's manifest. `zena pkg add` and
 `zena pkg update` write it, and no one edits it. It pins every published
 package any workspace package needs, directly or through other packages,
-with the versions minimal version selection chose across the whole
-workspace (package-manager.md, "Version selection"):
+with the versions selection chose across the whole workspace
+(package-manager.md, "Version selection"):
 
 ```json
 {
+  "workspace": {
+    ".": {"router": "did:plc:routerrouterrouterrouter@1.4.2"}
+  },
   "resolved": {
-    "did:plc:routerrouterrouterrouter@1": {
-      "version": "1.4.2",
+    "did:plc:routerrouterrouterrouter@1.4.2": {
       "release": "bafyrei...",
       "source": "bafkrei...",
-      "dependencies": {"json": "did:web:json.example.com@2"}
+      "dependencies": {"json": "did:web:json.example.com@2.1.0"}
     },
-    "did:web:json.example.com@2": {
-      "version": "2.1.0",
+    "did:web:json.example.com@2.1.0": {
       "release": "bafyrei...",
       "source": "bafkrei..."
     }
@@ -310,14 +312,14 @@ workspace (package-manager.md, "Version selection"):
 }
 ```
 
-Each entry is keyed by a package's DID and major version, since a
-workspace can use two major versions of one package. It records the
-selected version, the CID of its release record and of its source
-archive, and the names the release gives its own dependencies.
+Each entry of `resolved` is keyed by a package's DID and version, since
+a workspace can use two versions of one package. It records the CID of
+the release record and of the source archive, and the installed version
+each of the release's own names stands for. `workspace` gives the same
+for each workspace package's names, by the package's directory.
 
-The lockfile holds no names of the workspace's own: those are in the
-manifests, and a published dependency `{"did", "version"}` names the
-entry `<did>@<major>`.
+The names are in the manifests; the lockfile holds only the versions
+they stand for.
 
 ## How the compiler finds packages
 
@@ -335,8 +337,10 @@ entry `<did>@<major>`.
      the compiler reads too;
    - a WIT dependency is the package whose libraries the compiler
      synthesizes from that WIT;
-   - a published dependency is the pinned package `<did>@<major>`, found
-     in the package cache, where `zena pkg fetch` unpacks each source archive
+   - a published dependency is the version the lockfile pins for that
+     name in P, `<did>@<version>`: under `workspace` for a workspace
+     package, and in P's own entry for a published one. It is found in
+     the package cache, where `zena pkg fetch` unpacks each source archive
      into `sources/<source CID>`.
 4. A published package's libraries resolve names through the
    `dependencies` of its lockfile entry, which come from its release, and
@@ -399,7 +403,7 @@ my-app/
 {
   "name": "app",
   "dependencies": {
-    "router": {"did": "did:plc:routerrouterrouterrouter", "version": "1.4.2"},
+    "router": {"did": "did:plc:routerrouterrouterrouter", "version": "^1.4.2"},
     "lib": {"path": "./packages/lib"}
   },
   "workspace": {"packages": ["packages/*"]}
@@ -413,7 +417,7 @@ my-app/
   "name": "lib",
   "exports": {"lib": {}},
   "dependencies": {
-    "json": {"did": "did:web:json.example.com", "version": "2.0.1"}
+    "json": {"did": "did:web:json.example.com", "version": "^2.0.1"}
   }
 }
 ```
