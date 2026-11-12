@@ -613,13 +613,17 @@ program](#two-versions-in-one-program)). So selection installs as few
 versions as it can, and a program pays for a second version only when
 the ranges leave no choice.
 
+Each range uses the highest installed version that is in it.
 Selection minimizes, in this order:
 
 1. the number of versions installed, counting every package;
 2. the number of pins in the lockfile it changes, when there is a
    lockfile and the command is not `zena pkg update`;
-3. the versions themselves, higher before lower, compared package by
-   package in the order of their DIDs.
+3. the shortfall: over every range, the number of available versions in
+   the range above the version the range uses.
+
+Ties left after the third are broken by the versions themselves, higher
+before lower, package by package in the order of their DIDs.
 
 The answer depends only on the requests and the releases. It does not
 depend on the order the packages were added in or met, and two machines
@@ -643,16 +647,39 @@ known problem with an exact answer when each range is an interval of
 versions:
 
 1. Sort the ranges by their highest version.
-2. Take the highest version in the first range. It is in every other
+2. Find the highest version in the first range. It is in every other
    range that any version of the first range is in, since every other
    range ends at or after it.
-3. Drop every range the version is in, and repeat.
+3. Any version of the first range that is also in each of those ranges
+   is as good for the count: every version from the highest start among
+   them up to the highest version. Of those, take the one in the most
+   ranges, counting the ranges already met, then the higher. The ranges
+   already met then use a higher version, which lowers the shortfall.
+4. Drop every range the version is in, and repeat.
 
 For the four ranges above, `1.0–1.1` ends first, so 1.1 is taken, and
 it is also in `1.1–1.2`. Of the two left, `1.3–1.8` ends first, so 1.8
-is taken, and it is also in `1.2–1.9`. Each version taken is the
-highest that the tightest of its ranges allows, so the rule also
-prefers high versions.
+is taken, and it is also in `1.2–1.9`.
+
+The third step matters when a range ends between others. Five ranges
+ask for one package with versions 1 to 8:
+
+```
+     1   2   3   4   5   6   7   8
+A:   |-------------------|
+B:           |-------------------|
+C:       |-------|
+D:                   |-------|
+E:                               |
+```
+
+C ends first, at 4, which is in A, B and C. 3 is in the same ranges,
+and 4 is higher, so 4 is taken. D ends next, at 7, which is in D
+alone among the ranges left, so any version from 5 to 7 will do. 5 and
+6 are also in A and B, and 7 only in B, so 6 is taken. E takes 8. The
+selection is 4, 6 and 8: A and D use 6, B and E use 8, C uses 4. Taking
+D's highest, 7, would install as many versions but leave A on 4, two
+versions short of its highest.
 
 A range joined by `||` is two intervals, met when either is. The step
 sorts the intervals by their highest version, and skips one whose range
@@ -676,9 +703,12 @@ the last.
 **The second phase** searches for a better answer than the first phase
 found. It branches on the versions of each package and cuts a branch as
 soon as it cannot beat the best answer so far, which starts as the
-first phase's. Each package's candidates are few: in each region where
-a set of its ranges overlap, only the highest version there (or the
-lowest, below) can be in a best answer. The search has a time limit.
+first phase's. The first phase always finds the fewest versions for
+one package, and in random tests also the smallest shortfall nine times
+out of ten; the search finds the rest. Each package's candidates are
+few: the versions that are in the same set of its ranges meet the same
+requests, and only the highest of them (or the lowest, below) can be in
+a best answer. The search has a time limit.
 When the limit is reached it keeps the best answer it has, and the
 command says the answer may not be the smallest.
 
@@ -691,10 +721,11 @@ is none.
 
 #### Lowest versions
 
-`--resolution lowest` chooses the lowest version of each range, with
-the same first rule: the fewest versions, then the lowest. The first
-phase's step is the same with the order reversed: sort by the lowest
-version, and take the lowest version in the range that starts last.
+`--resolution lowest` chooses low versions: each range uses the lowest
+installed version in it, and the shortfall counts the versions below
+it. The first phase's step is the same with the order reversed: sort by
+the lowest version, and take a version from the range that starts
+last.
 Packages that test against both ends of their ranges run three jobs
 in CI: one at the lockfile's versions, which every developer shares,
 one after `zena pkg update --resolution lowest`, and one after
