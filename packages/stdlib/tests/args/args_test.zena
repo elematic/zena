@@ -1,389 +1,399 @@
-import {suite, test, TestContext} from 'zena:test';
-import {equal, notEqual, isTrue, isFalse, isNull, isNotNull, throws} from 'zena:assert';
+import { suite, test } from 'zena:test';
+import { equal, isTrue, isFalse, isNull, throws, fail } from 'zena:assert';
 import {
-  ArgParser, ParsedArgs, OptionType, parseArgs,
-  OptionConfig, ParserConfig, CommandConfig,
-  ParsedValue, Flag, Single, Multi
+  ArgParser, OptionType, parseArgs,
+  Flag, Single, Multi,
 } from 'zena:args';
 
 export let tests = suite('Args', () => {
-  test('boolean flags', (ctx) => {
-    let parser = new ArgParser('app')
-      .addOption('verbose', {type: OptionType.Flag, abbr: 'v', help: 'Verbose output'})
-      .addOption('debug', {type: OptionType.Flag, abbr: 'g', help: 'Debug mode'})
-      .addOption('optimize', {type: OptionType.Flag, help: 'Optimization', defaultVal: 'true'});
+  test('boolean flags and negation', () => {
+    let parser = new ArgParser({
+      name: 'app',
+      options: {
+        'verbose' => {type: OptionType.Flag, abbr: 'v', help: 'Verbose output'},
+        'debug' => {type: OptionType.Flag, abbr: 'g', help: 'Debug mode'},
+        'optimize' => {type: OptionType.Flag, help: 'Optimization', defaultVal: 'true'},
+        'no-cache' => {type: OptionType.Flag, help: 'Bypass compile cache'},
+      },
+    });
 
-    let args1 = new GrowableArray<String>();
-    args1.push('--verbose');
-    let res1 = parser.parse(args1);
+    let res1 = parser.parse(['--verbose']);
     isTrue(res1.getFlag('verbose'));
     isFalse(res1.getFlag('debug'));
-    isTrue(res1.getFlag('optimize')); // default was true
+    isTrue(res1.getFlag('optimize'));
+    isFalse(res1.getFlag('no-cache'));
 
-    // Negated flag
-    let args2 = new GrowableArray<String>();
-    args2.push('--no-optimize');
-    let res2 = parser.parse(args2);
+    // Negated flag (`--no-optimize`) vs literal `--no-cache` flag
+    let res2 = parser.parse(['--no-optimize', '--no-cache']);
     isFalse(res2.getFlag('optimize'));
+    isTrue(res2.getFlag('no-cache'));
+
+    // Explicit `=true` / `=false` / `=1` on flags
+    let res3 = parser.parse(['--verbose=false', '--debug=1']);
+    isFalse(res3.getFlag('verbose'));
+    isTrue(res3.getFlag('debug'));
 
     // Combined short flags
-    let args3 = new GrowableArray<String>();
-    args3.push('-vg');
-    let res3 = parser.parse(args3);
-    isTrue(res3.getFlag('verbose'));
-    isTrue(res3.getFlag('debug'));
+    let res4 = parser.parse(['-vg']);
+    isTrue(res4.getFlag('verbose'));
+    isTrue(res4.getFlag('debug'));
   });
 
-  test('string options', (ctx) => {
-    let parser = new ArgParser('app')
-      .addOption('output', {abbr: 'o', help: 'Output path', defaultVal: 'default.out'})
-      .addOption('target', {abbr: 't', help: 'Target'});
+  test('string options', () => {
+    let parser = new ArgParser({
+      name: 'app',
+      options: {
+        'output' => {abbr: 'o', help: 'Output path', defaultVal: 'default.out'},
+        'target' => {abbr: 't', help: 'Target'},
+        'opt' => {abbr: 'O'},
+      },
+    });
 
-    // Space separated: --output file.txt
-    let args1 = new GrowableArray<String>();
-    args1.push('--output');
-    args1.push('file.txt');
-    let res1 = parser.parse(args1);
+    // Space-separated: --output file.txt
+    let res1 = parser.parse(['--output', 'file.txt']);
     equal(res1.getOption('output') ?? null, 'file.txt');
 
-    // Equals separated: --output=file.txt
-    let args2 = new GrowableArray<String>();
-    args2.push('--output=file2.txt');
-    let res2 = parser.parse(args2);
+    // Equals-separated: --output=file2.txt
+    let res2 = parser.parse(['--output=file2.txt']);
     equal(res2.getOption('output') ?? null, 'file2.txt');
 
     // Short option: -o file3.txt
-    let args3 = new GrowableArray<String>();
-    args3.push('-o');
-    args3.push('file3.txt');
-    let res3 = parser.parse(args3);
+    let res3 = parser.parse(['-o', 'file3.txt']);
     equal(res3.getOption('output') ?? null, 'file3.txt');
 
     // Short attached: -O2
-    let parserO = new ArgParser('app').addOption('opt', {abbr: 'O'});
-    let args4 = new GrowableArray<String>();
-    args4.push('-O2');
-    let res4 = parserO.parse(args4);
+    let res4 = parser.parse(['-O2']);
     equal(res4.getOption('opt') ?? null, '2');
 
     // Short option with equals: -o=file4.txt
-    let args5 = new GrowableArray<String>();
-    args5.push('-o=file4.txt');
-    let res5 = parser.parse(args5);
+    let res5 = parser.parse(['-o=file4.txt']);
     equal(res5.getOption('output') ?? null, 'file4.txt');
   });
 
-  test('integer options', (ctx) => {
-    let parser = new ArgParser('app')
-      .addOption('count', {type: OptionType.Int, abbr: 'n', help: 'Count', defaultVal: '1'});
+  test('integer options', () => {
+    let parser = new ArgParser({
+      name: 'app',
+      options: {
+        'count' => {type: OptionType.Int, abbr: 'n', help: 'Count', defaultVal: '1'},
+      },
+    });
 
-    let args1 = new GrowableArray<String>();
-    args1.push('-n');
-    args1.push('42');
-    let res1 = parser.parse(args1);
+    let res1 = parser.parse(['-n', '42']);
     equal(res1.getInt('count') ?? 0, 42);
 
-    let args2 = new GrowableArray<String>();
-    let res2 = parser.parse(args2);
+    let res2 = parser.parse([]);
     equal(res2.getInt('count') ?? 0, 1);
+
+    let res3 = parser.parse(['--count=notanumber']);
+    equal(res3.getInt('count') ?? -1, -1);
   });
 
-  test('multi options', (ctx) => {
-    let parser = new ArgParser('app')
-      .addOption('dir', {type: OptionType.MultiString, abbr: 'd', help: 'Preopened directory'});
-
-    let args = new GrowableArray<String>();
-    args.push('--dir');
-    args.push('/tmp');
-    args.push('--dir=/data');
-    args.push('-d');
-    args.push('/var');
-
-    let res = parser.parse(args);
-    let dirs = res.getMultiOption('dir');
-    equal(dirs.length, 3);
-    equal(dirs[0], '/tmp');
-    equal(dirs[1], '/data');
-    equal(dirs[2], '/var');
-  });
-
-  test('positional arguments and delimiter (--)', (ctx) => {
-    let parser = new ArgParser('app')
-      .addOption('verbose', {type: OptionType.Flag, abbr: 'v'});
-
-    let args = new GrowableArray<String>();
-    args.push('input.txt');
-    args.push('-v');
-    args.push('--');
-    args.push('--not-an-option');
-    args.push('final.txt');
-
-    let res = parser.parse(args);
-    isTrue(res.getFlag('verbose'));
-    equal(res.rest.length, 3);
-    equal(res.rest[0], 'input.txt');
-    equal(res.rest[1], '--not-an-option');
-    equal(res.rest[2], 'final.txt');
-  });
-
-  test('subcommands', (ctx) => {
-    let root = new ArgParser('zena', 'The Zena toolchain');
-    let buildCmd = root.addCommand('build', {
-      description: 'Build a Zena file',
+  test('multi-string options', () => {
+    let parser = new ArgParser({
+      name: 'app',
       options: {
-        'output' => {abbr: 'o', help: 'Output file', defaultVal: 'out.wasm'},
-        'time'   => {type: OptionType.Flag, help: 'Time compilation'},
+        'dir' => {type: OptionType.MultiString, abbr: 'd', help: 'Preopened directory'},
       },
     });
-    let testCmd = root.addCommand('test', {
-      description: 'Run tests',
+
+    let res = parser.parse(['--dir', '/tmp', '--dir=/data', '-d', '/var', '-d/opt']);
+    isTrue(res.getMultiOption('dir').contentEquals(['/tmp', '/data', '/var', '/opt']));
+
+    let empty = parser.parse([]);
+    equal(empty.getMultiOption('dir').length, 0);
+  });
+
+  test('allowed option values', () => {
+    let parser = new ArgParser({
+      name: 'app',
       options: {
-        'filter' => {abbr: 'f', help: 'Filter tests'},
+        'target' => {
+          abbr: 't',
+          allowed: ['wasm', 'js'],
+          defaultVal: 'wasm',
+          help: 'Compilation target',
+        },
+        'tag' => {
+          type: OptionType.MultiString,
+          allowed: ['fast', 'slow'],
+        },
       },
     });
 
-    let args = new GrowableArray<String>();
-    args.push('build');
-    args.push('main.zena');
-    args.push('-o');
-    args.push('main.wasm');
-    args.push('--time');
+    let res = parser.parse(['-t', 'js', '--tag=fast', '--tag', 'slow']);
+    equal(res.getOption('target') ?? null, 'js');
+    isTrue(res.getMultiOption('tag').contentEquals(['fast', 'slow']));
 
-    let res = root.parse(args);
-    equal(res.commandName, 'build');
-    isNotNull(res.commandArgs);
-
-    let buildArgs = res.commandArgs as ParsedArgs;
-    equal(buildArgs.getOption('output') ?? null, 'main.wasm');
-    isTrue(buildArgs.getFlag('time'));
-    equal(buildArgs.rest.length, 1);
-    equal(buildArgs.rest[0], 'main.zena');
-  });
-
-  test('subcommands of subcommands, with help under their full name', (ctx) => {
-    let root = new ArgParser('zena', 'The Zena toolchain');
-    root.addCommand('pkg', {description: 'Packages'}).addCommands({
-      'add' => {
-        description: 'Add a package',
-        options: {'name' => {help: 'Its local name'}},
-      },
-      'fetch' => {description: 'Fetch them'},
+    throws(() => {
+      parser.parse(['--target=native']);
     });
-    let res = root.parse(['pkg', 'add', 'acme.pkg.test', '--name', 'acme']);
-    equal(res.commandName, 'pkg');
-    let pkgArgs = res.commandArgs as ParsedArgs;
-    equal(pkgArgs.commandName, 'add');
-    let addArgs = pkgArgs.commandArgs as ParsedArgs;
-    equal(addArgs.getOption('name') ?? null, 'acme');
-    equal(addArgs.rest.length, 1);
-    equal(addArgs.rest[0], 'acme.pkg.test');
-
-    let pkg = root.command('pkg');
-    isNotNull(pkg);
-    let help = (pkg as ArgParser).formatHelp();
-    isTrue(help.contains('Usage: zena pkg'), help);
-    isTrue(help.contains('add') && help.contains('Fetch them'), help);
-    isTrue(((pkg as ArgParser).command('add') as ArgParser).formatHelp().contains('Usage: zena pkg add'));
-    isTrue(root.command('nothing') == null, 'no such command');
-  });
-
-  test('help formatting', (ctx) => {
-    let parser = new ArgParser('mytool', 'A helpful tool')
-      .addOption('verbose', {type: OptionType.Flag, abbr: 'v', help: 'Verbose logging'})
-      .addOption('output', {abbr: 'o', help: 'Output file', defaultVal: 'out.txt'});
-    parser.addCommand('run', {description: 'Run command'});
+    throws(() => {
+      parser.parse(['-tnative']);
+    });
+    throws(() => {
+      parser.parse(['--tag=unknown']);
+    });
 
     let help = parser.formatHelp();
-    isTrue(help.contains('Usage: mytool'));
-    isTrue(help.contains('--verbose'));
-    isTrue(help.contains('--output'));
-    isTrue(help.contains('out.txt'));
-    isTrue(help.contains('Commands:'));
-    isTrue(help.contains('run'));
+    isTrue(help.contains('[wasm, js]'), help);
+    isTrue(help.contains('(default: wasm)'), help);
   });
 
-  test('declarative options map constructor', (ctx) => {
-    let parser = new ArgParser('app', 'Application', {
-      'output'  => {abbr: 'o', defaultVal: 'default.out', help: 'Output path'},
-      'verbose' => {type: OptionType.Flag, abbr: 'v', help: 'Enable verbose'},
-      'count'   => {type: OptionType.Int, abbr: 'n', defaultVal: '5', help: 'Iterations'},
-      'include' => {type: OptionType.MultiString, abbr: 'I', help: 'Include dirs'},
+  test('positional arguments and delimiter (--)', () => {
+    let parser = new ArgParser({
+      name: 'app',
+      options: {
+        'verbose' => {type: OptionType.Flag, abbr: 'v'},
+      },
     });
 
-    let args = new GrowableArray<String>();
-    args.push('-v');
-    args.push('-o');
-    args.push('custom.out');
-    args.push('--count=10');
-    args.push('-I');
-    args.push('dirA');
-    args.push('-IdirB');
-    args.push('input.txt');
-
-    let res = parser.parse(args);
+    let res = parser.parse(['input.txt', '-v', '--', '--not-an-option', 'final.txt']);
     isTrue(res.getFlag('verbose'));
-    equal(res.getOption('output') ?? null, 'custom.out');
-    equal(res.getInt('count') ?? 0, 10);
-    let inc = res.getMultiOption('include');
-    equal(inc.length, 2);
-    equal(inc[0], 'dirA');
-    equal(inc[1], 'dirB');
-    equal(res.rest.length, 1);
-    equal(res.rest[0], 'input.txt');
+    isTrue(res.rest.contentEquals(['input.txt', '--not-an-option', 'final.txt']));
   });
 
-  test('fromConfig with nested subcommands', (ctx) => {
-    let parser = new ArgParser.fromConfig({
-      name: 'tool',
-      description: 'Multi-command tool',
+  test('subcommands and nested subcommands from config', () => {
+    let parser = new ArgParser({
+      name: 'zena',
+      help: 'The Zena toolchain',
       options: {
         'verbose' => {type: OptionType.Flag, abbr: 'v'},
       },
       commands: {
         'build' => {
-          help: 'Compile project',
+          help: 'Build a Zena file',
           options: {
-            'target'  => {abbr: 't', defaultVal: 'wasm'},
-            'release' => {type: OptionType.Flag, abbr: 'r'},
+            'output' => {abbr: 'o', help: 'Output file', defaultVal: 'out.wasm'},
+            'time' => {type: OptionType.Flag, help: 'Time compilation'},
+          },
+        },
+        'pkg' => {
+          help: 'Manage packages',
+          commands: {
+            'add' => {
+              help: 'Add a package',
+              options: {'name' => {help: 'Its local name'}},
+            },
+            'fetch' => {help: 'Fetch pinned packages'},
           },
         },
       },
     });
 
-    let args = new GrowableArray<String>();
-    args.push('-v');
-    args.push('build');
-    args.push('-r');
-    args.push('--target=native');
-    args.push('src/main.zena');
+    let res1 = parser.parse(['-v', 'build', 'main.zena', '-o', 'main.wasm', '--time']);
+    isTrue(res1.getFlag('verbose'));
+    equal(res1.commandName, 'build');
+    let buildArgs = res1.commandArgs;
+    if (buildArgs != null) {
+      equal(buildArgs.getOption('output') ?? null, 'main.wasm');
+      isTrue(buildArgs.getFlag('time'));
+      isTrue(buildArgs.rest.contentEquals(['main.zena']));
+    } else {
+      fail('expected build commandArgs');
+    }
 
-    let res = parser.parse(args);
-    isTrue(res.getFlag('verbose'));
-    equal(res.commandName, 'build');
-    isNotNull(res.commandArgs);
-    let buildArgs = res.commandArgs as ParsedArgs;
-    isTrue(buildArgs.getFlag('release'));
-    equal(buildArgs.getOption('target') ?? null, 'native');
-    equal(buildArgs.rest.length, 1);
-    equal(buildArgs.rest[0], 'src/main.zena');
+    let res2 = parser.parse(['pkg', 'add', 'acme.pkg.test', '--name', 'acme']);
+    equal(res2.commandName, 'pkg');
+    let pkgArgs = res2.commandArgs;
+    if (pkgArgs != null) {
+      equal(pkgArgs.commandName, 'add');
+      let addArgs = pkgArgs.commandArgs;
+      if (addArgs != null) {
+        equal(addArgs.getOption('name') ?? null, 'acme');
+        isTrue(addArgs.rest.contentEquals(['acme.pkg.test']));
+      } else {
+        fail('expected add commandArgs');
+      }
+    } else {
+      fail('expected pkg commandArgs');
+    }
+
+    let pkg = parser.command('pkg');
+    if (pkg != null) {
+      let pkgHelp = pkg.formatHelp();
+      isTrue(pkgHelp.contains('Usage: zena pkg'), pkgHelp);
+      isTrue(pkgHelp.contains('add') && pkgHelp.contains('Fetch pinned packages'), pkgHelp);
+      let add = pkg.command('add');
+      if (add != null) {
+        isTrue(add.formatHelp().contains('Usage: zena pkg add'));
+      } else {
+        fail('expected add parser');
+      }
+    } else {
+      fail('expected pkg parser');
+    }
+    isNull(parser.command('nothing'));
   });
 
-  test('parseArgs convenience function', (ctx) => {
-    let args = new GrowableArray<String>();
-    args.push('ignored_binary');
-    args.push('--quiet');
-    args.push('--name=Alice');
-    args.push('arg1');
+  test('dynamic addOption and addCommand', () => {
+    let parser = new ArgParser({name: 'mytool', help: 'Extensible tool'});
+    parser.addOption('verbose', {type: OptionType.Flag, abbr: 'v'});
+    let pluginCmd = parser.addCommand('serve', {help: 'Start server'});
+    pluginCmd.addOption('port', {type: OptionType.Int, abbr: 'p', defaultVal: '8080'});
 
-    let res = parseArgs(args, {
-      'name'  => {defaultVal: 'World'},
-      'quiet' => {type: OptionType.Flag, abbr: 'q'},
-    }, 1);
+    let res = parser.parse(['-v', 'serve', '-p', '3000']);
+    isTrue(res.getFlag('verbose'));
+    equal(res.commandName, 'serve');
+    let serveArgs = res.commandArgs;
+    if (serveArgs != null) {
+      equal(serveArgs.getInt('port') ?? 0, 3000);
+    } else {
+      fail('expected serve commandArgs');
+    }
+  });
+
+  test('help formatting and first-line command summaries', () => {
+    let parser = new ArgParser({
+      name: 'mytool',
+      help: 'A CLI utility',
+      options: {
+        'verbose' => {type: OptionType.Flag, abbr: 'v', help: 'Verbose logging'},
+        'output' => {abbr: 'o', help: 'Output file', defaultVal: 'out.txt'},
+        'imported-string-constants' => {help: 'Module importing string constants'},
+      },
+      commands: {
+        'fmt' => {
+          help: 'Format Zena files\n\nRewrites files in place with -w, or checks formatting with --check.',
+          options: {'write' => {type: OptionType.Flag, abbr: 'w'}},
+        },
+      },
+    });
+
+    let rootHelp = parser.formatHelp();
+    isTrue(rootHelp.contains('Usage: mytool [options] <command> [args]'), rootHelp);
+    isTrue(rootHelp.contains('A CLI utility'), rootHelp);
+    isTrue(rootHelp.contains('-v, --verbose'), rootHelp);
+    isTrue(rootHelp.contains('-o, --output <value>'), rootHelp);
+    isTrue(rootHelp.contains('(default: out.txt)'), rootHelp);
+    isTrue(
+      rootHelp.contains('--imported-string-constants <value>  Module importing string constants'),
+      rootHelp,
+    );
+    // Parent Commands table shows only the first line of fmt's help.
+    isTrue(rootHelp.contains('Format Zena files'), rootHelp);
+    isFalse(rootHelp.contains('Rewrites files in place'), rootHelp);
+
+    // Subcommand's own formatHelp shows the full multi-paragraph help.
+    let fmt = parser.command('fmt');
+    if (fmt != null) {
+      let fmtHelp = fmt.formatHelp();
+      isTrue(fmtHelp.contains('Usage: mytool fmt [options]'), fmtHelp);
+      isTrue(fmtHelp.contains('Format Zena files\n\nRewrites files in place'), fmtHelp);
+    } else {
+      fail('expected fmt parser');
+    }
+
+    // Anonymous parser falls back to `Usage: program`.
+    let anon = new ArgParser();
+    isTrue(anon.formatHelp().contains('Usage: program'));
+  });
+
+  test('parseArgs with full ParserConfig', () => {
+    let res = parseArgs(
+      ['ignored_binary', '--quiet', 'run', '--name=Alice', 'prog.zena', '--child-flag'],
+      {
+        options: {
+          'quiet' => {type: OptionType.Flag, abbr: 'q'},
+        },
+        commands: {
+          'run' => {
+            stopAtPositional: true,
+            options: {
+              'name' => {defaultVal: 'World'},
+            },
+          },
+        },
+      },
+      1,
+    );
 
     isTrue(res.getFlag('quiet'));
-    equal(res.getOption('name') ?? null, 'Alice');
-    equal(res.rest.length, 1);
-    equal(res.rest[0], 'arg1');
+    equal(res.commandName, 'run');
+    let sub = res.commandArgs;
+    if (sub != null) {
+      equal(sub.getOption('name') ?? null, 'Alice');
+      isTrue(sub.rest.contentEquals(['prog.zena', '--child-flag']));
+    } else {
+      fail('expected run commandArgs');
+    }
   });
 
-  test('unknown option throws', (ctx) => {
-    let parser = new ArgParser('app');
-    let args = new GrowableArray<String>();
-    args.push('--invalid');
+  test('error cases and name validation', () => {
+    let parser = new ArgParser({
+      name: 'app',
+      options: {
+        'verbose' => {type: OptionType.Flag, abbr: 'v'},
+        'output' => {abbr: 'o'},
+      },
+    });
 
+    // Unknown options
+    throws(() => { parser.parse(['--invalid']); });
+    throws(() => { parser.parse(['--invalid=1']); });
+    throws(() => { parser.parse(['-x']); });
+    throws(() => { parser.parse(['-vx']); });
+
+    // Non-flag inside combined short flags
+    throws(() => { parser.parse(['-vo']); });
+
+    // Missing required option values
+    throws(() => { parser.parse(['--output']); });
+    throws(() => { parser.parse(['-o']); });
+
+    // Empty option or command names
     throws(() => {
-      parser.parse(args);
+      new ArgParser({options: {'' => {}}});
+    });
+    throws(() => {
+      new ArgParser().addOption('', {type: OptionType.Flag});
+    });
+    throws(() => {
+      new ArgParser().addCommand('');
     });
   });
 
-  test('parsed values sealed class and pattern matching', (ctx) => {
-    let parser = new ArgParser('app')
-      .addOption('flag', {type: OptionType.Flag})
-      .addOption('single', {})
-      .addOption('multi', {type: OptionType.MultiString});
+  test('ParsedValue variants and hasOption', () => {
+    let parser = new ArgParser({
+      name: 'app',
+      options: {
+        'flag' => {type: OptionType.Flag},
+        'single' => {},
+        'multi' => {type: OptionType.MultiString},
+        'absent' => {},
+        'defaulted' => {defaultVal: 'yes'},
+      },
+    });
 
-    let args = new GrowableArray<String>();
-    args.push('--flag');
-    args.push('--single=hello');
-    args.push('--multi=first');
-    args.push('--multi=second');
+    let res = parser.parse(['--flag', '--single=hello', '--multi=first', '--multi=second']);
 
-    let res = parser.parse(args);
-
-    // Test get(name)
-    if (let (true, val) = res.get('flag')) {
-      if (let Flag {value} = val) {
-        isTrue(value);
-      } else {
-        throws(() => { throw new Error('expected Flag'); });
-      }
+    if (let (true, Flag {value}) = res.get('flag')) {
+      isTrue(value);
     } else {
-      throws(() => { throw new Error('missing flag'); });
+      fail('expected Flag');
     }
 
-    if (let (true, val) = res.get('single')) {
-      if (let Single {value} = val) {
-        equal(value, 'hello');
-      } else {
-        throws(() => { throw new Error('expected Single'); });
-      }
+    if (let (true, Single {value}) = res.get('single')) {
+      equal(value, 'hello');
     } else {
-      throws(() => { throw new Error('missing single'); });
+      fail('expected Single');
     }
 
-    if (let (true, val) = res.get('multi')) {
-      if (let Multi {values} = val) {
-        equal(values.length, 2);
-          equal(values[0], 'first');
-          equal(values[1], 'second');
-      } else {
-        throws(() => { throw new Error('expected Multi'); });
-      }
+    if (let (true, Multi {values}) = res.get('multi')) {
+      isTrue(values.contentEquals(['first', 'second']));
     } else {
-      throws(() => { throw new Error('missing multi'); });
+      fail('expected Multi');
     }
-  });
-
-  test('parsed options map', (ctx) => {
-    let parser = new ArgParser('app')
-      .addOption('zeta', {})
-      .addOption('alpha', {})
-      .addOption('beta', {})
-      .addOption('defaultOpt', {defaultVal: 'fallback'});
-
-    let args = new GrowableArray<String>();
-    args.push('--beta=2');
-    args.push('--zeta=1');
-    args.push('--alpha=3');
-
-    let res = parser.parse(args);
 
     equal(res.options.size, 4);
-    isTrue(res.hasOption('beta'));
-    isTrue(res.hasOption('zeta'));
-    isTrue(res.hasOption('alpha'));
-    isTrue(res.hasOption('defaultOpt'));
-  });
-
-  test('hasOption', (ctx) => {
-    let parser = new ArgParser('app')
-      .addOption('present', {})
-      .addOption('absent', {})
-      .addOption('defaulted', {defaultVal: 'yes'});
-
-    let args = new GrowableArray<String>();
-    args.push('--present=val');
-
-    let res = parser.parse(args);
-    isTrue(res.hasOption('present'));
-    isFalse(res.hasOption('absent'));
+    isTrue(res.hasOption('flag'));
+    isTrue(res.hasOption('single'));
+    isTrue(res.hasOption('multi'));
     isTrue(res.hasOption('defaulted'));
+    isFalse(res.hasOption('absent'));
   });
 
-  test('stopAtPositional hands the tail to the positional', (ctx) => {
-    // A command that runs another program: everything after the program
-    // name is that program's, even when it looks like an option here.
-    let parser = new ArgParser.fromConfig({
+  test('stopAtPositional hands the tail to rest', () => {
+    let parser = new ArgParser({
       name: 'app',
       commands: {
         'run' => {
@@ -393,52 +403,23 @@ export let tests = suite('Args', () => {
       },
     });
 
-    let args = new GrowableArray<String>();
-    args.push('run');
-    args.push('-v');
-    args.push('prog.zena');
-    args.push('-v');
-    args.push('--unknown');
-    args.push('tail');
-
-    let res = parser.parse(args);
+    let res = parser.parse(['run', '-v', 'prog.zena', '-v', '--unknown', 'tail']);
     equal(res.commandName, 'run');
     let sub = res.commandArgs;
-    isNotNull(sub);
     if (sub != null) {
-      // The -v before the positional is the command's...
       isTrue(sub.getFlag('verbose'));
-      // ...and everything from the positional on is the program's,
-      // including an option this parser never declared.
-      equal(sub.rest.length, 4);
-      equal(sub.rest[0], 'prog.zena');
-      equal(sub.rest[1], '-v');
-      equal(sub.rest[2], '--unknown');
-      equal(sub.rest[3], 'tail');
+      isTrue(sub.rest.contentEquals(['prog.zena', '-v', '--unknown', 'tail']));
+    } else {
+      fail('expected run commandArgs');
     }
 
-    // Without it, an undeclared option after a positional is an error.
-    let strict = new ArgParser('app')
-      .addOption('verbose', {type: OptionType.Flag, abbr: 'v'});
-    let strictArgs = new GrowableArray<String>();
-    strictArgs.push('prog.zena');
-    strictArgs.push('--unknown');
-    throws(() => {
-      strict.parse(strictArgs);
+    // Without stopAtPositional, an undeclared option after a positional throws.
+    let strict = new ArgParser({
+      name: 'app',
+      options: {'verbose' => {type: OptionType.Flag, abbr: 'v'}},
     });
-  });
-
-  test('option name validation', (ctx) => {
-    // Option without a name throws
     throws(() => {
-      let parser = new ArgParser('bad')
-        .addOption('', {abbr: 'x', type: OptionType.Flag});
-    });
-
-    throws(() => {
-      let parser = new ArgParser('bad')
-        .addOption('', {});
+      strict.parse(['prog.zena', '--unknown']);
     });
   });
 });
-

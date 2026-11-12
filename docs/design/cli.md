@@ -152,9 +152,13 @@ use the dedicated `zena:args` module (`ArgParser`):
 import { getArguments } from 'zena:cli';
 import { ArgParser, OptionType } from 'zena:args';
 
-let parser = new ArgParser('mytool')
-  .addOption('verbose', { type: OptionType.Flag, abbr: 'v' })
-  .addOption('output', { abbr: 'o' });
+let parser = new ArgParser({
+  name: 'mytool',
+  options: {
+    'verbose' => { type: OptionType.Flag, abbr: 'v' },
+    'output' => { abbr: 'o' },
+  },
+});
 
 let parsed = parser.parse(getArguments(), 1);
 let verbose = parsed.getFlag('verbose');
