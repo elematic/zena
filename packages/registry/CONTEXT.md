@@ -16,9 +16,9 @@ When a pull request closes an item there, tick its box.
 - This package holds what only the App View does. What a PDS does goes in
   `packages/pds`, which this package imports (`pds:`) and which never
   imports it; general atproto code goes in `packages/atproto`.
-- XRPC routes go in `zena/xrpc/`, one module per area of the App View's
+- XRPC routes go in `src/xrpc/`, one module per area of the App View's
   methods, which `xrpc/routes.zena` adds. `server.zena` puts them, the
-  PDS's routes and the pages in `zena/web/` together. A method's route is
+  PDS's routes and the pages in `src/web/` together. A method's route is
   added with `registryQuery` or `registryProcedure`, which check the
   caller's token for the same method.
 - Method names come from `atproto/methods` and
@@ -26,7 +26,7 @@ When a pull request closes an item there, tick its box.
   in `zena`. A new method needs its lexicon and its constant; the lexicon
   test fails without either. Tests keep the literals, since they check the
   wire.
-- The pages in `zena/web/` are the site's (`pkg.zena-lang.dev`), served
+- The pages in `src/web/` are the site's (`pkg.zena-lang.dev`), served
   with the App View's methods; the PDS is padstone
   (`padstone.zena-lang.dev`), a service of its own. A page reaches the App View only with calls it could
   make over the network: an App View method, or a public atproto read.
@@ -47,7 +47,7 @@ When a pull request closes an item there, tick its box.
 - `registry/app-view` declares `AppViewStore` and keeps it in memory;
   `registry/firestore` keeps it in Firestore, under the PDS's tenant, or
   under its own (`APP_VIEW_TENANT`) when the PDS is elsewhere. Both
-  pass `zena/test/store-conformance.zena`; add a test there for anything a
+  pass `test/store-conformance.zena`; add a test there for anything a
   store must do.
 - The package listings read `AppViewStore.summaries`, and memberships and
   public roles start from `AppViewStore.mentionsOf`, which the App View

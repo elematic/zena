@@ -2,11 +2,11 @@
 
 `packages/pds-web` builds the stylesheet, script, and static documentation
 (`/docs/`) of the App View's pages. The dynamic pages are rendered on
-the server, in Zena, in `packages/registry/zena/web/`; the static documentation
+the server, in Zena, in `packages/registry/src/web/`; the static documentation
 pages are rendered by Eleventy from `site/docs/` into `out/docs/` and
 served at `/docs/` by `registry/service`. Read this package's README first.
 
-- Each page is a module of its own under `packages/registry/zena/web/pages/`
+- Each page is a module of its own under `packages/registry/src/web/pages/`
   (`registry/web/pages/package`, `.../scope`, ...), which exports a function
   that adds its routes; `registry/web/routes` adds them all. A page renders in
   the shell of `registry/web/layout`, from pieces pages share under

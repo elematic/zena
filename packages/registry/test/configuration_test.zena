@@ -1,0 +1,74 @@
+/**
+ * The README's configuration reference names every variable that the App
+ * View, padstone, the image and the deploy scripts read, found in their
+ * sources: the App View's quoted `APP_VIEW_*` names, `PDS_VARIABLES`,
+ * Google Cloud's `getEnv` calls, the image's `ENV` lines, and the
+ * `${ZENA_*}` and `PDS_ENV` of the deploy scripts.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {HashSet} from 'zena:collections';
+import {listDir, readFile} from 'zena:fs';
+import {PDS_VARIABLES} from 'pds/service';
+
+/** Whether `byte` can be in a variable's name: a capital, a digit or `_`. */
+function isNameByte(byte: i32) {
+  return (byte >= 65 && byte <= 90) || (byte >= 48 && byte <= 57) || byte == 95;
+}
+
+/**
+ * The variables `text` names after each `marker`: `prefix` and the name
+ * bytes that follow the marker.
+ */
+function namesAfter(text: String, marker: String, prefix: String, into: HashSet<String>) {
+  let parts = text.split(marker);
+  for (var i = 1; i < parts.length; i += 1) {
+    let part = parts[i];
+    var end = 0;
+    while (end < part.length && isNameByte(part.getByteAt(end))) {
+      end += 1;
+    }
+    if (end > 0) {
+      into.add(`${prefix}${part.sliceBytes(0, end)}`);
+    }
+  }
+}
+
+export let tests = suite('registry/configuration', () => {
+  test('the README lists every variable the services, the image and the deploy scripts read', async (ctx) => {
+    let names = new HashSet<String>();
+    namesAfter(await readFile('packages/registry/src/service.zena'), "'APP_VIEW_", 'APP_VIEW_', names);
+    for (let name in PDS_VARIABLES) {
+      names.add(name);
+    }
+    for (let entry in await listDir('packages/google-cloud/src')) {
+      if (entry.name.endsWith('.zena')) {
+        namesAfter(await readFile(`packages/google-cloud/src/${entry.name}`), "getEnv('", '', names);
+      }
+    }
+    namesAfter(await readFile('packages/registry/deploy/Dockerfile'), '\nENV ', '', names);
+    for (let entry in await listDir('packages/registry/deploy')) {
+      if (entry.name.endsWith('.sh')) {
+        let script = await readFile(`packages/registry/deploy/${entry.name}`);
+        namesAfter(script, '${ZENA_', 'ZENA_', names);
+        if (script.contains('${PDS_ENV')) {
+          names.add('PDS_ENV');
+        }
+      }
+    }
+    // The scan found what it looks for.
+    for (let expected in ['APP_VIEW_DOMAIN', 'PDS_STORAGE', 'GOOGLE_OAUTH_ACCESS_TOKEN', 'HOST', 'ZENA_GCP_PROJECT', 'PDS_ENV']) {
+      isTrue(names.has(expected), expected);
+    }
+    let readme = await readFile('packages/registry/README.md');
+    var missing = '';
+    for (let name in names) {
+      // A table's row, which prettier pads after the name.
+      if (!readme.contains(`\n| \`${name}\``)) {
+        missing = `${missing} ${name}`;
+      }
+    }
+    isTrue(missing == '', `not in the README's configuration reference:${missing}`);
+  });
+});

@@ -1,0 +1,334 @@
+/**
+ * What every `AppViewStore` and `PlcLog` must do, as tests that run against
+ * any of them: `store_test.zena` runs them in memory, and
+ * `emulator/firestore_test.zena` against the Firestore emulator. The PDS's
+ * stores have their own, in `packages/pds/test/storage-conformance.zena`.
+ */
+
+import {None, none, some} from 'zena:core';
+import {test} from 'zena:test';
+import {equal, isNull, isTrue} from 'zena:assert';
+import {hex} from 'zena:encoding';
+import {Cid} from 'atproto/cid';
+import {KeyType, curveOf, publicKeyFor} from 'atproto/didkey';
+import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto/plc';
+import {MemberEntry, OWNER} from 'package-manager/records';
+import {AccountKind} from 'pds/storage';
+import {
+  ALL_TIME, AppViewAccount, AppViewStore, Count, Limit, PackageSummary, PendingChange, PendingRelease
+} from 'registry/app-view';
+import {PlcLog} from 'registry/plc-directory';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
+
+/** Registers the App View store tests, each on a new store from `make`. */
+export function appViewStoreConformance(make: () => AppViewStore): void {
+  test('gives each scope and name to one account', async (ctx) => {
+    let store = make();
+    isNull(await store.scopeOwner('acme'));
+    isTrue(await store.claimScope('acme', ALICE), 'claimed');
+    isTrue(!await store.claimScope('acme', BOB), 'taken');
+    equal((await store.scopeOwner('acme')) as String, ALICE);
+    // Only its owner gives it back.
+    await store.releaseScope('acme', BOB);
+    equal((await store.scopeOwner('acme')) as String, ALICE);
+    await store.releaseScope('acme', ALICE);
+    isNull(await store.scopeOwner('acme'));
+    isTrue(await store.claimScope('acme', BOB), 'claimed again');
+
+    isNull(await store.nameInScope('acme', 'router'));
+    isTrue(await store.claimName('acme', 'router', ALICE), 'claimed');
+    isTrue(!await store.claimName('acme', 'router', BOB), 'taken');
+    isTrue(await store.claimName('other', 'router', BOB), 'another scope');
+    equal((await store.nameInScope('acme', 'router')) as String, ALICE);
+    await store.releaseName('acme', 'router', BOB);
+    equal((await store.nameInScope('acme', 'router')) as String, ALICE);
+    await store.releaseName('acme', 'router', ALICE);
+    isNull(await store.nameInScope('acme', 'router'));
+  });
+
+  test('keeps the accounts the App View holds, with their kinds, scopes and names', async (ctx) => {
+    let store = make();
+    isNull(await store.account(ALICE));
+    equal((await store.accounts()).length, 0);
+    await store.putAccount(new AppViewAccount(ALICE, 'acme.pkg.test', AccountKind.Organization, 'acme', 'acme'));
+    await store.putAccount(new AppViewAccount(BOB, 'ci.acme.pkg.test', AccountKind.Automation, 'acme', 'ci'));
+    let org = (await store.account(ALICE)) as AppViewAccount;
+    equal(org.handle, 'acme.pkg.test');
+    equal(org.kind, AccountKind.Organization);
+    equal(org.scope, 'acme');
+    equal(org.name, 'acme');
+    let bot = (await store.account(BOB)) as AppViewAccount;
+    equal(bot.kind, AccountKind.Automation);
+    equal(bot.name, 'ci');
+    let all = await store.accounts();
+    equal(all.length, 2);
+    isTrue(all[0].did != all[1].did, 'both');
+  });
+
+  test("keeps each package's latest summary, by scope", async (ctx) => {
+    let store = make();
+    equal((await store.summaries(null)).length, 0);
+    let router = new PackageSummary(ALICE, 'router.acme.pkg.test', 'acme', 'router');
+    router.description = 'Routes requests';
+    router.license = 'MIT';
+    router.latest = '1.0.0';
+    router.releases = 2;
+    router.bytes = 5000000000 as i64;
+    await store.putSummary(router, '3l3qo2vutsw2b');
+    await store.putSummary(new PackageSummary(BOB, 'json.other.pkg.test', 'other', 'json'), '3l3qo2vutsw2a');
+    let all = await store.summaries(null);
+    equal(all.length, 2);
+    let acme = await store.summaries('acme');
+    equal(acme.length, 1);
+    let read = acme[0];
+    equal(read.did, ALICE);
+    equal(read.handle, 'router.acme.pkg.test');
+    equal(read.name, 'router');
+    equal(read.description as String, 'Routes requests');
+    equal(read.license as String, 'MIT');
+    equal(read.latest as String, '1.0.0');
+    equal(read.releases, 2);
+    equal(read.bytes, 5000000000 as i64);
+    // With the revision it was kept at.
+    equal(read.rev as String, '3l3qo2vutsw2b');
+    let json = (await store.summaries('other'))[0];
+    isNull(json.description);
+    isNull(json.license);
+    isNull(json.latest);
+    equal(json.releases, 0);
+    equal(json.bytes, 0 as i64);
+
+    // A summary of an earlier commit does not replace one of a later.
+    let older = new PackageSummary(ALICE, 'router.acme.pkg.test', 'acme', 'router');
+    await store.putSummary(older, '3l3qo2vutsw2a');
+    equal((await store.summaries('acme'))[0].latest as String, '1.0.0');
+    let newer = new PackageSummary(ALICE, 'router.acme.pkg.test', 'acme', 'router');
+    newer.latest = '1.1.0';
+    await store.putSummary(newer, '3l3qo2vutsw2c');
+    let replaced = await store.summaries('acme');
+    equal(replaced.length, 1);
+    equal(replaced[0].latest as String, '1.1.0');
+    isNull(replaced[0].description);
+  });
+
+  test('notes which accounts mention a person or a team, and forgets none', async (ctx) => {
+    let store = make();
+    equal((await store.mentionsOf(ALICE)).length, 0);
+    let org = 'did:plc:orgorgorgorgorgorgorgorgo';
+    let pkg = 'did:plc:pkgpkgpkgpkgpkgpkgpkgpkgp';
+    await store.addMentions(org, [ALICE, BOB]);
+    await store.addMentions(pkg, [ALICE, `${org} core`]);
+    // Again, as each commit notes them: once is enough.
+    await store.addMentions(pkg, [ALICE]);
+    let alice = await store.mentionsOf(ALICE);
+    equal(alice.length, 2);
+    isTrue((alice[0] == org && alice[1] == pkg) || (alice[0] == pkg && alice[1] == org), 'both accounts');
+    let bob = await store.mentionsOf(BOB);
+    equal(bob.length, 1);
+    equal(bob[0], org);
+    let team = await store.mentionsOf(`${org} core`);
+    equal(team.length, 1);
+    equal(team[0], pkg);
+    await store.addMentions(org, []);
+    equal((await store.mentionsOf(BOB)).length, 1);
+  });
+
+  test('lists every scope and name', async (ctx) => {
+    let store = make();
+    await store.claimScope('acme', ALICE);
+    await store.claimScope('other', BOB);
+    await store.claimName('acme', 'router', BOB);
+    await store.claimName('other', 'router', ALICE);
+    await store.claimName('acme', 'gone', ALICE);
+    await store.releaseName('acme', 'gone', ALICE);
+    var scopes = '';
+    for (let claimed in await store.allScopes()) {
+      scopes = `${scopes}${claimed.scope}=${if (claimed.org == ALICE) 'alice' else 'bob'};`;
+    }
+    isTrue(scopes == 'acme=alice;other=bob;' || scopes == 'other=bob;acme=alice;', scopes);
+    let names = await store.allNames();
+    equal(names.length, 2);
+    for (let claimed in names) {
+      equal(claimed.name, 'router');
+      equal(claimed.did, if (claimed.scope == 'acme') BOB else ALICE);
+    }
+  });
+
+  test("keeps each automation account's one token hash", async (ctx) => {
+    let store = make();
+    isNull(await store.automationAccountOf('aa'));
+    await store.setAutomationToken(ALICE, 'aa');
+    await store.setAutomationToken(BOB, 'bb');
+    equal((await store.automationAccountOf('aa')) as String, ALICE);
+    equal((await store.automationAccountOf('bb')) as String, BOB);
+    // A new one replaces the account's old one.
+    await store.setAutomationToken(ALICE, 'cc');
+    isNull(await store.automationAccountOf('aa'));
+    equal((await store.automationAccountOf('cc')) as String, ALICE);
+    equal((await store.automationAccountOf('bb')) as String, BOB);
+  });
+
+  test('keeps the limits the operator sets on each account, until they are taken away', async (ctx) => {
+    let store = make();
+    isTrue((await store.limits(ALICE)).get(Limit.PackageBytes) is None);
+    await store.setLimit(ALICE, Limit.PackageBytes, some(5000000000 as i64));
+    await store.setLimit(ALICE, Limit.ReleaseBytes, some(1024 as i64));
+    await store.setLimit(BOB, Limit.ScopeBytes, some(0 as i64));
+    let alice = await store.limits(ALICE);
+    equal(alice.valueOr(Limit.PackageBytes, 0 as i64), 5000000000 as i64);
+    equal(alice.valueOr(Limit.ReleaseBytes, 0 as i64), 1024 as i64);
+    isTrue(alice.get(Limit.ScopeBytes) is None);
+    equal((await store.limits(BOB)).valueOr(Limit.ScopeBytes, 7 as i64), 0 as i64);
+    // Taking one away leaves the others.
+    await store.setLimit(ALICE, Limit.PackageBytes, none);
+    let after = await store.limits(ALICE);
+    isTrue(after.get(Limit.PackageBytes) is None);
+    equal(after.valueOr(Limit.ReleaseBytes, 0 as i64), 1024 as i64);
+  });
+
+  test('adds to every count of an action, or to none when one is full', async (ctx) => {
+    let store = make();
+    let now = 1762646400000000 as i64;
+    let pkg = new Count(ALICE, Limit.PackageActions, '2026-11-09', 2 as i64);
+    let user = new Count(BOB, Limit.UserActions, '2026-11-09', 1 as i64);
+    let ever = new Count(BOB, Limit.Scopes, ALL_TIME, 5 as i64);
+    isNull(await store.addCounts([pkg], now));
+    isNull(await store.addCounts([pkg, user, ever], now));
+    // Each count is full, or not, by itself; one full count adds to none.
+    let full = await store.addCounts([ever, pkg], now);
+    equal((full as Count).key, pkg.key);
+    let fullUser = await store.addCounts([ever, user], now);
+    equal((fullUser as Count).key, user.key);
+    // `ever` was added to once, so it takes four more.
+    for (var i = 0; i < 4; i += 1) {
+      isNull(await store.addCounts([ever], now));
+    }
+    equal(((await store.addCounts([ever], now)) as Count).key, ever.key);
+    // Another day is another count, and a higher maximum leaves room in a full one.
+    isNull(await store.addCounts([new Count(ALICE, Limit.PackageActions, '2026-11-10', 2 as i64)], now));
+    isNull(await store.addCounts([new Count(ALICE, Limit.PackageActions, '2026-11-09', 3 as i64)], now));
+  });
+
+  test('keeps member entries', async (ctx) => {
+    let store = make();
+    equal((await store.entries(ALICE)).length, 0);
+    let owner = new MemberEntry(BOB, OWNER, new FixedArray<u8>(32, 1 as u8));
+    let bot = new MemberEntry('did:plc:botbotbotbotbotbotbotbotb', 'publisher', new FixedArray<u8>(32, 2 as u8), true);
+    await store.addEntries(ALICE, [owner]);
+    await store.addEntries(ALICE, [bot]);
+    let entries = await store.entries(ALICE);
+    equal(entries.length, 2);
+    var commitments = 0;
+    for (let entry in entries) {
+      if (entry.commitment().equals(owner.commitment()) || entry.commitment().equals(bot.commitment())) {
+        commitments += 1;
+      }
+    }
+    equal(commitments, 2);
+    equal((await store.entries(BOB)).length, 0);
+  });
+
+  test('holds each release of a package once, until it is dropped', async (ctx) => {
+    let store = make();
+    let record = new FixedArray<u8>(3, 7 as u8);
+    let cid = Cid.forDagCbor(record);
+    isNull(await store.heldRelease(ALICE, '1.0.0'));
+    isTrue(await store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, BOB, 42 as i64)), 'held');
+    isTrue(!await store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, ALICE, 43 as i64)), 'taken');
+    isTrue(await store.holdRelease(ALICE, new PendingRelease('1.1.0', record, cid, BOB, 44 as i64)), 'another version');
+    isTrue(await store.holdRelease(BOB, new PendingRelease('1.0.0', record, cid, BOB, 45 as i64)), 'another package');
+    let held = await store.heldRelease(ALICE, '1.0.0');
+    if (held == null) {
+      throw new Error('1.0.0 is not held');
+    }
+    equal(held.version, '1.0.0');
+    equal(hex.encode(held.record), '070707');
+    isTrue(held.cid.equals(cid), 'cid');
+    equal(held.publisher, BOB);
+    equal(held.heldAt, 42 as i64);
+    equal((await store.heldReleases(ALICE)).length, 2);
+    await store.dropRelease(ALICE, '1.0.0');
+    isNull(await store.heldRelease(ALICE, '1.0.0'));
+    let rest = await store.heldReleases(ALICE);
+    equal(rest.length, 1);
+    equal(rest[0].version, '1.1.0');
+    isTrue(await store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, ALICE, 46 as i64)), 'held again');
+  });
+
+  test('holds one change to each record, the latest, until it is dropped', async (ctx) => {
+    let store = make();
+    let first = Cid.forDagCbor(new FixedArray<u8>(1, 1 as u8));
+    let second = Cid.forDagCbor(new FixedArray<u8>(1, 2 as u8));
+    let base = Cid.forDagCbor(new FixedArray<u8>(1, 3 as u8));
+    let members = 'dev.zena-lang.org.members';
+    let team = 'dev.zena-lang.org.team';
+    isNull(await store.heldChange(ALICE, members, 'self'));
+    await store.holdChange(ALICE, new PendingChange(members, 'self', new FixedArray<u8>(1, 1 as u8), first, base,
+        BOB, 42 as i64));
+    // A new team has no record before it.
+    await store.holdChange(ALICE, new PendingChange(team, 'core', new FixedArray<u8>(1, 4 as u8), first, null,
+        ALICE, 43 as i64));
+    await store.holdChange(BOB, new PendingChange(members, 'self', new FixedArray<u8>(1, 5 as u8), first, base,
+        BOB, 44 as i64));
+    let held = await store.heldChange(ALICE, members, 'self');
+    if (held == null) {
+      throw new Error('no change is held');
+    }
+    equal(held.collection, members);
+    equal(held.rkey, 'self');
+    equal(hex.encode(held.record), '01');
+    isTrue(held.cid.equals(first), 'cid');
+    isTrue(held.base != null && (held.base as Cid).equals(base), 'base');
+    equal(held.proposer, BOB);
+    equal(held.heldAt, 42 as i64);
+    let newTeam = await store.heldChange(ALICE, team, 'core');
+    isTrue(newTeam != null && newTeam.base == null, 'a new team has no base');
+    equal((await store.heldChanges(ALICE)).length, 2);
+
+    // A later change to the record takes the earlier one's place, and
+    // dropping the earlier one leaves it.
+    await store.holdChange(ALICE, new PendingChange(members, 'self', new FixedArray<u8>(1, 2 as u8), second, base,
+        ALICE, 45 as i64));
+    equal((await store.heldChanges(ALICE)).length, 2);
+    await store.dropChange(ALICE, members, 'self', first);
+    let latest = await store.heldChange(ALICE, members, 'self');
+    isTrue(latest != null && latest.cid.equals(second), 'the later change stays');
+    await store.dropChange(ALICE, members, 'self', second);
+    isNull(await store.heldChange(ALICE, members, 'self'));
+    equal((await store.heldChanges(ALICE)).length, 1);
+    equal((await store.heldChanges(BOB)).length, 1);
+  });
+}
+
+export function plcLogConformance(make: () => PlcLog): void {
+  test('keeps each DID\'s operations in order, appending only at the end', async (ctx) => {
+    let log = make();
+    let rotation = new FixedArray<u8>(32, 3 as u8);
+    let sign = (bytes: FixedArray<u8>) => curveOf(KeyType.P256).sign(rotation, bytes);
+    let first = genesisOperation(publicKeyFor(KeyType.P256, rotation), [publicKeyFor(KeyType.P256, rotation)],
+        'a.pkg.test', 'https://pkg.test').signedWith(sign);
+    let did = didOfGenesis(first);
+    equal((await log.operations(did)).length, 0);
+    isTrue(await log.append(did, 0, first), 'the genesis operation');
+    isTrue(!await log.append(did, 0, first), 'another at index 0');
+    var previous = first;
+    // More than nine, so the order is not the order of unpadded digits.
+    for (var i = 1; i < 12; i += 1) {
+      let aka = new GrowableArray<String>();
+      aka.push(`at://a${i}.pkg.test`);
+      let next = new PlcOperation(previous.rotationKeys, previous.verificationMethods, aka, previous.services,
+          previous.cid().toString()).signedWith(sign);
+      isTrue(await log.append(did, i, next), `operation ${i}`);
+      previous = next;
+    }
+    isTrue(!await log.append(did, 20, first), 'past the end');
+    let all = await log.operations(did);
+    equal(all.length, 12);
+    equal(all[0].alsoKnownAs[0], 'at://a.pkg.test');
+    equal(all[11].alsoKnownAs[0], 'at://a11.pkg.test');
+    equal(all[11].prev as String, all[10].cid().toString());
+    equal((await log.operations('did:plc:otherotherotherotherothe')).length, 0);
+  });
+}

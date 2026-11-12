@@ -20,7 +20,7 @@ first. When a pull request closes an item there, tick its box.
   typed records where pds.js uses plain objects and string tags.
 - Port the tests that come with a module where they exercise logic that does
   not depend on JavaScript. Known-answer vectors go under
-  `zena/test/fixtures/`, with their source and revision recorded beside
+  `test/fixtures/`, with their source and revision recorded beside
   them.
 - When the pinned pds.js revision changes, update docs/design/pds.md.
 - pds.js is MIT licensed, and its notice is in `LICENSE-pds-js`.
@@ -40,7 +40,7 @@ first. When a pull request closes an item there, tick its box.
   every one in `PDS_VARIABLES` when its PDS is elsewhere.
 - When Zena itself is missing something, the fix goes in the compiler or
   the standard library, in the same change if it is small.
-- XRPC routes go in `zena/xrpc/`, one module per `com.atproto` namespace
+- XRPC routes go in `src/xrpc/`, one module per `com.atproto` namespace
   (`sync.zena`, `repo.zena`, `server.zena`), and `managed.zena` for the
   methods that create managed accounts. `server.zena` puts them together
   (`pdsRoutes`); `registry/server` adds the App View's beside them.
@@ -54,7 +54,7 @@ first. When a pull request closes an item there, tick its box.
 
 - `pds/storage` declares the storage interfaces and keeps everything in
   memory; `pds/firestore` keeps it in Firestore, under a tenant, with blob
-  bytes in Cloud Storage. Both pass `zena/test/storage-conformance.zena`;
+  bytes in Cloud Storage. Both pass `test/storage-conformance.zena`;
   add a test there for anything a store must do. The App View's stores
   share the tenant, and the helpers `pds/firestore` exports.
 - An account's signing key comes from `Account.signingKey()`, which

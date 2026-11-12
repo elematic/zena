@@ -24,7 +24,7 @@ ZENA_RUN=../../../target/release/zena-run
 
 if [ -z "$OFFLINE_ROTATION_KEY" ] && [ "$PDS_ENV" = production ]; then
   echo "production needs the operator's offline rotation key: set ZENA_OFFLINE_ROTATION_KEY to its did:key," >&2
-  echo "from zena-cli run packages/registry/zena/main.zena -- generate-key on a machine you trust" >&2
+  echo "from zena-cli run packages/registry/src/main.zena -- generate-key on a machine you trust" >&2
   exit 2
 fi
 
