@@ -1,12 +1,11 @@
 // @mode: run
-// @result: 7
+// @result: 14
 // @invoke: main
-// @skip: a record alias that refers to itself through a type argument is not supported. Three places fail: `typesEqual` compares an alias reference only with an alias of the same name, so `Array<Tree>` never equals the `Array<{...}>` a literal produces; contextual typing does not see through the alias, so `[{label: 'b'}]` is not typed as `Array<Tree>`; and with the first fixed, codegen's `eraseTypeParameters` recurses without end on the cyclic type.
 
 // A record alias that refers to itself through a type argument. Inside
 // the declaration `Tree` is an alias reference; a literal's element type
-// is the record it names. The two must compare equal as type arguments,
-// or `kids: [{label: 'b'}]` is rejected against `Array<Tree>`.
+// is the record it names. Contextual typing, destructuring, spreads, and
+// field reads must all see through the alias reference.
 import {HashMap} from 'zena:collections';
 
 type Tree = {label: String, kids?: Array<Tree>};
@@ -14,11 +13,33 @@ type Tree = {label: String, kids?: Array<Tree>};
 type Value = {text?: String, map?: MapValue};
 type MapValue = {fields?: Map<String, Value>};
 
+enum OptionKind {
+  Flag,
+  Single
+}
+
+type OptionSpec = {help?: String, kind?: OptionKind};
+type CommandSpec = {help?: String, options?: Map<String, OptionSpec>, commands?: Map<String, CommandSpec>};
+type ParserSpec = {...CommandSpec, name?: String};
+
+let toParser = (name: String, cmd: CommandSpec): ParserSpec => {
+  return { ...cmd, name: name };
+};
+
 let count = (t: Tree): i32 => {
   var c = 1;
   if (let {kids} = t) {
     for (let k in kids) {
-      c += count(k);
+      // `k` has the recursive `TypeAliasType`, not the unwrapped `RecordType`.
+      let {label, kids: grandkids = []} = k;
+      let copy: Tree = { ...k, label: label };
+      let maybe: Tree | null = k;
+      let coalesced: Array<Tree> = k.kids ?? [];
+      if (k == copy
+        && copy.label.length > 0
+        && (maybe?.label ?? '').length > 0) {
+        c += count(k) + coalesced.length - grandkids.length;
+      }
     }
   }
   return c;
@@ -40,10 +61,49 @@ let depth = (v: Value): i32 => {
   return 0;
 };
 
+let countCommands = (cmds: Map<String, CommandSpec>): i32 => {
+  var total = 0;
+  for (let {key, value: cmd} in cmds) {
+    let p = toParser(key, cmd);
+    total += 1;
+    if (let {options} = p) {
+      total += options.size;
+    }
+    if (let {commands} = p) {
+      total += countCommands(commands);
+    }
+  }
+  return total;
+};
+
 export let main = (): i32 => {
-  let t: Tree = {label: 'a', kids: [{label: 'b'}, {label: 'c', kids: [{label: 'd'}]}]};
+  let t: Tree = {
+    label: 'a',
+    kids: [{ label: 'b' }, { label: 'c', kids: [{ label: 'd' }] }]
+  };
   let fields: Map<String, Value> = new HashMap<String, Value>();
-  fields['x'] = {map: {fields: new HashMap<String, Value>()}};
-  let v: Value = {map: {fields}};
-  return count(t) + depth(v) + 1;
+  fields['x'] = { map: { fields: new HashMap<String, Value>() } };
+  let v: Value = { map: { fields: fields } };
+
+  let sharedHelp = { help: 'Show help', kind: OptionKind.Flag };
+  let root: CommandSpec = {
+    commands: {
+      'pkg' => {
+        help: 'Manage packages',
+        commands: {
+          'add' => {
+            help: 'Add a dependency',
+            options: {
+              'help' => sharedHelp,
+              'name' => { help: 'Package name', kind: OptionKind.Single }
+            }
+          },
+          'check' => { options: {'help' => sharedHelp} }
+        }
+      }
+    }
+  };
+  let cmdScore = if (let {commands} = root) countCommands(commands) else 0;
+  // count(t) == 4, depth(v) == 2, cmdScore == 6 (pkg + add + 2 opts + check + 1 opt), + 2 == 14
+  return count(t) + depth(v) + cmdScore + 2;
 };

@@ -17,8 +17,8 @@ import {
   I8Type, InterfaceType, MixinType, NeverType, NullType, SymbolType, Type,
   TypeAliasType, TypeId, TypeInterner, TypeParameterType, U16Type, U32Type,
   U64Type, U8Type, UnionType as UnionT, V128Type, VoidType,
-  declaringModuleOf, makeTypeIdGenerator, mentionsTypeParams, releaseMemberOf,
-  unwrapAliases
+  copyRecursiveAliasKeys, declaringModuleOf, makeTypeIdGenerator,
+  mentionsTypeParams, releaseMemberOf, unwrapAliases
 } from '../types.zena';
 import {
   ClosureDependency, EdgeDrop, ModelIndex, SemanticModel, SymbolDependencies
@@ -1947,10 +1947,7 @@ export final class CheckerContext {
         if (bodyAnn != null) {
           let targetType = resolveTypeAnnotation(this, bodyAnn, true);
           aliasType.target = targetType;
-          if (aliasType.specializationKeyCache != null) {
-            targetType.specializationKeyCache = aliasType.specializationKeyCache;
-            targetType.uniqueKeyCache = aliasType.uniqueKeyCache;
-          }
+          copyRecursiveAliasKeys(aliasType, targetType);
         } else {
           // A `declare type` operator has no body.
           aliasType.target = typeOperatorTarget(this, aliasType, typeParams);

@@ -7,7 +7,7 @@ import {
   UnionType, InlineTupleType, InlineParamType, InlineRecordType, inlineOf, baseType, BoolLiteralType, NumLiteralType, StringLiteralType, sameNumericLiteralRaw,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
   countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType, mergeRow, mergeTupleRow,
-  scopedFieldNames } from '../types.zena';
+  copyRecursiveAliasKeys, hasRecursiveAliasKeys, scopedFieldNames, typeContainsTypeParameter } from '../types.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -1175,6 +1175,87 @@ export function getGenericInterfaceMemberSignature(wasm: WasmModule, it: Interfa
   return wasm.getSignature(params, returns);
 }
 
+/** Returns whether `eraseTypeParameters` rewrites any part of `t`. */
+function needsTypeErasure(wasm: WasmModule, t: Type): boolean {
+  if (let (true, done) = wasm.erasures.get(t.uid)) {
+    return done !== t;
+  }
+  return match (t) {
+    case TypeParameterType: true
+    case EnumType: true
+    case InlineParamType: true
+    case TypeAliasType as ta: {
+      if (ta.isDistinct || ta.typeParameters != null || ta.intrinsicName != null) {
+        return true;
+      }
+      if (ta.resolving) { return false; }
+      ta.resolving = true;
+      let res = needsTypeErasure(wasm, ta.target);
+      ta.resolving = false;
+      res
+    }
+    case ArrayType {elementType}: needsTypeErasure(wasm, elementType)
+    case ClassType {typeArguments}: {
+      if (typeArguments != null) {
+        for (let arg in typeArguments) {
+          if (needsTypeErasure(wasm, arg)) { return true; }
+        }
+      }
+      false
+    }
+    case InterfaceType {typeArguments}: {
+      if (typeArguments != null) {
+        for (let arg in typeArguments) {
+          if (needsTypeErasure(wasm, arg)) { return true; }
+        }
+      }
+      false
+    }
+    case MixinType {typeArguments}: {
+      if (typeArguments != null) {
+        for (let arg in typeArguments) {
+          if (needsTypeErasure(wasm, arg)) { return true; }
+        }
+      }
+      false
+    }
+    case FunctionType as ft: {
+      for (let p in ft.parameters) {
+        if (needsTypeErasure(wasm, p)) { return true; }
+      }
+      needsTypeErasure(wasm, ft.returnType)
+    }
+    case UnionType {types}: {
+      for (let subT in types) {
+        if (needsTypeErasure(wasm, subT)) { return true; }
+      }
+      false
+    }
+    case TupleType {elementTypes, row}: {
+      if (row != null) { return true; }
+      for (let subT in elementTypes) {
+        if (needsTypeErasure(wasm, subT)) { return true; }
+      }
+      false
+    }
+    case InlineTupleType {elementTypes}: {
+      for (let subT in elementTypes) {
+        if (needsTypeErasure(wasm, subT)) { return true; }
+      }
+      false
+    }
+    case InlineRecordType {record}: needsTypeErasure(wasm, record)
+    case RecordType as rec: {
+      if (rec.row != null) { return true; }
+      for (let pair in rec.properties) {
+        if (needsTypeErasure(wasm, pair.value)) { return true; }
+      }
+      false
+    }
+    case _: false
+  };
+}
+
 export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
   return match (t) {
     case TypeParameterType: new ErasedType()
@@ -1195,7 +1276,20 @@ export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
       // otherwise `Own<T> = T` erases to the bare type parameter, and
       // `Ptr<T> = i32` would wrongly erase to `T`.
       if (!ta.isDistinct && ta.typeParameters == null && ta.intrinsicName == null) {
-        return ta;
+        if (let (true, done) = wasm.erasures.get(ta.uid)) {
+          return done;
+        }
+        if (!needsTypeErasure(wasm, ta)) {
+          wasm.erasures[ta.uid] = ta;
+          return ta;
+        }
+        let erasedTa = new TypeAliasType(
+          ta.name, null, ta.target, false, null, ta.isOpaque, ta.declaringModule
+        );
+        copyRecursiveAliasKeys(ta, erasedTa);
+        wasm.erasures[ta.uid] = erasedTa;
+        erasedTa.target = eraseTypeParameters(wasm, ta.target);
+        return erasedTa;
       }
       if (let (true, done) = wasm.erasures.get(ta.uid)) {
         return done;
@@ -1383,20 +1477,33 @@ export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
         newTypes.push(sub);
       }
       if (!changed) { return t; }
+      if (hasRecursiveAliasKeys(t) && !typeContainsTypeParameter(t)) {
+        let newUnion = new UnionType(newTypes);
+        copyRecursiveAliasKeys(t, newUnion);
+        return newUnion;
+      }
       wasm.interner.union(newTypes)
     }
-    case TupleType {elementTypes, row}: {
-      let newElems = new Array<Type>();
-      var changed = false;
-      for (let subT in elementTypes) {
-        let sub = eraseTypeParameters(wasm, subT);
-        if (sub !== subT) { changed = true; }
-        newElems.push(sub);
+    case TupleType as tup: {
+      if (let (true, done) = wasm.erasures.get(tup.uid)) {
+        return done;
       }
+      if (!needsTypeErasure(wasm, tup)) {
+        wasm.erasures[tup.uid] = t;
+        return t;
+      }
+      let newElems = new Array<Type>();
       // An erased row is no elements: nothing is emitted at an erasure,
       // so this only names a struct.
-      if (!changed && row == null) { return t; }
-      new TupleType(newElems, null, 0)
+      let newTup = new TupleType(newElems, null, 0);
+      if (tup.row == null && !typeContainsTypeParameter(tup)) {
+        copyRecursiveAliasKeys(tup, newTup);
+      }
+      wasm.erasures[tup.uid] = newTup;
+      for (let subT in tup.elementTypes) {
+        newElems.push(eraseTypeParameters(wasm, subT));
+      }
+      newTup
     }
     case InlineTupleType {elementTypes}: {
       let newElems = new Array<Type>();
@@ -1416,19 +1523,25 @@ export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
       if (erased === record || !(erased is RecordType)) t else new InlineRecordType(erased)
     }
     case RecordType as rec: {
-      let newProps = new Map<String, Type>();
-      var changed = false;
-      let keys = rec.properties.keys();
-      for (let key in keys) {
-        let propType = rec.properties[key];
-        let sub = eraseTypeParameters(wasm, propType);
-        if (sub !== propType) { changed = true; }
-        newProps[key] = sub;
+      if (let (true, done) = wasm.erasures.get(rec.uid)) {
+        return done;
       }
+      if (!needsTypeErasure(wasm, rec)) {
+        wasm.erasures[rec.uid] = t;
+        return t;
+      }
+      let newProps = new Map<String, Type>();
       // An erased row is no fields at all: nothing is emitted at an
       // erasure (reachability/CONTEXT.md), so this only names a struct.
-      if (!changed && rec.row == null) { return t; }
       let newRec = new RecordType(newProps, rec.optionalProperties, null, rec.isExistential);
+      if (rec.row == null && !typeContainsTypeParameter(rec)) {
+        copyRecursiveAliasKeys(rec, newRec);
+      }
+      wasm.erasures[rec.uid] = newRec;
+      let keys = rec.properties.keys();
+      for (let key in keys) {
+        newProps[key] = eraseTypeParameters(wasm, rec.properties[key]);
+      }
       newRec
     }
     case _: t

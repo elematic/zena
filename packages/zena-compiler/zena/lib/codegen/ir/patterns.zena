@@ -16,7 +16,7 @@ import {
   TuplePattern, ArrayPattern, RestPattern,
 } from '../../ast.zena';
 import {
-  ClassType, InterfaceType, NullType, RecordType, Type, UnionType, baseType,
+  ClassType, InterfaceType, NullType, RecordType, Type, UnionType,
 } from '../../types.zena';
 import {
   typeToValTypeWithSub,
@@ -30,7 +30,7 @@ import {
 import {
   RecordDispatchInfo, WasmStruct, WasmArray, asWasmStruct, asWasmArray, asWasmSignature, isValSubtype,
 } from '../wasm-module.zena';
-import { getClassKey, getClassMethodKey, parseFloatLiteral, parseI64OrU64Literal, presentWordName } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, parseFloatLiteral, parseI64OrU64Literal, presentWordName, unwrapAliases } from '../codegen-utils.zena';
 import { IrOp, IrRefField, IrRefFunc, IrRefType } from './ir.zena';
 import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
@@ -61,11 +61,14 @@ let recordPatternValue = (cx: LoweringContext, rp: RecordPattern,
   // by a comparison of its discriminant: the value is that member, held
   // as the union, so it is cast to the member's fat pointer.
   if (recordDispatchOfValue(cx, value) == null && isRefValType(cx.valueTypeOf(value))) {
-    let matched = cx.substitutedNodeType(rp as Node);
-    if (matched is RecordType) {
-      let d = cx.recordDispatchOf(matched);
-      return cx.conformToSlot(value, new ValTypeRef(d.fatPtrType) as ValType,
-          'record pattern on a narrowed union');
+    let matchedOpt = cx.substitutedNodeType(rp as Node);
+    if (matchedOpt != null) {
+      let matched = unwrapAliases(matchedOpt);
+      if (matched is RecordType) {
+        let d = cx.recordDispatchOf(matched);
+        return cx.conformToSlot(value, new ValTypeRef(d.fatPtrType) as ValType,
+            'record pattern on a narrowed union');
+      }
     }
   }
   return value;
@@ -1122,7 +1125,7 @@ export let maskBitTest = (cx: LoweringContext, dispatch: RecordDispatchInfo,
 export let propTypeAdmitsNull = (rec: RecordType | null, name: String): boolean => {
   if (rec == null) { return true; }
   if (!rec.properties.has(name)) { return true; }
-  let bt = baseType(rec.properties[name]);
+  let bt = unwrapAliases(rec.properties[name]);
   return match (bt) {
     case NullType: true
     case UnionType {types}: {

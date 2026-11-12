@@ -136,7 +136,7 @@ function recordUnionMembers(ut: UnionType): GrowableArray<RecordType> | null {
   let members = new Array<RecordType>();
   for (let memberType in ut.types) {
     if (memberType is NullType) { continue; }
-    let rec = baseType(memberType);
+    let rec = unwrapAliases(memberType);
     if (!(rec is RecordType)) { return null; }
     members.push(rec);
   }
@@ -4917,7 +4917,7 @@ export final class FunctionLowerer {
       if (tOpt == null) {
         this.#bail('untyped destructuring source');
       }
-      let bt = baseType(tOpt);
+      let bt = unwrapAliases(tOpt);
       if (!(bt is TupleType)) {
         this.#bail('tuple rest of a non-tuple');
       }
@@ -5045,7 +5045,7 @@ export final class FunctionLowerer {
       recordSource = this.#applyRecordUnionAdaptation(raOpt, source);
       recordTypeOpt = raOpt.target;
     } else {
-      let initBase = baseType(getNonNullableType(initTypeOpt));
+      let initBase = unwrapAliases(getNonNullableType(initTypeOpt));
       if (initBase is RecordType) {
         recordTypeOpt = initBase;
       }
@@ -7108,7 +7108,7 @@ export final class FunctionLowerer {
     if (tOpt == null) {
       this.#bail('untyped record literal');
     }
-    let bt = baseType(tOpt);
+    let bt = unwrapAliases(tOpt);
     if (!(bt is RecordType)) {
       this.#bail('record literal type');
     }
@@ -7192,7 +7192,7 @@ export final class FunctionLowerer {
           let spT = this.#substitutedNodeType(prop.argument);
           if (spT != null) {
             let sv = propVals[pi];
-            let nn = baseType(getNonNullableType(spT));
+            let nn = unwrapAliases(getNonNullableType(spT));
             if (nn is RecordType && nn.properties.has(key)) {
               let srcDispatch = this.#cx().recordDispatchOf(nn);
               if (srcDispatch.optionalBitOf(key) >= 0) {
@@ -7489,8 +7489,8 @@ export final class FunctionLowerer {
     let value = this.#lowerExpression(isExpr.expression);
     // An existential holds a record of a shape only the run time knows:
     // `is` asks whether it is exactly a value of the closed target type.
-    let sourceBase = baseType(sourceType);
-    let targetBase = baseType(targetType);
+    let sourceBase = unwrapAliases(sourceType);
+    let targetBase = unwrapAliases(targetType);
     if (sourceBase is RecordType && targetBase is RecordType) {
       if (sourceBase.isExistential && !targetBase.isExistential) {
         return existentialIs(this.#cx(), value, this.#cx().recordDispatchOf(sourceBase),
@@ -7529,8 +7529,8 @@ export final class FunctionLowerer {
     // already do. Only when the target is a class: interface-to-
     // interface is a question about vtables, not representation, and
     // `ref.test` cannot answer it either way.
-    let tested = if (baseType(targetType) is ClassType) {
-      this.#cx().unwrapFatPointer(baseType(sourceType), value)
+    let tested = if (targetBase is ClassType) {
+      this.#cx().unwrapFatPointer(sourceBase, value)
     } else {
       value
     };
@@ -8634,11 +8634,11 @@ export final class FunctionLowerer {
       return this.#lowerEnumMember(
           (baseType(objectType) as EnumType).declaration, member);
     }
-    if (objectType != null && baseType(objectType) is RecordType) {
-      return this.#lowerRecordRead(baseType(objectType) as RecordType, member);
+    if (objectType != null && unwrapAliases(objectType) is RecordType) {
+      return this.#lowerRecordRead(unwrapAliases(objectType) as RecordType, member);
     }
-    if (objectType != null && baseType(objectType) is UnionType) {
-      let members = recordUnionMembers(baseType(objectType) as UnionType);
+    if (objectType != null && unwrapAliases(objectType) is UnionType) {
+      let members = recordUnionMembers(unwrapAliases(objectType) as UnionType);
       if (members != null) {
         return this.#lowerRecordUnionRead(members, member);
       }
@@ -9267,7 +9267,7 @@ export final class FunctionLowerer {
     if (expr is MemberExpression) {
       let objectType = this.#substitutedNodeType(expr.object);
       if (objectType != null) {
-        let nonNull = baseType(getNonNullableType(objectType));
+        let nonNull = unwrapAliases(getNonNullableType(objectType));
         if (nonNull is RecordType) {
           return this.#lowerRecordReadOn(nonNull, expr, receiver);
         }
@@ -9371,8 +9371,8 @@ export final class FunctionLowerer {
     // Record-typed receivers (including namespace imports, which are
     // record globals of the module's exports): the member is a field
     // holding a function value — read it, call the closure pair.
-    if (baseType(objectType) is RecordType) {
-      let rt = baseType(objectType) as RecordType;
+    if (unwrapAliases(objectType) is RecordType) {
+      let rt = unwrapAliases(objectType) as RecordType;
       let recv = this.#lowerExpression(member.object);
       let fnValue = this.#lowerRecordReadOn(rt, member, recv);
       return this.#lowerClosureCallOn(call, fnValue);
@@ -11406,7 +11406,7 @@ export final class FunctionLowerer {
     if (t == null) {
       return false;
     }
-    let bt = baseType(t);
+    let bt = unwrapAliases(t);
     return bt is RecordType && this.#cx().recordDispatchOf(bt) === d;
   }
 

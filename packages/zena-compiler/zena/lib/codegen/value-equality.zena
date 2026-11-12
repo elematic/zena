@@ -8,15 +8,15 @@
  */
 import { CallExpression, MemberExpression, Node } from '../ast.zena';
 import { SemanticModel, memberKeyOf } from '../semantic-model.zena';
-import { NullType, RecordType, TupleType, Type, UnionType, VoidType, baseType } from '../types.zena';
-import { compareStrings, getTypeUniqueKey } from './codegen-utils.zena';
+import { NullType, RecordType, TupleType, Type, UnionType, VoidType } from '../types.zena';
+import { compareStrings, getTypeUniqueKey, unwrapAliases } from './codegen-utils.zena';
 
 /**
  * A record or tuple operand's type without `| null` and without an alias,
  * or null for any other type.
  */
 export function valueEqOperand(t: Type): Type | null {
-  var base = baseType(t);
+  var base = unwrapAliases(t);
   if (base is UnionType) {
     var only: Type | null = null;
     var count = 0;
@@ -29,7 +29,7 @@ export function valueEqOperand(t: Type): Type | null {
     if (count != 1 || only == null) {
       return null;
     }
-    base = baseType(only as Type);
+    base = unwrapAliases(only);
   }
   if (base is RecordType || base is TupleType) {
     return base;
@@ -42,7 +42,7 @@ export function valueEqOperand(t: Type): Type | null {
  * `==` and hash are those of the record it holds (ir/existential.zena).
  */
 export function isExistentialRecord(t: Type): boolean {
-  let base = baseType(t);
+  let base = unwrapAliases(t);
   if (base is RecordType) {
     let rec = base;
     return rec.isExistential;

@@ -25,7 +25,7 @@ import {
 } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
-  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass, parseBigIntLiteralLimbs, bigIntLiteralCacheKey,
+  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass, parseBigIntLiteralLimbs, bigIntLiteralCacheKey, unwrapAliases,
 } from '../codegen-utils.zena';
 import {
   typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedWellKnownInterface, findImplementedInterfaceType, findExtendedWellKnownInterface, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture, getNonNullableType, boxedRecordWithFields, InlineLayout, inlineLayoutOf,
@@ -40,12 +40,41 @@ import { stdlibLibraryOf, stdlibLibraryAnswers } from '../../stdlib-manifest.zen
 import { growable } from 'zena:core';
 import { targetEmitsComponent, targetUsesJsStrings } from '../../targets.zena';
 
+final class DeferredClassDiscovery {
+  ct: ClassType;
+  model: SemanticModel;
+  isGenericInst: boolean;
+  didPreRegister: boolean;
+  suppressNameEvidence: boolean;
+
+  new(this.ct, this.model, this.isGenericInst, this.didPreRegister,
+      this.suppressNameEvidence);
+}
+
+final class DeferredInterfaceDiscovery {
+  it: InterfaceType;
+  model: SemanticModel;
+  didPreRegister: boolean;
+  suppressNameEvidence: boolean;
+
+  new(this.it, this.model, this.didPreRegister, this.suppressNameEvidence);
+}
+
 /**
  * TypeLowerer translates Zena semantic types into their target WebAssembly representation,
  * generating struct and array definitions on-demand as they are discovered.
  */
 export final class TypeLowerer implements TypeLowererInterface {
   pass: ReachabilityContext;
+  /**
+   * Nesting depth of `RecordType`/`TupleType` field layout in `discoverType`.
+   * While positive, nominal class and interface specializations register their
+   * shell structs immediately (so `recordWasmFields` can name them) and defer
+   * member walks until the enclosing record dispatch is registered.
+   */
+  var #recordFieldDepth = 0;
+  var #deferredClasses = new Array<DeferredClassDiscovery>();
+  var #deferredInterfaces = new Array<DeferredInterfaceDiscovery>();
 
   new(this.pass);
 
@@ -165,6 +194,7 @@ export final class TypeLowerer implements TypeLowererInterface {
     }
     
     if (t is RecordType) {
+      this.#recordFieldDepth += 1;
       for (let pair in t.properties) {
         this.discoverType(pair.value, model);
       }
@@ -175,7 +205,9 @@ export final class TypeLowerer implements TypeLowererInterface {
       this.pass.markTypeReached(st.fatPtrType);
       this.pass.markTypeReached(st.vtableType);
       this.pass.markTypeReached(st.concreteType);
+      this.#endRecordFieldDiscovery();
     } else if (t is TupleType) {
+      this.#recordFieldDepth += 1;
       for (var i = 0; i < t.elementTypes.length; i += 1) {
         this.discoverType(t.elementTypes[i], model);
       }
@@ -191,6 +223,7 @@ export final class TypeLowerer implements TypeLowererInterface {
       if (this.pass.inQueueWalk) {
         this.pass.reachablyNamedAnonStructs.add(st);
       }
+      this.#endRecordFieldDiscovery();
     } else if (t is InlineTupleType) {
       for (var i = 0; i < t.elementTypes.length; i += 1) {
         this.discoverType(t.elementTypes[i], model);
@@ -322,72 +355,19 @@ export final class TypeLowerer implements TypeLowererInterface {
       // Register specialized class struct & methods if generic instantiation or mixin intermediate
       let typeArguments = t.typeArguments;
       let isGenericInst = typeArguments != null && typeArguments.length > 0 && isConcrete(t);
-      if (isGenericInst || (t.isMixinIntermediate && !t.isExtension)) {
-        // An ERASURE is not a specialization. A mention of one is
-        // made by code that does not run: `#linkSuperAndVT` naming a
-        // subclass template's supertype, or the walk of a generic
-        // class's own template naming its field types. Every value
-        // either stands for is some real specialization, discovered on
-        // its own.
-        //
-        // Believing a mention made it a fan-out target for every
-        // reached member of the generic class and, once instantiated,
-        // gave it a class vtable global — and a vtable global ref.funcs
-        // its slots, so an erased body of every method got emitted.
-        // Those bodies do not always lower: `hash`/`eq` dispatch on
-        // their operand's type and have nothing to dispatch on at
-        // anyref, which is what made a generic class whose methods use
-        // them impossible to subclass.
-        //
-        // Nothing is emitted at an erasure, so nothing constructs one
-        // either: the erasure of a generic FUNCTION is no longer
-        // specialized (noOpenTypeParameters, below), which was the only
-        // thing that ran `new Full<T>` as `new Full<erased>`. The STRUCT
-        // is still registered — erased signatures and fields name it —
-        // and registerSpecializedClass stops there for an erasure.
-        let isErasedMention = containsErasedType(t as Type);
-        let specializer = this.pass.specializer;
-        if (!isErasedMention) {
-          // A mention made while laying out a class the module will
-          // never emit does not put the specialization on the
-          // generic's list. Being on it is what makes a specialization
-          // travel: instantiating any sibling instantiates every
-          // listed one, and every member reached on the template later
-          // fans out over them. If this one turns out to be real,
-          // instantiateClassType lists it then.
-          if (!this.pass.layingOutUnemittedClass) {
-            this.pass.noteSpecialization(t, model);
-          }
-
-          // Reaching a generic at one type argument is the evidence
-          // that a specialization at another can hold values — the
-          // instantiating `new` may live in generic code this mention
-          // stands in for. It is not evidence when the mention itself
-          // comes from a class the module will never emit: nothing
-          // runs there, so nothing constructs anything.
-          if (this.pass.isRtaActive && !this.pass.layingOutUnemittedClass &&
-              this.pass.instantiatedClasses.has(lookupId)) {
-            specializer.instantiateClassType(t, model);
-          }
-        }
-
-        if (this.pass.classDecls.has(lookupId)) {
-          let classDecl = this.pass.classDecls[lookupId];
-          let sourceModel = this.pass.classModels[lookupId];
-          specializer.registerSpecializedClass(t, classDecl, sourceModel);
-        }
+      if (!t.isExtension && this.#recordFieldDepth > 0) {
+        let didPreRegister = if ((isGenericInst || (t.isMixinIntermediate && !t.isExtension)) &&
+            this.pass.classDecls.has(lookupId)) {
+          this.pass.specializer.preRegisterClassStruct(t)
+        } else {
+          false
+        };
+        this.#deferredClasses.push(new DeferredClassDiscovery(
+            t, model, isGenericInst, didPreRegister,
+            this.pass.suppressNameEvidence));
+        return;
       }
-      
-      if (t.isExtension && t.onType != null) {
-        let subOn = substituteTypeParamsInClassContext(this.pass.wasm, t, t.onType as Type);
-        this.discoverType(subOn, model);
-      }
-      for (let pair in t.members) {
-        if (pair.value is FieldInfo) {
-          let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, getClassTypeParameters(t), t.typeArguments, pair.value.type);
-          this.discoverType(resolvedType, model);
-        }
-      }
+      this.#finishClassDiscovery(t, model, isGenericInst, false, true);
     } else    if (t is InterfaceType) {
       let iKey = getInterfaceKey(t);
 
@@ -404,12 +384,11 @@ export final class TypeLowerer implements TypeLowererInterface {
       
       // Register specialized interface struct & methods if generic instantiation
       let typeArguments = t.typeArguments;
+      var didPreRegister = false;
       if (typeArguments != null && typeArguments.length > 0 && isConcrete(t)) {
         let lookupId = (t.genericSource ?? t).symbolId;
         if (this.pass.interfaceDecls.has(lookupId)) {
-          let ifaceDecl = this.pass.interfaceDecls[lookupId];
-          let sourceModel = this.pass.interfaceModels[lookupId];
-          this.pass.specializer.registerSpecializedInterface(t, ifaceDecl, sourceModel);
+          didPreRegister = this.pass.specializer.preRegisterInterfaceStruct(t);
         }
       }
 
@@ -422,17 +401,12 @@ export final class TypeLowerer implements TypeLowererInterface {
           this.pass.markTypeReached(emptyVTableStruct);
         }
       }
-      let itParams = getInterfaceTypeParameters(t);
-      for (let ext in t.extendsList) {
-        let resolvedExt = substituteTypeParamsInCodegen(this.pass.wasm, itParams, t.typeArguments, ext);
-        this.discoverType(resolvedExt, model);
+      if (this.#recordFieldDepth > 0) {
+        this.#deferredInterfaces.push(new DeferredInterfaceDiscovery(
+            t, model, didPreRegister, this.pass.suppressNameEvidence));
+        return;
       }
-      for (let pair in t.members) {
-        if (pair.value is FieldInfo) {
-          let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, itParams, t.typeArguments, pair.value.type);
-          this.discoverType(resolvedType, model);
-        }
-      }
+      this.#finishInterfaceDiscovery(t, model, didPreRegister);
     } else if (t is ArrayType) {
       this.discoverType(t.elementType, model);
       // Storage type, for the same reason as the `array` class arm.
@@ -467,6 +441,124 @@ export final class TypeLowerer implements TypeLowererInterface {
           this.discoverType(instantiateClassType(iaClass, typeArgs), model);
         }
         this.pass.suppressNameEvidence = savedSuppress;
+      }
+    }
+  }
+
+  #endRecordFieldDiscovery(): void {
+    this.#recordFieldDepth -= 1;
+    if (this.#recordFieldDepth > 0) {
+      return;
+    }
+    let savedSuppress = this.pass.suppressNameEvidence;
+    while (this.#deferredInterfaces.length > 0 || this.#deferredClasses.length > 0) {
+      let ifaces = this.#deferredInterfaces;
+      this.#deferredInterfaces = new Array<DeferredInterfaceDiscovery>();
+      for (let item in ifaces) {
+        this.pass.suppressNameEvidence = item.suppressNameEvidence;
+        this.#finishInterfaceDiscovery(item.it, item.model, item.didPreRegister);
+      }
+      let classes = this.#deferredClasses;
+      this.#deferredClasses = new Array<DeferredClassDiscovery>();
+      for (let item in classes) {
+        this.pass.suppressNameEvidence = item.suppressNameEvidence;
+        this.#finishClassDiscovery(item.ct, item.model, item.isGenericInst, item.didPreRegister, false);
+      }
+    }
+    this.pass.suppressNameEvidence = savedSuppress;
+  }
+
+  #finishClassDiscovery(t: ClassType, model: SemanticModel, isGenericInst: boolean,
+      didPreRegister: boolean, registerShell: boolean): void {
+    let lookupId = (t.genericSource ?? t).symbolId;
+    if (isGenericInst || (t.isMixinIntermediate && !t.isExtension)) {
+      // An ERASURE is not a specialization. A mention of one is
+      // made by code that does not run: `#linkSuperAndVT` naming a
+      // subclass template's supertype, or the walk of a generic
+      // class's own template naming its field types. Every value
+      // either stands for is some real specialization, discovered on
+      // its own.
+      //
+      // Believing a mention made it a fan-out target for every
+      // reached member of the generic class and, once instantiated,
+      // gave it a class vtable global — and a vtable global ref.funcs
+      // its slots, so an erased body of every method got emitted.
+      // Those bodies do not always lower: `hash`/`eq` dispatch on
+      // their operand's type and have nothing to dispatch on at
+      // anyref, which is what made a generic class whose methods use
+      // them impossible to subclass.
+      //
+      // Nothing is emitted at an erasure, so nothing constructs one
+      // either: the erasure of a generic FUNCTION is no longer
+      // specialized (noOpenTypeParameters, below), which was the only
+      // thing that ran `new Full<T>` as `new Full<erased>`. The STRUCT
+      // is still registered — erased signatures and fields name it —
+      // and registerSpecializedClass stops there for an erasure.
+      let isErasedMention = containsErasedType(t as Type);
+      let specializer = this.pass.specializer;
+      if (!isErasedMention) {
+        // A mention made while laying out a class the module will
+        // never emit does not put the specialization on the
+        // generic's list. Being on it is what makes a specialization
+        // travel: instantiating any sibling instantiates every
+        // listed one, and every member reached on the template later
+        // fans out over them. If this one turns out to be real,
+        // instantiateClassType lists it then.
+        if (!this.pass.layingOutUnemittedClass) {
+          this.pass.noteSpecialization(t, model);
+        }
+
+        // Reaching a generic at one type argument is the evidence
+        // that a specialization at another can hold values — the
+        // instantiating `new` may live in generic code this mention
+        // stands in for. It is not evidence when the mention itself
+        // comes from a class the module will never emit: nothing
+        // runs there, so nothing constructs anything.
+        if (this.pass.isRtaActive && !this.pass.layingOutUnemittedClass &&
+            this.pass.instantiatedClasses.has(lookupId)) {
+          specializer.instantiateClassType(t, model);
+        }
+      }
+
+      if (this.pass.classDecls.has(lookupId)) {
+        let classDecl = this.pass.classDecls[lookupId];
+        let sourceModel = this.pass.classModels[lookupId];
+        if (registerShell) {
+          specializer.registerSpecializedClass(t, classDecl, sourceModel);
+        } else if (didPreRegister) {
+          specializer.finishSpecializedClass(t, classDecl, sourceModel);
+        }
+      }
+    }
+
+    if (t.isExtension && t.onType != null) {
+      let subOn = substituteTypeParamsInClassContext(this.pass.wasm, t, t.onType as Type);
+      this.discoverType(subOn, model);
+    }
+    for (let pair in t.members) {
+      if (pair.value is FieldInfo) {
+        let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, getClassTypeParameters(t), t.typeArguments, pair.value.type);
+        this.discoverType(resolvedType, model);
+      }
+    }
+  }
+
+  #finishInterfaceDiscovery(t: InterfaceType, model: SemanticModel, didPreRegister: boolean): void {
+    if (didPreRegister) {
+      let lookupId = (t.genericSource ?? t).symbolId;
+      let ifaceDecl = this.pass.interfaceDecls[lookupId];
+      let sourceModel = this.pass.interfaceModels[lookupId];
+      this.pass.specializer.finishSpecializedInterface(t, ifaceDecl, sourceModel);
+    }
+    let itParams = getInterfaceTypeParameters(t);
+    for (let ext in t.extendsList) {
+      let resolvedExt = substituteTypeParamsInCodegen(this.pass.wasm, itParams, t.typeArguments, ext);
+      this.discoverType(resolvedExt, model);
+    }
+    for (let pair in t.members) {
+      if (pair.value is FieldInfo) {
+        let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, itParams, t.typeArguments, pair.value.type);
+        this.discoverType(resolvedType, model);
       }
     }
   }
@@ -912,10 +1004,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (unionAdaptation != null) {
       // Every member needs both its own dispatch, to test the value
       // against, and a dispatch adapted to the target shape.
-      let tgtRec = resolveType(unionAdaptation.target) as RecordType;
+      let tgtRec = unwrapAliases(resolveType(unionAdaptation.target)) as RecordType;
       typeLowerer.discoverType(tgtRec, model);
       for (let member in unionAdaptation.members) {
-        let srcRec = resolveType(member) as RecordType;
+        let srcRec = unwrapAliases(resolveType(member)) as RecordType;
         typeLowerer.discoverType(srcRec, model);
         let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
         let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
@@ -926,8 +1018,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
     let adaptation = model.getRecordAdaptation(n);
     if (adaptation != null) {
-      let srcRec = resolveType(adaptation.source) as RecordType;
-      let tgtRec = resolveType(adaptation.target) as RecordType;
+      let srcRec = unwrapAliases(resolveType(adaptation.source)) as RecordType;
+      let tgtRec = unwrapAliases(resolveType(adaptation.target)) as RecordType;
       typeLowerer.discoverType(tgtRec, model);
       typeLowerer.discoverType(srcRec, model);
       if (srcRec.isExistential || tgtRec.isExistential) {
@@ -1538,7 +1630,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   #noteRecordResultCall(n: CallExpression, model: SemanticModel,
       callee: SymbolId): void {
     let t = model.getNodeType(n);
-    if (t == null || !(baseType(t) is RecordType || baseType(t) is TupleType)) {
+    if (t == null) {
+      return;
+    }
+    let rt = unwrapAliases(t);
+    if (!(rt is RecordType || rt is TupleType)) {
       return;
     }
     let id = (n as Node).id as i32;
@@ -1618,7 +1714,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
     }
     let t = model.getNodeType(n);
-    if (t == null || !(baseType(t) is RecordType || baseType(t) is TupleType)) {
+    if (t == null) {
+      return;
+    }
+    let rt = unwrapAliases(t);
+    if (!(rt is RecordType || rt is TupleType)) {
       return;
     }
     // A call in a generic body resolves per instantiation, so it is
@@ -1665,7 +1765,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
     }
     let t = model.getNodeType(n);
-    if (t == null || !(baseType(t) is RecordType || baseType(t) is TupleType)) {
+    if (t == null) {
+      return;
+    }
+    let rt = unwrapAliases(t);
+    if (!(rt is RecordType || rt is TupleType)) {
       return;
     }
     let callKey = `${(n as Node).id as i32}|${specName}`;

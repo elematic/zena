@@ -14,7 +14,8 @@ import {
   AnyRefType, ClassType, EnumType, ErrorType, FieldInfo, FunctionDeclInfo,
   FunctionType, HoleType, I32Type, InterfaceType, MethodInfo, MixinType,
   RecordType as RecordT, Type, TypeAliasType, TypeParameterType, VoidType,
-  baseType, instantiateInterfaceType, isBigIntLiteralRaw, typeToString
+  baseType, copyRecursiveAliasKeys, instantiateInterfaceType,
+  isBigIntLiteralRaw, typeToString
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { noSymbolId } from '../scope/symbol.zena';
@@ -117,10 +118,7 @@ export function registerTypeAliasDeclaration(ctx: CheckerContext, ta: TypeAliasD
     ctx.setDiagnosticsSuppressed(true);
     alias.target = resolveTypeAnnotation(ctx, bodyAnn, true);
     ctx.setDiagnosticsSuppressed(false);
-    if (alias.specializationKeyCache != null) {
-      alias.target.specializationKeyCache = alias.specializationKeyCache;
-      alias.target.uniqueKeyCache = alias.uniqueKeyCache;
-    }
+    copyRecursiveAliasKeys(alias, alias.target);
   } else {
     // A `declare type` operator has no body.
     alias.target = typeOperatorTarget(ctx, alias, typeParams);

@@ -2746,6 +2746,24 @@ export function recursiveAliasKey(alias: TypeAliasType): String {
   return `${alias.name}@${alias.declaringModule}`;
 }
 
+/** Returns whether `source` carries nominal keys from a recursive alias. */
+export function hasRecursiveAliasKeys(source: Type): boolean {
+  let {uniqueKeyCache, specializationKeyCache} = source;
+  return uniqueKeyCache != null && uniqueKeyCache.startsWith("alias_") &&
+      specializationKeyCache != null;
+}
+
+/**
+ * Copies a recursive alias's nominal keys onto `target` so the alias and
+ * its unwrapped target produce the same specialization and unique keys.
+ */
+export function copyRecursiveAliasKeys(source: Type, target: Type): void {
+  if (hasRecursiveAliasKeys(source)) {
+    target.specializationKeyCache = source.specializationKeyCache;
+    target.uniqueKeyCache = source.uniqueKeyCache;
+  }
+}
+
 export function instantiateFunctionType(
   source: FunctionType,
   typeArguments: Array<Type>,
