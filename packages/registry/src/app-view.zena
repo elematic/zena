@@ -44,6 +44,7 @@ import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from
 import {ARTIFACT_MIME_TYPES, artifactMimeType, validateRelease} from 'package-manager/validate';
 import {ArchiveError} from 'package-manager/archive';
 import {Version} from 'zena-lang:semver';
+import {MINIMUM_CLIENT_VERSION, RECOMMENDED_CLIENT_VERSION, zenaVersionOf} from './clients.zena';
 import {
   ADMIN,
   ATTESTATION_TYPE,
@@ -872,10 +873,10 @@ export final class AppViewConfig {
   reservedScopes = new HashSet<String>();
   /** Who may create a scope (`APP_VIEW_SCOPE_CREATORS`). */
   var scopeCreation = ScopeCreation.Anyone;
-  /** The oldest `zena` the App View's methods take (`APP_VIEW_MIN_CLIENT_VERSION`), or null for any. */
-  var minimumClientVersion: Version | null = null;
-  /** A message for the people who use `zena`, which `describeRegistry` passes on (`APP_VIEW_CLIENT_NOTICE`), or null. */
-  var clientNotice: String | null = null;
+  /** The oldest `zena` the App View's methods take: `MINIMUM_CLIENT_VERSION`, unless a test sets another. */
+  var minimumClientVersion = Version.parse(MINIMUM_CLIENT_VERSION);
+  /** The oldest `zena` that is not deprecated: `RECOMMENDED_CLIENT_VERSION`, unless a test sets another. */
+  var recommendedClientVersion = Version.parse(RECOMMENDED_CLIENT_VERSION);
   /**
    * The DIDs of the App View's admins (`APP_VIEW_ADMIN_DIDS`), who sign in as
    * themselves, as anyone does, and may see every account the App View holds
@@ -1989,7 +1990,7 @@ export final class AppView {
   checkClient(userAgent: String | null): void {
     let minimum = this.config.minimumClientVersion;
     let version = zenaVersionOf(userAgent);
-    if (minimum != null && version != null && version.compareTo(minimum) < 0) {
+    if (version != null && version.compareTo(minimum) < 0) {
       throw new AppViewError(400, 'UpgradeRequired',
           `this registry takes zena ${minimum.toString()} or newer, and this is zena ${version.toString()}: upgrade zena`);
     }
@@ -3510,18 +3511,5 @@ function readRecord<T>(read: () => T): T {
       throw new AppViewError(400, 'InvalidRequest', e.message);
     }
     throw e;
-  }
-}
-
-/** The version a `zena` names itself by in its `user-agent`, `zena/<version>`, or null for another client. */
-export function zenaVersionOf(userAgent: String | null): Version | null {
-  if (userAgent == null || !userAgent.startsWith('zena/')) {
-    return null;
-  }
-  let product = userAgent.split(' ')[0];
-  try {
-    return Version.parse(product.sliceBytes(5, product.length));
-  } catch (e) {
-    return null;
   }
 }

@@ -447,20 +447,32 @@ another key.
 ### Requiring a newer zena
 
 `zena` names its version to every registry call, in its `user-agent`
-(`zena/0.1.0 (linux-x86_64)`), from `CLI_VERSION` in
-`packages/zena-cli/zena/version.zena`. Raise that with each release of the
-command, and in any change a registry will need its clients to have. The
-App View logs each call to its methods as a JSON line, with the method,
-the caller, that client and the answer's status, which Cloud Logging keeps.
+(`zena/0.1.0 (linux-x86_64) zena-compiler/0.1.0 package-manager/0.1.0`).
+Its version is the `version` in `packages/zena-cli/zena-package.json`,
+and the compiler's and the package manager's are in theirs. Raise the
+command's with each release, then run `npm run versions`, which copies
+them into `packages/zena-cli/zena/versions.zena`; a test fails while that
+file is out of date. The App View logs each call to its methods as a JSON line, with
+the method, the caller, that client and the answer's status, which Cloud
+Logging keeps.
 
-To make people upgrade, set the settings' `MIN_CLIENT_VERSION` and deploy:
-`describeRegistry` names it, `zena` stops before it calls and says to
-upgrade, and the App View refuses an older `zena`'s calls with
-`UpgradeRequired`. A client that names no `zena` version, such as the
-site's script, is not judged. `CLIENT_NOTICE` is a message `zena` prints
-before each command that calls the App View, such as a warning a week
-before the minimum rises. Commands that only read packages, `zena pkg add`
-and `zena pkg fetch`, do not call the App View and are not stopped.
+Which versions the App View takes is in code, in `registry/clients`, and
+changes in the pull request that changes how `zena` and the App View
+talk, not in a deploy setting:
+
+1. The change that a newer `zena` needs raises zena-cli's version, and
+   `RECOMMENDED_CLIENT_VERSION` to match. Older clients still work, and
+   `zena` warns their users that their version is deprecated and to
+   upgrade.
+2. Once they have had time to, a later change raises
+   `MINIMUM_CLIENT_VERSION` and removes what only the older clients
+   needed. `describeRegistry` names the minimum, `zena` below it stops
+   before it calls and says to upgrade, and the App View refuses its calls
+   with `UpgradeRequired`.
+
+A client that names no `zena` version, such as the site's script, is not
+judged. Commands that only read packages, `zena pkg add` and
+`zena pkg fetch`, do not call the App View and are not stopped.
 
 ### Backups and alerts
 

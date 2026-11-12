@@ -34,9 +34,12 @@ the `zena` command. The design is in
      release waiting for its maintainers and asks the registry to complete
      it, `ci.zena`, for `zena pkg ci create` and `zena pkg ci token`, and
      `admin.zena`, for `zena pkg admin`, the registry admins' list of who
-     may create scopes. `version.zena` holds the command's version, which
+     may create scopes. `versions.zena` holds the versions of the command,
+     the compiler and the package manager's libraries, which
      `zena --version` prints and every registry call names in its
-     `user-agent`.
+     `user-agent`. `npm run versions` (`dev/versions.zena`) writes it from
+     their `zena-package.json`, and `tests/versions_test.zena` fails while
+     it is out of date: change a version in its manifest, never there.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler/compile-file`), zebra, zenadoc, the language service and
      the formatter linked

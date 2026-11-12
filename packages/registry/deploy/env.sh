@@ -173,12 +173,6 @@ else
 fi
 # Spaces, since gcloud's --set-env-vars splits on commas.
 APP_VIEW_VARS+=("APP_VIEW_ADMIN_DIDS=${ADMIN_DIDS//,/ }")
-if [ -n "${MIN_CLIENT_VERSION:-}" ]; then
-  APP_VIEW_VARS+=("APP_VIEW_MIN_CLIENT_VERSION=${MIN_CLIENT_VERSION}")
-fi
-if [ -n "${CLIENT_NOTICE:-}" ]; then
-  APP_VIEW_VARS+=("APP_VIEW_CLIENT_NOTICE=${CLIENT_NOTICE}")
-fi
 if [ -n "$OFFLINE_ROTATION_KEY" ]; then
   APP_VIEW_VARS+=("APP_VIEW_OFFLINE_ROTATION_KEY=${OFFLINE_ROTATION_KEY}")
 fi

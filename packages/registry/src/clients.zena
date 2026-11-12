@@ -1,0 +1,30 @@
+/**
+ * Which `zena` versions the App View takes. They change in the pull
+ * request that changes how `zena` and the App View talk, with the
+ * `version` in `packages/zena-cli/zena-package.json`
+ * (packages/registry/DEVELOPMENT.md, "Requiring a newer zena"): first
+ * `RECOMMENDED_CLIENT_VERSION`, which leaves older clients working and has
+ * `zena` tell their users to upgrade; later, once they have had time to,
+ * `MINIMUM_CLIENT_VERSION`, below which the App View refuses them.
+ */
+
+import {Version} from 'zena-lang:semver';
+
+/** The oldest `zena` the App View's methods take. */
+export let MINIMUM_CLIENT_VERSION = '0.1.0';
+
+/** The oldest `zena` that is not deprecated; never below `MINIMUM_CLIENT_VERSION`. */
+export let RECOMMENDED_CLIENT_VERSION = '0.1.0';
+
+/** The version a `zena` names itself by in its `user-agent`, `zena/<version>`, or null for another client. */
+export function zenaVersionOf(userAgent: String | null): Version | null {
+  if (userAgent == null || !userAgent.startsWith('zena/')) {
+    return null;
+  }
+  let product = userAgent.split(' ')[0];
+  try {
+    return Version.parse(product.sliceBytes(5, product.length));
+  } catch (e) {
+    return null;
+  }
+}

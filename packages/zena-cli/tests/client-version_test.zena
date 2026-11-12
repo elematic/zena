@@ -1,8 +1,8 @@
 /**
  * `zena`'s version, and how it heeds a registry's minimum and notice,
  * against `tests/fixtures/publish-stack.zena`: it names its version to the
- * registry, stops before calling one that needs a newer `zena`, and prints
- * the registry's message.
+ * registry, stops before calling one that needs a newer `zena`, and warns
+ * when the registry deprecates it.
  */
 
 import {suite, test} from 'zena:test';
@@ -11,7 +11,7 @@ import {Future} from 'zena:async';
 import {JsonObject, parseJson} from 'zena:json';
 import {ProcessResult} from 'zena:process';
 import {Scratch, ZenaCommand, described, fakePdsOrigin, read, startFakePds, stopFakePds, write} from './cli-support.zena';
-import {CLI_VERSION} from '../zena/version.zena';
+import {CLI_VERSION, COMPILER_VERSION} from '../zena/versions.zena';
 
 let ALICE = 'did:plc:alicealicealicealicealic';
 
@@ -36,29 +36,31 @@ async function createScope(name: String, env: Array<(String, String)>): Future<P
   }
 }
 
-export let tests = suite('zena and a registry\'s minimum version', () => {
+export let tests = suite('zena and the versions a registry takes', () => {
   test('prints its version', async (ctx) => {
     let scratch = await Scratch.create('version');
     try {
       let run = await new ZenaCommand('.', scratch.host('cache')).run(['--version']);
-      isTrue(run.succeeded() && run.stdout.trim() == `zena ${CLI_VERSION}`, described(run));
+      isTrue(run.succeeded() && run.stdout.startsWith(`zena ${CLI_VERSION} (zena-compiler ${COMPILER_VERSION}, `),
+          described(run));
     } finally {
       await scratch.remove();
     }
   });
 
-  test('stops before calling a registry that needs a newer zena, and prints its notice', async (ctx) => {
-    let run = await createScope('old-client', [('STACK_MIN_CLIENT_VERSION', '99.0.0'),
-        ('STACK_CLIENT_NOTICE', 'Upgrade zena by Friday, please')]);
+  test('stops before calling a registry that needs a newer zena', async (ctx) => {
+    let run = await createScope('old-client', [('STACK_MIN_CLIENT_VERSION', '99.0.0')]);
     isTrue(!run.succeeded() && run.stderr.contains(`needs zena 99.0.0 or newer, and this is zena ${CLI_VERSION}`) &&
         run.stderr.contains('Upgrade zena:'), described(run));
-    isTrue(run.stderr.contains('says: Upgrade zena by Friday, please'), described(run));
   });
 
-  test('calls a registry whose minimum it meets, which takes the version it names', async (ctx) => {
-    // The registry refuses a call whose user-agent names an older zena, so
-    // a call that succeeds at the minimum named one at least as new.
-    let run = await createScope('new-client', [('STACK_MIN_CLIENT_VERSION', CLI_VERSION)]);
-    isTrue(run.succeeded(), described(run));
+  test('calls a registry that takes it but deprecates it, and warns that it is deprecated', async (ctx) => {
+    // The registry refuses a call whose user-agent names a zena older than
+    // its minimum, so a call that succeeds at the minimum named one at
+    // least as new.
+    let run = await createScope('deprecated-client', [('STACK_MIN_CLIENT_VERSION', CLI_VERSION),
+        ('STACK_RECOMMENDED_CLIENT_VERSION', '99.0.0')]);
+    isTrue(run.succeeded() && run.stderr.contains(`zena ${CLI_VERSION} is deprecated on `) &&
+        run.stderr.contains('Upgrade to zena 99.0.0 or newer'), described(run));
   });
 });

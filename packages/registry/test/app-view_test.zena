@@ -29,6 +29,7 @@ import {
   Policy, RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, TEAM_TYPE, Team, TeamRole
 } from 'package-manager/records';
 import {Range, Version} from 'zena-lang:semver';
+import {MINIMUM_CLIENT_VERSION, RECOMMENDED_CLIENT_VERSION} from 'registry/clients';
 import {MemoryHandleRecords} from 'registry/handles';
 import {
   CallLog, ClaimedName, ClaimedScope, AppViewAccount, AppViewConfig, AppViewError, AppViewStore, MemoryAppViewStore, PENDING_MICROS, AppView,
@@ -2135,7 +2136,7 @@ export let tests = suite('registry/app-view', () => {
     equal(errorOf(await fixture.call(BOB, 'putScopeCreator', `{"did": "${ALICE}"}`)), 'InvalidRequest');
   });
 
-  test('refuses a zena older than it takes, names the minimum, and logs each call with its client', async (ctx) => {
+  test('refuses a zena older than it takes, names its versions, and logs each call with its client', async (ctx) => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;
     let logged = new GrowableArray<CallLog>();
@@ -2143,15 +2144,19 @@ export let tests = suite('registry/app-view', () => {
       logged.push(entry);
     };
     let describe = '/xrpc/dev.zena-lang.registry.describeRegistry';
-    isTrue(json(await fixture.get(describe))['minimumClientVersion'] == null, 'no minimum');
+    // The App View's code's versions, until a test sets others.
+    let coded = json(await fixture.get(describe));
+    equal(coded['minimumClientVersion'] as String, MINIMUM_CLIENT_VERSION);
+    equal(coded['recommendedClientVersion'] as String, RECOMMENDED_CLIENT_VERSION);
     appView.config.minimumClientVersion = Version.parse('0.2.0');
-    appView.config.clientNotice = 'Upgrade zena by Friday';
+    appView.config.recommendedClientVersion = Version.parse('0.3.0');
     let described = json(await fixture.get(describe));
     equal(described['minimumClientVersion'] as String, '0.2.0');
-    equal(described['clientNotice'] as String, 'Upgrade zena by Friday');
+    equal(described['recommendedClientVersion'] as String, '0.3.0');
 
     fixture.userAgent = 'zena/0.1.9 (linux-x86_64)';
     equal(errorOf(await createOrganization(fixture, ALICE, 'acme')), 'UpgradeRequired');
+    // A deprecated zena still works: zena itself warns its user.
     fixture.userAgent = 'zena/0.2.0 (linux-x86_64)';
     ok(await createOrganization(fixture, ALICE, 'acme'));
     // A client that names no zena version, such as the site's script, is not judged.

@@ -46,11 +46,6 @@ ADMIN_DIDS=did:plc:exampleexampleexampleex
 # Who may create a scope: anyone, or listed, only the admins and the
 # accounts they list with `zena pkg admin allow`, as during a preview.
 SCOPE_CREATORS=listed
-# The oldest zena the App View's methods take, such as 0.2.0, and a
-# message zena prints before each command that calls the App View, such as
-# one asking people to upgrade before the minimum rises. Both may be empty.
-MIN_CLIENT_VERSION=
-CLIENT_NOTICE=
 
 # Backups (setup.sh): 1 adds a weekly backup kept 14 weeks to the daily ones.
 WEEKLY_BACKUPS=0
