@@ -17,7 +17,7 @@
 
 import { NodeMap } from './node-map.zena';
 import {
-  Comment, Node, Module, Statement, Expression, BlockStatement, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, EnumMember, VariableDeclaration, FunctionDeclaration, FunctionExpression, BinaryExpression, UnaryExpression, AssignmentExpression, CallExpression, MemberExpression, IndexExpression, NewExpression, ArrayLiteral, IfExpression, MatchExpression, MatchCase, AsExpression, IsExpression, SpreadElement, IfStatement, WhileStatement, ForStatement, ForInStatement, ReturnStatement, YieldStatement, ExpressionStatement, UsingStatement, ShieldedStatement, MethodDefinition, AccessorDeclaration, SetterInfo, FieldDefinition,
+  Comment, Node, Module, Statement, Expression, BlockStatement, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, EnumMember, TypeAliasDeclaration, VariableDeclaration, FunctionDeclaration, FunctionExpression, BinaryExpression, UnaryExpression, AssignmentExpression, CallExpression, MemberExpression, IndexExpression, NewExpression, ArrayLiteral, IfExpression, MatchExpression, MatchCase, AsExpression, IsExpression, SpreadElement, IfStatement, WhileStatement, ForStatement, ForInStatement, ReturnStatement, YieldStatement, ExpressionStatement, UsingStatement, ShieldedStatement, MethodDefinition, AccessorDeclaration, SetterInfo, FieldDefinition, SealedVariant, CaseClassParam, TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTypeAnnotation, PropertySignature,
 } from './ast.zena';
 import { growable } from 'zena:core';
 
@@ -175,6 +175,17 @@ function twoNodes(a: Node, b: Node) {
   return arr;
 }
 
+/** Convert Array<TypeAnnotation> to Array<Node>. */
+function typeAnnotationsToNodes(anns: GrowableArray<TypeAnnotation>) {
+  let result = new Array<Node>(anns.length);
+  var i = 0;
+  while (i < anns.length) {
+    result.push(anns[i]);
+    i += 1;
+  }
+  return result;
+}
+
 /**
  * Extract the child body (Array<Node>) from nodes that contain bodies.
  * Also handles variable declarations and function expressions so that
@@ -184,10 +195,68 @@ function twoNodes(a: Node, b: Node) {
 function getChildBody(node: Node): GrowableArray<Node> | null {
   return match (node) {
   case BlockStatement {body}: statementsToNodes(body)
-  case ClassDeclaration {body}: body
+  case ClassDeclaration {caseParams, sealedVariants, body}: {
+    if (caseParams == null && sealedVariants == null) {
+      body
+    } else {
+      let result = new Array<Node>(8);
+      if (caseParams != null) {
+        for (let cp in caseParams) {
+          result.push(cp);
+        }
+      }
+      if (sealedVariants != null) {
+        var vi = 0;
+        var bi = 0;
+        while (vi < sealedVariants.length && bi < body.length) {
+          if (getNodeStart(sealedVariants[vi]) < getNodeStart(body[bi])) {
+            result.push(sealedVariants[vi]);
+            vi += 1;
+          } else {
+            result.push(body[bi]);
+            bi += 1;
+          }
+        }
+        while (vi < sealedVariants.length) {
+          result.push(sealedVariants[vi]);
+          vi += 1;
+        }
+        while (bi < body.length) {
+          result.push(body[bi]);
+          bi += 1;
+        }
+      } else {
+        for (let m in body) {
+          result.push(m);
+        }
+      }
+      result
+    }
+  }
+  case SealedVariant {params}: {
+    if (params == null || params.length == 0) {
+      null
+    } else {
+      let result = new Array<Node>(params.length);
+      for (let p in params) {
+        result.push(p);
+      }
+      result
+    }
+  }
+  case CaseClassParam {typeAnnotation, defaultValue}: {
+    if (defaultValue == null) {
+      singleNode(typeAnnotation)
+    } else {
+      twoNodes(typeAnnotation, defaultValue as Node)
+    }
+  }
   case InterfaceDeclaration {body}: body
   case MixinDeclaration {body}: body
   case EnumDeclaration {members}: enumMembersToNodes(members)
+  case TypeAliasDeclaration {typeAnnotation}: {
+    if (typeAnnotation == null) { null } else { singleNode(typeAnnotation as Node) }
+  }
   // Statements that hold a body. Without these a comment written inside the
   // body is not descended into, and ends up attached outside the statement.
   case IfStatement {test, consequent, alternate}: {
@@ -214,8 +283,11 @@ function getChildBody(node: Node): GrowableArray<Node> | null {
   case ShieldedStatement {body}: singleNode(body)
   // Class members that hold a body, so a comment in a method or an accessor
   // stays in it rather than becoming a trailing comment on the member before.
-  case MethodDefinition {body}: {
-    if (body == null) { null } else { singleNode(body as Node) }
+  case MethodDefinition {returnType, body}: {
+    let result = new Array<Node>(2);
+    if (returnType != null) { result.push(returnType as Node); }
+    if (body != null) { result.push(body); }
+    if (result.length == 0) { null } else { result }
   }
   case AccessorDeclaration {getter, setter}: {
     let result = new Array<Node>(2);
@@ -224,15 +296,27 @@ function getChildBody(node: Node): GrowableArray<Node> | null {
     if (result.length == 0) { null } else { result }
   }
   case SetterInfo {body}: singleNode(body)
-  case FieldDefinition {value}: {
-    if (value == null) { null } else { singleNode(value as Node) }
+  case FieldDefinition {typeAnnotation, value}: {
+    let result = new Array<Node>(2);
+    if (typeAnnotation != null) { result.push(typeAnnotation as Node); }
+    if (value != null) { result.push(value as Node); }
+    if (result.length == 0) { null } else { result }
   }
   case MatchCase {body}: singleNode(body)
-  case VariableDeclaration {init}: {
-    if (init.loc == null) { null } else { singleNode(init as Node) }
+  case VariableDeclaration {typeAnnotation, init}: {
+    let result = new Array<Node>(2);
+    if (typeAnnotation != null) { result.push(typeAnnotation as Node); }
+    if (init.loc != null) { result.push(init as Node); }
+    if (result.length == 0) { null } else { result }
   }
   case FunctionDeclaration {func}: singleNode(func as Node)
-  case FunctionExpression {body}: singleNode(body)
+  case FunctionExpression {returnType, body}: {
+    if (returnType == null) {
+      singleNode(body)
+    } else {
+      twoNodes(returnType as Node, body)
+    }
+  }
   case BinaryExpression {left, right}: twoNodes(left, right)
   case AssignmentExpression {left, value}: twoNodes(left, value)
   case UnaryExpression {argument}: singleNode(argument)
@@ -270,6 +354,43 @@ function getChildBody(node: Node): GrowableArray<Node> | null {
   case AsExpression {expression}: singleNode(expression)
   case IsExpression {expression}: singleNode(expression)
   case SpreadElement {argument}: singleNode(argument)
+  case RecordTypeAnnotation {properties, spreads}: {
+    let result = new Array<Node>(properties.length);
+    var si = 0;
+    for (let p in properties) {
+      if (spreads != null) {
+        while (si < spreads.length && getNodeStart(spreads[si]) < getNodeStart(p)) {
+          result.push(spreads[si]);
+          si += 1;
+        }
+      }
+      result.push(p);
+    }
+    if (spreads != null) {
+      while (si < spreads.length) {
+        result.push(spreads[si]);
+        si += 1;
+      }
+    }
+    result
+  }
+  case PropertySignature {typeAnnotation}: singleNode(typeAnnotation)
+  case NamedTypeAnnotation {typeArguments}: {
+    if (typeArguments == null || typeArguments.length == 0) {
+      null
+    } else {
+      typeAnnotationsToNodes(typeArguments)
+    }
+  }
+  case UnionTypeAnnotation {types}: typeAnnotationsToNodes(types)
+  case NullableTypeAnnotation {typeAnnotation}: singleNode(typeAnnotation)
+  case InlineTypeAnnotation {typeAnnotation}: singleNode(typeAnnotation)
+  case TupleTypeAnnotation {elementTypes}: typeAnnotationsToNodes(elementTypes)
+  case FunctionTypeAnnotation {params, returnType}: {
+    let result = typeAnnotationsToNodes(params);
+    result.push(returnType);
+    result
+  }
   case _: null
 };
 }

@@ -688,16 +688,7 @@ function printClassDeclaration(decl: ClassDeclaration): Doc {
   }
 
   if (decl.caseParams != null) {
-    let cps = decl.caseParams as GrowableArray<CaseClassParam>;
-    parts.push(text('('));
-    let cpDocs = new Array<Doc>();
-    var i = 0;
-    while (i < cps.length) {
-      cpDocs.push(printCaseClassParam(cps[i]));
-      i += 1;
-    }
-    parts.push(join(text(', '), cpDocs));
-    parts.push(text(')'));
+    parts.push(printCaseClassParamList(decl.caseParams as GrowableArray<CaseClassParam>));
   }
 
   // A `resource class` with no written superclass is parsed as extending
@@ -807,21 +798,12 @@ function printClassDeclaration(decl: ClassDeclaration): Doc {
 function printSealedVariant(v: SealedVariant): Doc {
   let parts = growable<Doc>([text('case '), text(v.name.name)]);
   if (v.params != null) {
-    let ps = v.params as GrowableArray<CaseClassParam>;
-    parts.push(text('('));
-    let pDocs = new Array<Doc>();
-    var i = 0;
-    while (i < ps.length) {
-      pDocs.push(printCaseClassParam(ps[i]));
-      i += 1;
-    }
-    parts.push(join(text(', '), pDocs));
-    parts.push(text(')'));
+    parts.push(printCaseClassParamList(v.params as GrowableArray<CaseClassParam>));
   }
   return concat(parts);
 }
 
-function printCaseClassParam(param: CaseClassParam): Doc {
+function printCaseClassParamInner(param: CaseClassParam) {
   let parts = new Array<Doc>();
   if (param.mutability != null) {
     parts.push(text(param.mutability as String));
@@ -835,6 +817,44 @@ function printCaseClassParam(param: CaseClassParam): Doc {
     parts.push(printExpression(param.defaultValue as Expression));
   }
   return concat(parts);
+}
+
+function printCaseClassParamList(ps: GrowableArray<CaseClassParam>): Doc {
+  var hasParamComments = false;
+  for (let p in ps) {
+    if (currentCommentMap.getLeading(p) != null
+        || currentCommentMap.getTrailing(p) != null) {
+      hasParamComments = true;
+    }
+  }
+  if (!hasParamComments) {
+    let pDocs = new Array<Doc>();
+    var i = 0;
+    while (i < ps.length) {
+      pDocs.push(printCaseClassParamInner(ps[i]));
+      i += 1;
+    }
+    return concat(docs3(text('('), join(text(', '), pDocs), text(')')));
+  }
+  let pDocs = new Array<Doc>();
+  var i = 0;
+  while (i < ps.length) {
+    let cur = ps[i];
+    let inner = printCaseClassParamInner(cur);
+    let withComma = if (i < ps.length - 1) concat(docs2(inner, text(','))) else inner;
+    pDocs.push(withComments(cur, withComma));
+    if (i < ps.length - 1) {
+      pDocs.push(hardline);
+      if (hasBlankLineBetweenNodes(cur, ps[i + 1])) {
+        pDocs.push(hardline);
+      }
+    }
+    i += 1;
+  }
+  return concat(docs3(
+    text('('),
+    indent(concat(docs2(hardline, concat(pDocs)))),
+    concat(docs2(hardline, text(')')))));
 }
 
 function printClassMember(member: Node): Doc {
@@ -2203,6 +2223,24 @@ function startsBefore(a: Node, b: Node) {
 }
 
 function printTypeAnnotation(ann: TypeAnnotation): Doc {
+  let doc = printTypeAnnotationInner(ann);
+  return withComments(ann, doc);
+}
+
+function printRecordTypeItem(item: Node): Doc {
+  return if (let PropertySignature {name, typeAnnotation, optional} = item) {
+    let nameDoc = if (optional) {
+      concat(docs2(text(name.name), text('?')))
+    } else {
+      text(name.name)
+    };
+    concat(docs3(nameDoc, text(': '), printTypeAnnotation(typeAnnotation)))
+  } else {
+    concat(docs2(text('...'), printTypeAnnotationInner(item as TypeAnnotation)))
+  };
+}
+
+function printTypeAnnotationInner(ann: TypeAnnotation): Doc {
   return match (ann) {
   case NamedTypeAnnotation {name, typeArguments, elementsMutable}: {
     let parts = growable<Doc>([text(name)]);
@@ -2262,40 +2300,87 @@ function printTypeAnnotation(ann: TypeAnnotation): Doc {
   }
   case LiteralTypeAnnotation {value}: printNode(value)
   case RecordTypeAnnotation {properties, spreads, isExistential}: {
-    let propDocs = new Array<Doc>();
+    let itemNodes = new Array<Node>();
     // Spreads print where they were written: merge the two lists by
     // source position.
     var si = 0;
     for (let p in properties) {
       if (spreads != null) {
         while (si < spreads.length && startsBefore(spreads[si], p)) {
-          propDocs.push(concat(docs2(text('...'), printTypeAnnotation(spreads[si]))));
+          itemNodes.push(spreads[si]);
           si += 1;
         }
       }
-      let nameDoc = if (p.optional) { concat(docs2(text(p.name.name), text('?'))) } else { text(p.name.name) };
-      propDocs.push(concat(docs3(nameDoc, text(': '), printTypeAnnotation(p.typeAnnotation))));
+      itemNodes.push(p);
     }
     if (spreads != null) {
       while (si < spreads.length) {
-        propDocs.push(concat(docs2(text('...'), printTypeAnnotation(spreads[si]))));
+        itemNodes.push(spreads[si]);
         si += 1;
       }
     }
-    if (isExistential) {
-      propDocs.push(text('...'));
+    if (itemNodes.length == 0 && !isExistential) {
+      printEmptyBody(ann, false)
+    } else {
+      var hasItemComments = false;
+      for (let item in itemNodes) {
+        if (currentCommentMap.getLeading(item) != null
+            || currentCommentMap.getTrailing(item) != null) {
+          hasItemComments = true;
+        }
+      }
+      if (!hasItemComments) {
+        let propDocs = new Array<Doc>();
+        for (let item in itemNodes) {
+          propDocs.push(printRecordTypeItem(item));
+        }
+        if (isExistential) {
+          propDocs.push(text('...'));
+        }
+        concat(docs3(text('{'), join(text(', '), propDocs), text('}')))
+      } else {
+        let totalItems = itemNodes.length + (if (isExistential) 1 else 0);
+        let memberDocs = new Array<Doc>();
+        var i = 0;
+        while (i < itemNodes.length) {
+          let cur = itemNodes[i];
+          let itemDoc = printRecordTypeItem(cur);
+          let withComma = if (i < totalItems - 1) {
+            concat(docs2(itemDoc, text(',')))
+          } else {
+            itemDoc
+          };
+          memberDocs.push(withComments(cur, withComma));
+          if (i < itemNodes.length - 1) {
+            memberDocs.push(hardline);
+            if (hasBlankLineBetweenNodes(cur, itemNodes[i + 1])) {
+              memberDocs.push(hardline);
+            }
+          }
+          i += 1;
+        }
+        if (isExistential) {
+          if (itemNodes.length > 0) {
+            memberDocs.push(hardline);
+          }
+          memberDocs.push(text('...'));
+        }
+        concat(docs3(
+          text('{'),
+          indent(concat(docs2(hardline, concat(memberDocs)))),
+          concat(docs2(hardline, text('}')))))
+      }
     }
-    concat(docs3(text('{'), join(text(', '), propDocs), text('}')))
   }
   case TupleTypeAnnotation {elementTypes, spreadIndices}: {
     let eDocs = new Array<Doc>();
     var i = 0;
     while (i < elementTypes.length) {
-      let elementDoc = printTypeAnnotation(elementTypes[i]);
       if (spreadIndices != null && spreadIndices.contains(i)) {
-        eDocs.push(concat(docs2(text('...'), elementDoc)));
+        let spreadDoc = concat(docs2(text('...'), printTypeAnnotationInner(elementTypes[i])));
+        eDocs.push(withComments(elementTypes[i], spreadDoc));
       } else {
-        eDocs.push(elementDoc);
+        eDocs.push(printTypeAnnotation(elementTypes[i]));
       }
       i += 1;
     }
