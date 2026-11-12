@@ -1,199 +1,45 @@
-# Zebra
+# zebra
 
-An incremental script runner: Zebra runs a graph of scripts and services
-with declared inputs, outputs, and dependencies, rerunning only what
-changed. It is written in Zena on the `workflow` engine
-(`packages/workflow`); `docs/design/workflow.md` describes the layered
-design this implements and where it is headed.
+An incremental script and service runner for Zena (`zena-package.json`), standalone Zebra (`zebra.json`), and [Wireit](https://github.com/google/wireit) (`package.json`) workspaces, built on `@zena/workflow`.
 
-Configuration comes from `zena-package.json` (`scripts`, `filesets`, and
-`locks`) or standalone per-package `zebra.json` files (both supporting `//`
-and `/* ... */` comments), with a per-package fallback to
-[wireit](https://github.com/google/wireit) blocks in `package.json`.
-Dependencies can cross between `zena-package.json`, `zebra.json`, and
-`package.json` packages, and `--migrate` converts existing wireit
-configurations into `zena-package.json` (when present) or `zebra.json`.
+Zebra runs a dependency graph of scripts and long-running services with declared inputs, outputs, and dependencies, rerunning only what changed. For each script, Zebra content-hashes the declared inputs and asks the workflow engine what to do: nothing (when the previous run recorded the same fingerprints and declared outputs are intact), restore from the local content-addressed cache, or execute the command (`sh -c` in the package directory with `node_modules/.bin` on `PATH`).
 
-For each script, Zebra content-hashes the declared inputs and asks the
-engine what to do: nothing (the previous run recorded the same
-fingerprints), restore from the local cache, or run the command.
-Commands run through `sh -c` in the package directory with
-`node_modules/.bin` on `PATH`, like wireit through npm.
+## Installation
 
-## Status
-
-Working today:
-
-- Zena-native `zena-package.json` and standalone `zebra.json` configs
-  with `//` and `/* ... */` comments: `scripts` (object stanzas and
-  command string shorthands), `filesets` (reusable file groups plus the
-  automatic `source` fileset synthesized from `zena-package.json`'s
-  `source` and `dependencies`), `files`, `output` (`[]` by default when
-  `files` or a fileset dependency is declared), `locks`
-  (`['zena-lock.json']` by default at package or script scope, `[]` to
-  disable), `cache` (`false` to opt out of caching while keeping `files`
-  for watch mode), `dependencies`, `env`, `service`, `clean`, and
-  comment keys, plus `--migrate [--dry-run] [-f]` from `package.json`
-- cached plan snapshots (`.zebra/plans/<hash>.plan`): a cold run records
-  probed config paths (existing file `(mtime, size)` stamps plus
-  probed-absent config paths) and the resolved `ScriptConfig` closure;
-  warm runs verify those `stat` stamps and load the snapshot without
-  reading or parsing package config files
-- wireit script configs: `command`, `files`, `output`, `packageLocks`
-  (`['package-lock.json']` by default, `[]` to disable), `dependencies`
-  (strings, `../pkg:script`, dependency-only scripts, and `{script,
-cascade}` objects), `env` (literal values and `{external: true,
-default?}`), `service` (`true` and `{readyWhen: {lineMatches}}`),
-  `clean` (`true`/`false`/`if-file-deleted`), comment keys
-- wireit's tracking rules: a task script with a command is fresh or
-  cacheable when both `files` and `output` are declared (an explicit
-  `[]` counts); omitting either means unknown inputs or outputs, so the
-  script always runs and its cascading dependents rerun too. Services
-  track their identity when `files` is declared, and command-less
-  scripts forward their resolved inputs as dependency/fileset groups.
-- lazy per-step input expansion and a persistent `(mtime, size)` hash
-  memo (`.zebra/hashes.json`, with a 20ms racy-timestamp guard): a step's
-  `files` globs expand after its dependencies finish, literal file
-  entries check only that path, and warm runs verify unchanged files by
-  `stat` without rereading bytes
-- on-disk output verification: before reporting a key-matched step
-  `fresh`, Zebra checks that its recorded file outputs still match on disk,
-  restoring from `.zebra/blobs/` or rerunning the command if an output was
-  deleted or modified
-- services: started on demand when a dependent executes, gated on
-  `readyWhen.lineMatches` when configured, shared across dependents,
-  skipped when all dependents are fresh or cached, and stopped as a Unix
-  process group (`SIGTERM` then `SIGKILL`). Invoking a service directly
-  as the top-level target runs its dependencies and streams the service
-  in the foreground.
-- watch mode (`-w` / `--watch`): watches input globs, lockfiles, and
-  `package.json` manifests for changes, re-running affected steps
-  incrementally while keeping unchanged services pinned alive in a
-  `ServicePool` across rebuilds and restarting them (stopping child
-  services before parents) only when their own configuration or inputs
-  change. `SIGINT` and `SIGTERM` cleanly stop in-flight scripts,
-  foreground services, and pinned watch-mode service process groups in
-  reverse startup order before exiting (`130` / `143`).
-- bare npm scripts as always-run commands (with dependent poisoning)
-- content-addressed local cache under `.zebra/` (state file, per-key
-  manifests, blob store); lost state restores from cache instead of
-  rebuilding
-- bounded parallel command execution (`-j <jobs>`, defaulting to
-  `ZENA_AVAILABLE_PARALLELISM`), cache flags (`-f` / `--force`,
-  `--no-cache`), and verbose output (`-v` / `--verbose`)
-- Clack-style rail output (`┌`, `│`, `◇`, `◆`, `○`, `▲`, `■`, `└`) with
-  per-step durations, buffered stdout/stderr blocks shown on failure (or
-  for all non-empty outputs with `-v` / `--verbose`), summarized fresh
-  and skipped step counts by default, and a live interactive spinner
-  when stdout is a terminal
-- precise cleaning: the previous run's recorded file outputs are deleted
-
-Not yet (see the design doc's milestones):
-
-- remote caches, per-output incremental deltas to commands
-
-## Running
-
-Prerequisite: a built checkout (`npm run build`), so
-`target/release/zena-cli` and the compiler exist. From the repository
-root:
+`zebra` is built into the `zena` CLI (`zena build <target>`). To use it as a library or standalone runner:
 
 ```sh
-./target/release/zena-cli build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<target>]
-./target/release/zena-cli build --migrate [--dry-run] [-f|--force] [<package-dir>]
-# or directly:
-./target/release/zena-cli run --dir . --allow-spawn packages/zebra/zena/main.zena \
-  [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<package-dir>] [<script>]
-./target/release/zena-cli run --dir . --allow-spawn packages/zebra/zena/main.zena \
-  [-C <workspace-root>] --migrate [--dry-run] [-f|--force] [<package-dir>]
+zena pkg add @zena/zebra
 ```
 
-`--dir .` grants filesystem access and `--allow-spawn` process spawning;
-`-C` points at a workspace other than the current directory. By default,
-executed (`ran`), cache-restored (`restored`), and failed (`FAILED`)
-steps appear on the rail and `fresh` / `skipped` steps are summarized in
-the footer (`└  build succeeded in 42ms (2 ran, 4 fresh)`); pass `-v` /
-`--verbose` to list every step and any captured stdout/stderr on the
-rail.
-
-## The example workspace
-
-`example/` is a three-package workspace: `greeting` concatenates text
-files, `site` builds an HTML page from them, and `hello-wasm` compiles a
-real Zena program with `zena-cli`. Build it all:
+## CLI Usage
 
 ```sh
-./target/release/zena-cli run --dir . --allow-spawn packages/zebra/zena/main.zena \
-  -C packages/zebra/example build
+zena build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<target>]
+zena build --migrate [--dry-run] [-f|--force] [<package-dir>...]
 ```
 
-The first run reports `ran` for every step; a second run reports `fresh`.
-Edit `example/greeting/src/hello.txt` and only `greeting` and `site`
-rebuild. The built page is `example/site/out/index.html`, and the wasm
-runs directly:
+- `<target>` can be a script name in the current package (`zena build test`), a package directory (`zena build ./packages/app`, which runs `build`), or `<package-dir>:<script>` (`zena build ./packages/app:test`). With no `<target>`, `zena build` runs the current package's `build` script.
+- `-j` / `--jobs <n>` bounds parallel command execution (defaulting to `ZENA_AVAILABLE_PARALLELISM`).
+- `-w` / `--watch` watches input globs, lockfiles, and package manifests for changes, re-running affected steps incrementally while keeping unchanged services alive in a `ServicePool` across rebuilds.
+- `-f` / `--force` bypasses freshness and cached outputs to rerun scripts unconditionally.
+- `--no-cache` disables restoring outputs from `.zebra/blobs/` when a step is not fresh.
+- `-v` / `--verbose` prints every step (including `fresh` and `skipped`) and any captured stdout/stderr on the rail.
+- `--migrate` converts Wireit blocks in `package.json` into `zena-package.json` (when present) or `zebra.json`.
 
-```sh
-wasmtime run -W gc=y -W function-references=y -W exceptions=y \
-  --invoke main packages/zebra/example/hello-wasm/out/hello.wasm
+## Programmatic Usage
+
+```zena
+import { buildTarget, reportBuild } from 'zebra/runner';
+import { ScriptRef } from 'zebra/wireit-config';
+
+let outcome = await buildTarget('.', new ScriptRef('packages/app', 'build'));
+let exitCode = reportBuild(outcome);
 ```
-
-Build state lives in each package's `.zebra/` directory (gitignored, safe
-to delete — the next build restores outputs from scratch or cache).
-
-## The cache
-
-Build state lives per package, like wireit's `.wireit/`: each package's
-`<pkg>/.zebra/` holds `state.json` (freshness records for that package's
-scripts: the last cache key and output manifest), `cache/<key>.json`
-(cache key → output manifest), and `blobs/` (output bytes,
-content-addressed). The workspace root's `.zebra/` holds `hashes.json`
-(the `(mtime, size)` → `sha256` file memo shared across packages) and
-`plans/<hash>.plan` (cached `ScriptConfig` closures keyed by target
-entry). Because per-package state sits next to each `zena-package.json`,
-`zebra.json`, or `package.json`, the cache location does not depend on
-the directory Zebra was invoked from. Pass `-f` / `--force` to rerun
-scripts regardless of freshness or cached outputs, or `--no-cache` to
-disable restoring from `blobs/` when a step is not fresh. Deleting a
-package's `state.json` drops freshness while keeping cached blobs;
-deleting `.zebra/` directories clears both.
-
-One semantic difference from wireit to know about: a dependency
-contributes the digest of its _outputs_ to dependents' cache keys, not
-its input fingerprint. That gives early cutoff (a dependency that reruns
-but produces identical outputs leaves dependents fresh) — and it makes
-complete `output` declarations matter more than under wireit, where
-input-transitive fingerprints rerun dependents regardless. An output a
-step produces but does not declare is invisible to dependents.
-
-## Building this repository
-
-Zebra builds real targets of this monorepo from its existing wireit
-configuration, measured on a warm checkout:
-
-| Command                                                                                                      | First run | Fresh rerun |
-| ------------------------------------------------------------------------------------------------------------ | --------- | ----------- |
-| `packages/stdlib build` (tsc)                                                                                | ~8s       | ~0.05s      |
-| `packages/zena-compiler build:cli` (the compiler, via the bootstrap, plus its cargo and stdlib dependencies) | ~28s      | ~0.35s      |
-
-The root build converges over two runs: the first Zebra build regenerates
-some outputs with contents that differ from wireit's, so a handful of
-downstream steps rerun once, and from the third run on everything is
-fresh. Warm rerun time on `build:cli` is mostly the untracked `cargo
-build --release -p zena-run` check (~0.25s); `.zebra/hashes.json` and
-literal-path resolution avoid rereading unchanged source and output
-files across runs.
-
-Zebra keeps its own state in `.zebra/` and never touches `.wireit/`, so it
-can run side by side with wireit on the same checkout. The two systems do
-not share caches: after building with one, the other will re-run steps
-whose outputs changed on disk.
 
 ## Configuration (`zena-package.json` and `zebra.json`)
 
-Zena packages can configure scripts and filesets directly in
-`zena-package.json`, and non-Zena projects can use a standalone
-`zebra.json` (with an optional `"workspace": {"packages": [...]}` at the
-workspace root):
+Zena packages configure scripts and filesets directly in `zena-package.json`. Non-Zena projects can use a standalone `zebra.json` (with an optional `"workspace": {"packages": [...]}` at the workspace root). Both support `//` and `/* ... */` comments:
 
 ```jsonc
 {
@@ -220,64 +66,40 @@ workspace root):
 }
 ```
 
-In `zena-package.json` and `zebra.json`:
+- **Automatic `source` fileset**: Every package with `zena-package.json` exposes an automatic `source` fileset covering its library `.zena` files (from `"source"`, defaulting to `"src"` and excluding `*_test.zena`, `test/**`, and `tests/**`), `zena-package.json`, any `"wit"` dependencies, and the `source` filesets of all `"path"` dependencies. Scripts opt into it via `"dependencies": ["source"]` (or `"../pkg:source"`).
+- **Named `filesets`**: Entries accept either a glob array shorthand (`"wit": ["wit/**/*.wit"]`) or `{"files": [...], "dependencies": [...]}` and compose transitively without spawning commands.
+- **Caching and tracking**: Task scripts cache automatically whenever `files`, `output`, or a fileset dependency is declared, defaulting `output` to `[]` when omitted. Setting `"cache": false` opts a step out of freshness and caching while keeping its `files` globs active in `--watch` mode. Omitting `files`, `output`, and fileset dependencies on a command step leaves it untracked so it runs every time. String entries (`"fmt": "zena fmt --check ."`) are shorthands for always-run commands.
+- **Locks**: `locks` defaults to `["zena-lock.json"]` and may be set at the package root or overridden per script (`"locks": []` disables lockfile hashing).
+- **Services**: Scripts with `"service": true` or `"service": {"readyWhen": {"lineMatches": "..."}}` start on demand when a dependent executes, wait for readiness when configured, are shared across dependents, and are stopped as a Unix process group (`SIGTERM` then `SIGKILL`) when dependents finish. Invoking a service directly as the top-level target runs its dependencies and streams the service in the foreground.
+- **Wireit fallback**: When a package directory has no `zebra.json` and no `"scripts"` block in `zena-package.json`, Zebra falls back to `package.json` Wireit scripts while still serving filesets from `zena-package.json`. Dependencies can cross freely between `zena-package.json`, `zebra.json`, and `package.json` packages.
 
-- Every package with `zena-package.json` exposes an automatic `source`
-  fileset covering its library `.zena` files (from `"source"`, defaulting
-  to `"src"` and excluding `*_test.zena`, `test/**`, and `tests/**`),
-  `zena-package.json`, any `"wit"` dependencies, and the `source`
-  filesets of all `"path"` dependencies. Scripts opt into it via
-  `"dependencies": ["source"]` (or `"../pkg:source"`).
-- Named `"filesets"` entries accept either a glob array shorthand
-  (`"wit": ["wit/**/*.wit"]`) or `{"files": [...], "dependencies": [...]}`
-  and compose transitively without spawning commands.
-- Task scripts cache automatically whenever `files`, `output`, or a
-  fileset dependency is declared, defaulting `output` to `[]` when
-  omitted.
-- Setting `"cache": false` opts a step out of freshness and caching while
-  keeping its `files` globs active in `--watch` mode.
-- Omitting `files`, `output`, and fileset dependencies on a command step
-  leaves it untracked so it runs every time; `"cache": true` without
-  declared inputs or outputs is a configuration error.
-- String entries (`"fmt": "zena fmt --check ."`) are shorthands for
-  always-run commands.
-- `locks` defaults to `["zena-lock.json"]` and may be set at the package
-  root or overridden per script (`"locks": []` disables lockfile hashing).
-- Running `zena build` (or `zebra`) with no target argument runs the
-  current package's `build` script; `zena build ./pkg` runs `./pkg:build`.
+## Cache Layout (`.zebra/`)
 
-When a package directory has `zebra.json`, or `zena-package.json` with a
-`"scripts"` block, Zebra ignores that directory's `package.json`; otherwise
-Zebra falls back to `package.json` for scripts while still serving filesets
-from `zena-package.json`. `zena build --migrate` (or `zebra --migrate`)
-converts wireit `package.json` files into `zena-package.json` (when one
-exists in that directory) or `zebra.json`, preserving script semantics
-(emitting `"cache": false` where wireit declared `files` without
-`output`, and keeping `package-lock.json` in `locks` when present). Pass
-`--dry-run` to preview generated files on the rail without writing, or
-`-f` to overwrite existing migrated configs.
+Each package's `<pkg>/.zebra/` directory stores:
 
-## Layout
+- `state.json` — freshness records for that package's scripts (the last cache key and output manifest).
+- `cache/<key>.json` — cache key to output manifest.
+- `blobs/` — content-addressed output bytes (`sha256`).
 
-- `zena/main.zena` — the CLI
-- `zena/runner.zena` — config → plan → engine run → persisted state and
-  rail report
-- `zena/zebra-config.zena` — `zena-package.json` and `zebra.json`
-  parsing, fileset rules and synthesized `source` filesets, per-package
-  workspace resolution, and `--migrate` conversion from `package.json`
-- `zena/plan-cache.zena` — `.zebra/plans/` snapshot serialization and
-  `stat`-verified warm plan loading
-- `zena/wireit-config.zena` — package.json wireit parsing and shared
-  script config primitives
-- `zena/builder.zena` — script configs → workflow steps and run callbacks
-- `zena/fs-walk.zena` — input discovery: walks each glob's literal base
-  directory and keeps what `zena:glob`'s `GlobSet` matches
-- `zena/disk-cache.zena`, `zena/state-json.zena` — the `.zebra/` formats
-- `zena/colors.zena`, `zena/layout.zena`, `zena/animation.zena` —
-  standalone terminal formatting, Clack-style rail layout, and spinner
-  animation helpers
+The workspace root's `.zebra/` directory stores:
 
-Fingerprints are `sha256:<hex>`, hashed with `zena:crypto`.
+- `hashes.json` — the `(mtime, size)` to `sha256` file hash memo shared across packages (with a 20ms racy-timestamp guard).
+- `plans/<hash>.plan` — `stat`-verified cached `ScriptConfig` closures keyed by target entry.
 
-Tests: `npm test -w @zena-lang/zebra`. The end-to-end tests build fixture
-workspaces under `/tmp` through the real filesystem and shell.
+A dependency contributes the digest of its _outputs_ to dependents' cache keys rather than its input fingerprint, giving early cutoff when a dependency reruns and produces identical outputs.
+
+## Libraries
+
+- `zebra` (`zebra/main`) — CLI entry point (`main`).
+- `zebra/runner` — `buildTarget`, `watchTarget`, `reportBuild`, `reportMigration`, `formatBuildReport`, and `BuildOutcome`.
+- `zebra/zebra-config` — `zena-package.json` and `zebra.json` parsing (`ZebraWorkspace`), synthesized `source` filesets, and Wireit migration (`migrateWorkspaceToZebra`, `convertPackageJsonToZebraJson`, `mergeWireitIntoZenaPackageJson`).
+- `zebra/wireit-config` — `package.json` Wireit parsing (`WireitWorkspace`) and shared script configuration types (`ScriptConfig`, `ScriptRef`, `DependencySpec`, `ServiceConfig`, `EnvBinding`, `ConfigError`, `refKey`, `resolveDependency`).
+- `zebra/plan-cache` — `.zebra/plans/` snapshot serialization and `stat`-verified warm plan loading (`loadOrCollectConfigs`, `PlanLoadStats`, `ConfigProbe`).
+- `zebra/builder` — Translates `ScriptConfig` closures into `workflow` steps and execution callbacks (`planScripts`, `StepExecution`, `lockfileCandidates`).
+- `zebra/disk-cache` and `zebra/state-json` — `.zebra/` blob/manifest storage (`DiskCache`, `stateDirOf`) and JSON serialization for state, manifests, and hash memos.
+- `zebra/fs-walk` and `zebra/fs-util` — Input glob discovery (`FileHasher`, `expandGlobs`, `hashFile`, `validateGlobs`, `splitBase`) and workspace path utilities.
+- `zebra/colors`, `zebra/layout`, and `zebra/animation` — Terminal color formatting, Clack-style rail layout (`RailLayout`), and interactive spinner animation (`Spinner`).
+
+## License
+
+MIT
