@@ -700,6 +700,25 @@ export let tests = suite('WatGenerator', () => {
     assertNoAllocation(result, '$main', 'a literal argument passed as slots');
   });
 
+  // `==`, `!=` and `is` on inline values compare and test slot by slot
+  // (#812), so neither operand is boxed.
+  test('comparing inline values allocates nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Reply = (true, i32) | (false, i32);
+      function same(a: inline (i32, i32), b: inline (i32, i32)): boolean {
+        return a == b || a != (1, 2);
+      }
+      function sameReply(a: inline Reply, b: inline Reply): boolean {
+        return a == b && a is (true, i32);
+      }
+      export let main = (): i32 =>
+        (if (same((1, 2), (1, 2)) && sameReply((true, 1), (true, 1))) 1 else 0);
+    `);
+    assertNoAllocation(result, '$same', 'inline tuples compared slot by slot');
+    assertNoAllocation(result, '$sameReply', 'an inline union compared and tested by its slots');
+    assertNoAllocation(result, '$main', 'literals compared as slots');
+  });
+
   test('nested inline unions allocate nothing', async (ctx) => {
     let result = await compileAndGenerateWat(`
       type Reply = (true, i32) | (false, i32);

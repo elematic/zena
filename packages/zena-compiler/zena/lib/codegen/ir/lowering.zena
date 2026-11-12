@@ -3603,8 +3603,10 @@ export final class FunctionLowerer {
       return this.#convertInlineSlots(mv.values, mv.layout as InlineLayout,
           layout as InlineLayout);
     }
+    // A literal writes its elements into the slots whatever its own type:
+    // `make(1) != (1, 2)` has a boxed literal beside an inline result.
     let nt = this.func.model.getNodeType(arg);
-    if (nt == null || !(baseType(nt) is InlineTupleType)) {
+    if (nt == null || !(baseType(nt) is InlineTupleType || baseType(nt) is TupleType)) {
       this.#bail('boxed tuple return');
     }
     // Slots come from the FUNCTION's declared return type, not this
@@ -4929,7 +4931,16 @@ export final class FunctionLowerer {
     // One value per element, a nested tuple pattern at a nested inline
     // position read leaf by leaf.
     var elements = new Array<Node | null>();
-    var values = source.patternValues(this.#cx(), tp.elements, null, elements);
+    // A held inline union narrowed by an `is` or a pattern reads only the
+    // members its type still names.
+    let sourceLayout = source.layout;
+    let initType = this.#substitutedNodeType(vd.init);
+    let narrowed = if (sourceLayout != null && initType != null) {
+      this.#narrowedMembers(sourceLayout, initType)
+    } else {
+      null
+    };
+    var values = source.patternValues(this.#cx(), tp.elements, narrowed, elements);
     if (values.length == 1 && tp.elements.length != 1) {
       // A single value can still be a BOXED tuple (fields "0"..):
       // non-inline tuple returns arrive as one struct reference.
@@ -7386,6 +7397,67 @@ export final class FunctionLowerer {
   }
 
   /**
+   * The members of `layout` whose literals agree with one of the tuples
+   * `t` names (a tuple or a union of them, boxed or inline), or null when
+   * that is every member, or `t` names something else.
+   */
+  #narrowedMembers(layout: InlineLayout, t: Type): GrowableArray<boolean> | null {
+    let resolved = unwrapAliases(t);
+    let named = if (resolved is UnionType) resolved.types else growable<Type>([resolved]);
+    let allowed = new Array<boolean>();
+    for (var m = 0; m < layout.originals.length; m += 1) {
+      allowed.push(false);
+    }
+    for (let n in named) {
+      let tuple = unwrapAliases(n);
+      let inlineTuple = if (tuple is TupleType) {
+        new InlineTupleType(tuple.elementTypes)
+      } else if (tuple is InlineTupleType) {
+        tuple
+      } else {
+        null
+      };
+      if (inlineTuple == null) {
+        return null;
+      }
+      let like = inlineMembersLike(layout, inlineTuple);
+      for (var m = 0; m < like.length; m += 1) {
+        if (like[m]) {
+          allowed[m] = true;
+        }
+      }
+    }
+    for (let a in allowed) {
+      if (!a) {
+        return allowed;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Whether `values`, an inline value in `layout`'s slots, is one of the
+   * tuples `target` names: an or of the member tests of the members whose
+   * literals agree with them.
+   */
+  #inlineIsTest(values: GrowableArray<i32>, layout: InlineLayout, target: Type): i32 {
+    let i32Vt = new ValTypeI32() as ValType;
+    let narrowed = this.#narrowedMembers(layout, target);
+    if (narrowed == null) {
+      return this.b.constI32(1, i32Vt);
+    }
+    let allowed = narrowed;
+    var cond = -1;
+    for (var m = 0; m < allowed.length; m += 1) {
+      if (allowed[m]) {
+        let test = memberTest(this.#cx(), layout, values, m);
+        cond = if (cond == -1) test else this.b.binary(IrOp.i32_or, i32Vt, cond, test);
+      }
+    }
+    return if (cond == -1) this.b.constI32(0, i32Vt) else cond;
+  }
+
+  /**
    * `x is T`: ref.test for reference sources; non-reference sources
    * fold to a constant by type identity (the operand still evaluates
    * for effects). Mirrors streaming's IsExpression codegen.
@@ -7401,6 +7473,15 @@ export final class FunctionLowerer {
     }
     let targetType = substituteTypeParamsInFunctionContext(this.wasm,
         this.func, targetTypeOpt);
+    // An inline union's member is told by its literals (#812): the test is
+    // whether the value is one of the members whose literals the tested
+    // tuples agree with, read off the slots, so nothing is boxed.
+    let sourceLayout = inlineLayoutOf(this.wasm, sourceType);
+    if (sourceLayout != null) {
+      let source = this.#lowerMultiSource(isExpr.expression);
+      let layout = source.layout ?? sourceLayout;
+      return this.#inlineIsTest(source.values, layout, targetType);
+    }
     let value = this.#lowerExpression(isExpr.expression);
     // An existential holds a record of a shape only the run time knows:
     // `is` asks whether it is exactly a value of the closed target type.
