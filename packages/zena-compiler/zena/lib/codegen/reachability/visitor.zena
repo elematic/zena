@@ -211,14 +211,11 @@ export final class TypeLowerer implements TypeLowererInterface {
       for (var i = 0; i < t.elementTypes.length; i += 1) {
         this.discoverType(t.elementTypes[i], model);
       }
-      let fields = new Array<WasmField>();
-      for (var i = 0; i < t.elementTypes.length; i += 1) {
-        let vt = typeToValType(this.pass.wasm, t.elementTypes[i]);
-        if (!(vt is ValTypeVoid)) {
-          fields.push(new WasmField(i32ToString(i), vt, false));
-        }
+      let elements = new Array<ValType>();
+      for (let el in t.elementTypes) {
+        elements.push(typeToValType(this.pass.wasm, el));
       }
-      let st = this.pass.wasm.getStruct(null, fields);
+      let st = this.pass.wasm.getTupleStruct(elements);
       this.pass.markTypeReached(st);
       if (this.pass.inQueueWalk) {
         this.pass.reachablyNamedAnonStructs.add(st);

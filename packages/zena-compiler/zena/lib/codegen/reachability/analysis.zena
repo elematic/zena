@@ -2219,14 +2219,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // has settled and every nested dispatch exists.
     for (let compT in this.#namedCompositeTypes) {
       if (compT is TupleType) {
-        let tFields = new Array<WasmField>();
-        for (var ti = 0; ti < compT.elementTypes.length; ti += 1) {
-          let vt = typeToValType(this.wasm, compT.elementTypes[ti]);
-          if (!(vt is ValTypeVoid)) {
-            tFields.push(new WasmField(i32ToString(ti), vt, false));
-          }
+        let elements = new Array<ValType>();
+        for (let el in compT.elementTypes) {
+          elements.push(typeToValType(this.wasm, el));
         }
-        this.reachablyNamedAnonStructs.add(this.wasm.getStruct(null, tFields));
+        this.reachablyNamedAnonStructs.add(this.wasm.getTupleStruct(elements));
       } else if (compT is FunctionType) {
         this.reachablyNamedClosures.add(
             getClosureStruct(this.wasm, compT));

@@ -1600,6 +1600,41 @@ export let tests = suite('zir backend', () => {
         'the result is returned as its elements');
   });
 
+  test('a tuple rebuilt from every field of another is that tuple', async (ctx) => {
+    // Each function keeps its parameter and has its result stored whole,
+    // so neither explodes and the rebuild stays in the body. `copy`
+    // rebuilds its parameter field by field, in order, so it returns the
+    // parameter (#529). The others build a new tuple: the fields in
+    // another order, from two tuples, or from part of a wider one.
+    let result = await compileWithZir(dedentRaw`
+        var kept: (i32, i32) = (0, 0);
+        var wide: (i32, i32, i32) = (0, 0, 0);
+        var out: (i32, i32) = (0, 0);
+        function copy(t: (i32, i32)): (i32, i32) { kept = t; return (t[0], t[1]); }
+        function swap(t: (i32, i32)): (i32, i32) { kept = t; return (t[1], t[0]); }
+        function mix(a: (i32, i32), b: (i32, i32)): (i32, i32) {
+          kept = a;
+          out = b;
+          return (a[0], b[1]);
+        }
+        function prefix(t: (i32, i32, i32)): (i32, i32) { wide = t; return (t[0], t[1]); }
+        export let main = (): i32 => {
+          out = copy((1, 2));
+          out = swap((1, 2));
+          out = mix((1, 2), (3, 4));
+          out = prefix((1, 2, 3));
+          return out[0];
+        };
+        `);
+    assertNoAllocation(result, '$copy', 'the rebuild is the parameter itself');
+    assertFunctionUsesTimes(result, '$swap', 'struct.new', 1,
+        'fields in another order make a new tuple');
+    assertFunctionUsesTimes(result, '$mix', 'struct.new', 1,
+        'fields from two tuples make a new tuple');
+    assertFunctionUsesTimes(result, '$prefix', 'struct.new', 1,
+        'part of a wider tuple makes a new tuple');
+  });
+
   test('-O2 removes a local fat pointer entirely', async (ctx) => {
     // Pack, dispatch, unpack, all in one body: devirtualization makes
     // the call direct, inlining brings the trampoline's receiver cast

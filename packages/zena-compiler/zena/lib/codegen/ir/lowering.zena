@@ -6949,14 +6949,11 @@ export final class FunctionLowerer {
   /** The struct a (boxed) tuple type lowers to. A zero-width element
    * (`void`) has no field; the others are named by their position. */
   #tupleStruct(tt: TupleType): WasmStruct {
-    let fields = new Array<WasmField>(tt.elementTypes.length);
-    for (var i = 0; i < tt.elementTypes.length; i += 1) {
-      let vt = typeToValTypeWithSub(this.wasm, tt.elementTypes[i], this.func);
-      if (!(vt is ValTypeVoid)) {
-        fields.push(new WasmField(i32ToString(i), vt, false));
-      }
+    let elements = new Array<ValType>(tt.elementTypes.length);
+    for (let el in tt.elementTypes) {
+      elements.push(typeToValTypeWithSub(this.wasm, el, this.func));
     }
-    return this.wasm.getStruct(null, fields);
+    return this.wasm.getTupleStruct(elements);
   }
 
   /** Each element of the tuple `expr` evaluates to, in order. */

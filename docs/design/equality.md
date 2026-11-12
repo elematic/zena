@@ -179,6 +179,15 @@ struct of its element types, and the dead-field pass can leave a class
 struct with the same layout, so a type test cannot tell a tuple from
 such a class instance.
 
+So whether two value-equal tuples are one box can show there, and the
+compiler does not promise either way. Simplify turns a tuple rebuilt
+from every field of another, in order, into the original (#529), and
+argument explosion passes a tuple as its elements and may build a new
+one from them. A rebuilt tuple and its original can then compare equal
+through `anyref` at one optimization level and unequal at another. Both
+answers are wrong only in the way identity comparison already is: two
+value-equal tuples comparing unequal.
+
 **`hashCode()` on a record or tuple.** Records have no methods, but they
 satisfy `Hashable`, so generic code bounded by it can call `x.hashCode()`
 on one. The call lowers to the type's `$valueHash` function, the hash
