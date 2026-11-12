@@ -1,18 +1,18 @@
 /**
- * Minimal version selection: for each package and major version, the
- * highest of the minimum versions a workspace's packages and their
- * dependencies require. A requirement is a range
- * (docs/design/package-manager.md, "Version ranges"), and until selection
- * reads ranges (#1087) its minimum is the version it requires.
+ * Version selection (docs/design/package-manager.md, "Version
+ * selection"): which versions of each package a workspace installs, given
+ * the ranges its packages and their dependencies accept.
  *
- * Resolution starts from the requirements in all of a workspace's
- * manifests, so that the workspace uses one version of each package and
- * major version. It reads the release record of every version any of them
- * names, following each release's own dependencies, as Go's modules do. A
- * version that a
- * higher minimum later overrides still contributes its dependencies'
- * minimums. The result is a `Resolution`: for each selected package, its
- * version, release and source CIDs and its own names for its dependencies.
+ * Selection installs as few versions of each package as the ranges asking
+ * for it allow, and a second version only when no one version is in all
+ * of them. Each range then uses the highest selected version in it. This
+ * is the design's first phase: one package at a time, repeated over every
+ * package until nothing changes. The second phase, a search for a better
+ * answer, is #1089.
+ *
+ * The result is a `Resolution`: for each selected version, its release and
+ * source CIDs and the version each of its own dependency names stands
+ * for.
  */
 
 import {HashMap, HashSet, OrderedHashMap} from 'zena:collections';
@@ -25,24 +25,8 @@ import {Range, Version} from 'zena-lang:semver';
 export final class Requirement {
   did: String;
   range: Range;
-  /** The lowest version in the range, which minimal version selection requires. */
-  minimum: Version;
 
-  new(did: String, range: Range) : did = did, range = range, minimum = minimumOf(range, did);
-}
-
-/** The lowest version in `range`; throws `ResolutionError` when it has none. */
-function minimumOf(range: Range, did: String): Version {
-  let minimum = range.minimum();
-  if (minimum == null) {
-    throw new ResolutionError(`${did}: no version is in '${range.text}'`);
-  }
-  return minimum;
-}
-
-/** The selection's slot for `version` of `did`: one per package and major version. */
-function slotOf(did: String, version: Version) {
-  return `${did}@${version.major}`;
+  new(did: String, range: Range) : did = did, range = range;
 }
 
 /** A release record, and its CID, fetched with its proof. */
@@ -53,87 +37,301 @@ export final class CheckedRelease {
   new(release: Release, cid: Cid) : release = release, cid = cid;
 }
 
-/**
- * Where resolution reads release records: `did`'s release `version`,
- * checked against the account's key. Throws when there is no such release.
- */
-export type ReleaseSource = (did: String, version: Version) => Future<CheckedRelease>;
+/** The versions a package's repository lists, and which of them are retracted. */
+export final class Versions {
+  releases: GrowableArray<Version>;
+  /** The retracted versions, as text. */
+  retracted: HashSet<String>;
+
+  new(releases: GrowableArray<Version>, retracted: HashSet<String>) : releases = releases, retracted = retracted;
+
+  /**
+   * The highest version that is not retracted, in major version `major` when
+   * it is given. Pre-releases count only with `prereleases`.
+   */
+  latest(major: i64 = -1, prereleases: boolean = false): Version | null {
+    var best: Version | null = null;
+    for (let version in this.releases) {
+      if (this.retracted.has(version.toString())) {
+        continue;
+      }
+      if (major >= 0 && version.major != major) {
+        continue;
+      }
+      if (version.isPrerelease && !prereleases) {
+        continue;
+      }
+      let current = best;
+      if (current == null || version.compareTo(current) > 0) {
+        best = version;
+      }
+    }
+    return best;
+  }
+
+  has(version: Version): boolean {
+    for (let listed in this.releases) {
+      if (listed.compareTo(version) == 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+}
 
 /**
- * Selects a version of every package `requirements` lead to, reading
- * release records from `source`. Throws `ResolutionError` for a selected
- * release with no source artifact, and whatever `source` throws.
+ * Where selection reads what it chooses from: the versions a package
+ * lists, and a release record, checked against the account's key.
  */
-export async function resolve(requirements: Array<Requirement>,
-    source: ReleaseSource): Future<Resolution> {
-  let cache = new HashMap<String, CheckedRelease>();
+export interface PackageSource {
+  versions(did: String): Future<Versions>;
+  /** `did`'s release `version`. Throws when there is no such release. */
+  release(did: String, version: Version): Future<CheckedRelease>;
+}
+
+/** How many times the first phase goes over every package before it stops. */
+let MAX_PASSES = 32;
+
+/**
+ * Selects versions of every package `requirements` lead to, from what
+ * `source` lists. A retracted version is chosen only when `preferred`, the
+ * keys of the versions the lockfile pins, has it; among versions equally
+ * good for the number installed, a pinned one is chosen first. Throws
+ * `ResolutionError` for a range no usable version is in, and for a
+ * selected release with no source artifact, and whatever `source` throws.
+ */
+export async function resolve(requirements: Array<Requirement>, source: PackageSource,
+    preferred: HashSet<String> = new HashSet<String>()): Future<Resolution> {
+  let available = new HashMap<String, GrowableArray<Version>>();
+  let usable = async (did: String): Future<GrowableArray<Version>> => {
+    if (let (true, known) = available.get(did)) {
+      return known;
+    }
+    let listed = await source.versions(did);
+    let versions = new GrowableArray<Version>();
+    for (let version in listed.releases) {
+      if (!listed.retracted.has(version.toString()) || preferred.has(packageKey(did, version))) {
+        versions.push(version);
+      }
+    }
+    let sorted = sortVersions(versions);
+    available[did] = sorted;
+    return sorted;
+  };
+  let releases = new HashMap<String, CheckedRelease>();
   let read = async (did: String, version: Version): Future<CheckedRelease> => {
-    let id = `${did} ${version.toString()}`;
-    if (let (true, checked) = cache.get(id)) {
+    let key = packageKey(did, version);
+    if (let (true, checked) = releases.get(key)) {
       return checked;
     }
-    let checked = await source(did, version);
-    cache[id] = checked;
+    let checked = await source.release(did, version);
+    releases[key] = checked;
     return checked;
   };
 
-  let selected = new HashMap<String, Requirement>();
-  let visited = new HashSet<String>();
-  let queue = new GrowableArray<Requirement>();
-  for (let requirement in requirements) {
-    queue.push(requirement);
-  }
-  var next = 0;
-  while (next < queue.length) {
-    let requirement = queue[next];
-    next += 1;
-    let slot = slotOf(requirement.did, requirement.minimum);
-    let id = `${slot} ${requirement.minimum.toString()}`;
-    if (visited.has(id)) {
-      continue;
+  var selected = new HashMap<String, GrowableArray<Version>>();
+  var pass = 0;
+  while (pass < MAX_PASSES) {
+    pass += 1;
+    // Every range asking for each package now: the workspace's, and those
+    // of the releases selected so far.
+    let requests = new HashMap<String, GrowableArray<Range>>();
+    for (let requirement in requirements) {
+      request(requests, requirement.did, requirement.range);
     }
-    visited.add(id);
-    if (let (true, current) = selected.get(slot)) {
-      if (requirement.minimum.compareTo(current.minimum) > 0) {
-        selected[slot] = requirement;
+    for (let did in sortedKeys(selected)) {
+      for (let version in selected[did]) {
+        for (let dependency in (await read(did, version)).release.dependencies) {
+          request(requests, dependency.did, dependency.range);
+        }
       }
-    } else {
-      selected[slot] = requirement;
     }
-    let checked = await read(requirement.did, requirement.minimum);
-    for (let dependency in checked.release.dependencies) {
-      queue.push(new Requirement(dependency.did, dependency.range));
+    let next = new HashMap<String, GrowableArray<Version>>();
+    for (let did in sortedKeys(requests)) {
+      next[did] = choose(did, await usable(did), requests[did], preferred);
+    }
+    let settled = sameSelection(selected, next);
+    selected = next;
+    if (settled) {
+      break;
     }
   }
 
-  // The key each slot's selected version is pinned under.
-  let keys = new HashMap<String, String>();
-  for (let slot in selected.keys()) {
-    let requirement = selected[slot];
-    keys[slot] = packageKey(requirement.did, requirement.minimum);
-  }
   let packages = new OrderedHashMap<String, ResolvedPackage>();
-  for (let slot in sortedKeys(selected)) {
-    let requirement = selected[slot];
-    let key = keys[slot];
-    let checked = await read(requirement.did, requirement.minimum);
-    let artifact = checked.release.artifact(SOURCE);
-    if (artifact == null) {
-      throw new ResolutionError(`${key}: release ${requirement.minimum.toString()} has no source artifact`);
+  for (let did in sortedKeys(selected)) {
+    for (let version in selected[did]) {
+      let key = packageKey(did, version);
+      let checked = await read(did, version);
+      let artifact = checked.release.artifact(SOURCE);
+      if (artifact == null) {
+        throw new ResolutionError(`${key}: release ${version.toString()} has no source artifact`);
+      }
+      let dependencies = new OrderedHashMap<String, String>();
+      for (let dependency in checked.release.dependencies) {
+        let used = highestIn(selected[dependency.did], dependency.range);
+        if (used == null) {
+          throw new ResolutionError(`${key}: no selected version of '${dependency.name}' is in '${dependency.range.text}'`);
+        }
+        dependencies[dependency.name] = packageKey(dependency.did, used);
+      }
+      packages[key] = new ResolvedPackage(key, did, version, checked.cid, artifact.cid, dependencies);
     }
-    let dependencies = new OrderedHashMap<String, String>();
-    for (let dependency in checked.release.dependencies) {
-      let minimum = minimumOf(dependency.range, dependency.did);
-      dependencies[dependency.name] = keys[slotOf(dependency.did, minimum)];
-    }
-    packages[key] = new ResolvedPackage(key, requirement.did, requirement.minimum, checked.cid,
-        artifact.cid, dependencies);
   }
   return new Resolution(packages);
 }
 
+function request(requests: HashMap<String, GrowableArray<Range>>, did: String, range: Range): void {
+  if (let (true, ranges) = requests.get(did)) {
+    ranges.push(range);
+  } else {
+    let ranges = new GrowableArray<Range>();
+    ranges.push(range);
+    requests[did] = ranges;
+  }
+}
+
+/**
+ * The fewest of `versions` (ascending) that every range in `ranges` has
+ * one of, for the package `did`. Repeatedly: of the ranges no chosen
+ * version is in yet, take the one whose highest version is lowest; every
+ * version of it that is in each of those ranges its highest version is in
+ * is as good for the count as that highest one; of those, choose a
+ * version `preferred` pins, then the one in the most ranges, then the
+ * highest. For ranges that are intervals this is the fewest versions
+ * there can be (docs/design/package-manager.md, "Finding the selection").
+ */
+function choose(did: String, versions: GrowableArray<Version>, ranges: GrowableArray<Range>,
+    preferred: HashSet<String>): GrowableArray<Version> {
+  // inRange[r][v]: whether version v is in range r.
+  let inRange = new GrowableArray<FixedArray<boolean>>();
+  let tops = new GrowableArray<i32>();
+  for (let range in ranges) {
+    let row = new FixedArray<boolean>(versions.length, false);
+    var top = -1;
+    for (var v = 0; v < versions.length; v += 1) {
+      if (range.includes(versions[v])) {
+        row[v] = true;
+        top = v;
+      }
+    }
+    if (top < 0) {
+      throw new ResolutionError(`no usable release of ${did} is in '${range.text}'`);
+    }
+    inRange.push(row);
+    tops.push(top);
+  }
+  let met = new FixedArray<boolean>(ranges.length, false);
+  let chosen = new HashSet<i32>();
+  while (true) {
+    // The unmet range whose highest version is lowest.
+    var first = -1;
+    for (var r = 0; r < ranges.length; r += 1) {
+      if (!met[r] && (first < 0 || tops[r] < tops[first])) {
+        first = r;
+      }
+    }
+    if (first < 0) {
+      break;
+    }
+    let top = tops[first];
+    var best = -1;
+    var bestPinned = false;
+    var bestCount = -1;
+    for (var v = 0; v <= top; v += 1) {
+      if (!inRange[first][v] || !inEveryRangeOf(inRange, met, top, v)) {
+        continue;
+      }
+      let pinned = preferred.has(packageKey(did, versions[v]));
+      var count = 0;
+      for (var r = 0; r < ranges.length; r += 1) {
+        if (inRange[r][v]) {
+          count += 1;
+        }
+      }
+      // Later versions are higher, so a tie goes to the later one.
+      if (best < 0 || (pinned && !bestPinned) || (pinned == bestPinned && count >= bestCount)) {
+        best = v;
+        bestPinned = pinned;
+        bestCount = count;
+      }
+    }
+    chosen.add(best);
+    for (var r = 0; r < ranges.length; r += 1) {
+      if (inRange[r][best]) {
+        met[r] = true;
+      }
+    }
+  }
+  let out = new GrowableArray<Version>();
+  for (var v = 0; v < versions.length; v += 1) {
+    if (chosen.has(v)) {
+      out.push(versions[v]);
+    }
+  }
+  return out;
+}
+
+/** Whether version `v` is in every unmet range that version `top` is in. */
+function inEveryRangeOf(inRange: GrowableArray<FixedArray<boolean>>, met: FixedArray<boolean>,
+    top: i32, v: i32): boolean {
+  for (var r = 0; r < inRange.length; r += 1) {
+    if (!met[r] && inRange[r][top] && !inRange[r][v]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The highest of `versions` in `range`, or null when none is. */
+function highestIn(versions: GrowableArray<Version>, range: Range): Version | null {
+  var found: Version | null = null;
+  for (let version in versions) {
+    if (range.includes(version)) {
+      found = version;
+    }
+  }
+  return found;
+}
+
+function sameSelection(a: HashMap<String, GrowableArray<Version>>, b: HashMap<String, GrowableArray<Version>>): boolean {
+  if (a.size != b.size) {
+    return false;
+  }
+  for (let did in a.keys()) {
+    if (!b.has(did)) {
+      return false;
+    }
+    let x = a[did];
+    let y = b[did];
+    if (x.length != y.length) {
+      return false;
+    }
+    for (var i = 0; i < x.length; i += 1) {
+      if (x[i].compareTo(y[i]) != 0) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 // TODO(#450): use the standard library's sort once it has one.
-function sortedKeys(map: HashMap<String, Requirement>): FixedArray<String> {
+function sortVersions(versions: GrowableArray<Version>): GrowableArray<Version> {
+  let out = new GrowableArray<Version>();
+  for (let version in versions) {
+    out.push(version);
+    var j = out.length - 1;
+    while (j > 0 && out[j - 1].compareTo(version) > 0) {
+      out[j] = out[j - 1];
+      j -= 1;
+    }
+    out[j] = version;
+  }
+  return out;
+}
+
+// TODO(#450): use the standard library's sort once it has one.
+function sortedKeys<V>(map: HashMap<String, V>): FixedArray<String> {
   let keys = new FixedArray<String>(map.size, '');
   var n = 0;
   for (let key in map.keys()) {

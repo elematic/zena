@@ -26,7 +26,8 @@ import {PublishedFiles} from './files.zena';
 import {Manifest, readManifest} from './manifest.zena';
 import {Dependency, Release, SOURCE, isValidLicenseExpression} from './records.zena';
 import {Version} from 'zena-lang:semver';
-import {Versions, listVersions} from './registry.zena';
+import {listVersions} from './registry.zena';
+import {Versions} from './resolve.zena';
 import {MANIFEST} from './workspace.zena';
 
 /** The MIME type of a source archive, a CAR file. */
@@ -187,9 +188,9 @@ function unpacked(source: FixedArray<u8>, problems: GrowableArray<String>): Fixe
 }
 
 /**
- * The problems with `dependencies`: each must be a release its package has
- * published and not retracted, or the release that names it could never be
- * resolved. Empty when there are none. With `explain`, a dependency that
+ * The problems with `dependencies`: each range must have a version in it
+ * that its package has published and not retracted, or the release that
+ * names it could never be resolved. Empty when there are none. With `explain`, a dependency that
  * cannot be found says why in full; without, only whether its DID or its
  * PDS failed, as a host answers.
  */
@@ -197,18 +198,26 @@ export async function checkDependencies(dependencies: Array<Dependency>, resolve
     explain: boolean = true): Future<GrowableArray<String>> {
   let problems = new GrowableArray<String>();
   for (let dependency in dependencies) {
-    // Selection requires the lowest version in the range until it reads
-    // ranges (#1087), so that version must be one it can use.
-    let minimum = dependency.range.minimum() as Version;
-    let text = minimum.toString();
     let named = `${dependency.name} ${dependency.range.text} (${dependency.did})`;
     let found = await versionsOf(dependency, resolver, explain);
     if (found is String) {
       problems.push(`${named} cannot be found: ${found}`);
-    } else if (!found.has(minimum)) {
-      problems.push(`${named}: its lowest version, ${text}, is not published: publish it first, or depend on a range that starts at a version that is`);
-    } else if (found.retracted.has(text)) {
-      problems.push(`${named}: its lowest version, ${text}, is retracted: depend on a range that starts at another version`);
+    } else {
+      var published = false;
+      var usable = false;
+      for (let version in found.releases) {
+        if (dependency.range.includes(version)) {
+          published = true;
+          if (!found.retracted.has(version.toString())) {
+            usable = true;
+          }
+        }
+      }
+      if (!published) {
+        problems.push(`${named} is not published: no version in the range is; publish one first, or depend on a range that has one`);
+      } else if (!usable) {
+        problems.push(`${named} is retracted: every published version in the range is; depend on another range`);
+      }
     }
   }
   return problems;

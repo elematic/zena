@@ -77,6 +77,13 @@ export final class Manifest {
    */
   var scopedNames = true;
   /**
+   * At a workspace's root, what `zena pkg add` and `zena pkg update` do when
+   * selection installs a package at two versions: `allow`, `warn` or
+   * `error` (docs/design/package-manager.md, "What zena pkg add and zena
+   * pkg update report").
+   */
+  var duplicates = 'allow';
+  /**
    * The WIT-backed packages it depends on, by local name: each one's `.wit`
    * file or directory, relative to the manifest's.
    */
@@ -227,6 +234,13 @@ export function readManifest(text: String | null): Manifest {
       throw new ManifestError('zena-package.json: scopedNames is not true or false');
     }
     manifest.scopedNames = scopedNames.value;
+  }
+  let duplicates = optionalString(root, 'duplicates');
+  if (duplicates != null) {
+    if (duplicates != 'allow' && duplicates != 'warn' && duplicates != 'error') {
+      throw new ManifestError(`zena-package.json: duplicates is allow, warn or error, not '${duplicates}'`);
+    }
+    manifest.duplicates = duplicates;
   }
   manifest.description = optionalString(root, 'description');
   manifest.license = optionalString(root, 'license');

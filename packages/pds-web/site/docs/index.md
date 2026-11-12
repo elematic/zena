@@ -54,7 +54,7 @@ No single registry owns your packages: each keeps its own identity and data wher
 | Section                                               | Topics covered                                                                                     |
 | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | [Installing Packages](/docs/installing/)              | Setting up a project, adding dependencies, importing libraries, updating, and fetching             |
-| [Workspaces & Lockfiles](/docs/workspaces/)           | Multi-package workspaces, path dependencies, minimal version selection, and `zena-lock.json`       |
+| [Workspaces & Lockfiles](/docs/workspaces/)           | Multi-package workspaces, path dependencies, version selection, and `zena-lock.json`               |
 | [Publishing Packages](/docs/publishing/)              | Signing in, creating scopes, publishing releases, approving held releases, and retracting versions |
 | [Defining a Package](/docs/manifests/)                | `zena-package.json` fields, `exports`, `virtual` targets, and dependency types                     |
 | [Security](/docs/security/)                           | Pinned hashes, immutable versions, maintainer approvals, automation accounts, and what is planned  |

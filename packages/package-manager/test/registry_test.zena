@@ -14,7 +14,7 @@ import {
   RegistryError,
   fetchProfile,
   listVersions,
-  networkReleases,
+  NetworkSource,
   resolveIdentifier,
   scopedHandle,
   scopedName
@@ -138,9 +138,9 @@ export let tests = suite('package-manager/registry', () => {
     let routerRecord = publish(pds.main, '1.4.2', needsJson);
     let requirements = new GrowableArray<Requirement>();
     requirements.push(new Requirement(DID, Range.parse('1.4.2')));
-    requirements.push(new Requirement(JSON_DID, Range.parse('2.0.0')));
+    requirements.push(new Requirement(JSON_DID, Range.parse('^2.0.0')));
 
-    let resolution = await resolve(requirements, networkReleases(pds.resolver()));
+    let resolution = await resolve(requirements, new NetworkSource(pds.resolver()));
     equal(resolution.packages[`${JSON_DID}@2.1.0`].version.toString(), '2.1.0');
     isTrue(resolution.packages[`${DID}@1.4.2`].release.equals(routerRecord));
     isTrue(resolution.packages[`${DID}@1.4.2`].source.equals(Cid.forBlob(bytesOf(`${DID} 1.4.2`))));
@@ -148,11 +148,11 @@ export let tests = suite('package-manager/registry', () => {
     var message = '';
     try {
       requirements[1] = new Requirement(JSON_DID, Range.parse('2.9.0'));
-      await resolve(requirements, networkReleases(pds.resolver()));
+      await resolve(requirements, new NetworkSource(pds.resolver()));
     } catch (e) {
       message = e.message;
     }
-    isTrue(message.contains('has no release 2.9.0'), message);
+    isTrue(message.contains(`no usable release of ${JSON_DID} is in '2.9.0'`), message);
     pds.close();
   });
 });

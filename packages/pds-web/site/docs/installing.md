@@ -93,7 +93,7 @@ Your code then imports from `http-router/<library>` while other packages in the 
 
 ## Updating dependencies
 
-To raise dependencies to the latest non-retracted release within their current major version:
+To move dependencies to the latest non-retracted release their ranges allow (the manifest's ranges stay as they are):
 
 ```sh
 # Update all dependencies

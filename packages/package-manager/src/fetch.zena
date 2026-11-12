@@ -133,9 +133,7 @@ function readRelease(record: Value, versionText: String, pin: Pin): Release {
 /**
  * The lockfile maps each of the package's own names to a pinned
  * package, and the release says which package each name is and which
- * versions it accepts: they must agree, name for name. Until selection
- * reads ranges (#1087), the pin is at the major version of the range's
- * lowest version.
+ * versions it accepts: they must agree, name for name.
  */
 function checkDependencies(pin: Pin, release: Release): void {
   for (let dependency in release.dependencies) {
@@ -156,7 +154,7 @@ function checkDependencies(pin: Pin, release: Release): void {
   }
 }
 
-/** Whether the pin `key`, `did@version`, is a version selection may give `dependency`. */
+/** Whether the pin `key`, `did@version`, is of `dependency`'s package and in its range. */
 function pinMatches(key: String, dependency: Dependency): boolean {
   var at = -1;
   for (var i = 0; i < key.length; i += 1) {
@@ -167,12 +165,8 @@ function pinMatches(key: String, dependency: Dependency): boolean {
   if (at < 0 || key.sliceBytes(0, at) != dependency.did) {
     return false;
   }
-  let minimum = dependency.range.minimum();
-  if (minimum == null) {
-    return false;
-  }
   try {
-    return Version.parse(key.sliceBytes(at + 1, key.length)).major == minimum.major;
+    return dependency.range.includes(Version.parse(key.sliceBytes(at + 1, key.length)));
   } catch (e) {
     return false;
   }

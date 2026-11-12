@@ -329,9 +329,12 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
     `zena-lock.json`, and fetch them. It prints what changed in the
     lockfile, and refuses a pinned release whose CIDs changed at the same
     version unless given `--allow-changed`.
-  - **`pkg update [names...]`**: Raise dependencies to the latest version of
-    their major version that is not retracted, then pin and fetch as `add`
-    does.
+  - **`pkg update [names...]`**: Select versions again without keeping the
+    lockfile's pins of the named dependencies, or of any when none is
+    named, so each gets the latest version its ranges allow that is not
+    retracted; then pin and fetch as `add` does. `add` and `update` take
+    `--duplicates allow|warn|error` for a package selected at two
+    versions (the root manifest's `"duplicates"` is the default).
   - **`pkg fetch`**: Fetch the published packages `zena-lock.json` pins
     into the package cache, checking each against its pins.
     `ZENA_PLC_DIRECTORY` and `ZENA_DNS_OVER_HTTPS` replace the PLC

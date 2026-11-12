@@ -1,19 +1,20 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {Future} from 'zena:async';
-import {HashMap} from 'zena:collections';
+import {HashMap, HashSet} from 'zena:collections';
 import {growable} from 'zena:core';
 import {encodeCbor} from 'atproto/cbor';
 import {Cid} from 'atproto/cid';
 import {BlobRef} from 'atproto/data';
 import {Artifact, COMPONENT, Dependency, Release, SOURCE} from 'package-manager/records';
-import {CheckedRelease, ReleaseSource, Requirement, resolve} from 'package-manager/resolve';
+import {CheckedRelease, PackageSource, Requirement, Versions, resolve} from 'package-manager/resolve';
 import {Resolution, ResolutionError} from 'package-manager/resolution';
 import {Range, Version} from 'zena-lang:semver';
 
 let ROUTER = 'did:plc:routerrouterrouterrouter';
 let JSON = 'did:web:json.example.com';
 let LOG = 'did:plc:loglogloglogloglogloglogl';
+let URL = 'did:plc:urlurlurlurlurlurlurlurl';
 
 function bytesOf(text: String) {
   let out = new FixedArray<u8>(text.length, 0 as u8);
@@ -23,10 +24,11 @@ function bytesOf(text: String) {
   return out;
 }
 
-/** Releases by `<did> <version>`, and how often each was read. */
-final class Registry {
+/** Releases by `<did> <version>`, the versions each package lists, and its retractions. */
+final class Registry implements PackageSource {
   releases = new HashMap<String, Release>();
-  reads = new HashMap<String, i32>();
+  listed = new HashMap<String, GrowableArray<Version>>();
+  retracted = new HashMap<String, HashSet<String>>();
 
   /** Adds `did`'s release `version`, depending on `dependencies`. */
   add(did: String, version: String, dependencies: Array<Dependency> = new GrowableArray<Dependency>(),
@@ -34,165 +36,190 @@ final class Registry {
     let artifact = Artifact.whole(kind, new BlobRef(Cid.forBlob(bytesOf(`${did} ${version}`)),
         'application/vnd.ipld.car', 1 as i64), if (kind == COMPONENT) 'wasi:cli/command' else null,
         if (kind == COMPONENT) new BlobRef(Cid.forBlob(bytesOf('wit')), 'text/plain', 3 as i64) else null);
-    let list = new FixedArray<Dependency>(dependencies.length, new Dependency('', Range.parse('0.0.0'), ''));
+    let list = new FixedArray<Dependency>(dependencies.length, new Dependency('', Range.parse('*'), ''));
     for (var i = 0; i < dependencies.length; i += 1) {
       list[i] = dependencies[i];
     }
     this.releases[`${did} ${version}`] = new Release(Version.parse(version), '2026-10-22T00:00:00.000Z',
         new FixedArray<Artifact>(1, artifact), list);
+    if (!this.listed.has(did)) {
+      this.listed[did] = new GrowableArray<Version>();
+      this.retracted[did] = new HashSet<String>();
+    }
+    this.listed[did].push(Version.parse(version));
   }
 
-  source(): ReleaseSource {
-    return async (did: String, version: Version): Future<CheckedRelease> => {
-      let id = `${did} ${version.toString()}`;
-      this.reads[id] = this.reads.getOr(id, 0) + 1;
-      if (let (true, release) = this.releases.get(id)) {
-        return new CheckedRelease(release, Cid.forDagCbor(encodeCbor(release.toValue())));
-      }
-      throw new ResolutionError(`no release ${id}`);
-    };
+  /** Adds each version of `did`, with no dependencies. */
+  addAll(did: String, versions: Array<String>): void {
+    for (let version in versions) {
+      this.add(did, version);
+    }
+  }
+
+  retract(did: String, version: String): void {
+    this.retracted[did].add(version);
+  }
+
+  async versions(did: String): Future<Versions> {
+    if (let (true, versions) = this.listed.get(did)) {
+      return new Versions(versions, this.retracted[did]);
+    }
+    throw new ResolutionError(`no package ${did}`);
+  }
+
+  async release(did: String, version: Version): Future<CheckedRelease> {
+    let id = `${did} ${version.toString()}`;
+    if (let (true, release) = this.releases.get(id)) {
+      return new CheckedRelease(release, Cid.forDagCbor(encodeCbor(release.toValue())));
+    }
+    throw new ResolutionError(`no release ${id}`);
   }
 }
 
-function needs(did: String, version: String, name: String) {
-  return new Dependency(did, Range.parse(version), name);
+function needs(did: String, range: String, name: String) {
+  return new Dependency(did, Range.parse(range), name);
 }
 
 function requirements(entries: Array<(String, String)>) {
   let list = new GrowableArray<Requirement>();
-  for (let (did, version) in entries) {
-    list.push(new Requirement(did, Range.parse(version)));
+  for (let (did, range) in entries) {
+    list.push(new Requirement(did, Range.parse(range)));
   }
   return list;
 }
 
-async function resolved(registry: Registry, entries: Array<(String, String)>): Future<Resolution> {
-  return await resolve(requirements(entries), registry.source());
+async function resolved(registry: Registry, entries: Array<(String, String)>,
+    pinned: HashSet<String> = new HashSet<String>()): Future<Resolution> {
+  return await resolve(requirements(entries), registry, pinned);
+}
+
+/** The versions selected of `did`, as `1.1.5 1.9.0`. */
+function versionsOf(resolution: Resolution, did: String) {
+  var out = '';
+  for (let key in resolution.packages.keys()) {
+    let pkg = resolution.packages[key];
+    if (pkg.did == did) {
+      out = if (out == '') pkg.version.toString() else `${out} ${pkg.version.toString()}`;
+    }
+  }
+  return out;
 }
 
 export let tests = suite('package-manager/resolve', () => {
-  test('selects the highest minimum anyone asks for, not the newest release', async (ctx): Future<void> => {
+  test('installs one version for ranges that overlap, the highest they share', async (ctx): Future<void> => {
     let registry = new Registry();
-    registry.add(ROUTER, '1.4.2', growable([needs(JSON, '2.1.0', 'json')]));
-    registry.add(JSON, '2.0.1');
-    registry.add(JSON, '2.1.0');
-    registry.add(JSON, '2.3.0');
-    let resolution = await resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.0.1')]);
-
-    equal(resolution.packages.size, 2);
-    let json = resolution.packages[`${JSON}@2.1.0`];
-    equal(json.version.toString(), '2.1.0');
-    isTrue(json.source.equals(Cid.forBlob(bytesOf(`${JSON} 2.1.0`))));
-    let router = resolution.packages[`${ROUTER}@1.4.2`];
-    equal(router.dependencies['json'], `${JSON}@2.1.0`);
-    isTrue(router.release.equals(Cid.forDagCbor(encodeCbor(registry.releases[`${ROUTER} 1.4.2`].toValue()))));
+    registry.addAll(JSON, ['1.0.0', '1.1.0', '1.1.5', '1.9.0']);
+    // The design's first example: ^1.0.0 alone would take 1.9.0.
+    let resolution = await resolved(registry, [(JSON, '^1.0.0'), (JSON, '~1.1.0')]);
+    equal(versionsOf(resolution, JSON), '1.1.5');
+    equal(versionsOf(await resolved(registry, [(JSON, '^1.0.0')]), JSON), '1.9.0');
   });
 
-  test('selects one version for the whole workspace', async (ctx): Future<void> => {
+  test('installs the fewest versions when no one version is in every range', async (ctx): Future<void> => {
     let registry = new Registry();
-    registry.add(JSON, '2.0.1');
-    registry.add(JSON, '2.1.0');
-    // Two workspace packages need json 2, at different minimums.
-    let resolution = await resolved(registry, [(JSON, '2.0.1'), (JSON, '2.1.0')]);
-    equal(resolution.packages.size, 1);
-    equal(resolution.packages[`${JSON}@2.1.0`].version.toString(), '2.1.0');
+    registry.addAll(JSON, ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0', '1.6.0', '1.7.0', '1.8.0', '1.9.0']);
+    // The design's second example: three is what "most ranges first" takes.
+    let resolution = await resolved(registry, [(JSON, '>=1.0.0 <=1.1.0'), (JSON, '>=1.1.0 <=1.2.0'),
+        (JSON, '>=1.2.0 <=1.9.0'), (JSON, '>=1.3.0 <=1.8.0')]);
+    equal(versionsOf(resolution, JSON), '1.1.0 1.8.0');
   });
 
-  test('keeps a version that a higher minimum overrides, for its dependencies', async (ctx): Future<void> => {
+  test('of equally few versions, chooses the one more ranges can use', async (ctx): Future<void> => {
     let registry = new Registry();
-    // The package asks for router 1.4.2, which needs log 1.2.0; json asks
-    // for router 1.5.0, which needs no log at all. Router 1.5.0 is
-    // selected, and log 1.2.0 with it, as Go's minimal version selection
-    // does.
-    registry.add(ROUTER, '1.4.2', growable([needs(LOG, '1.2.0', 'log')]));
-    registry.add(ROUTER, '1.5.0');
-    registry.add(JSON, '2.0.0', growable([needs(ROUTER, '1.5.0', 'router')]));
-    registry.add(LOG, '1.2.0');
-    let resolution = await resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.0.0')]);
-    equal(resolution.packages[`${ROUTER}@1.5.0`].version.toString(), '1.5.0');
-    equal(resolution.packages[`${LOG}@1.2.0`].version.toString(), '1.2.0');
+    registry.addAll(JSON, ['1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0', '1.6.0', '1.7.0', '1.8.0']);
+    // The design's five-range chart: 7 for D would leave A on 4.
+    let resolution = await resolved(registry, [(JSON, '>=1.1.0 <=1.6.0'), (JSON, '>=1.3.0 <=1.8.0'),
+        (JSON, '>=1.2.0 <=1.4.0'), (JSON, '>=1.5.0 <=1.7.0'), (JSON, '1.8.0')]);
+    equal(versionsOf(resolution, JSON), '1.4.0 1.6.0 1.8.0');
   });
 
-  test('selects each major version of a package on its own', async (ctx): Future<void> => {
+  test("maps each dependency's name to the highest selected version in its range", async (ctx): Future<void> => {
     let registry = new Registry();
-    registry.add(ROUTER, '1.4.2', growable([needs(JSON, '3.0.0', 'json3')]));
-    registry.add(JSON, '2.1.0');
-    registry.add(JSON, '3.0.0');
-    let resolution = await resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.1.0')]);
-    equal(resolution.packages.size, 3);
-    equal(resolution.packages[`${JSON}@2.1.0`].version.toString(), '2.1.0');
-    equal(resolution.packages[`${JSON}@3.0.0`].version.toString(), '3.0.0');
-    equal(resolution.packages[`${ROUTER}@1.4.2`].dependencies['json3'], `${JSON}@3.0.0`);
+    registry.add(ROUTER, '1.4.2', growable([needs(JSON, '~2.0.0', 'json')]));
+    registry.addAll(JSON, ['2.0.1', '2.1.0', '3.0.0']);
+    let resolution = await resolved(registry, [(ROUTER, '^1.4.0'), (JSON, '^2.1.0 || ^3.0.0')]);
+    equal(versionsOf(resolution, JSON), '2.0.1 3.0.0');
+    equal(resolution.packages[`${ROUTER}@1.4.2`].dependencies['json'], `${JSON}@2.0.1`);
+    equal(resolution.keyOf(JSON, Range.parse('^2.1.0 || ^3.0.0')) as String, `${JSON}@3.0.0`);
+    let artifact = resolution.packages[`${JSON}@2.0.1`];
+    isTrue(artifact.source.equals(Cid.forBlob(bytesOf(`${JSON} 2.0.1`))));
+    isTrue(resolution.packages[`${ROUTER}@1.4.2`].release.equals(
+        Cid.forDagCbor(encodeCbor(registry.releases[`${ROUTER} 1.4.2`].toValue()))));
   });
 
-  test('requires the lowest version in each range, and maps names to what was selected', async (ctx): Future<void> => {
+  test('drops what a version no longer selected asked for', async (ctx): Future<void> => {
     let registry = new Registry();
-    registry.add(ROUTER, '1.4.2', growable([needs(JSON, '^2.0.1', 'json')]));
-    registry.add(JSON, '2.0.1');
-    registry.add(JSON, '2.1.0');
-    registry.add(JSON, '2.3.0');
-    let resolution = await resolved(registry, [(ROUTER, '~1.4.2'), (JSON, '>=2.1.0 <3.0.0')]);
-    equal(resolution.packages.size, 2);
-    equal(resolution.packages[`${JSON}@2.1.0`].version.toString(), '2.1.0');
-    equal(resolution.packages[`${ROUTER}@1.4.2`].dependencies['json'], `${JSON}@2.1.0`);
-  });
-
-  test('refuses a range with no version in it', async (ctx): Future<void> => {
-    var message = '';
-    try {
-      requirements([(JSON, '>2.0.0 <2.0.0')]);
-    } catch (e) {
-      message = e.message;
-    }
-    isTrue(message.contains("no version is in '>2.0.0 <2.0.0'"), message);
-  });
-
-  test('lists packages in key order', async (ctx): Future<void> => {
-    let registry = new Registry();
-    registry.add(ROUTER, '1.0.0', growable([needs(LOG, '1.0.0', 'log'), needs(JSON, '2.0.0', 'json')]));
+    // Router 1.5.0 needs log; 1.4.2 does not. Once json pulls router down to
+    // 1.4.2, log is no one's dependency.
+    registry.add(ROUTER, '1.4.2');
+    registry.add(ROUTER, '1.5.0', growable([needs(LOG, '^1.0.0', 'log')]));
     registry.add(LOG, '1.0.0');
-    registry.add(JSON, '2.0.0');
+    registry.add(JSON, '2.0.0', growable([needs(ROUTER, '~1.4.0', 'router')]));
+    let resolution = await resolved(registry, [(ROUTER, '^1.4.0'), (JSON, '^2.0.0')]);
+    equal(versionsOf(resolution, ROUTER), '1.4.2');
+    equal(versionsOf(resolution, LOG), '');
+    equal(resolution.packages.size, 2);
+  });
+
+  test("keeps a pinned version that is as good as the highest, and skips retracted ones", async (ctx): Future<void> => {
+    let registry = new Registry();
+    registry.addAll(JSON, ['2.0.0', '2.1.0', '2.2.0']);
+    let pinned = new HashSet<String>();
+    pinned.add(`${JSON}@2.1.0`);
+    equal(versionsOf(await resolved(registry, [(JSON, '^2.0.0')], pinned), JSON), '2.1.0');
+    equal(versionsOf(await resolved(registry, [(JSON, '^2.0.0')]), JSON), '2.2.0');
+    // A pin outside the range is not kept.
+    equal(versionsOf(await resolved(registry, [(JSON, '^2.2.0')], pinned), JSON), '2.2.0');
+    registry.retract(JSON, '2.2.0');
+    equal(versionsOf(await resolved(registry, [(JSON, '^2.0.0')]), JSON), '2.1.0');
+    // A retracted version the lockfile pins stays usable.
+    let retractedPin = new HashSet<String>();
+    retractedPin.add(`${JSON}@2.2.0`);
+    equal(versionsOf(await resolved(registry, [(JSON, '^2.0.0')], retractedPin), JSON), '2.2.0');
+  });
+
+  test('lists packages by DID, and each package version by version', async (ctx): Future<void> => {
+    let registry = new Registry();
+    registry.add(ROUTER, '1.0.0', growable([needs(LOG, '1.0.0', 'log'), needs(URL, '1.0.0', 'url')]));
+    registry.add(LOG, '1.0.0');
+    registry.add(URL, '1.0.0');
+    registry.addAll(JSON, ['2.0.0', '3.0.0']);
     let keys = new GrowableArray<String>();
-    for (let key in (await resolved(registry, [(ROUTER, '1.0.0')])).packages.keys()) {
+    let resolution = await resolved(registry, [(ROUTER, '1.0.0'), (JSON, '3.0.0'), (JSON, '2.0.0')]);
+    for (let key in resolution.packages.keys()) {
       keys.push(key);
     }
-    equal(keys.length, 3);
+    equal(keys.length, 5);
     equal(keys[0], `${LOG}@1.0.0`);
     equal(keys[1], `${ROUTER}@1.0.0`);
-    equal(keys[2], `${JSON}@2.0.0`);
+    equal(keys[2], `${URL}@1.0.0`);
+    equal(keys[3], `${JSON}@2.0.0`);
+    equal(keys[4], `${JSON}@3.0.0`);
+    equal(resolution.duplicates().size, 1);
+    equal(resolution.duplicates()[JSON].length, 2);
   });
 
-  test('reads each release once', async (ctx): Future<void> => {
+  test('refuses a range no usable version is in', async (ctx): Future<void> => {
     let registry = new Registry();
-    registry.add(ROUTER, '1.0.0', growable([needs(JSON, '2.0.0', 'json')]));
-    registry.add(LOG, '1.0.0', growable([needs(JSON, '2.0.0', 'json')]));
-    registry.add(JSON, '2.0.0');
-    await resolved(registry, [(ROUTER, '1.0.0'), (LOG, '1.0.0')]);
-    equal(registry.reads[`${JSON} 2.0.0`], 1);
-    equal(registry.reads[`${ROUTER} 1.0.0`], 1);
-  });
-
-  test('refuses a selected release with no source archive', async (ctx): Future<void> => {
-    let registry = new Registry();
-    registry.add(ROUTER, '1.0.0', new GrowableArray<Dependency>(), COMPONENT);
+    registry.addAll(JSON, ['2.0.0']);
     var message = '';
     try {
-      await resolved(registry, [(ROUTER, '1.0.0')]);
-    } catch (e) {
-      message = if (e is ResolutionError) e.message else 'another error';
-    }
-    isTrue(message.contains('no source artifact'), message);
-  });
-
-  test('passes on a missing release', async (ctx): Future<void> => {
-    let registry = new Registry();
-    registry.add(ROUTER, '1.0.0', growable([needs(JSON, '2.0.0', 'json')]));
-    var message = '';
-    try {
-      await resolved(registry, [(ROUTER, '1.0.0')]);
+      await resolved(registry, [(JSON, '^3.0.0')]);
     } catch (e) {
       message = e.message;
     }
-    isTrue(message.contains(`no release ${JSON} 2.0.0`), message);
+    isTrue(message.contains("no usable release of did:web:json.example.com is in '^3.0.0'"), message);
+  });
+
+  test('refuses a selected release with no source artifact', async (ctx): Future<void> => {
+    let registry = new Registry();
+    registry.add(ROUTER, '1.0.0', new GrowableArray<Dependency>(), COMPONENT);
+    var refused = false;
+    try {
+      await resolved(registry, [(ROUTER, '1.0.0')]);
+    } catch (e) {
+      refused = e is ResolutionError && e.message.contains('no source artifact');
+    }
+    isTrue(refused, 'a release with no source artifact');
   });
 });

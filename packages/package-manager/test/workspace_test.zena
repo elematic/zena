@@ -107,15 +107,16 @@ export let tests = suite('package-manager/workspace', () => {
   test("gives the lockfile each package's pins, by its directory relative to the root", async (ctx) => {
     let workspace = await readWorkspace('/ws', files());
     let packages = new OrderedHashMap<String, ResolvedPackage>();
-    for (let (did, version) in [(ROUTER, '1.5.0'), (JSON, '2.1.0')]) {
+    for (let (did, version) in [(ROUTER, '1.4.2'), (ROUTER, '1.5.0'), (JSON, '2.0.1')]) {
       let parsed = Version.parse(version);
       let key = packageKey(did, parsed);
       packages[key] = new ResolvedPackage(key, did, parsed, CID, CID, new OrderedHashMap<String, String>());
     }
     let pins = workspace.pinsByPackage(new Resolution(packages));
     equal(pins.size, 3);
-    equal(pins['.']['router'], `${ROUTER}@1.5.0`);
-    equal(pins['packages/lib']['json'], `${JSON}@2.1.0`);
+    // Each name stands for the highest selected version in its range.
+    equal(pins['.']['router'], `${ROUTER}@1.4.2`);
+    equal(pins['packages/lib']['json'], `${JSON}@2.0.1`);
     equal(pins['/tool']['router'], `${ROUTER}@1.5.0`);
   });
 
