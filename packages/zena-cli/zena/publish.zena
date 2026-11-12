@@ -57,6 +57,7 @@ import { packageResolver } from './fetch.zena';
 import { IdentityError, didWebHost } from 'atproto/identity';
 import { URL } from 'zena:url';
 import { configDir, currentSession, saveSession } from './login.zena';
+import { CLI_VERSION, COMPILER_VERSION, PACKAGE_MANAGER_VERSION } from './versions.zena';
 import { REPO_GET_RECORD, REPO_PUT_RECORD } from 'atproto/methods';
 import {
   COMPLETE_RELEASE, CREATE_ORGANIZATION, CREATE_PACKAGE, DESCRIBE_REGISTRY, PUBLISH, UPLOAD_ARTIFACT
@@ -250,24 +251,66 @@ async function saveCaller(caller: Caller): Future<void> {
 /** A client for `registry` that calls `method` as `caller`. */
 export async function callerClient(caller: Caller, registry: Registry, method: String): Future<XrpcClient> {
   if (let AutomationToken {token} = caller) {
-    let client = new XrpcClient(registry.origin);
+    let client = registryXrpc(registry.origin);
     client.authorization = `Bearer ${token}`;
     return client;
   }
   return await registryClient(personOf(caller, 'call the registry'), registry, method);
 }
 
+/** How to upgrade `zena`, which every user builds from a checkout for now. */
+let HOW_TO_UPGRADE = 'Upgrade zena: in a checkout of Zena, git pull and npm run build.';
+
 export async function findRegistry(args: ParsedArgs): Future<Registry> {
   var origin = getEnv('ZENA_REGISTRY') ?? DEFAULT_REGISTRY;
   if (let (true, given) = args.getOption('registry')) {
     origin = given;
   }
-  let described = (await new XrpcClient(origin).query(DESCRIBE_REGISTRY)) as JsonObject;
+  let described = (await registryXrpc(origin).query(DESCRIBE_REGISTRY)) as JsonObject;
   let did = described['did'] as String;
   await checkRegistryDid(origin, did);
+  let minimum = described['minimumClientVersion'];
+  if (minimum is String && newerThanThis(minimum)) {
+    throw new PublishError(
+        `${origin} needs zena ${minimum} or newer, and this is zena ${CLI_VERSION}. ${HOW_TO_UPGRADE}`);
+  }
+  let recommended = described['recommendedClientVersion'];
+  if (recommended is String && newerThanThis(recommended)) {
+    console.error(
+        `Warning: zena ${CLI_VERSION} is deprecated on ${origin}, which will stop taking it. Upgrade to zena ${recommended} or newer. ${HOW_TO_UPGRADE}`);
+  }
   let registry = new Registry(origin, did, described['domain'] as String);
   registry.listsScopeCreators = described['scopeCreation'] == 'listed';
   return registry;
+}
+
+/**
+ * The `user-agent` this command sends a registry: `zena/<version>`, the
+ * platform the host gives as `ZENA_HOST_PLATFORM` (`<os>-<arch>`), and the
+ * versions of the compiler and the package manager's libraries in it:
+ * `zena/0.1.0 (linux-x86_64) zena-compiler/0.1.0 package-manager/0.1.0`.
+ * A registry judges the first.
+ */
+export function clientAgent(): String {
+  let platform = getEnv('ZENA_HOST_PLATFORM');
+  let product = if (platform != null) `zena/${CLI_VERSION} (${platform})` else `zena/${CLI_VERSION}`;
+  return `${product} zena-compiler/${COMPILER_VERSION} package-manager/${PACKAGE_MANAGER_VERSION}`;
+}
+
+/** A client for the registry at `origin`, which names this command (`clientAgent`). */
+function registryXrpc(origin: String): XrpcClient {
+  let client = new XrpcClient(origin);
+  client.userAgent = clientAgent();
+  return client;
+}
+
+/** Whether `version`, a registry's minimum, is newer than this command; false when it is not a version. */
+function newerThanThis(version: String): boolean {
+  try {
+    return Version.parse(version).compareTo(Version.parse(CLI_VERSION)) > 0;
+  } catch (e) {
+    return false;
+  }
 }
 
 /**
@@ -332,7 +375,7 @@ function trimSlash(url: String): String {
 /** A client for `registry` that calls `method` as the signed-in maintainer. */
 export async function registryClient(session: Session, registry: Registry, method: String): Future<XrpcClient> {
   let token = await getServiceAuth(session, registry.did, method);
-  let client = new XrpcClient(registry.origin);
+  let client = registryXrpc(registry.origin);
   client.authorization = `Bearer ${token}`;
   return client;
 }

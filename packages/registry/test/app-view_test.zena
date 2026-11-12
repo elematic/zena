@@ -29,9 +29,10 @@ import {
   Policy, RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, TEAM_TYPE, Team, TeamRole
 } from 'package-manager/records';
 import {Range, Version} from 'zena-lang:semver';
+import {MINIMUM_CLIENT_VERSION, RECOMMENDED_CLIENT_VERSION} from 'registry/clients';
 import {MemoryHandleRecords} from 'registry/handles';
 import {
-  ClaimedName, ClaimedScope, AppViewAccount, AppViewConfig, AppViewError, AppViewStore, MemoryAppViewStore, PENDING_MICROS, AppView,
+  CallLog, ClaimedName, ClaimedScope, AppViewAccount, AppViewConfig, AppViewError, AppViewStore, MemoryAppViewStore, PENDING_MICROS, AppView,
   Count, Limit, Limits, PackageSummary, PendingChange, PendingRelease, ScopeCreation, ScopeCreator, limitName, limitNamed
 } from 'registry/app-view';
 import {MAX_README_BYTES, ReleaseContents, ReleaseFile} from 'registry/release-contents';
@@ -94,6 +95,8 @@ final class CountingStorage implements Storage {
 final class Fixture {
   var app: App;
   var appView: AppView | null = null;
+  /** The `user-agent` the calls of `call` and `query` send, or null for none. */
+  var userAgent: String | null = null;
   pds: Pds;
   /** The PLC operations the App View sent for each DID, oldest first. */
   submitted = new HashMap<String, GrowableArray<PlcOperation>>();
@@ -224,6 +227,10 @@ final class Fixture {
       contentType: String = 'application/json', authorization: String | null = null): Future<Response> {
     let method = `dev.zena-lang.registry.${name}`;
     let headers: HashMap<String, String> = {'content-type' => contentType};
+    let userAgent = this.userAgent;
+    if (userAgent != null) {
+      headers['user-agent'] = userAgent;
+    }
     if (authorization != null) {
       headers['authorization'] = authorization;
     } else if (caller != null) {
@@ -243,6 +250,10 @@ final class Fixture {
     let headers: HashMap<String, String> = {
       'authorization' => `Bearer ${this.token(caller, method)}`,
     };
+    let userAgent = this.userAgent;
+    if (userAgent != null) {
+      headers['user-agent'] = userAgent;
+    }
     let res = new Response();
     let app = this.app;
     let req = new Request.fromUrl(`http://localhost/xrpc/${method}${query}`, 'GET', headers);
@@ -2123,6 +2134,51 @@ export let tests = suite('registry/app-view', () => {
     equal((ok(await fixture.query(BOB, 'listScopeCreators', ''))['creators'] as JsonArray).length, 0);
     equal(errorOf(await fixture.call(BOB, 'putScopeCreator', '{"did": "alice", "allowed": true}')), 'InvalidRequest');
     equal(errorOf(await fixture.call(BOB, 'putScopeCreator', `{"did": "${ALICE}"}`)), 'InvalidRequest');
+  });
+
+  test('refuses a zena older than it takes, names its versions, and logs each call with its client', async (ctx) => {
+    let fixture = new Fixture();
+    let appView = fixture.appView as AppView;
+    let logged = new GrowableArray<CallLog>();
+    appView.log = (entry) => {
+      logged.push(entry);
+    };
+    let describe = '/xrpc/dev.zena-lang.registry.describeRegistry';
+    // The App View's code's versions, until a test sets others.
+    let coded = json(await fixture.get(describe));
+    equal(coded['minimumClientVersion'] as String, MINIMUM_CLIENT_VERSION);
+    equal(coded['recommendedClientVersion'] as String, RECOMMENDED_CLIENT_VERSION);
+    appView.config.minimumClientVersion = Version.parse('0.2.0');
+    appView.config.recommendedClientVersion = Version.parse('0.3.0');
+    let described = json(await fixture.get(describe));
+    equal(described['minimumClientVersion'] as String, '0.2.0');
+    equal(described['recommendedClientVersion'] as String, '0.3.0');
+
+    fixture.userAgent = 'zena/0.1.9 (linux-x86_64)';
+    equal(errorOf(await createOrganization(fixture, ALICE, 'acme')), 'UpgradeRequired');
+    // A deprecated zena still works: zena itself warns its user.
+    fixture.userAgent = 'zena/0.2.0 (linux-x86_64)';
+    ok(await createOrganization(fixture, ALICE, 'acme'));
+    // A client that names no zena version, such as the site's script, is not judged.
+    fixture.userAgent = 'Mozilla/5.0';
+    ok(await createOrganization(fixture, BOB, 'other'));
+    fixture.userAgent = null;
+    ok(await createOrganization(fixture, BOB, 'third'));
+
+    equal(logged.length, 4);
+    let refused = logged[0];
+    equal(refused.method, 'dev.zena-lang.registry.createOrganization');
+    isTrue(refused.caller == null, 'refused before it named a caller');
+    equal(refused.client as String, 'zena/0.1.9 (linux-x86_64)');
+    equal(refused.status, 400);
+    equal(refused.error as String, 'UpgradeRequired');
+    equal(refused.toJson()['severity'] as String, 'WARNING');
+    let made = logged[1].toJson();
+    equal(made['severity'] as String, 'INFO');
+    equal(made['caller'] as String, ALICE);
+    equal(made['client'] as String, 'zena/0.2.0 (linux-x86_64)');
+    isTrue(made['error'] == null, 'no error');
+    isTrue(logged[3].client == null, 'no client');
   });
 
   test('refuses calls without a valid, unused token for the method', async (ctx) => {

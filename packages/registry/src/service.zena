@@ -106,6 +106,7 @@
 import {Future} from 'zena:async';
 import {Unmanaged} from 'zena:core';
 import {App, Server, mount, serve as serveFiles} from 'zena:http';
+import {stringify} from 'zena:json';
 import {randomBytes} from 'zena:random';
 import {URL} from 'zena:url';
 import {defaultProjectId} from 'google-cloud/auth';
@@ -626,6 +627,10 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let appView = new AppView(client as PdsClient, appViewConfig, appViewStore, records, keys, submit,
       (count: i32) => randomBytes(count), dependencies);
   appView.derived = derived;
+  // A JSON line on standard output, which Cloud Run gives Cloud Logging.
+  appView.log = (entry) => {
+    console.log(stringify(entry.toJson()));
+  };
   let sessionSecret = config.sessionSecret ?? randomBytes(32);
   appView.sessions = new WebSessions(sessionSecret);
   // A DID document is written by whoever controls the DID, so the PDS it

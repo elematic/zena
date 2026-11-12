@@ -1,0 +1,66 @@
+/**
+ * `zena`'s version, and how it heeds a registry's minimum and notice,
+ * against `tests/fixtures/publish-stack.zena`: it names its version to the
+ * registry, stops before calling one that needs a newer `zena`, and warns
+ * when the registry deprecates it.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {Future} from 'zena:async';
+import {JsonObject, parseJson} from 'zena:json';
+import {ProcessResult} from 'zena:process';
+import {Scratch, ZenaCommand, described, fakePdsOrigin, read, startFakePds, stopFakePds, write} from './cli-support.zena';
+import {CLI_VERSION, COMPILER_VERSION} from '../zena/versions.zena';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+
+/** Signs Alice in to a publish stack with `env`, runs `pkg scope create acme --yes`, and returns what it did. */
+async function createScope(name: String, env: Array<(String, String)>): Future<ProcessResult> {
+  let scratch = await Scratch.create(name);
+  let stack = await startFakePds(scratch, 'publish-stack.zena', null, env);
+  try {
+    await fakePdsOrigin(scratch, stack);
+    let addresses = parseJson(await read(scratch.at('pds/stack.json'))) as JsonObject;
+    await write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}\n');
+    let alice = new ZenaCommand(scratch.at('lib'), scratch.host('cache'))
+      .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
+      .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
+      .set('ZENA_REGISTRY', addresses['registry'] as String)
+      .set('ZENA_CONFIG_DIR', scratch.host('config-alice'));
+    isTrue((await alice.run(['pkg', 'login', ALICE, '--password-stdin'], 'app-password\n')).succeeded(), 'alice signs in');
+    return await alice.run(['pkg', 'scope', 'create', 'acme', '--yes']);
+  } finally {
+    await stopFakePds(stack);
+    await scratch.remove();
+  }
+}
+
+export let tests = suite('zena and the versions a registry takes', () => {
+  test('prints its version', async (ctx) => {
+    let scratch = await Scratch.create('version');
+    try {
+      let run = await new ZenaCommand('.', scratch.host('cache')).run(['--version']);
+      isTrue(run.succeeded() && run.stdout.startsWith(`zena ${CLI_VERSION} (zena-compiler ${COMPILER_VERSION}, `),
+          described(run));
+    } finally {
+      await scratch.remove();
+    }
+  });
+
+  test('stops before calling a registry that needs a newer zena', async (ctx) => {
+    let run = await createScope('old-client', [('STACK_MIN_CLIENT_VERSION', '99.0.0')]);
+    isTrue(!run.succeeded() && run.stderr.contains(`needs zena 99.0.0 or newer, and this is zena ${CLI_VERSION}`) &&
+        run.stderr.contains('Upgrade zena:'), described(run));
+  });
+
+  test('calls a registry that takes it but deprecates it, and warns that it is deprecated', async (ctx) => {
+    // The registry refuses a call whose user-agent names a zena older than
+    // its minimum, so a call that succeeds at the minimum named one at
+    // least as new.
+    let run = await createScope('deprecated-client', [('STACK_MIN_CLIENT_VERSION', CLI_VERSION),
+        ('STACK_RECOMMENDED_CLIENT_VERSION', '99.0.0')]);
+    isTrue(run.succeeded() && run.stderr.contains(`zena ${CLI_VERSION} is deprecated on `) &&
+        run.stderr.contains('Upgrade to zena 99.0.0 or newer'), described(run));
+  });
+});

@@ -1,0 +1,51 @@
+/**
+ * What `zena/versions.zena` holds: the versions in the manifests of
+ * zena-cli, zena-compiler and package-manager, which `zena --version`
+ * prints and every call to a registry names. `dev/versions.zena` writes
+ * it (`npm run versions`), and `tests/versions_test.zena` fails while it
+ * is out of date.
+ */
+
+import {Future} from 'zena:async';
+import {StringBuilder} from 'zena:core';
+import {readFile} from 'zena:fs';
+import {JsonObject, parseJson} from 'zena:json';
+
+/** Where the file is, from the repository's root. */
+export let VERSIONS_FILE = 'packages/zena-cli/zena/versions.zena';
+
+/** A version `zena` names: its constant, the package's directory, and what it is the version of. */
+final class Named {
+  constant: String;
+  directory: String;
+  what: String;
+
+  new(this.constant, this.directory, this.what);
+}
+
+let NAMED: Array<Named> = [
+  new Named('CLI_VERSION', 'packages/zena-cli', 'The version of `zena` itself, which stands for the build'),
+  new Named('COMPILER_VERSION', 'packages/zena-compiler', "The compiler's version"),
+  new Named('PACKAGE_MANAGER_VERSION', 'packages/package-manager', "The package manager's libraries' version"),
+];
+
+/** The text `zena/versions.zena` holds for the versions the manifests give now. */
+export async function versionsSource(): Future<String> {
+  let sb = new StringBuilder();
+  sb.append('/**\n');
+  sb.append(' * The versions `zena` names: what `zena --version` prints, and every call\n');
+  sb.append(" * to a registry sends in its user-agent. Written by `npm run versions`\n");
+  sb.append(" * (dev/versions.zena) from each package's zena-package.json: change a\n");
+  sb.append(' * version there, never here.\n');
+  sb.append(' */\n');
+  for (let named in NAMED) {
+    let manifest = parseJson(await readFile(`${named.directory}/zena-package.json`)) as JsonObject;
+    let version = manifest['version'];
+    if (!(version is String)) {
+      throw new Error(`${named.directory}/zena-package.json has no version`);
+    }
+    sb.append(`\n/** ${named.what}: ${named.directory}/zena-package.json. */\n`);
+    sb.append(`export let ${named.constant} = '${version}';\n`);
+  }
+  return sb.toString();
+}

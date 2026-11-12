@@ -32,6 +32,7 @@ import {cidForValue, decodeCbor, encodeCbor} from 'atproto/cbor';
 import {readCar} from 'atproto/car';
 import {verifyRecordProof} from 'atproto/repo';
 import {fetch} from 'zena:fetch';
+import {JsonObject} from 'zena:json';
 import {timeout} from 'zena:task';
 import {BlobRef, MapValue, Value} from 'atproto/data';
 import {Cid} from 'atproto/cid';
@@ -43,6 +44,7 @@ import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from
 import {ARTIFACT_MIME_TYPES, artifactMimeType, validateRelease} from 'package-manager/validate';
 import {ArchiveError} from 'package-manager/archive';
 import {Version} from 'zena-lang:semver';
+import {MINIMUM_CLIENT_VERSION, RECOMMENDED_CLIENT_VERSION, zenaVersionOf} from './clients.zena';
 import {
   ADMIN,
   ATTESTATION_TYPE,
@@ -367,6 +369,42 @@ export interface AppViewStore {
   scopeCreator(did: String): Future<ScopeCreator | null>;
   /** Every account listed, in no order. */
   scopeCreators(): Future<Array<ScopeCreator>>;
+}
+
+/**
+ * A call to one of the App View's methods, as the App View logs it: the
+ * method, the caller's DID, or null when the call was refused before it
+ * named one, the client's `user-agent`, the answer's status, and the
+ * error's name for one that failed. The client is how a registry learns
+ * which `zena` versions its writes came from.
+ */
+export final class CallLog {
+  method: String;
+  caller: String | null;
+  client: String | null;
+  status: i32;
+  error: String | null;
+
+  new(this.method, this.caller, this.client, this.status, this.error);
+
+  /** The entry as a JSON line Cloud Logging reads: `severity`, `message`, and the fields above. */
+  toJson(): JsonObject {
+    let entry = new JsonObject();
+    entry['severity'] = if (this.status >= 500) 'ERROR' else if (this.status >= 400) 'WARNING' else 'INFO';
+    entry['message'] = `${this.method} ${this.status}`;
+    entry['method'] = this.method;
+    if (this.caller != null) {
+      entry['caller'] = this.caller as String;
+    }
+    if (this.client != null) {
+      entry['client'] = this.client as String;
+    }
+    entry['status'] = new Box<f64>(this.status as f64);
+    if (this.error != null) {
+      entry['error'] = this.error as String;
+    }
+    return entry;
+  }
 }
 
 /**
@@ -835,6 +873,10 @@ export final class AppViewConfig {
   reservedScopes = new HashSet<String>();
   /** Who may create a scope (`APP_VIEW_SCOPE_CREATORS`). */
   var scopeCreation = ScopeCreation.Anyone;
+  /** The oldest `zena` the App View's methods take: `MINIMUM_CLIENT_VERSION`, unless a test sets another. */
+  var minimumClientVersion = Version.parse(MINIMUM_CLIENT_VERSION);
+  /** The oldest `zena` that is not deprecated: `RECOMMENDED_CLIENT_VERSION`, unless a test sets another. */
+  var recommendedClientVersion = Version.parse(RECOMMENDED_CLIENT_VERSION);
   /**
    * The DIDs of the App View's admins (`APP_VIEW_ADMIN_DIDS`), who sign in as
    * themselves, as anyone does, and may see every account the App View holds
@@ -885,6 +927,12 @@ export final class AppView {
   var remoteRecords: RemoteRecords | null = null;
   /** Where the App View keeps what it derives from releases, shared by its servers; in memory by default. */
   var derived = new DerivedObjects(new MemoryBlobs(), '');
+  /**
+   * Where a line about each call to the App View's methods goes (`CallLog`):
+   * nowhere by default. `registry/service` writes them to standard output
+   * as JSON, which Cloud Logging keeps.
+   */
+  var log: (entry: CallLog) => void = (entry) => {};
   config: AppViewConfig;
   #pds: PdsClient;
   #store: AppViewStore;
@@ -1930,6 +1978,22 @@ export final class AppView {
       }
     }
     return found;
+  }
+
+  /**
+   * Refuses a call from a `zena` older than `minimumClientVersion`, by the
+   * version its `user-agent` names (`zena/0.1.0 (linux-x86_64)`), with
+   * `UpgradeRequired`. A client that names no `zena` version, such as the
+   * site's script, is not judged: the minimum is for changes the command
+   * must have.
+   */
+  checkClient(userAgent: String | null): void {
+    let minimum = this.config.minimumClientVersion;
+    let version = zenaVersionOf(userAgent);
+    if (version != null && version.compareTo(minimum) < 0) {
+      throw new AppViewError(400, 'UpgradeRequired',
+          `this registry takes zena ${minimum.toString()} or newer, and this is zena ${version.toString()}: upgrade zena`);
+    }
   }
 
   /** Whether `did` is one of the App View's admins. */

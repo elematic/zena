@@ -10,11 +10,11 @@
 import {Future} from 'zena:async';
 import {Own} from 'zena:core';
 import {Request, Response, Router} from 'zena:http';
-import {JsonArray, JsonObject} from 'zena:json';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {div} from 'zena:math';
 import {Value, fromJson} from 'atproto/data';
 import {xrpcPath} from 'atproto/methods';
-import {Created, AppViewError, AppView} from '../app-view.zena';
+import {CallLog, Created, AppViewError, AppView} from '../app-view.zena';
 import {fail, json, nowMicros} from 'pds/xrpc/common';
 
 /**
@@ -40,15 +40,19 @@ export function registryProcedure(router: Router, appView: AppView, method: Stri
 
 async function registryCall(appView: AppView, req: Own<Request>, res: Response, method: String, call: RegistryMethod)
     : Future<void> {
+  let client = req.getHeader('user-agent');
   var caller = '';
   try {
+    appView.checkClient(client);
     caller = await appView.authenticate(req.getHeader('authorization'), method, div(nowMicros(), 1000000 as i64));
   } catch (e) {
     if (e is AppViewError) {
       let error = e;
       fail(res, error.status, error.error, error.message);
+      appView.log(new CallLog(method, null, client, error.status, error.error));
       return;
     }
+    appView.log(new CallLog(method, null, client, 500, 'InternalServerError'));
     throw e;
   }
   try {
@@ -60,10 +64,30 @@ async function registryCall(appView: AppView, req: Own<Request>, res: Response, 
     if (e is AppViewError) {
       let error = e;
       fail(res, error.status, error.error, error.message);
+      appView.log(new CallLog(method, caller, client, error.status, error.error));
       return;
     }
+    appView.log(new CallLog(method, caller, client, 500, 'InternalServerError'));
     throw e;
   }
+  appView.log(new CallLog(method, caller, client, res.statusCode, if (res.statusCode >= 400) errorNameOf(res) else null));
+}
+
+/** The XRPC error name a route answered with itself, as `fail` writes it, or null. */
+function errorNameOf(res: Response): String | null {
+  let body = res.body;
+  if (!(body is String)) {
+    return null;
+  }
+  try {
+    let parsed = parseJson(body);
+    if (parsed is JsonObject && parsed['error'] is String) {
+      return parsed['error'] as String;
+    }
+  } catch (e) {
+    return null;
+  }
+  return null;
 }
 
 /** The answer to a call that wrote a record: its AT-URI and CID. */

@@ -20,7 +20,9 @@
  * With `STACK_WEB_DIR` naming a directory it can read, the App View serves
  * it as the web app's assets. `STACK_ADMINS` names the App View's admins,
  * separated by spaces, and `STACK_SCOPE_CREATORS=listed` lets only them and
- * the accounts they list create scopes. Run from the repository root with
+ * the accounts they list create scopes. `STACK_MIN_CLIENT_VERSION` and
+ * `STACK_RECOMMENDED_CLIENT_VERSION` replace the oldest `zena` it takes
+ * and the oldest that is not deprecated. Run from the repository root with
  * `--dir <scratch>::/out`, it writes
  * `/out/stack.json` (`{"plc", "dns", "registry"}`), then `/out/plc.txt` (the PLC
  * directory's origin), and serves until it is killed.
@@ -37,6 +39,7 @@ import {MEMBERS_TYPE, MemberEntry, Members} from 'package-manager/records';
 import {FakePds, KEY, didDocument} from 'package-manager/testing/fake-pds';
 import {InMemory, PdsConfig} from 'pds/service';
 import {ScopeCreation} from 'registry/app-view';
+import {Version} from 'zena-lang:semver';
 import {AppViewSettings, RecordsInMemory, ServiceConfig, serve} from 'registry/service';
 
 export async function main(): Future<i32> {
@@ -72,6 +75,16 @@ export async function main(): Future<i32> {
   let config = new ServiceConfig(pds, registry, world.plcDirectory, world.dnsOverHttps);
   config.webDir = getEnv('STACK_WEB_DIR');
   let running = await serve(config);
+  // The versions are the App View's code's, which a test sets in their place.
+  let clients = running.service.appView.config;
+  let minimum = getEnv('STACK_MIN_CLIENT_VERSION');
+  if (minimum != null) {
+    clients.minimumClientVersion = Version.parse(minimum);
+  }
+  let recommended = getEnv('STACK_RECOMMENDED_CLIENT_VERSION');
+  if (recommended != null) {
+    clients.recommendedClientVersion = Version.parse(recommended);
+  }
   let records = running.service.records as MemoryHandleRecords;
   await records.set('ghost.pkg.test', 'did:plc:ghostghostghostghostghost');
   let dns = new Server(dnsOverHttpsApp(records), 0 as u16);
