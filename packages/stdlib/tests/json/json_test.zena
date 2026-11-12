@@ -1,6 +1,7 @@
 // JSON parser stdlib tests using zena:test
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse, throws} from 'zena:assert';
+import {StringBuilder} from 'zena:core';
 import {parseJson, jsonGet, JsonObject, JsonArray, JsonOptions, JsonParseError, stringify} from 'zena:json';
 
 // Helper to test that parsing throws JsonParseError
@@ -519,6 +520,35 @@ export let tests = suite('JSON Parser', () => {
 
     test('trailing content after array', (ctx) => {
       expectParseError('[] extra');
+    });
+
+    test('nesting deeper than the limit, which would overflow the stack', (ctx) => {
+      let nested = (open: String, close: String, depth: i32) => {
+        let sb = new StringBuilder();
+        for (var i = 0; i < depth; i += 1) {
+          sb.append(open);
+        }
+        sb.append('1');
+        for (var i = 0; i < depth; i += 1) {
+          sb.append(close);
+        }
+        return sb.toString();
+      };
+      // A request body is parsed before its caller is known, so a deep one
+      // must fail as an error rather than end the process.
+      for (let open in ['[', '{"a":']) {
+        let close = if (open == '[') ']' else '}';
+        var message = '';
+        try {
+          parseJson(nested(open, close, 1000000));
+        } catch (e) {
+          isTrue(e is JsonParseError, 'a JsonParseError');
+          message = e.message;
+        }
+        isTrue(message.contains('nested more than 256 deep'), message);
+        // As deep as the limit still parses.
+        parseJson(nested(open, close, 256));
+      }
     });
   });
 
