@@ -271,9 +271,9 @@ export sealed class PinChange {
   /** A package the lockfile pinned, and no longer does. */
   case PinRemoved(pin: Pin)
   /**
-   * A package pinned at another version of the same major version, higher
-   * or lower: the one version of that major version the lockfile pinned
-   * and the one the resolution selects instead.
+   * A package pinned at another version on the same compatible line
+   * (`Version.compatibleLine`), higher or lower: the one version on that
+   * line the lockfile pinned and the one the resolution selects instead.
    */
   case PinVersionChanged(pin: Pin, now: ResolvedPackage)
   /**
@@ -288,13 +288,13 @@ export sealed class PinChange {
 /**
  * What writing `after` changes in the pins `before`, in `after`'s order
  * and then `before`'s: a version both have with other CIDs was changed in
- * place; a package and major version with one version before and another
- * after changed version; any other version only one of them has was added
- * or removed. A pin that stays the same has no change.
+ * place; a package and compatible line with one version before and
+ * another after changed version; any other version only one of them has
+ * was added or removed. A pin that stays the same has no change.
  */
 export function diffPins(before: GrowableArray<Pin>, after: Resolution): GrowableArray<PinChange> {
   let pinned = new HashMap<String, Pin>();
-  // The versions only `before` or only `after` has, by package and major version.
+  // The versions only `before` or only `after` has, by package and compatible line.
   let gone = new HashMap<String, GrowableArray<Pin>>();
   let fresh = new HashMap<String, GrowableArray<ResolvedPackage>>();
   for (let pin in before) {
@@ -335,8 +335,9 @@ export function diffPins(before: GrowableArray<Pin>, after: Resolution): Growabl
   return changes;
 }
 
+/** The package `did`'s compatible line that `version` is on. */
 function slotOf(did: String, version: Version): String {
-  return `${did}@${version.major}`;
+  return `${did}@${version.compatibleLine()}`;
 }
 
 function append<T>(map: HashMap<String, GrowableArray<T>>, key: String, value: T): void {

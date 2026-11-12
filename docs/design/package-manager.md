@@ -593,6 +593,17 @@ the same `major.minor.patch`, as in npm, so `^2.0.0` does not take
 `2.1.0-rc.1`. npm's dist-tags (`latest`) and URLs are not ranges here:
 a dependency is a DID and a range.
 
+Before 1.0, the first number that is not zero is the one a breaking
+change raises, as `^` reads it: `^0.3.1` stops below 0.4.0, and
+`^0.0.3` takes only 0.0.3. A package can then break its users at each
+minor version while it is young, as Zena's own packages will. Each such
+line, the major version from 1.0 and `0.3` or `0.0.3` before it
+(`Version.compatibleLine`), counts as a dependency of its own: a release
+may depend on 0.1 and 0.2 of one package as it may on 1 and 2,
+selection installs both when two ranges ask for them, and the lockfile
+reports a move from 0.1.3 to 0.2.0 as one version removed and another
+added, not as one version raised.
+
 Versions and ranges are a library of their own, the package `semver`
 (`zena-lang:semver`): parsing and printing, ordering, and whether a
 version is in a range. The package manager's resolver and the App

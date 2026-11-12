@@ -6,8 +6,9 @@ npm's version ranges. The package manager selects versions with it
 
 ## Layout
 
-- `src/version.zena`: `Version` (parsing, printing, precedence) and
-  `VersionError`. Build metadata is kept but does not count in
+- `src/version.zena`: `Version` (parsing, printing, precedence,
+  `compatibleLine`, the major version or before 1.0 the first number
+  that is not zero) and `VersionError`. Build metadata is kept but does not count in
   `compareTo`. The package manager refuses build metadata in a
   package's version itself, since a release's version is its record key.
 - `src/range.zena`: `Range`, read into comparator sets as node-semver

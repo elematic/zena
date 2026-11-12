@@ -124,6 +124,14 @@ export let tests = suite('package-manager/resolve', () => {
     equal(versionsOf(resolution, JSON), '1.1.0 1.8.0');
   });
 
+  test('treats each minor version before 1.0 as a line of its own, as ^ does', async (ctx): Future<void> => {
+    let registry = new Registry();
+    registry.addAll(JSON, ['0.1.0', '0.1.4', '0.2.0', '0.2.3', '0.3.0']);
+    // ^0.1 never takes 0.2, which may break it: two ranges, two versions.
+    equal(versionsOf(await resolved(registry, [(JSON, '^0.1.0'), (JSON, '^0.2.0')]), JSON), '0.1.4 0.2.3');
+    equal(versionsOf(await resolved(registry, [(JSON, '^0.1.0')]), JSON), '0.1.4');
+  });
+
   test('of equally few versions, chooses the one more ranges can use', async (ctx): Future<void> => {
     let registry = new Registry();
     registry.addAll(JSON, ['1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0', '1.6.0', '1.7.0', '1.8.0']);

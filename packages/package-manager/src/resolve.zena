@@ -46,16 +46,17 @@ export final class Versions {
   new(releases: GrowableArray<Version>, retracted: HashSet<String>) : releases = releases, retracted = retracted;
 
   /**
-   * The highest version that is not retracted, in major version `major` when
-   * it is given. Pre-releases count only with `prereleases`.
+   * The highest version that is not retracted, on the compatible line
+   * `line` when it is given (`Version.compatibleLine`: `1`, or `0.2` before
+   * 1.0). Pre-releases count only with `prereleases`.
    */
-  latest(major: i64 = -1, prereleases: boolean = false): Version | null {
+  latest(line: String | null = null, prereleases: boolean = false): Version | null {
     var best: Version | null = null;
     for (let version in this.releases) {
       if (this.retracted.has(version.toString())) {
         continue;
       }
-      if (major >= 0 && version.major != major) {
+      if (line != null && version.compatibleLine() != line) {
         continue;
       }
       if (version.isPrerelease && !prereleases) {
