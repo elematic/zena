@@ -52,7 +52,6 @@ if [ "$PLC_MODE" = staging ]; then
   # of the accounts it makes.
   PDS_VARS+=",PDS_PLC_DIRECTORY=${APP_VIEW_URL}/plc"
 fi
-PDS_SECRETS="PDS_JWT_SECRET=${JWT_SECRET}:latest"
 
 # The App View's configuration, as env.sh gives it, in gcloud's form.
 ENV_VARS="$(IFS=,; echo "${APP_VIEW_VARS[*]}")"
@@ -67,7 +66,10 @@ echo "padstone trusts $APP_VIEW_DID with $ROTATION_DID_KEY"
 echo
 
 # Both public: padstone's writes take the App View's tokens, its reads are
-# public, and the App View's methods check their own callers.
+# public, and the App View's methods check their own callers. padstone has
+# no secrets, since it serves no password sessions: --clear-secrets takes
+# away the session secret that deploys before it gave padstone, which it
+# would now refuse to start with.
 gcloud run deploy "$PDS_SERVICE" \
   --project "$PROJECT" \
   --region "$REGION" \
@@ -77,7 +79,7 @@ gcloud run deploy "$PDS_SERVICE" \
   --args /app/pds.wasm \
   --service-account "$SERVICE_ACCOUNT_EMAIL" \
   --set-env-vars "$PDS_VARS" \
-  --set-secrets "$PDS_SECRETS" \
+  --clear-secrets \
   --memory 1Gi \
   --cpu 1 \
   --max-instances 4 \

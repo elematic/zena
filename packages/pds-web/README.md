@@ -94,7 +94,7 @@ in the browser. Then:
    that method with it.
 2. The App View checks the token as it checks every call to its methods, and
    answers with a cookie: an HS256 token naming the person's DID and
-   handle, signed with `PDS_JWT_SECRET`, HttpOnly, SameSite=Lax, and
+   handle, signed with `APP_VIEW_SESSION_SECRET`, HttpOnly, SameSite=Lax, and
    Secure over HTTPS (`registry/web/session`).
 3. Every page reads the cookie, so the pages are rendered for the person
    on the server. Signing out posts a form to `/signout`, which drops the

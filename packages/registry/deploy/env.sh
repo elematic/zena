@@ -80,8 +80,8 @@ BUCKET="${PROJECT}-zena-pkg${SUFFIX}"
 SERVICE_ACCOUNT="zena-pkg${SUFFIX}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT}@${PROJECT}.iam.gserviceaccount.com"
 SECRET="zena-pkg${SUFFIX}-rotation-key"
-# Signs padstone's password sessions and the App View's web sessions, each
-# kind of token with a type of its own.
+# Signs the App View's web sessions. padstone, which serves no password
+# sessions, has no secret; the name is from when it did.
 JWT_SECRET="zena-pkg${SUFFIX}-jwt-secret"
 # The smoke test's (smoke.sh): the scope of its canary package, and the
 # secret that keeps the token of the automation account it publishes as.
@@ -153,7 +153,6 @@ APP_VIEW_VARS=(
   "APP_VIEW_PLC=${PLC_MODE}"
   "GOOGLE_CLOUD_PROJECT=${PROJECT}"
 )
-# The web sessions' secret is the one padstone's sessions are signed with.
 APP_VIEW_SECRETS=("APP_VIEW_SESSION_SECRET=${JWT_SECRET}")
 if [ "$ROTATION_KMS" = 1 ]; then
   APP_VIEW_VARS+=("APP_VIEW_ROTATION_KMS_KEY=${KMS_KEY_VERSION}")

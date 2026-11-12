@@ -68,7 +68,6 @@ export let tests = suite('pds/service', () => {
     let config = configFromEnv(envOf([
       ('PORT', '8080'),
       ('PDS_STORAGE', 'firestore'),
-      ('PDS_JWT_SECRET', KEY),
       ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'zena-blobs'),
       ('PDS_PUBLIC_URL', 'https://padstone.example.dev'),
@@ -88,6 +87,7 @@ export let tests = suite('pds/service', () => {
     equal(config.trustedAppViews[0].rotationKeys.length, 2);
     equal(formatDidKey(config.trustedAppViews[0].rotationKeys[1]), didKey(3));
     equal(config.trustedAppViews[1].did, 'did:web:other.example.dev');
+    isTrue(!config.passwordSessions, 'no password sessions');
 
     let wrong = refusal([
       ('PDS_PUBLIC_URL', 'https://padstone.example.dev/pds'),
@@ -100,7 +100,19 @@ export let tests = suite('pds/service', () => {
       isTrue(wrong.contains(expected), `${expected} in: ${wrong}`);
     }
     let firestore = refusal([('PDS_STORAGE', 'firestore')]);
-    isTrue(firestore.contains('needs PDS_TENANT') && firestore.contains('needs PDS_JWT_SECRET'), firestore);
+    isTrue(firestore.contains('needs PDS_TENANT') && !firestore.contains('PDS_JWT_SECRET'), firestore);
+  });
+
+  test('takes a session secret only for password sessions, which are off by default', (ctx) => {
+    equal(refusal([('PDS_PASSWORD_SESSIONS', '1')]), '');
+    isTrue(configFromEnv(envOf([('PDS_PASSWORD_SESSIONS', '1')])).passwordSessions, 'password sessions');
+    let firestore = refusal([('PDS_STORAGE', 'firestore'), ('PDS_TENANT', 'pkg'), ('PDS_BLOB_BUCKET', 'zena-blobs'),
+        ('PDS_PASSWORD_SESSIONS', '1')]);
+    isTrue(firestore.contains('PDS_PASSWORD_SESSIONS=1 with PDS_STORAGE=firestore needs PDS_JWT_SECRET'), firestore);
+    let unused = refusal([('PDS_JWT_SECRET', KEY)]);
+    isTrue(unused.contains('PDS_JWT_SECRET signs password sessions, which need PDS_PASSWORD_SESSIONS=1'), unused);
+    let wrong = refusal([('PDS_PASSWORD_SESSIONS', 'yes')]);
+    isTrue(wrong.contains('PDS_PASSWORD_SESSIONS is 1 or 0, not yes'), wrong);
   });
 
   test('builds a PDS alone, which keeps managed accounts only for the App Views it trusts', async (ctx) => {
@@ -113,6 +125,13 @@ export let tests = suite('pds/service', () => {
     equal((parseJson(described.body as String) as JsonObject)['did'] as String, 'did:web:127.0.0.1%3A1');
     isTrue(plain.pds.managed == null, 'no managed accounts');
     equal(plain.did, 'did:web:127.0.0.1%3A1');
+    // No password sessions, unless asked for: managed accounts have no
+    // passwords, and nothing over the network gives an account one.
+    isTrue(plain.sessions == null, 'no sessions');
+    equal((await get(plain.app, '/xrpc/com.atproto.server.getSession')).statusCode, 404);
+    let signing = await buildPds(configFromEnv(envOf([('PDS_PASSWORD_SESSIONS', '1')])), 'http://127.0.0.1:1');
+    isTrue(signing.sessions != null, 'sessions');
+    equal((await get(signing.app, '/xrpc/com.atproto.server.getSession')).statusCode, 401);
 
     let trusting = await buildPds(configFromEnv(envOf([('PDS_PUBLIC_URL', 'https://padstone.test'),
         ('PDS_TRUSTED_APP_VIEWS', `did:web:pkg.test=${didKey(1)}`)])), 'http://127.0.0.1:1');
