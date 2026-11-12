@@ -1,0 +1,34 @@
+{
+  "locks": ["zena-lock.json", "package-lock.json"],
+  "scripts": {
+    "build": {
+      "dependencies": ["build:ts", "build:lsp"]
+    },
+    "test": {
+      "command": "node --test test/lsp_test.js",
+      "files": ["test/**/*.js"],
+      "dependencies": ["build"]
+    },
+    "package": "npm run build && vsce package --no-dependencies",
+    "install-ext": "npm run package && code --install-extension vscode-zena-0.1.0.vsix",
+    "build:ts": {
+      "command": "tsc",
+      "files": ["src/**/*.{ts,cts}", "tsconfig.json"],
+      "output": [
+        "extension.cjs",
+        "extension.cjs.map",
+        "lib/",
+        "test/",
+        "tsconfig.tsbuildinfo"
+      ],
+      "clean": "if-file-deleted",
+      "dependencies": ["../runtime:build"]
+    },
+    "build:lsp": {
+      "command": "cp ../language-service/lsp.wasm lsp.wasm",
+      "files": [],
+      "output": ["lsp.wasm"],
+      "dependencies": ["../language-service:build"]
+    }
+  }
+}

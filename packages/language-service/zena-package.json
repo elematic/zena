@@ -28,5 +28,60 @@
     "zena-lint": {
       "path": "../zena-lint"
     }
+  },
+  "locks": ["zena-lock.json", "package-lock.json"],
+  "scripts": {
+    "build": {
+      "dependencies": ["build:ts", "build:wasm"]
+    },
+    "test": {
+      "command": "node --test test/*_test.js",
+      "files": ["test/*_test.js", "lsp.wasm"],
+      "dependencies": [
+        "../stdlib:lib",
+        "build:ts",
+        {
+          "script": "build:wasm",
+          "cascade": false
+        },
+        {
+          "script": "test:zena",
+          "cascade": false
+        }
+      ]
+    },
+    "test:zena": {
+      "#": "The language server's Zena tests, run by the zena command's test runner from the repository root, which is where the service reads the standard library from. zena-lsp_test.zena runs the zena command's language server, so this needs the zena command built.",
+      "command": "../../target/release/zena-cli test test",
+      "files": ["test/**/*.zena"],
+      "dependencies": ["source", "../stdlib:lib", "../zena-cli:build"]
+    },
+    "build:ts": {
+      "command": "tsc",
+      "files": ["ts/**/*.ts", "tsconfig.json"],
+      "output": [
+        "index.{js,d.ts,js.map,d.ts.map}",
+        "test/*.{js,d.ts,js.map,d.ts.map}",
+        "tsconfig.tsbuildinfo"
+      ],
+      "clean": "if-file-deleted",
+      "dependencies": ["../runtime:build"]
+    },
+    "build:wasm": {
+      "#command": "256MB of GC heap, not the 1536MB the compiler's own builds reserve: the reservation is an allocation, so it costs both startup time and resident memory, and this module's live set does not need it. Measured here — 128MB: 27s, 256MB: 6s/590MB, 512MB: 5s/1101MB, 1536MB: 6s/3150MB.",
+      "#dependencies": "Stage A on zena-run, the way the CLI module itself is built: this module is the compiler and the language service, and building it with the zena command would wait for that command's module and binary, neither of which it needs. `cascade: false` on build:cli: its output is an input here, so this rebuilds when the compiler's bytes change.",
+      "command": "cd ../.. && ZENA_GC_RESERVE_MB=256 ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/zena/out/cli.wasm packages/language-service/src/lsp.zena --target zena-js -g -o packages/language-service/lsp.wasm",
+      "files": ["package.json", "../zena-compiler/zena/out/cli.wasm"],
+      "output": ["lsp.wasm"],
+      "dependencies": [
+        "source",
+        "../stdlib:lib",
+        "../zena-run:build",
+        {
+          "script": "../zena-compiler:build:cli",
+          "cascade": false
+        }
+      ]
+    }
   }
 }

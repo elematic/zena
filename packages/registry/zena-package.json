@@ -46,5 +46,125 @@
     "zena-lang:semver": {
       "path": "../semver"
     }
+  },
+  "locks": ["zena-lock.json", "package-lock.json"],
+  "scripts": {
+    "test": {
+      "command": "../../target/release/zena-cli test \"test/*_test.zena\"",
+      "files": [
+        "test/*.zena",
+        "test/fixtures/**",
+        "README.md",
+        "deploy/*.sh",
+        "deploy/Dockerfile"
+      ],
+      "dependencies": [
+        "source",
+        "../stdlib:lib",
+        "../zena-cli:build",
+        "../pds-web:docs"
+      ]
+    },
+    "test:emulator": {
+      "#command": "The store conformance tests, and the service on Firestore, against the Firestore emulator. Not part of `test`: the emulator needs the flake's `emulators` shell (firebase-tools and Java, about 2 GB), which the root `emulators:start` service enters itself.",
+      "command": "../../target/release/zena-cli test \"test/emulator/*_test.zena\"",
+      "files": ["test/emulator/*.zena", "test/store-conformance.zena"],
+      "env": {
+        "FIRESTORE_EMULATOR_HOST": "127.0.0.1:8180"
+      },
+      "dependencies": [
+        "source",
+        "../stdlib:lib",
+        "../..:emulators:start",
+        "../zena-cli:build",
+        "../pds-web:docs"
+      ]
+    },
+    "demo": {
+      "#command": "An App View for pkg.test on this machine, with a stand-in PLC directory and a resolver for its handles, to try `zena pkg login`, `zena pkg publish` and `zena pkg add` against: dev/demo.zena prints how, and writes the variables to .zena/demo/env.sh. Runs until stopped.",
+      "command": "cd ../.. && mkdir -p .zena/demo && DEMO_REPO=$PWD APP_VIEW_WEB_DIR=${APP_VIEW_WEB_DIR:-/web} ./target/release/zena-cli run --allow-spawn --dir packages/pds-web/out::/web --dir .zena/demo::/demo packages/registry/dev/demo.zena",
+      "service": true,
+      "files": ["dev/*.zena"],
+      "dependencies": [
+        "source",
+        "../stdlib:lib",
+        "../zena-cli:build",
+        "../pds-web:build"
+      ]
+    },
+    "demo:publish": {
+      "#command": "The demo, with the scope zena-lang, owned by its maintainer, and the packages DEMO_PUBLISH names (by default packages/wit-parser, packages/markdown, packages/workflow and packages/zebra, in that order) published in it with `zena pkg login` and `zena pkg publish`, each from a copy in .zena/demo/packages. Runs until stopped.",
+      "command": "cd ../.. && mkdir -p .zena/demo && DEMO_REPO=$PWD DEMO_SCOPES=${DEMO_SCOPES:-zena-lang=did:plc:maintainermaintainermain} DEMO_PUBLISH=\"${DEMO_PUBLISH:-packages/wit-parser packages/markdown packages/workflow packages/zebra}\" APP_VIEW_WEB_DIR=${APP_VIEW_WEB_DIR:-/web} ./target/release/zena-cli run --allow-spawn --dir packages/pds-web/out::/web --dir .zena/demo::/demo packages/registry/dev/demo.zena",
+      "service": true,
+      "dependencies": ["../zena-cli:build", "../pds-web:build"]
+    },
+    "build:server": {
+      "#command": "Compiles the two servers the image runs: src/main.zena, the App View, into deploy/registry.wasm, and padstone's packages/pds/src/main.zena into deploy/pds.wasm.",
+      "command": "cd ../.. && ./target/release/zena-cli build packages/registry/src/main.zena -o packages/registry/deploy/registry.wasm && ./target/release/zena-cli build packages/pds/src/main.zena -o packages/registry/deploy/pds.wasm",
+      "output": ["deploy/registry.wasm", "deploy/pds.wasm"],
+      "dependencies": [
+        "source",
+        "../stdlib:lib",
+        "../zena-cli:build",
+        "../pds-web:docs"
+      ]
+    },
+    "stage:docker": {
+      "#command": "Stages a Linux x86_64 zena-run into deploy/ for the image, with the website's resolving and patching (deploy/stage-docker.js).",
+      "command": "node deploy/stage-docker.js",
+      "files": [
+        "deploy/stage-docker.js",
+        "../website/lib/stage-docker.js",
+        "../../target/release/zena-run",
+        "../zena-run/Cargo.toml",
+        "../zena-run/src/**/*.rs",
+        "../zena-runtime/Cargo.toml",
+        "../zena-runtime/src/**/*.rs",
+        "../stdlib/zena/host-wit/*.wit",
+        "../../Cargo.toml",
+        "../../Cargo.lock"
+      ],
+      "output": ["deploy/zena-run"],
+      "dependencies": ["../zena-run:build"]
+    },
+    "stage:web": {
+      "#command": "Copies the web app's build (packages/pds-web) into deploy/web for the image, which serves it as APP_VIEW_WEB_DIR.",
+      "command": "rm -rf deploy/web && cp -R ../pds-web/out deploy/web",
+      "files": ["../pds-web/out/**"],
+      "output": ["deploy/web/**"],
+      "dependencies": ["../pds-web:build"]
+    },
+    "docker:build": {
+      "#command": "Builds the image locally, for those with Docker; deploy:image builds it with Cloud Build instead.",
+      "command": "docker build --platform linux/amd64 --file deploy/Dockerfile --tag zena-pkg deploy",
+      "dependencies": ["build:server", "stage:docker", "stage:web"]
+    },
+    "deploy:setup": {
+      "#command": "One time, and idempotent: the Google Cloud resources of the environment PDS_ENV (staging by default), in the project its settings in deploy/environments/ name. See deploy/setup.sh. No files, so it always runs: re-running is the fix when a step failed.",
+      "command": "bash deploy/setup.sh"
+    },
+    "deploy:image": {
+      "#command": "Builds the image with Cloud Build from deploy/, and pushes it. The same image serves both environments.",
+      "command": "bash -c 'source deploy/env.sh > /dev/null && gcloud builds submit --project \"$PROJECT\" --config deploy/cloudbuild.yaml --substitutions _IMAGE=\"$IMAGE\" deploy'",
+      "dependencies": ["build:server", "stage:docker", "stage:web"]
+    },
+    "deploy": {
+      "#command": "Deploys the image to the environment PDS_ENV (staging by default), and checks that it answers. See deploy/deploy.sh.",
+      "command": "bash deploy/deploy.sh",
+      "dependencies": ["deploy:image"]
+    },
+    "deploy:domain": {
+      "#command": "Once, after the first deploy: maps the environment's domain to its service and writes the records it needs. Needs gcloud's beta component. See deploy/domain.sh.",
+      "command": "bash deploy/domain.sh"
+    },
+    "deploy:alerts": {
+      "#command": "Once both names answer: uptime checks of both, alerts by email to ZENA_ALERT_EMAIL, and with ZENA_MONTHLY_BUDGET a budget on the project. Needs gcloud's beta component. See deploy/alerts.sh.",
+      "command": "bash deploy/alerts.sh"
+    },
+    "deploy:smoke": {
+      "#command": "After every deploy: checks the environment as its clients see it, and publishes and withdraws a version of the canary package as an automation account (dev/smoke.zena). `deploy/smoke.sh setup` makes the canary once. See deploy/smoke.sh.",
+      "command": "bash deploy/smoke.sh",
+      "dependencies": ["../zena-cli:build"]
+    }
   }
 }

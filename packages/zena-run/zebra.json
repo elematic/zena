@@ -1,0 +1,39 @@
+{
+  "locks": [],
+  "scripts": {
+    "build": {
+      "#": "Two scripts for one build. `build:cargo` declares no inputs, so wireit never calls it fresh and cargo is always consulted — cargo tracks its own inputs better than a `files` list could, and a no-op is a quarter of a second. This one names the binary cargo produced as an *input*, so its fingerprint changes exactly when the binary does, and that is what dependents inherit. `cascade: false` keeps `build:cargo`'s own fingerprint out: a script with no `files` is not `fullyTracked`, and wireit propagates that to everything downstream, where nothing can ever be fresh — which is why one `npm test` with no changes used to rebuild the whole bootstrap chain. Hashing the binary also makes freshness imply the binary exists, so the exit-127 case that a `files` list alone would have allowed cannot happen.",
+      "files": ["../../target/release/zena-run"],
+      "dependencies": [
+        {
+          "script": "build:cargo",
+          "cascade": false
+        }
+      ]
+    },
+    "build:cargo": {
+      "#": "Always runs; `build` is what dependents read. See its comment.",
+      "command": "cargo build --release -p zena-run"
+    },
+    "test": {
+      "#command": "--release reuses the dependency artifacts the build step produced instead of compiling wasmtime a second time in the dev profile.",
+      "command": "cargo test --release -p zena-run",
+      "files": [
+        "Cargo.toml",
+        "src/**/*.rs",
+        "tests/**/*.rs",
+        "../zena-runtime/Cargo.toml",
+        "../workspace-hack/Cargo.toml",
+        "../zena-runtime/src/**/*.rs",
+        "../stdlib/zena/host-wit/*.wit",
+        "../../Cargo.toml",
+        "../../Cargo.lock"
+      ],
+      "dependencies": ["build"]
+    },
+    "zena-run": {
+      "command": "../../target/release/zena-run",
+      "dependencies": ["build"]
+    }
+  }
+}

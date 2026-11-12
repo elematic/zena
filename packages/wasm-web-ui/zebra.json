@@ -1,0 +1,56 @@
+{
+  "locks": ["zena-lock.json", "package-lock.json"],
+  "scripts": {
+    "build": {
+      "#": "The tests import the Zena runtime, a development dependency, so its declarations must exist before tsc runs.",
+      "command": "tsc",
+      "files": ["src/**/*.ts", "tsconfig.json"],
+      "output": [
+        "test",
+        "index.{js,d.ts,js.map,d.ts.map}",
+        "elements.{js,d.ts,js.map,d.ts.map}",
+        "templates.{js,d.ts,js.map,d.ts.map}",
+        "linear.{js,d.ts,js.map,d.ts.map}",
+        "listener.{js,d.ts,js.map,d.ts.map}",
+        "tsconfig.tsbuildinfo"
+      ],
+      "clean": "if-file-deleted",
+      "dependencies": ["../runtime:build"]
+    },
+    "build:demo": {
+      "#": "The demo page's module: the counter and todo elements, built for the js target. Depends on `build` because the page loads this package's compiled JavaScript straight from the package root.",
+      "command": "../../target/release/zena-cli build demo/elements.zena -o demo/elements.wasm --target js",
+      "files": ["demo/*.zena"],
+      "output": ["demo/elements.wasm"],
+      "dependencies": ["build", "../stdlib:lib", "../zena-cli:build"]
+    },
+    "test": {
+      "#": "The server-rendering test runs `zena-cli` on `src/test/ssr/render.zena`, so it depends on the CLI build as well as on the language service module the other tests compile through; the linear-memory test loads the Rust example.",
+      "command": "node --enable-source-maps --test test/**/*_test.js",
+      "files": ["src/test/ssr/*.zena", "../language-service/lsp.wasm"],
+      "dependencies": [
+        "build",
+        "build:rust-example",
+        "../runtime:build",
+        "../stdlib:lib",
+        {
+          "script": "../language-service:build:wasm",
+          "cascade": false
+        },
+        "../zena-cli:build"
+      ]
+    },
+    "build:rust-example": {
+      "#": "The Rust element module, examples/rust, for the linear-memory extension's test. rustc's wasm32 target links through lld, which the dev shell provides.",
+      "command": "cargo build --quiet --release --target wasm32-unknown-unknown --manifest-path examples/rust/Cargo.toml",
+      "files": [
+        "examples/rust/Cargo.toml",
+        "examples/rust/Cargo.lock",
+        "examples/rust/src/**/*.rs"
+      ],
+      "output": [
+        "examples/rust/target/wasm32-unknown-unknown/release/wasm_web_ui_example.wasm"
+      ]
+    }
+  }
+}
