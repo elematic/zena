@@ -55,7 +55,11 @@
  *   made up at start: a PDS in the same process needs no tokens.
  * - `APP_VIEW_OFFLINE_ROTATION_KEY`: the operator's offline rotation key,
  *   as a `did:key`, which every new account ranks above the online key, so
- *   that the operator can undo what a stolen online key signs.
+ *   that the operator can undo what a stolen online key signs. Required
+ *   with Firestore when the App View makes accounts in the public PLC
+ *   directory, since an account made without it never lists it.
+ * - `APP_VIEW_ALLOW_NO_OFFLINE_KEY`: `1` starts such an App View without
+ *   the offline key, on purpose.
  * - `APP_VIEW_DID`: the App View's DID, by default the `did:web` of the
  *   host where its methods are served: `APP_VIEW_PUBLIC_URL`'s with a PDS
  *   elsewhere, `PDS_PUBLIC_URL`'s otherwise.
@@ -108,7 +112,7 @@ import {Firestore} from 'google-cloud/firestore';
 import {CloudKms} from 'google-cloud/kms';
 import {parseDidDocument} from 'atproto/did';
 import {KeyType, PublicKey, parseDidKey} from 'atproto/didkey';
-import {IdentityResolver} from 'atproto/identity';
+import {IdentityResolver, PUBLIC_PLC_DIRECTORY} from 'atproto/identity';
 import {PlcOperation, fetchOperations, submitPlcOperation} from 'atproto/plc';
 import {SigningKeyLookup} from 'atproto/service-auth';
 import {PlcLogLookup, TrustedAppView} from 'pds/managed';
@@ -445,9 +449,21 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
   } else if (plcMode != 'public') {
     problems.push(`APP_VIEW_PLC is public or staging, not ${plcMode}`);
   }
+  // Every account the App View creates in the public directory lists the
+  // offline key only if the App View had it then: one started without it
+  // makes accounts no one can take back from a stolen online key.
+  let plcDirectory = value('APP_VIEW_PLC_DIRECTORY') ?? PUBLIC_PLC_DIRECTORY;
+  let allowNoOffline = value('APP_VIEW_ALLOW_NO_OFFLINE_KEY');
+  if (allowNoOffline != null && allowNoOffline != '1' && allowNoOffline != '0') {
+    problems.push(`APP_VIEW_ALLOW_NO_OFFLINE_KEY is 1 or 0, not ${allowNoOffline}`);
+  }
+  let publicDirectory = plcDirectory == PUBLIC_PLC_DIRECTORY || plcDirectory == `${PUBLIC_PLC_DIRECTORY}/`;
+  if (firestore != null && !plcStaging && publicDirectory && offlineText == null && allowNoOffline != '1') {
+    problems.push(`${firestore}=firestore with the public PLC directory needs APP_VIEW_OFFLINE_ROTATION_KEY, the did:key every account it creates ranks above the online key; APP_VIEW_ALLOW_NO_OFFLINE_KEY=1 starts without it on purpose`);
+  }
 
   refuseProblems(problems);
-  let config = new ServiceConfig(pds, settings, value('APP_VIEW_PLC_DIRECTORY') ?? 'https://plc.directory',
+  let config = new ServiceConfig(pds, settings, plcDirectory,
       value('APP_VIEW_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query');
   config.port = port;
   config.remotePds = remote;

@@ -464,8 +464,11 @@ View's online key, which signs its operations
   It prints the private key, to keep offline (on paper, or in a password
   manager you trust), and its `did:key`, which deploys as
   `APP_VIEW_OFFLINE_ROTATION_KEY` from `ZENA_OFFLINE_ROTATION_KEY`.
-  `deploy` refuses production without it. Only accounts created after it
-  is set list it.
+  `deploy` refuses production without it, and so does the App View
+  itself, however it is started: with Firestore and the public PLC
+  directory it stops at start without the key, unless
+  `APP_VIEW_ALLOW_NO_OFFLINE_KEY=1` says so on purpose. Only accounts
+  created after it is set list it.
 
 **If the online key is stolen or misused**, the offline key undoes what
 it signed, within 72 hours of the first operation to undo. Find the last
