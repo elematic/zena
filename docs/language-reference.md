@@ -5198,7 +5198,7 @@ group as usual, so `(inline A) | B` mixes an inline member with a boxed one,
 which is an error.
 
 An inline type may appear as a function's result, as a parameter, and as a
-`let` in a function body. A type argument, a record field, a `var`, a
+`let` or `var` in a function body. A type argument, a record field, a
 module-level `let` and an element of a boxed tuple are storage positions, and
 an inline type in one is an error. Because inline-ness is part of a function
 type, an arrow written where `() => inline Pair` is expected returns
@@ -5223,11 +5223,13 @@ function clamp(s: inline Span, limit: i32): inline Span {
 let w = width(clamp((0, 50), 10)); // nothing is allocated
 ```
 
-An inline parameter or `let` is never put in a heap object. It can be
+An inline parameter, `let` or `var` is never put in a heap object. It can be
 destructured, matched, indexed with a literal, passed for another inline
-parameter, held by another `let`, and returned as an inline result. A `let`
-initialized from one, directly or through an `if` or `match` arm, is inline
-too. Anything
+parameter, held by another `let` or `var`, and returned as an inline result. A
+`let` or `var` initialized from one, directly or through an `if` or `match`
+arm, is inline too. An inline `var` is written with `=`; it cannot be written
+inside a `try` body or after a `using` in its block, where a handler would need
+its value in one place. Anything
 that would box it is an error at that use: storing it, passing it for a
 parameter that is not inline, capturing it in a closure, and `as`. `==`, `!=`
 and `is` compare and test it slot by slot, without boxing it.

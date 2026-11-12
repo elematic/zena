@@ -189,6 +189,21 @@ export final class ExplodedRecord {
   new(this.dispatch, this.values);
 }
 
+/**
+ * How an inline `var` crosses a join (#813, docs/design/inline-parameters.md):
+ * as its slots, one block parameter of `slotTypes` each. `slotsOf` reads
+ * the slots of the env entry the var has, `bind` makes an env entry from
+ * slots, and `write` lowers a value written to the var (its initializer
+ * or an assignment) to an env entry.
+ */
+export final class InlineVar {
+  slotTypes: GrowableArray<ValType>;
+  slotsOf: (entry: i32) => GrowableArray<i32>;
+  bind: (slots: GrowableArray<i32>) => i32;
+  write: (value: Expression) => i32;
+  new(this.slotTypes, this.slotsOf, this.bind, this.write);
+}
+
 export final class LoweringContext {
   b: IrBuilder;
   wasm: WasmModule;
@@ -225,6 +240,36 @@ export final class LoweringContext {
    * needs one value boxes them.
    */
   inlineBindings = new Map<SymbolId, MultiValues>();
+  /**
+   * How each inline `var` crosses a join (#813). Its env entry changes
+   * with every write, and the env is saved and restored around every
+   * branch, so the entry itself carries the current value: a record
+   * held as its fields, or, for slots, `holdSlots`'s handle on one of
+   * `#slotStates`.
+   */
+  inlineVars = new Map<SymbolId, InlineVar>();
+  #slotStates = new Array<MultiValues>();
+
+  /**
+   * An env entry for an inline var holding `slots`: a handle below -1
+   * (lowering.zena's NO_VALUE), so it is never taken for a value id. A
+   * state is never changed after it is recorded, so a restored env sees
+   * the slots it saw when it was saved.
+   */
+  holdSlots(slots: MultiValues): i32 {
+    this.#slotStates.push(slots);
+    return -1 - this.#slotStates.length;
+  }
+
+  /** The slots a `holdSlots` handle stands for. */
+  heldSlots(handle: i32): MultiValues {
+    let index = -2 - handle;
+    if (index < 0 || index >= this.#slotStates.length) {
+      this.fail('inline var handle');
+    }
+    return this.#slotStates[index];
+  }
+
   loops = new Array<LoopCtx>();
   /** Enclosing scopes whose normal-exit drops run before `returnInlineTail` returns. */
   tailExitScopes = new Array<Node>();
@@ -2073,6 +2118,13 @@ export final class LoweringContext {
   addParams(block: i32, syms: GrowableArray<SymbolId>): GrowableArray<i32> {
     let params = new Array<i32>();
     for (let symId in syms) {
+      // An inline var crosses the join as one parameter per slot.
+      if (let (true, iv) = this.inlineVars.get(symId)) {
+        for (let vt in iv.slotTypes) {
+          params.push(this.b.blockParam(block, vt));
+        }
+        continue;
+      }
       // A var held as its fields (ir/explode.zena) crosses the join as
       // one parameter per field.
       if (let (true, d) = this.wasm.fieldHeldVars.get(symId)) {
@@ -2161,6 +2213,15 @@ export final class LoweringContext {
     // so this runs once the join block is current.
     var p = 0;
     for (let symId in syms) {
+      if (let (true, iv) = this.inlineVars.get(symId)) {
+        let slots = new Array<i32>();
+        for (var k = 0; k < iv.slotTypes.length; k += 1) {
+          slots.push(params[p + k]);
+        }
+        p += iv.slotTypes.length;
+        this.env[symId] = iv.bind(slots);
+        continue;
+      }
       if (let (true, d) = this.wasm.fieldHeldVars.get(symId)) {
         let values = new Array<i32>();
         for (var k = 0; k < d.fields.length; k += 1) {
@@ -2188,6 +2249,13 @@ export final class LoweringContext {
       // can leave the current value at a different nullability than
       // the binding. conformToBinding re-asserts or downcasts; exact
       // matches pass through untouched.
+      if (let (true, iv) = this.inlineVars.get(symId)) {
+        let slots = iv.slotsOf(this.env[symId]);
+        for (var k = 0; k < slots.length; k += 1) {
+          values.push(this.conformToSlot(slots[k], iv.slotTypes[k], 'inline var slot'));
+        }
+        continue;
+      }
       if (let (true, d) = this.wasm.fieldHeldVars.get(symId)) {
         for (let v in this.heldFields(d, this.env[symId])) {
           values.push(v);

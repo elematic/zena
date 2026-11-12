@@ -42,11 +42,12 @@ Allowed positions in this round:
   method signature;
 - a `let` local, written `let q: inline Span = ...`, or initialized from
   another inline binding (`let q = s` keeps `q` inline), directly or
-  from an arm of an `if` or `match` (`let q = if (c) s else t`).
+  from an arm of an `if` or `match` (`let q = if (c) s else t`);
+- a `var` local, the same ways, whose slots cross joins
+  ([Inline `var`s](#inline-vars)).
 
 Not in this round, each an error that says so:
 
-- a `var` local, which would need its slots carried through joins;
 - `inline? T` on a parameter;
 - a function type with an inline parameter, a closure with one, and
   using a function that has one as a value. Converting between
@@ -62,9 +63,9 @@ An inline binding is only read or passed on. Each use of one is one of:
 - **a read:** destructuring (`let (a, b) = s`), a pattern (`if let`,
   `match`), an index with a literal (`s[0]`), a field read (`r.x`);
 - **a forward:** an argument for an `inline` parameter, the initializer
-  of a `let`, which is then inline too, a returned value when the
-  function's result is inline, or an arm of an `if` or `match` in one of
-  these positions;
+  of a `let` or `var`, which is then inline too, the value assigned to
+  an inline `var`, a returned value when the function's result is
+  inline, or an arm of an `if` or `match` in one of these positions;
 - **a discard:** an expression statement.
 
 Anything else would box the value, and is an error at that use: storing
@@ -299,3 +300,37 @@ field and type, and the literal field is a discriminant path.
 
 A member cannot have optional fields, whose presence words have no
 position here, or inline fields, yet.
+
+## Inline `var`s
+
+A `var` can be inline (#813), written `var v: inline Span = ...` or
+initialized from another inline binding, as a `let` can. Writing it
+replaces its value, and its value crosses every join its writes reach
+(loop headers, the arms of an `if` or `match`, `break` and `continue`) as
+one block parameter per slot. That is the machinery argument explosion
+uses for a record `var` held as its fields (argument-explosion.md, Held
+vars). Here it is required rather than chosen, and it covers tuples and
+unions as well as records.
+
+- **The rule:** writing the `var` (`v = e`) is a use of `v` that passes
+  `e` on, so `e` may be another inline binding. A compound assignment is
+  an error. So is capturing it in a closure, which needs the value in a
+  cell, and assigning it inside a `try` body or after a `using` in its
+  block: a handler edge leaves from anywhere in the region and can carry
+  only one value per binding, so the region mirrors each binding it
+  assigns into one wasm local (ir.md §5.1.1).
+- **Lowering:** an `InlineVar` (lowering-context.zena) says how the
+  binding crosses a join: its slot types, how to read the slots of the
+  value the env holds, how to bind that value from slots, and how to
+  lower a write. `addParams`, `envValues` and `applyParams` consult it.
+  An inline record's env entry is a record held as its fields, as an
+  inline record `let` binds, and one with inline fields is held as its
+  leaves' slots. A tuple or union has no single value to put in the env,
+  and the env is saved and restored around every branch, so its entry is
+  a handle below `NO_VALUE` on a recorded `MultiValues` that is never
+  changed afterwards (`holdSlots`, `heldSlots`). A restored env then
+  sees the slots it saw when it was saved.
+
+A boxed `var` assigned an inline value holds it boxed. Its flow type after
+the store is its declared type, as for a record or tuple, so a later
+read is not taken for the inline value.

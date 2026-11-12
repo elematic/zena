@@ -64,7 +64,7 @@ function escapes(s: inline Span): Span {
   boxed(s); // @error: 's' is inline, so it is only read or passed on: passing it for a parameter that is not inline would box it.
   let b = new Box<Span>(s); // @error: 's' is inline, so it is only read or passed on: passing it for a parameter that is not inline would box it.
   let all = [s]; // @error: 's' is inline, so it is only read or passed on: putting it in an array would box it.
-  var held = s; // @error: 's' is inline, so it is only read or passed on: holding it in a 'var' would box it.
+  var held: Span = s; // @error: 's' is inline, so it is only read or passed on: holding it in a 'var' would box it.
   let f = () => s[0]; // @error: 's' is inline, so it is only read or passed on: capturing it in a closure would box it.
   return s; // @error: 's' is inline, so it is only read or passed on: returning it as a boxed result would box it.
 }
@@ -90,10 +90,27 @@ function defaulted(s: inline Span = (0, 0)): i32 { // @error: An inline paramete
 // A function that takes one is called, not used as a value.
 let asValue = width; // @error: A function that takes a parameter inline is called directly, not used as a value: adapting it to a boxed parameter is not supported yet (#543).
 
-// A `var` or a module-level `let` cannot be inline.
-let global: inline Span = (1, 2); // @error: An inline type can only be a function's result, a parameter or a 'let', not here.
-function locals(): void {
-  var v: inline Span = (1, 2); // @error: An inline type can only be a function's result, a parameter or a 'let', not here.
+// A module-level `let` cannot be inline: it is a global.
+let global: inline Span = (1, 2); // @error: An inline type can only be a function's result, a parameter or a local, not here.
+
+// A `var` can (#813): its slots cross joins. One that forwards an inline
+// binding is inline itself, like a `let`. Writing it replaces its slots.
+function locals(s: inline Span, n: i32): i32 {
+  var v: inline Span = (1, 2);
+  var w = s;
+  for (var i = 0; i < n; i += 1) {
+    v = (v[1], v[0] + i);
+    w = v;
+  }
+  var boxedVar: Span = (0, 0);
+  boxedVar = w; // @error: 'w' is inline, so it is only read or passed on: assigning it would box it.
+  try {
+    v = s; // @error: 'v' is an inline 'var', so it cannot be assigned inside a 'try' or after a 'using': its handler would need the value in one place.
+  } finally {
+    w = s;
+  }
+  let read = () => v[0]; // @error: 'v' is inline, so it is only read or passed on: capturing it in a closure would box it.
+  return width(v) + w[0];
 }
 
 // Inline-ness is part of a method's signature.

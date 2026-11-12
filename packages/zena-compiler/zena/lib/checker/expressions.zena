@@ -30,7 +30,10 @@ import { WellKnown, isWellKnown, wellKnownName } from '../well-known.zena';
 import {
   adaptArmToContext, adaptCoalescedArm, adaptJoinedArm, adaptToExpected, armValueNode, boxForTemplateValue, checkAndRegisterInterfaceAdaptation, noteExistentialComparison
 } from './adaptation.zena';
-import { inlineRecordOf, inlineRecordUnionBoxed, noteFieldsBesideRow, reportTwoRows, resolveTypeAnnotation } from './annotations.zena';
+import {
+  inlineRecordOf, inlineRecordUnionBoxed, isInlineType, noteFieldsBesideRow, reportTwoRows,
+  resolveTypeAnnotation,
+} from './annotations.zena';
 import { checkCallExpression, checkNewExpression } from './calls.zena';
 import { CheckerContext } from './context.zena';
 import { checkFunctionExpression } from './functions.zena';
@@ -623,14 +626,16 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     // once, so the walk never re-checks assignability. Structural types
     // are stored ADAPTED — the value in the slot has the declared
     // type's representation, not the source expression's — so they
-    // keep the declared type.
+    // keep the declared type. So does any inline value, a union of
+    // inline tuples included: a boxed `var` holds it boxed.
     match (left) {
       case Identifier: {
         let info = ctx.model.resolve(left);
         if (info != null) {
           let unwrappedEffective = unwrapAliases(effectiveType);
           let structural = unwrappedEffective is RecordT ||
-            unwrappedEffective is TupleT || unwrappedEffective is InlineTupleT;
+            unwrappedEffective is TupleT || unwrappedEffective is InlineTupleT ||
+            isInlineType(effectiveType);
           let stored = if (!structural &&
               isAssignableTo(ctx, effectiveType, leftType)) {
             effectiveType

@@ -1,0 +1,24 @@
+// @mode: run
+// @result: 3
+// A `var` holding a function's inline union result is boxed, so after a
+// store it reads as its declared, boxed type, not the stored value's
+// inline one: `is` and `match` on it test the box.
+
+function parse(n: i32): inline (true, i32) | (false, String) {
+  return if (n >= 0) (true, n) else (false, 'negative');
+}
+
+export let main = (): i32 => {
+  var result = parse(0);
+  result = parse(-1);
+  var found = 0;
+  if (result is (false, String)) {
+    found += 1;
+  }
+  result = parse(4);
+  found += match (result) {
+    case (true, let v): if (v == 4) 2 else 0
+    case (false, _): 0
+  };
+  return found;
+};
