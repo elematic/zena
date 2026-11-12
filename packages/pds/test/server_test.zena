@@ -4,6 +4,7 @@ import { Future } from 'zena:async';
 import { hex } from 'zena:encoding';
 import { App, Request, Response } from 'zena:http';
 import { JsonArray, JsonObject, parseJson } from 'zena:json';
+import { Stream, readAllBytes } from 'zena:stream';
 import { readCar } from 'atproto/car';
 import { Cid } from 'atproto/cid';
 import { MapValue, StringValue, newMap, stringField } from 'atproto/data';
@@ -138,6 +139,40 @@ export let tests = suite('pds/server', () => {
     let missing = Cid.forBlob('bye'.toBytes()).toString();
     equal(errorOf(await getFrom(app, `/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=${missing}`)), 'BlobNotFound');
     equal(errorOf(await getFrom(app, `/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=nonsense`)), 'InvalidRequest');
+  });
+
+  test('sync.getBlob streams a blob larger than one read, a range at a time', async (ctx) => {
+    let pds = new Pds(new MemoryStorage());
+    await pds.createAccount(DID, 'alice.test', KEY, NOW);
+    let bytes = new FixedArray<u8>(2500000, 0 as u8);
+    for (var i = 0; i < bytes.length; i += 1) {
+      bytes[i] = (i % 251) as u8;
+    }
+    let cid = Cid.forBlob(bytes);
+    await pds.storage.store(DID).putBlob(cid, new StoredBlob('application/gzip', bytes));
+    let res = await getFrom(createApp(pds), `/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=${cid.toString()}`);
+    equal(res.statusCode, 200);
+    equal(res.type as String, 'application/gzip');
+    // Never the whole blob in memory at once, however large it is.
+    let body = res.body;
+    isTrue(body is Stream<u8>, 'a stream');
+    let read = await readAllBytes(body as Stream<u8>);
+    equal(read.length, bytes.length);
+    equal(Cid.forBlob(read).toString(), cid.toString());
+
+    // As is a large range, such as everything from a byte on.
+    let headers: Map<String, String> = {'range' => 'bytes=1000-'};
+    let ranged = new Response();
+    await createApp(pds).handleRequest(new Request.fromUrl(
+        `http://localhost/xrpc/com.atproto.sync.getBlob?did=${DID}&cid=${cid.toString()}`, 'GET', headers), ranged);
+    equal(ranged.statusCode, 206);
+    equal(ranged.getHeader('content-range') ?? '', 'bytes 1000-2499999/2500000');
+    let part = ranged.body;
+    isTrue(part is Stream<u8>, 'a stream for the range');
+    let rest = await readAllBytes(part as Stream<u8>);
+    equal(rest.length, bytes.length - 1000);
+    equal(rest[0] as i32, 1000 % 251);
+    equal(rest[rest.length - 1] as i32, (bytes.length - 1) % 251);
   });
 
   test('sync.getBlob answers a Range with that part of the blob', async (ctx) => {
