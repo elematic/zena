@@ -62,8 +62,8 @@ import { walk } from '../../visitor.zena';
 import { lowerContractClause } from './contracts.zena';
 import { lowerIntrinsic } from './intrinsics.zena';
 import {
-  ExplodedRecord, LetCondBinds, LoweringContext, MergeState, ResultSlots, ZirUnsupported,
-  noValues, oneValue, repackInterfaceValue,
+  ExplodedRecord, InlineVar, LetCondBinds, LoweringContext, MergeState, ResultSlots,
+  ZirUnsupported, noValues, oneValue, repackInterfaceValue,
 } from './lowering-context.zena';
 import { lowerBigIntLiteral, lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
 import {
@@ -4512,6 +4512,22 @@ export final class FunctionLowerer {
     }
     let subBinding = substituteTypeParamsInFunctionContext(
         this.wasm, this.func, bindingType);
+    // An inline `var` crosses joins as its slots (#813).
+    if (vd.kind == 'var') {
+      let iv = this.#inlineVarOf(bindingType, subBinding);
+      if (iv != null) {
+        if (this.#isCelled(sym.id)) {
+          this.#bail('inline var is celled');
+        }
+        // Lowered before the env is named: an `if` or `match` value
+        // replaces the env when it merges.
+        let entry = iv.write(vd.init);
+        this.#cx().inlineVars[sym.id] = iv;
+        this.#cx().symbols[sym.id] = sym;
+        this.#cx().env[sym.id] = entry;
+        return;
+      }
+    }
     // An inline `let` holds its initializer's slots
     // (docs/design/inline-parameters.md).
     let inlineLayout = inlineParamLayoutOf(this.wasm, subBinding);
@@ -4592,6 +4608,50 @@ export final class FunctionLowerer {
   }
 
   /** The dispatch of a `var` held as its fields (ir/explode.zena), or null. */
+  /**
+   * How a `var` of type `bindingType` (`subBinding` substituted) crosses
+   * joins when its type is inline (#813), or null when it is not: an
+   * inline tuple or union as its slots, an inline record as its fields,
+   * and an inline record with inline fields as its leaves' slots. Each
+   * env entry is what the matching inline `let` binds: slots, or a
+   * record held as them.
+   */
+  #inlineVarOf(bindingType: Type, subBinding: Type): InlineVar | null {
+    let cx = this.#cx();
+    let layout = inlineParamLayoutOf(this.wasm, subBinding);
+    if (layout != null) {
+      return new InlineVar(layout.slots,
+          (entry) => cx.heldSlots(entry).values,
+          (slots) => cx.holdSlots(new MultiValues(slots, layout)),
+          (value) => cx.holdSlots(new MultiValues(
+              this.#lowerIntoSlots(value, layout, layout.slots), layout)));
+    }
+    let record = inlineRecordParamOf(subBinding);
+    if (record == null) {
+      return null;
+    }
+    let param = this.#inlineParamOf(bindingType, this.func) as InlineParam;
+    let d = param.dispatch as RecordDispatchInfo;
+    let leafLayout = param.layout;
+    if (leafLayout != null) {
+      return new InlineVar(leafLayout.slots,
+          (entry) => this.#leavesToSlots(record, leafLayout,
+              this.#recordValueLeaves(entry, record)),
+          (slots) => this.#heldRecordFromSlots(record, leafLayout, slots),
+          (value) => this.#heldRecordFromSlots(record, leafLayout,
+              this.#leavesToSlots(record, leafLayout,
+                  this.#recordExprLeaves(value, record))));
+    }
+    let fieldTypes = new Array<ValType>();
+    for (let field in d.fields) {
+      fieldTypes.push(field.type);
+    }
+    return new InlineVar(fieldTypes,
+        (entry) => cx.heldFields(d, entry),
+        (fields) => cx.heldRecord(d, fields),
+        (value) => cx.heldRecord(d, this.#recordArgFields(value, d, record)));
+  }
+
   #heldVarDispatch(symId: SymbolId): RecordDispatchInfo | null {
     if (let (true, d) = this.wasm.fieldHeldVars.get(symId)) {
       return d;
@@ -11848,6 +11908,19 @@ export final class FunctionLowerer {
       }
       this.#bail('non-local assignment target');
     }
+    // Writing an inline var replaces its slots (#813). The checker allows
+    // neither a compound write nor one a handler protects, so no mirror
+    // variable has to see it, and the assignment's value is never read.
+    if (let (true, iv) = this.#cx().inlineVars.get(resolved.id)) {
+      if (assign.operator != null) {
+        this.#bail('compound assignment to an inline var');
+      }
+      // Lowered before the env is named: an `if` or `match` value
+      // replaces the env when it merges.
+      let entry = iv.write(assign.value);
+      this.#cx().env[resolved.id] = entry;
+      return NO_VALUE;
+    }
     let celled = this.#isCelled(resolved.id);
     var value = -1;
     let {operator} = assign;
@@ -12335,7 +12408,11 @@ export final class FunctionLowerer {
     return fields;
   }
 
-  /** The slots of the inline parameter or `let` `e` names, or null. */
+  /**
+   * The slots of the inline parameter, `let` or `var` `e` names, or null.
+   * An inline record binds a record held as its fields instead, which
+   * every read of it answers from.
+   */
   #heldInline(e: Expression): MultiValues | null {
     if (!(e is Identifier)) {
       return null;
@@ -12345,7 +12422,16 @@ export final class FunctionLowerer {
       return null;
     }
     let id = sym.resolveTarget().id;
-    return if (let (true, source) = this.#cx().inlineBindings.get(id)) source else null;
+    if (let (true, source) = this.#cx().inlineBindings.get(id)) {
+      return source;
+    }
+    if (this.#cx().inlineVars.has(id)) {
+      let entry = this.#cx().env[id];
+      if (entry < NO_VALUE) {
+        return this.#cx().heldSlots(entry);
+      }
+    }
+    return null;
   }
 
   /** How a parameter of this function is passed when it is inline, or null. */

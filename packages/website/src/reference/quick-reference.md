@@ -541,13 +541,22 @@ shallow: in `inline (i32, (i32, i32))` the inner tuple is still boxed, and
 `inline (i32, inline {x: i32, y: i32})`, and so does an inline field of an
 inline record: `inline {pos: inline {x: i32, y: i32}, id: i32}`.
 
-A parameter or a `let` in a function body can be inline too. It is passed as
-its slots and can only be read or passed on to another inline position:
+A parameter, a `let` or a `var` in a function body can be inline too. It is
+passed as its slots and can only be read or passed on to another inline
+position:
 
 ```zena
 function width(s: inline (i32, i32)): i32 {
   let (start, end) = s;
   return end - start;
+}
+
+function fib(n: i32): i32 {
+  var pair: inline (i32, i32) = (0, 1);
+  for (var i = 0; i < n; i += 1) {
+    pair = (pair[1], pair[0] + pair[1]); // no tuple is allocated
+  }
+  return pair[0];
 }
 ```
 

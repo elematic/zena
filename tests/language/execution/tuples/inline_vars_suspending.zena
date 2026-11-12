@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 11235071
+// An inline `var` (#813) in a generator and in an async function: its
+// slots cross the suspensions as well as the loop's joins.
+import { Future, Completer } from 'zena:async';
+
+let pairs = gen (n: i32): Iterator<i32> => {
+  var pos: inline (i32, i32) = (0, 1);
+  for (var i = 0; i < n; i += 1) {
+    yield pos[0];
+    pos = (pos[1], pos[0] + pos[1]);
+  }
+};
+
+let later = async (c: Completer<i32>): Future<i32> => {
+  var pos: inline (i32, i32) = (1, 2);
+  let v = await c.future;
+  pos = (pos[1] + v, pos[0]);
+  return pos[0] * 10 + pos[1];
+};
+
+export let main = async (): Future<i32> => {
+  // 0, 1, 1, 2, 3, 5
+  var s = 0;
+  for (let v in pairs(6)) {
+    s = s * 10 + v;
+  }
+  let c = new Completer<i32>();
+  let f = later(c);
+  c.complete(5);
+  // (2 + 5, 1)
+  return s * 1000 + await f;
+};

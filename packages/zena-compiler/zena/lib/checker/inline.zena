@@ -13,8 +13,8 @@ import {
   BlockStatement, CallExpression, Expression, PropertyAssignment, TupleLiteral,
   ExpressionStatement, FunctionExpression, Identifier, IdentifierPattern, IfExpression,
   IndexExpression, IsExpression, LetPatternCondition, MatchCase,
-  MatchExpression, MemberExpression, NewExpression, Node, ReturnStatement,
-  VariableDeclaration,
+  MatchExpression, MemberExpression, MethodDefinition, NewExpression, Node,
+  ReturnStatement, TryExpression, UsingStatement, VariableDeclaration, BindingPattern,
 } from '../ast.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { ClassType, FunctionType, InlineTupleType, Type } from '../types.zena';
@@ -164,6 +164,42 @@ function checkInlineReference(ctx: CheckerContext, ref: Identifier, result: Type
       ref.loc
     );
   }
+  let parent = ctx.model.getParent(ref);
+  if (parent is AssignmentExpression && parent.left === ref && inProtectedRegion(ctx, ref)) {
+    ctx.error(
+      `'${ref.name}' is an inline 'var', so it cannot be assigned inside a 'try' or after a 'using': its handler would need the value in one place.`,
+      DiagnosticCode.TypeMismatch,
+      ref.loc
+    );
+  }
+}
+
+/**
+ * Whether `node` is in a region an exception handler protects, in its own
+ * function: a `try` body, or the statements after a `using` in its block,
+ * which release the resource the way a `finally` would.
+ */
+function inProtectedRegion(ctx: CheckerContext, node: Node): boolean {
+  var child = node;
+  var p = ctx.model.getParent(node);
+  while (p != null && !(p is FunctionExpression) && !(p is MethodDefinition)) {
+    if (p is TryExpression && (p.body as Node) === child) {
+      return true;
+    }
+    if (p is BlockStatement) {
+      for (let statement in p.body) {
+        if ((statement as Node) === child) {
+          break;
+        }
+        if (statement is UsingStatement) {
+          return true;
+        }
+      }
+    }
+    child = p;
+    p = ctx.model.getParent(p);
+  }
+  return false;
 }
 
 /**
@@ -179,7 +215,8 @@ function boxingUse(ctx: CheckerContext, node: Node, result: Type | null): String
     case VariableDeclaration {kind, pattern, init}: {
       if (init !== node) {
         "this use"
-      } else if (kind == "var" && pattern is IdentifierPattern) {
+      } else if (kind == "var" && pattern is IdentifierPattern &&
+          !isInlineVar(ctx, pattern)) {
         "holding it in a 'var'"
       } else {
         null
@@ -218,9 +255,43 @@ function boxingUse(ctx: CheckerContext, node: Node, result: Type | null): String
     case ArrayLiteral {}: "putting it in an array"
     case TupleLiteral {}: tupleElementUse(ctx, parent, node, result)
     case PropertyAssignment {}: "putting it in a record"
-    case AssignmentExpression {}: "assigning it"
+    // Writing an inline `var` replaces its slots; writing an inline value
+    // into one passes it on.
+    case AssignmentExpression {left, value, operator}: {
+      if (operator != null) {
+        "this use"
+      } else if (left === node) {
+        null
+      } else if (value === node && left is Identifier && isInlineVar(ctx, left)) {
+        null
+      } else {
+        "assigning it"
+      }
+    }
     case _: "this use"
   };
+}
+
+/** Whether `name` is, or names, a `var` of an inline type. */
+function isInlineVar(ctx: CheckerContext, name: Node): boolean {
+  let sym = if (name is Identifier) ctx.model.resolve(name)
+      else ctx.model.resolveDeclaration(name);
+  if (sym == null) {
+    return false;
+  }
+  let t = ctx.model.getBindingType(sym);
+  let decl = sym.declaration;
+  return t != null && isInlineType(t) && !(t is FunctionType) &&
+      decl != null && declaresVar(ctx, decl);
+}
+
+/** Whether the binding `decl` names is declared by a `var`. */
+function declaresVar(ctx: CheckerContext, decl: Node): boolean {
+  var p = ctx.model.getParent(decl);
+  if (p is BindingPattern) {
+    p = ctx.model.getParent(p);
+  }
+  return p is VariableDeclaration && p.kind == "var";
 }
 
 /**

@@ -1,0 +1,143 @@
+// @mode: run
+// @result: 0
+// An inline `var` (#813) carries its slots through every join its writes
+// reach: loop headers, both arms of an `if`, the arms of a `match`,
+// `break` and `continue`, and nested loops. It can hold an inline tuple,
+// a union of tuples, a record, and a record with an inline field, and be
+// written a literal, a call's inline result, another inline binding, or
+// an `if` or `match`.
+
+type Vec = {x: i32, y: i32};
+type Sprite = inline {pos: inline Vec, id: i32};
+
+function step(p: inline (i32, i32)): inline (i32, i32) {
+  return (p[0] + p[1], p[1] + 1);
+}
+
+function parse(n: i32): inline (true, i32) | (false, String) {
+  return if (n >= 0) (true, n) else (false, 'negative');
+}
+
+function fib(n: i32): i32 {
+  var pair: inline (i32, i32) = (0, 1);
+  for (var i = 0; i < n; i += 1) {
+    pair = (pair[1], pair[0] + pair[1]);
+  }
+  return pair[0];
+}
+
+function walk(n: i32): i32 {
+  var pos: inline (i32, i32) = (0, 1);
+  var i = 0;
+  while (true) {
+    if (i >= n) {
+      break;
+    }
+    i += 1;
+    if ((i & 1) == 0) {
+      continue;
+    }
+    pos = step(pos);
+  }
+  let (x, y) = pos;
+  return x * 100 + y;
+}
+
+function branches(n: i32): i32 {
+  var pos: inline (i32, i32) = (1, 2);
+  for (var i = 0; i < n; i += 1) {
+    if ((i & 1) == 0) {
+      pos = (pos[1], pos[0]);
+    } else {
+      pos = match (i) {
+        case 1: (pos[0] + 10, pos[1])
+        case _: step(pos)
+      };
+    }
+  }
+  return pos[0] * 1000 + pos[1];
+}
+
+function nested(): i32 {
+  var pos: inline (i32, i32) = (0, 0);
+  for (var a = 0; a < 3; a += 1) {
+    for (var b = 0; b < 3; b += 1) {
+      pos = step(pos);
+    }
+    pos = (pos[1], pos[0]);
+  }
+  return pos[0] * 1000 + pos[1];
+}
+
+function lastValid(inputs: Array<i32>): i32 {
+  var result = parse(0);
+  for (let n in inputs) {
+    let r = parse(n);
+    if (let (true, v) = r) {
+      result = (true, v);
+    }
+  }
+  return match (result) {
+    case (true, let v): v
+    case (false, _): -1
+  };
+}
+
+function firstError(inputs: Array<i32>): String {
+  var result = parse(0);
+  for (let n in inputs) {
+    result = parse(n);
+    if (result is (false, String)) {
+      break;
+    }
+  }
+  return match (result) {
+    case (true, _): 'none'
+    case (false, let message): message
+  };
+}
+
+function records(n: i32): i32 {
+  var v: inline Vec = {x: 0, y: 1};
+  for (var i = 0; i < n; i += 1) {
+    v = {x: v.x + v.y, y: v.y + 1};
+  }
+  return v.x * 100 + v.y;
+}
+
+function sprites(n: i32): i32 {
+  var s: Sprite = {pos: {x: 0, y: 0}, id: 7};
+  for (var i = 0; i < n; i += 1) {
+    s = if ((i & 1) == 0) ({pos: {x: s.pos.x + 1, y: s.pos.y}, id: s.id})
+        else ({pos: {x: s.pos.x, y: s.pos.y + 2}, id: s.id + 1});
+  }
+  return s.pos.x * 10000 + s.pos.y * 100 + s.id;
+}
+
+function forwarded(p: inline (i32, i32), n: i32): i32 {
+  var q = p;
+  for (var i = 0; i < n; i += 1) {
+    q = step(q);
+  }
+  return q[0] + q[1];
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (fib(10) != 55) { failures += 1; }
+  // Steps on i = 1, 3, 5: (0,1) -> (1,2) -> (3,3) -> (6,4)
+  if (walk(6) != 604) { failures += 2; }
+  // i0 swap (2,1); i1 +10 (12,1); i2 swap (1,12); i3 step (13,13)
+  if (branches(4) != 13013) { failures += 4; }
+  // Each outer round: three steps, then a swap.
+  if (nested() != 18054) { failures += 8; }
+  if (lastValid([3, -1, 5, -2]) != 5) { failures += 16; }
+  if (firstError([1, 2, -3, 4]) != 'negative' || firstError([1]) != 'none') { failures += 32; }
+  // x: 0, 1, 3, 6, 10 with y: 1..5
+  if (records(4) != 1005) { failures += 64; }
+  // i0 x+1; i1 y+2, id 8; i2 x+1; i3 y+2, id 9
+  if (sprites(4) != 20409) { failures += 128; }
+  // (1, 1) -> (2, 2) -> (4, 3)
+  if (forwarded((1, 1), 2) != 7) { failures += 256; }
+  return failures;
+};
