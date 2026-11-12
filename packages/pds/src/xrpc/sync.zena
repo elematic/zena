@@ -7,12 +7,21 @@
  * request names.
  */
 
+import {Future} from 'zena:async';
 import {Router} from 'zena:http';
 import {JsonObject} from 'zena:json';
+import {StreamWriter} from 'zena:stream';
 import {Cid} from 'atproto/cid';
 import {SYNC_GET_BLOB, SYNC_GET_LATEST_COMMIT, SYNC_GET_RECORD, SYNC_GET_REPO, xrpcPath} from 'atproto/methods';
 import {Pds} from '../pds.zena';
+import {AccountStore} from '../storage.zena';
 import {accountFor, fail, json, parseCid, required} from './common.zena';
+
+/** How much of a blob `sync.getBlob` reads at a time. */
+let BLOB_CHUNK = (1024 * 1024) as i64;
+
+/** The longest range a `Range` without a last byte asks for. */
+let TO_THE_END: i64 = 0x7fffffffffffffff;
 
 /** Adds the `com.atproto.sync` routes for the accounts in `pds`. */
 export function syncRoutes(router: Router, pds: Pds): void {
@@ -86,39 +95,69 @@ export function syncRoutes(router: Router, pds: Pds): void {
     res.setHeader('content-security-policy', "default-src 'none'; sandbox");
     res.setHeader('x-content-type-options', 'nosniff');
     let store = pds.storage.store(account.did);
+    // A range, or the whole blob, is read a `BLOB_CHUNK` at a time, so that
+    // no blob is ever in memory whole: anyone may ask for any blob, as
+    // often as they like.
     let range = byteRange(req.getHeader('range'));
+    let first = range?.first ?? (0 as i64);
+    let wanted = range?.length ?? TO_THE_END;
+    let head = await store.getBlobRange(cid, first, if (wanted < BLOB_CHUNK) wanted else BLOB_CHUNK);
+    if (head == null) {
+      fail(res, 400, 'BlobNotFound', 'Blob not found');
+      return;
+    }
+    // Where what is asked for ends: the blob's end, for a range past it.
+    let end = if (wanted >= head.size - first) head.size else first + wanted;
     if (range != null) {
-      let first = range.first;
-      let part = await store.getBlobRange(cid, first, range.length);
-      if (part == null) {
-        fail(res, 400, 'BlobNotFound', 'Blob not found');
-        return;
-      }
-      if (first >= part.size) {
+      if (first >= head.size) {
         res.statusCode = 416;
-        res.setHeader('content-range', `bytes */${part.size}`);
+        res.setHeader('content-range', `bytes */${head.size}`);
         res.body = new FixedArray<u8>(0, 0 as u8);
         return;
       }
       res.statusCode = 206;
-      res.type = part.mimeType;
-      res.setHeader('content-range', `bytes ${first}-${first + (part.bytes.length as i64) - (1 as i64)}/${part.size}`);
-      res.body = part.bytes;
+      res.setHeader('content-range', `bytes ${first}-${end - (1 as i64)}/${head.size}`);
+    } else {
+      res.setHeader('accept-ranges', 'bytes');
+    }
+    res.type = head.mimeType;
+    if (first + (head.bytes.length as i64) >= end) {
+      res.body = head.bytes;
       return;
     }
-    let blob = await store.getBlob(cid);
-    if (blob == null) {
-      fail(res, 400, 'BlobNotFound', 'Blob not found');
-      return;
-    }
-    res.type = blob.mimeType;
-    res.setHeader('accept-ranges', 'bytes');
-    res.body = blob.bytes;
+    let writer = new StreamWriter<u8>();
+    res.body = writer.stream;
+    sendRest(store, cid, head.bytes, first + (head.bytes.length as i64), end, writer);
   });
 }
 
-/** The longest range a `Range` without a last byte asks for. */
-let TO_THE_END: i64 = 0x7fffffffffffffff;
+/**
+ * Writes `head`, and then the blob `cid` from `offset` up to `end` a
+ * `BLOB_CHUNK` at a time, to `writer`, and closes it: early, when the
+ * reader stops or a read fails, which ends the response short.
+ */
+async function sendRest(store: AccountStore, cid: Cid, head: FixedArray<u8>, offset: i64, end: i64,
+    writer: StreamWriter<u8>): Future<void> {
+  try {
+    if (!(await writer.writeAll(head))) {
+      return;
+    }
+    var next = offset;
+    while (next < end) {
+      let left = end - next;
+      let part = await store.getBlobRange(cid, next, if (left < BLOB_CHUNK) left else BLOB_CHUNK);
+      if (part == null || part.bytes.length == 0) {
+        return;
+      }
+      if (!(await writer.writeAll(part.bytes))) {
+        return;
+      }
+      next += part.bytes.length as i64;
+    }
+  } finally {
+    writer.close();
+  }
+}
 
 /** A range of bytes a `Range` header asks for: `length` bytes from `first`. */
 class ByteRange(first: i64, length: i64)
