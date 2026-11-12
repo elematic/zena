@@ -1,0 +1,149 @@
+/**
+ * Release version validation, changelog note extraction, and Windows host
+ * path normalization.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {readFile} from 'zena:fs';
+import {
+  checkReleaseTags,
+  checkVersionIncrement,
+  extractChangelogNotes,
+  parseReleaseVersion,
+} from '../dev/release-version.zena';
+import {CLI_VERSION} from '../zena/versions.zena';
+import {normalizeHostPath} from '../zena/env.zena';
+
+function rejectsParse(text: String): boolean {
+  try {
+    parseReleaseVersion(text);
+    return false;
+  } catch (e) {
+    return true;
+  }
+}
+
+export let tests = suite('release version checks and host paths', () => {
+  test('accepts stable versions and integer preview tags, and rejects others', (ctx) => {
+    equal(parseReleaseVersion('0.0.1-preview.1').toString(), '0.0.1-preview.1');
+    equal(
+      parseReleaseVersion('0.0.1-preview.20261112').toString(),
+      '0.0.1-preview.20261112',
+    );
+    equal(parseReleaseVersion('0.1.0').toString(), '0.1.0');
+    equal(parseReleaseVersion('1.2.3').toString(), '1.2.3');
+
+    isTrue(rejectsParse('0.0.1-alpha.1'), 'non-preview tag');
+    isTrue(rejectsParse('0.0.1-preview'), 'missing preview number');
+    isTrue(rejectsParse('0.0.1-preview.1.2'), 'extra dot segment');
+    isTrue(rejectsParse('0.0.1-preview.01'), 'leading zero');
+    isTrue(rejectsParse('0.0.1-preview.abc'), 'non-numeric preview tag');
+    isTrue(rejectsParse('0.0.1+build.1'), 'build metadata');
+  });
+
+  test('allows initial release and refuses duplicate tags', (ctx) => {
+    let initial = parseReleaseVersion('0.0.1-preview.1');
+    equal(checkReleaseTags([], initial), null);
+    equal(checkReleaseTags(['pre-rebase-158', ''], initial), null);
+
+    let duplicate = checkReleaseTags(
+      ['pre-rebase-158', 'v0.0.1-preview.1'],
+      initial,
+    );
+    isTrue(
+      duplicate != null && duplicate.contains('already been released'),
+      'duplicate tag',
+    );
+
+    // Even when a newer tag exists, re-releasing an earlier tag is refused.
+    let oldDuplicate = checkReleaseTags(
+      ['v0.0.1-preview.1', 'v0.0.1-preview.2'],
+      initial,
+    );
+    isTrue(
+      oldDuplicate != null && oldDuplicate.contains('already been released'),
+      're-releasing an older tag',
+    );
+  });
+
+  test('enforces major, minor, patch, and preview increment rules', (ctx) => {
+    let p1 = parseReleaseVersion('0.0.1-preview.1');
+    let p2 = parseReleaseVersion('0.0.1-preview.2');
+    let p10 = parseReleaseVersion('0.0.1-preview.10');
+    let s001 = parseReleaseVersion('0.0.1');
+    let s002p1 = parseReleaseVersion('0.0.2-preview.1');
+    let s002 = parseReleaseVersion('0.0.2');
+    let s003 = parseReleaseVersion('0.0.3');
+    let s010p1 = parseReleaseVersion('0.1.0-preview.1');
+    let s010 = parseReleaseVersion('0.1.0');
+    let s011 = parseReleaseVersion('0.1.1');
+    let s020 = parseReleaseVersion('0.2.0');
+    let s100p1 = parseReleaseVersion('1.0.0-preview.1');
+    let s100 = parseReleaseVersion('1.0.0');
+    let s101 = parseReleaseVersion('1.0.1');
+    let s110 = parseReleaseVersion('1.1.0');
+    let s200 = parseReleaseVersion('2.0.0');
+
+    // Preview advances by any positive amount, or graduates to M.m.p.
+    equal(checkVersionIncrement(p1, p2), null);
+    equal(checkVersionIncrement(p2, p10), null);
+    equal(checkVersionIncrement(p10, s001), null);
+    isTrue(checkVersionIncrement(p10, p2) != null, 'preview backwards');
+    isTrue(checkVersionIncrement(s001, p10) != null, 'stable back to preview');
+
+    // Patch increments by 1 (stable or preview), never skipping.
+    equal(checkVersionIncrement(s001, s002p1), null);
+    equal(checkVersionIncrement(s001, s002), null);
+    equal(checkVersionIncrement(p2, s002p1), null);
+    isTrue(checkVersionIncrement(s001, s003) != null, 'skipped patch');
+
+    // Minor increments by 1 and resets patch to 0.
+    equal(checkVersionIncrement(s002, s010p1), null);
+    equal(checkVersionIncrement(s002, s010), null);
+    isTrue(checkVersionIncrement(s002, s011) != null, 'minor bump kept patch');
+    isTrue(checkVersionIncrement(s002, s020) != null, 'skipped minor');
+
+    // Major increments by 1 and resets minor and patch to 0.
+    equal(checkVersionIncrement(s020, s100p1), null);
+    equal(checkVersionIncrement(s020, s100), null);
+    isTrue(checkVersionIncrement(s011, s101) != null, 'major bump kept patch');
+    isTrue(checkVersionIncrement(s011, s110) != null, 'major bump kept minor');
+    isTrue(checkVersionIncrement(s100, s200) == null, '1.0.0 -> 2.0.0 is +1');
+    isTrue(checkVersionIncrement(s020, s200) != null, 'skipped major');
+  });
+
+  test('packages/zena-cli/CHANGELOG.md documents the current CLI version', async (ctx) => {
+    let changelog = await readFile('packages/zena-cli/CHANGELOG.md');
+    let notes = extractChangelogNotes(changelog, CLI_VERSION);
+    isTrue(
+      notes != null && notes.contains('### Added'),
+      `packages/zena-cli/CHANGELOG.md needs a non-empty ## [${CLI_VERSION}] section`,
+    );
+    equal(extractChangelogNotes(changelog, '99.99.99'), null);
+
+    let emptySection = '# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2026-12-01\n\n## [0.1.0] - 2026-11-12\n\n- Initial\n';
+    equal(extractChangelogNotes(emptySection, '0.2.0'), null);
+    equal(extractChangelogNotes(emptySection, '0.1.0'), '- Initial\n');
+  });
+
+  test('normalizes Windows drive and backslash paths only on windows hosts', (ctx) => {
+    equal(
+      normalizeHostPath('D:\\a\\zena\\zena\\hello.zena', 'windows-x86_64'),
+      '/d/a/zena/zena/hello.zena',
+    );
+    equal(
+      normalizeHostPath('\\\\?\\C:\\Users\\runner\\.cache', 'windows-x86_64'),
+      '/c/Users/runner/.cache',
+    );
+    equal(
+      normalizeHostPath('fixtures\\hello.zena', 'windows-x86_64'),
+      'fixtures/hello.zena',
+    );
+    equal(normalizeHostPath('C:\\', 'windows-x86_64'), '/c');
+    equal(
+      normalizeHostPath('fixtures\\hello.zena', 'linux-x86_64'),
+      'fixtures\\hello.zena',
+    );
+  });
+});

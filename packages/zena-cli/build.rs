@@ -14,6 +14,7 @@
 use std::path::PathBuf;
 
 const STUB: &str = r#"
+pub static BUNDLED_CLI_VERSION: &str = "";
 pub static STDLIB_HASH: &str = "";
 pub static STDLIB_FILES: &[(&str, &[u8])] = &[];
 pub static BUNDLED_CLI_HASH: Option<&str> = None;

@@ -1,0 +1,421 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and smoke-test all release archives without creating a tag or GitHub Release'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Phase 1: Compile the CLI WebAssembly module, verify the version and
+  # changelog against existing releases, generate out/stdlib_bundle.rs, and
+  # pass the compiler self-hosting fixpoint check once on Linux.
+  build-assets:
+    name: Build CLI bundle & verify version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.verify-version.outputs.version }}
+      tag: ${{ steps.verify-version.outputs.tag }}
+      prerelease: ${{ steps.verify-version.outputs.prerelease }}
+    env:
+      WORKSPACE_CRATES: |
+        target/zena-rust-sources.tsv
+        target/release/zena-run
+        target/release/zena-cli
+        target/release/*.d
+        target/release/.fingerprint/workspace-hack-*
+        target/release/.fingerprint/zena-*
+        target/release/build/workspace-hack-*
+        target/release/build/zena-*
+        target/release/deps/*workspace_hack*
+        target/release/deps/*zena_*
+
+    steps:
+      - name: Require main branch for non-dry-run releases
+        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::Published releases must run from refs/heads/main (got ${GITHUB_REF}). Re-run with dry_run=true to test a branch."
+          exit 1
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Fetch remote tags
+        run: git fetch --tags --force
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Put the dev shell's cargo and rustc on PATH
+        run: |
+          # shellcheck disable=SC2016
+          nix develop --command bash -c 'dirname "$(command -v rustc)"; dirname "$(command -v cargo)"' >> "$GITHUB_PATH"
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Restore the workspace crates
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.WORKSPACE_CRATES }}
+          key: rust-workspace-${{ runner.os }}-${{ hashFiles('.github/workflows/test.yml', 'scripts/ci-cargo-freshness.py', 'Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/zena-cli/Cargo.toml', 'packages/zena-cli/build.rs', 'packages/zena-cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
+          restore-keys: rust-workspace-${{ runner.os }}-
+
+      - name: Restore the Rust sources' times from the cached build
+        run: python3 scripts/ci-cargo-freshness.py restore
+
+      - name: Setup Wireit GitHub Actions Caching
+        uses: google/wireit@setup-github-actions-caching/v2
+
+      - name: Install npm dependencies
+        run: nix develop --command npm ci
+
+      - name: Build CLI binary and module
+        env:
+          WIREIT_PARALLEL: 3
+        run: nix develop --command npm run build -w @zena-lang/zena-cli
+
+      - name: Verify release version, changelog, and tag progression
+        id: verify-version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .zena packages/zena-cli/out
+          {
+            git tag -l
+            gh release list --limit 1000 --json tagName --jq '.[].tagName'
+          } | sort -u > .zena/release-tags.txt
+          rm -f .zena/github-output.txt
+          ./target/release/zena-cli run --dir . packages/zena-cli/dev/check-release-version.zena \
+            --tags-file .zena/release-tags.txt \
+            --notes-out packages/zena-cli/out/release-notes.md \
+            --github-output .zena/github-output.txt
+          cat .zena/github-output.txt >> "$GITHUB_OUTPUT"
+
+      - name: Build bundle assets and verify compiler fixpoint
+        env:
+          WIREIT_PARALLEL: 3
+        run: |
+          nix develop --command bash -c '
+            npm run build:bundle-assets -w @zena-lang/zena-cli
+            npm run test:fixpoint -w @zena-lang/zena-compiler
+          '
+
+      - name: Upload CLI bundle assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-bundle-assets
+          path: |
+            packages/zena-cli/out/zena.wasm
+            packages/zena-cli/out/stdlib_bundle.rs
+            packages/zena-cli/out/release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+  # Phase 2 & Phase 3: Compile standalone native binaries with the native OS
+  # toolchain (not Nix, so binaries link against system libc/libSystem/MSVC
+  # rather than /nix/store), package archives + .sha256 files, and smoke-test
+  # each archive outside the repository checkout.
+  build-native:
+    name: Build ${{ matrix.target }}
+    needs: build-assets
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive_ext: tar.gz
+            bin_name: zena
+            built_bin: zena-cli
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+            bin_name: zena
+            built_bin: zena-cli
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive_ext: tar.gz
+            bin_name: zena
+            built_bin: zena-cli
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+            bin_name: zena.exe
+            built_bin: zena-cli.exe
+
+    steps:
+      # out/stdlib_bundle.rs embeds packages/stdlib/zena/** via include_bytes!
+      # and checks their hash against STDLIB_HASH computed on Linux. Keep LF
+      # endings on Windows so the embedded bytes match byte-for-byte.
+      - name: Disable git autocrlf
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Download CLI bundle assets
+        uses: actions/download-artifact@v8
+        with:
+          name: cli-bundle-assets
+          path: packages/zena-cli/out
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Compile standalone zena binary
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} -p zena-cli --features bundled
+
+      - name: Strip symbols and verify dynamic library links (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/${{ matrix.built_bin }}"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            strip -x "$BIN"
+            codesign --force --sign - "$BIN"
+            otool -L "$BIN"
+            if otool -L "$BIN" | grep -q '/nix/store'; then
+              echo "::error::Binary links against /nix/store"
+              exit 1
+            fi
+          else
+            strip "$BIN"
+            ldd "$BIN"
+            if ldd "$BIN" | grep -q '/nix/store'; then
+              echo "::error::Binary links against /nix/store"
+              exit 1
+            fi
+          fi
+
+      - name: Package archive and SHA-256 checksum
+        shell: bash
+        env:
+          TAG: ${{ needs.build-assets.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+          EXT: ${{ matrix.archive_ext }}
+          BIN_NAME: ${{ matrix.bin_name }}
+          BUILT_BIN: ${{ matrix.built_bin }}
+        run: |
+          rm -rf stage dist
+          mkdir -p stage dist
+          cp "target/${TARGET}/release/${BUILT_BIN}" "stage/${BIN_NAME}"
+          ARCHIVE="zena-${TAG}-${TARGET}.${EXT}"
+          if [ "$EXT" = "tar.gz" ]; then
+            chmod +x "stage/${BIN_NAME}"
+            tar -C stage -czf "dist/${ARCHIVE}" "${BIN_NAME}"
+          else
+            pwsh -NoProfile -Command "Compress-Archive -Path 'stage/${BIN_NAME}' -DestinationPath 'dist/${ARCHIVE}' -Force"
+          fi
+          (
+            cd dist
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+            else
+              shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+            fi
+          )
+          cat "dist/${ARCHIVE}.sha256"
+
+      - name: Smoke test standalone archive (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          VERSION: ${{ needs.build-assets.outputs.version }}
+          TAG: ${{ needs.build-assets.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          ARCHIVE="zena-${TAG}-${TARGET}.tar.gz"
+          (
+            cd dist
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum -c "${ARCHIVE}.sha256"
+            else
+              shasum -a 256 -c "${ARCHIVE}.sha256"
+            fi
+          )
+          SMOKE_DIR="${RUNNER_TEMP}/zena-smoke"
+          SMOKE_CACHE="${RUNNER_TEMP}/zena-smoke-cache"
+          rm -rf "$SMOKE_DIR" "$SMOKE_CACHE"
+          mkdir -p "$SMOKE_DIR"
+          tar -xzf "dist/${ARCHIVE}" -C "$SMOKE_DIR"
+
+          cd "$SMOKE_DIR"
+          export ZENA_CACHE_DIR="$SMOKE_CACHE"
+
+          VER_OUT="$(./zena --version)"
+          echo "version output: $VER_OUT"
+          case "$VER_OUT" in
+            "zena ${VERSION} "*) ;;
+            *)
+              echo "::error::Unexpected --version output: $VER_OUT"
+              exit 1
+              ;;
+          esac
+
+          printf '%s\n' 'export function main(): void { console.log("Hello from Zena!"); }' > hello.zena
+          RUN_OUT="$(./zena run hello.zena)"
+          echo "run output: $RUN_OUT"
+          if [ "$RUN_OUT" != "Hello from Zena!" ]; then
+            echo "::error::Unexpected run output: $RUN_OUT"
+            exit 1
+          fi
+
+      - name: Smoke test standalone archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.build-assets.outputs.version }}
+          TAG: ${{ needs.build-assets.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = "zena-$env:TAG-$env:TARGET.zip"
+          $expectedLine = (Get-Content "dist/$archive.sha256" -Raw).Trim()
+          $actualHash = (Get-FileHash "dist/$archive" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($expectedLine -ne "$actualHash  $archive") {
+            throw "SHA-256 mismatch: expected '$actualHash  $archive', got '$expectedLine'"
+          }
+
+          $smokeDir = Join-Path $env:RUNNER_TEMP 'zena-smoke'
+          $smokeCache = Join-Path $env:RUNNER_TEMP 'zena-smoke-cache'
+          if (Test-Path $smokeDir) { Remove-Item -Recurse -Force $smokeDir }
+          if (Test-Path $smokeCache) { Remove-Item -Recurse -Force $smokeCache }
+          New-Item -ItemType Directory -Path $smokeDir | Out-Null
+          Expand-Archive -Path "dist/$archive" -DestinationPath $smokeDir -Force
+
+          Push-Location $smokeDir
+          try {
+            $env:ZENA_CACHE_DIR = $smokeCache
+            $verOut = (& .\zena.exe --version | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) {
+              throw "zena.exe --version exited with $LASTEXITCODE"
+            }
+            Write-Host "version output: $verOut"
+            if (-not $verOut.StartsWith("zena $env:VERSION ")) {
+              throw "Unexpected --version output: $verOut"
+            }
+
+            Set-Content -Path '.\hello.zena' -NoNewline -Value "export function main(): void { console.log('Hello from Zena!'); }`n"
+            $runOut = (& .\zena.exe run .\hello.zena | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) {
+              throw "zena.exe run exited with $LASTEXITCODE"
+            }
+            Write-Host "run output: $runOut"
+            if ($runOut -ne 'Hello from Zena!') {
+              throw "Unexpected run output: $runOut"
+            }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/zena-${{ needs.build-assets.outputs.tag }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+            dist/zena-${{ needs.build-assets.outputs.tag }}-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  # Phase 4: Aggregate platform archives and checksums, tag the commit, and
+  # publish the GitHub Release. Skipped when dry_run=true.
+  publish:
+    name: Publish GitHub Release
+    needs: [build-assets, build-native]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download release notes
+        uses: actions/download-artifact@v8
+        with:
+          name: cli-bundle-assets
+          path: release-meta
+
+      - name: Download platform archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate and verify SHA256SUMS
+        run: |
+          cd dist
+          LC_ALL=C sort -- *.sha256 > SHA256SUMS
+          cat SHA256SUMS
+          COUNT="$(wc -l < SHA256SUMS | tr -d ' ')"
+          if [ "$COUNT" -ne 4 ]; then
+            echo "::error::Expected 4 platform checksums in SHA256SUMS, got ${COUNT}"
+            exit 1
+          fi
+          sha256sum -c SHA256SUMS
+
+      - name: Tag commit and publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build-assets.outputs.tag }}
+          PRERELEASE: ${{ needs.build-assets.outputs.prerelease }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists on origin"
+            exit 1
+          fi
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "::error::GitHub Release ${TAG} already exists"
+            exit 1
+          fi
+
+          git tag "${TAG}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${TAG}"
+
+          PRERELEASE_FLAG=()
+          if [ "$PRERELEASE" = "true" ]; then
+            PRERELEASE_FLAG=(--prerelease)
+          fi
+
+          gh release create "${TAG}" \
+            dist/zena-* \
+            dist/SHA256SUMS \
+            --title "Zena ${TAG}" \
+            --notes-file release-meta/release-notes.md \
+            "${PRERELEASE_FLAG[@]}"
