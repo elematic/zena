@@ -1534,11 +1534,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * way a written `a == b` would. The intrinsic is recognized by its
    * decorator, since the call may be visited before the declaration is.
    */
-  /** Records a direct call whose result is a record. */
+  /** Records a direct call whose result is a record or a tuple. */
   #noteRecordResultCall(n: CallExpression, model: SemanticModel,
       callee: SymbolId): void {
     let t = model.getNodeType(n);
-    if (t == null || !(baseType(t) is RecordType)) {
+    if (t == null || !(baseType(t) is RecordType || baseType(t) is TupleType)) {
       return;
     }
     let id = (n as Node).id as i32;
@@ -1551,10 +1551,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   /**
    * Records a call of a method of a class, keyed by the method's
    * declaration: its record and tuple literal arguments, and the call
-   * itself when its result is a record (argument explosion,
-   * ir/explode.zena). Only
-   * the lowering knows whether a call is direct; these are the evidence
-   * that some call could pass or take the fields.
+   * itself when its result is a record or a tuple (argument explosion,
+   * ir/explode.zena). Only the lowering knows whether a call is direct;
+   * these are the evidence that some call could pass or take the fields.
    */
   #noteMethodCall(n: CallExpression, model: SemanticModel,
       resolveType: (t: Type) => Type): void {
@@ -1619,7 +1618,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
     }
     let t = model.getNodeType(n);
-    if (t == null || !(baseType(t) is RecordType)) {
+    if (t == null || !(baseType(t) is RecordType || baseType(t) is TupleType)) {
       return;
     }
     // A call in a generic body resolves per instantiation, so it is
@@ -1648,7 +1647,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   /**
    * Records a call of the specialization `spec` of a generic function:
    * its record and tuple literal arguments, and the call itself when its
-   * result is a record (argument explosion, ir/explode.zena). A call in a
+   * result is a record or a tuple (argument explosion, ir/explode.zena).
+   * A call in a
    * generic body names a specialization per walk, so each is recorded
    * once per target.
    */
@@ -1665,7 +1665,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
     }
     let t = model.getNodeType(n);
-    if (t == null || !(baseType(t) is RecordType)) {
+    if (t == null || !(baseType(t) is RecordType || baseType(t) is TupleType)) {
       return;
     }
     let callKey = `${(n as Node).id as i32}|${specName}`;

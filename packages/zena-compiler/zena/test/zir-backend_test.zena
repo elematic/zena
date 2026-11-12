@@ -910,6 +910,43 @@ export let tests = suite('zir backend', () => {
     isTrue(result.contains('.sum.core'), 'the static method has a core');
   });
 
+  test('a tuple result only read for its elements is returned as its elements', async (ctx) => {
+    // `step` returns a literal, `pick` merges its arms, `same` returns
+    // its parameter, and `main` destructures, indexes, matches and passes
+    // the results on: no tuple is built on either side.
+    let result = await compileWithZir(dedentRaw`
+        function step(p: i32): (i32, i32) { return (p, p + 1); }
+        function pick(p: i32): (i32, i32) {
+          return if (p > 0) (p, 1) else match (p) {
+            case 0: (0, 0)
+            case _: (p, p * 2)
+          };
+        }
+        function same(v: (i32, i32)): (i32, i32) { return v; }
+        function area(v: (i32, i32)): i32 { return v[0] * v[1]; }
+        export let main = (): i32 => {
+          let (x, y) = step(3);
+          let m = match (pick(-2)) {
+            case (0, _): 0
+            case (let a, let b): a + b
+          };
+          return x * y + pick(4)[1] + m + area(same((5, 6))) + area(step(1));
+        };
+        `);
+    assertNoAllocation(result, '$step.core',
+        'the result literal is returned as its elements');
+    assertNoAllocation(result, '$pick.core',
+        'the if and match arms are merged as their elements');
+    assertNoAllocation(result, '$same.core',
+        'the parameter is returned as the elements it arrived as');
+    assertNoAllocation(result, '$main', 'the elements are never packed');
+    let coreCalls = growable<String>([
+      'call $step.core', 'call $pick.core', 'call $same.core', 'call $area.core',
+    ]);
+    assertFunctionUses(result, '$main', coreCalls,
+        'calls that only read the elements go to the cores');
+  });
+
   test('a record literal passed to a constructor is passed as its fields', async (ctx) => {
     // The named-arguments idiom for a class: `P`'s constructor only reads
     // fields of its record parameter, so `new P({x: 3})` calls the

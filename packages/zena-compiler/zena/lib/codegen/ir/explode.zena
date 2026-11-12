@@ -923,7 +923,7 @@ function hasFieldsOnHand(dc: DemandContext, c: Candidate,
   }
   let params = c.params();
   let model = c.f.model;
-  if (n is RecordLiteral) {
+  if (n is RecordLiteral || n is TupleLiteral) {
     return true;
   }
   if (n is Identifier) {
@@ -971,6 +971,16 @@ function classifyResultUse(dc: DemandContext, rc: RecordResultCall,
   } else if (parent is MemberExpression) {
     direct = (parent.object as Node) === (call as Node) &&
         !parent.optional && !parent.isSymbolAccess;
+  } else if (parent is IndexExpression) {
+    direct = (parent.object as Node) === (call as Node) && !parent.optional;
+  } else if (parent is MatchExpression) {
+    direct = (parent.discriminant as Node) === (call as Node);
+    for (let c in parent.cases) {
+      direct = direct && takesTupleApart(c.pattern);
+    }
+  } else if (parent is LetPatternCondition) {
+    direct = (parent.init as Node) === (call as Node) &&
+        takesTupleApart(parent.pattern);
   } else if (parent is CallExpression) {
     // Passed straight to a fields-only parameter, like a bound result.
     let fw = forwardOf(dc, parent, call as Node, model);
@@ -981,7 +991,7 @@ function classifyResultUse(dc: DemandContext, rc: RecordResultCall,
   } else if (parent is VariableDeclaration) {
     let pattern = parent.pattern;
     if ((parent.init as Node) === (call as Node)) {
-      if (pattern is RecordPattern) {
+      if (pattern is RecordPattern || pattern is TuplePattern) {
         direct = true;
       } else if (pattern is IdentifierPattern) {
         if (parent.kind == 'let' && owner != null) {
@@ -1100,6 +1110,13 @@ function resultDispatchOfType(wasm: WasmModule, f: WasmFunction,
     return null;
   }
   let rt = baseType(substituteTypeParamsInFunctionContext(wasm, f, ft.returnType));
+  if (rt is TupleType) {
+    let st = asWasmStruct(typeToValTypeWithSub(wasm, rt, f));
+    if (st == null || st.fields.length == 0) {
+      return null;
+    }
+    return wasm.getTupleDispatch(f.model, st);
+  }
   if (!(rt is RecordType)) {
     return null;
   }
