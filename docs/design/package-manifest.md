@@ -134,7 +134,9 @@ The library an import of the package's name alone imports, `'router'`:
 `main`, the library `main.zena`, when the manifest has no `main`. It
 must be one of `exports` when the manifest lists them, which the
 compiler and `zena pkg publish` check (import-names.md, "The main
-library").
+library"). A package with no `exports` that names a `main` must hold
+that library's file, `<source>/<main>.zena`, in its published archive,
+as a package with `exports` must hold each of theirs.
 
 ### `exports`
 
@@ -204,7 +206,8 @@ everything under it.
 A package can publish any files: documentation, images, video, demos. Some
 paths mean something to the compiler: the manifest itself, and, in a
 package with `exports`, each library's entry file, which a published
-archive must hold. Other kinds of package may give other paths a meaning
+archive must hold, as it must the file of the library a package with no
+`exports` names as its `main`. Other kinds of package may give other paths a meaning
 (#734).
 
 - **Without `files`**, the archive holds every file but tests:

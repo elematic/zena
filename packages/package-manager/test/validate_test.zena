@@ -119,6 +119,13 @@ export let tests = suite('package-manager/validate', () => {
     problems = check(listed, true);
     isTrue(has(problems, 'holds bench/fast.zena') && has(problems, 'has no src/match.zena') &&
         !has(problems, 'router.zena'), lines(problems));
+    // A package with no exports lists none, but the library its main
+    // names must be there all the same.
+    let mainless = archive(manifest('"main": "hello", '), ['hello.zena']);
+    problems = check(mainless, true);
+    isTrue(has(problems, 'has no src/hello.zena, the library its zena-package.json\'s main names'), lines(problems));
+    let withMain = archive(manifest('"main": "hello", '), ['src/hello.zena']);
+    equal(check(withMain, true).length, 0, lines(check(withMain, true)));
   });
 
   test('finds every way an archive disagrees with its release', (ctx) => {
