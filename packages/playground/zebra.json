@@ -1,0 +1,31 @@
+{
+  "locks": ["zena-lock.json", "package-lock.json"],
+  "scripts": {
+    "build": {
+      "command": "tsc",
+      "files": ["src/**/*.ts", "tsconfig.json"],
+      "output": ["lib", "tsconfig.tsbuildinfo"],
+      "clean": "if-file-deleted",
+      "dependencies": [
+        "build:stdlib",
+        "../codemirror:build",
+        "../language-service:build:ts",
+        {
+          "script": "../language-service:build:wasm",
+          "cascade": false
+        }
+      ]
+    },
+    "build:stdlib": {
+      "command": "node --experimental-strip-types src/scripts/build-stdlib-map.ts",
+      "files": ["src/scripts/build-stdlib-map.ts", "../stdlib/zena/**/*.zena"],
+      "output": ["src/stdlib-data.json"],
+      "dependencies": ["../stdlib:build"]
+    },
+    "test": {
+      "command": "node --test test/*_test.ts",
+      "files": ["test/**/*.ts", "../language-service/lsp.wasm"],
+      "dependencies": ["build"]
+    }
+  }
+}

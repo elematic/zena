@@ -37,5 +37,148 @@
     "zenadoc": {
       "path": "../zenadoc"
     }
+  },
+  "scripts": {
+    "build": {
+      "#": "The zena command: the host binary and the CLI module it runs.",
+      "dependencies": ["build:binary", "precompile:module"]
+    },
+    "build:binary": {
+      "#": "The host binary. Two scripts for one build: `build:cargo` declares no inputs, so wireit never calls it fresh and cargo is always consulted — cargo tracks its own inputs better than a `files` list could, and a no-op is a quarter of a second. This one names the binary cargo produced as an *input*, so its fingerprint changes exactly when the binary does, and that is what dependents inherit. `cascade: false` keeps `build:cargo`'s own fingerprint out: a script with no `files` is not `fullyTracked`, and wireit propagates that to everything downstream, where nothing can ever be fresh. Hashing the binary also makes freshness imply the binary exists, so a cache hit against an empty target dir cannot leave the scripts that run it failing with exit 127.",
+      "files": ["../../target/release/zena-cli"],
+      "dependencies": [
+        {
+          "script": "build:cargo",
+          "cascade": false
+        }
+      ]
+    },
+    "build:cargo": {
+      "#": "The repository's binary, without `--features bundled`. It embeds nothing built from Zena: in a repository it reads the CLI module and the standard library from disk (see CONTEXT.md), so it waits for no compiler and a Zena change never relinks it. Always runs; `build:binary` is what dependents read.",
+      "command": "cargo build --release -p zena-cli"
+    },
+    "build:module": {
+      "#command": "The compiler just built from source compiles the CLI module, run on zena-run with the preopens `zc` expects. It keeps its name section, like the compiler, so a trap in it names functions. Precompiling it is a separate script: it needs the zena command's binary, which is built from the bundle this module goes into.",
+      "command": "mkdir -p out && cd ../.. && ZENA_GC_RESERVE_MB=1536 ZENA_DEBUG_NAMES=1 ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/zena/out/cli.wasm packages/zena-cli/zena/main.zena -o packages/zena-cli/out/zena.wasm",
+      "files": [
+        "zena/**/*.zena",
+        "zena-package.json",
+        "../zena-compiler/zena/out/cli.wasm"
+      ],
+      "output": ["out/zena.wasm"],
+      "dependencies": [
+        "../zena-compiler:source",
+        "../zebra:source",
+        "../zenadoc:source",
+        "../language-service:source",
+        "../package-manager:source",
+        "../stdlib:lib",
+        "../zena-run:build",
+        {
+          "script": "../zena-compiler:build:cli",
+          "cascade": false
+        }
+      ]
+    },
+    "build:standalone": {
+      "#": "The zena command for use outside a repository: `--features bundled` embeds the standard library and the CLI module (out/stdlib_bundle.rs, from build:bundle-assets), and the build script fails without them. Nothing in the repository runs this binary, so `build` does not build it. It has its own target directory, so building it never replaces the binary every other script runs; the price is compiling wasmtime once more, the first time.",
+      "command": "cargo build --release -p zena-cli --features bundled --target-dir ../../target/standalone",
+      "dependencies": ["build:bundle-assets"]
+    },
+    "build:bundle-assets": {
+      "#": "Generates out/stdlib_bundle.rs from the standard library's sources and out/zena.wasm. bundle.zena is compiled and run on zena-run, which is what lets the zena command have one Rust build: the binary that embeds this bundle cannot also be the one that produces it.",
+      "command": "mkdir -p out && cd ../.. && ZENA_GC_RESERVE_MB=1536 ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/zena/out/cli.wasm packages/zena-cli/dev/bundle.zena -o packages/zena-cli/out/bundle.wasm && ./target/release/zena-run --dir .::. packages/zena-cli/out/bundle.wasm",
+      "files": [
+        "dev/bundle.zena",
+        "zena-package.json",
+        "out/zena.wasm",
+        "../zena-compiler/zena/out/cli.wasm"
+      ],
+      "output": ["out/stdlib_bundle.rs", "out/bundle.wasm"],
+      "dependencies": [
+        "../workflow:source",
+        "../stdlib:lib",
+        {
+          "script": "build:module",
+          "cascade": false
+        },
+        "../zena-run:build",
+        {
+          "script": "../zena-compiler:build:cli",
+          "cascade": false
+        }
+      ]
+    },
+    "test": {
+      "#": "The Rust crates' own tests, and the command's tests, which run the built binary from Zena (tests/*_test.zena).",
+      "dependencies": ["test:cargo", "test:zena"]
+    },
+    "test:pds-js": {
+      "#": "zena pkg login and service auth against pds.js, which tests/pds-js/setup.mjs fetches. Not part of test, since it needs the network.",
+      "command": "../../target/release/zena-cli test tests/pds-js/pds-js_test.zena",
+      "files": [
+        "tests/pds-js/**",
+        "tests/cli-support.zena",
+        "tests/fixtures/pds-service-auth.zena",
+        "zena-package.json"
+      ],
+      "dependencies": ["build", "../atproto:source", "../stdlib:lib"]
+    },
+    "zena": {
+      "command": "../../target/release/zena-cli",
+      "dependencies": ["build"]
+    },
+    "precompile:module": {
+      "#": "The CLI module's .cwasm, so the first zena commands do not race to run Cranelift on it. After the binary, because wasmtime's version is what decides whether a .cwasm can be loaded at all.",
+      "#dependencies": "`cascade: false` on build:module: out/zena.wasm is an input, so this reruns when the module changes and not when build:module reruns to produce the same bytes. Everything that depends on `build` inherits that.",
+      "command": "../../target/release/zena-cli precompile out/zena.wasm",
+      "files": ["out/zena.wasm"],
+      "output": ["out/zena.cwasm"],
+      "dependencies": [
+        "build:binary",
+        {
+          "script": "build:module",
+          "cascade": false
+        }
+      ]
+    },
+    "test:cargo": {
+      "#command": "--release reuses the dependency artifacts the build step produced instead of compiling wasmtime a second time in the dev profile. The features are build:cargo's, so the two share every artifact.",
+      "command": "cargo test --release -p zena-runtime -p zena-cli",
+      "files": [
+        "Cargo.toml",
+        "build.rs",
+        "src/**/*.rs",
+        "../zena-runtime/Cargo.toml",
+        "../workspace-hack/Cargo.toml",
+        "../zena-runtime/src/**/*.rs",
+        "../stdlib/zena/host-wit/*.wit",
+        "../../Cargo.toml",
+        "../../Cargo.lock"
+      ]
+    },
+    "test:zena": {
+      "#dependencies": "build:cli without its fingerprint: workspace-errors_test.zena runs stage A as ZENA_COMPILER_WASM, so its bytes are an input.",
+      "command": "../../target/release/zena-cli test \"tests/*_test.zena\"",
+      "files": [
+        "tests/**/*.zena",
+        "zena-package.json",
+        "zena/versions.zena",
+        "dev/version-file.zena",
+        "../zena-compiler/zena-package.json",
+        "../registry/dev/smoke.zena",
+        "../registry/test/fixtures/web/**",
+        "../zena-compiler/zena/out/cli.wasm"
+      ],
+      "dependencies": [
+        "build",
+        "../registry:source",
+        "../stdlib:lib",
+        {
+          "script": "../zena-compiler:build:cli",
+          "cascade": false
+        }
+      ]
+    }
   }
 }

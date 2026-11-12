@@ -30,5 +30,116 @@
     "zebra": {
       "path": "./packages/zebra"
     }
+  },
+  "locks": ["zena-lock.json", "package-lock.json"],
+  "scripts": {
+    "build": {
+      "dependencies": [
+        "./packages/codemirror:build",
+        "./packages/language-service:build",
+        "./packages/playground:build",
+        "./packages/runtime:build",
+        "./packages/stdlib:build",
+        "./packages/vscode-zena:build",
+        "./packages/wasm-web-ui:build",
+        "./packages/website:build",
+        "./packages/website-client:build",
+        "./packages/zena-cli:build",
+        "./packages/zena-compiler:build",
+        "./packages/zena-run:build",
+        "./packages/zenafx:build"
+      ]
+    },
+    "test": {
+      "#": "The gate, and what CI runs: every package's tests, the compiler's fixpoint check included.",
+      "dependencies": ["test:others", "./packages/zena-compiler:test"]
+    },
+    "test:quick": "./target/release/zena-cli test",
+    "check": "node scripts/check.js",
+    "versions": "./target/release/zena-cli run --dir . packages/zena-cli/dev/versions.zena",
+    "watch-prs": "node scripts/watch-prs.js",
+    "worktrees": "node scripts/worktrees.js",
+    "prepare": "git config core.hooksPath scripts/git-hooks || true",
+    "format": "npm run format:fix",
+    "format:check": "prettier \"**/*.{cjs,html,js,json,md,ts}\" --check",
+    "format:fix": "prettier \"**/*.{cjs,html,js,json,md,ts}\" --write",
+    "ignore-sync": "ignore-sync .",
+    "wasmtime:build": "./scripts/wasmtime-run.sh",
+    "demo:cloudflare:build": "npm run zena -w @zena-lang/zena-cli -- build ../../examples/cloudflare-worker/hello.zena -o ../../examples/cloudflare-worker/hello.wasm --target zena-js",
+    "sloc": "./scripts/count-lines.sh",
+    "bench": "./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/run.zena",
+    "bench:build": "./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/build.zena",
+    "bench:size": "./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/size.zena",
+    "bench:speed": "./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/run.zena -- --speed",
+    "bench:compile": "ZENA_TIME_JSON=1 ./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/compile.zena",
+    "test:smoke": {
+      "#": "Everything except the fixpoint check (stage B, then stage C, then a byte comparison), which is two compiler builds and the longest chain in a cold run. It catches the compiler miscompiling itself, which nothing else can see, so `npm test` keeps it and CI runs that on every PR — the window for finding such a bug stays one commit wide. This target is for the local loop, where paying it on every run is what hurts. See docs/design/bootstrapping.md, \"The invariant\".",
+      "dependencies": ["test:others", "./packages/zena-compiler:test:smoke"]
+    },
+    "test:others": {
+      "#": "Every package but the compiler, and the workspace check, so `test` and `test:smoke` differ only in which of the compiler's aggregates they name.",
+      "dependencies": [
+        "check:workspace",
+        "./packages/atproto:test",
+        "./packages/google-cloud:test",
+        "./packages/language-service:test",
+        "./packages/markdown:test",
+        "./packages/package-manager:test",
+        "./packages/semver:test",
+        "./packages/pds:test",
+        "./packages/registry:test",
+        "./packages/playground:test",
+        "./packages/protobuf:test",
+        "./packages/wasm-web-ui:test",
+        "./packages/runtime:test",
+        "./packages/stdlib:test",
+        "./packages/wit-parser:test",
+        "./packages/website:test",
+        "./packages/workflow:test",
+        "./packages/zebra:test",
+        "./packages/zena-lint:test",
+        "./packages/zena-cli:test",
+        "./packages/zena-formatter:test",
+        "./packages/zena-run:test",
+        "./packages/zenadoc:test",
+        "./packages/zenafx:test"
+      ]
+    },
+    "check:workspace": {
+      "#": "Whether the whole workspace loads. Every compile reads all of the workspace's zena-package.json manifests and fails when one cannot be read, but its output depends only on the manifests of the packages it reaches, so each script lists only those. This compiles scripts/workspace-check.zena, which imports nothing, with the zena command, whose compiler is stage A's source and which names the manifest at fault, and then with the checked-in bootstrap, which builds stage A and reads the manifests with its own code.",
+      "command": "mkdir -p .zena/workspace-check && ./target/release/zena-cli build scripts/workspace-check.zena -o .zena/workspace-check/zena.wasm && ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/bootstrap/cli.wasm scripts/workspace-check.zena -o .zena/workspace-check/bootstrap.wasm",
+      "files": [
+        "scripts/workspace-check.zena",
+        "zena-package.json",
+        "zena-lock.json",
+        "packages/*/zena-package.json",
+        "packages/*/zena/**/zena-package.json",
+        "packages/zenafx/wit/*.wit",
+        "packages/zena-compiler/bootstrap/cli.wasm"
+      ],
+      "output": [
+        ".zena/workspace-check/bootstrap.wasm",
+        ".zena/workspace-check/zena.wasm"
+      ],
+      "dependencies": [
+        "./packages/zena-run:build",
+        "./packages/zena-cli:build",
+        "./packages/stdlib:lib"
+      ]
+    },
+    "emulators:start": {
+      "#command": "The Firestore emulator on 127.0.0.1:8180, as a service: a script that depends on it gets it running first and stopped after. Enters the flake's `emulators` shell for firebase-tools and Java, which the default shell leaves out for their size. firebase-tools downloads the emulator itself on first use.",
+      "command": "nix develop .#emulators --command firebase emulators:start --only firestore --project demo-zena --config packages/google-cloud/firebase.json",
+      "service": {
+        "readyWhen": {
+          "lineMatches": "All emulators ready!"
+        }
+      },
+      "files": [
+        "flake.nix",
+        "flake.lock",
+        "packages/google-cloud/firebase.json"
+      ]
+    }
   }
 }

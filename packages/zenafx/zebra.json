@@ -1,0 +1,84 @@
+{
+  "scripts": {
+    "build": {
+      "#": "Split the way packages/zena-cli's build:host is, and for the same reasons.",
+      "files": ["../../target/release/zfx"],
+      "dependencies": [
+        {
+          "script": "build:cargo",
+          "cascade": false
+        }
+      ]
+    },
+    "build:cargo": {
+      "#": "Always runs; `build` is what dependents read.",
+      "command": "cargo build --release -p zenafx"
+    },
+    "test": {
+      "command": "cargo test --release -p zenafx",
+      "files": [
+        "Cargo.toml",
+        "src/**/*.rs",
+        "tests/**/*.rs",
+        "fixtures/**/*",
+        "../zena-runtime/Cargo.toml",
+        "../workspace-hack/Cargo.toml",
+        "../zena-runtime/src/**/*.rs",
+        "../../Cargo.toml",
+        "../../Cargo.lock",
+        "out/*.wasm"
+      ],
+      "dependencies": ["build", "build:examples"]
+    },
+    "test:gui": {
+      "command": "cargo test --release -p zenafx -- --ignored",
+      "files": [
+        "Cargo.toml",
+        "src/**/*.rs",
+        "tests/**/*.rs",
+        "fixtures/**/*",
+        "../zena-runtime/Cargo.toml",
+        "../workspace-hack/Cargo.toml",
+        "../zena-runtime/src/**/*.rs",
+        "../../Cargo.toml",
+        "../../Cargo.lock",
+        "out/*.wasm"
+      ],
+      "dependencies": ["build", "build:examples"]
+    },
+    "zfx": {
+      "command": "../../target/release/zfx",
+      "dependencies": ["build"]
+    },
+    "build:examples": {
+      "#": "Every example component. Each example also has a script of its own, so that editing one does not rebuild the others.",
+      "dependencies": ["build:widgets", "build:counter"]
+    },
+    "build:widgets": {
+      "#": "Three widget classes composed in one component: a page of cards, one holding two labels in its slot.",
+      "command": "mkdir -p out && cd ../.. && ./target/release/zena-cli build examples/zenafx/widgets/main.zena -o packages/zenafx/out/widgets.wasm --target component --wit examples/zenafx/widgets.wit --world app",
+      "files": [
+        "../../examples/zenafx/widgets/**/*.zena",
+        "../../examples/zenafx/widgets.wit",
+        "../../examples/zenafx/framework.zena",
+        "wit/*.wit",
+        "../../zena-package.json"
+      ],
+      "output": ["out/widgets.wasm"],
+      "dependencies": ["../stdlib:lib", "../zena-cli:build"]
+    },
+    "build:counter": {
+      "#": "Two counters sharing one template, each writing a hole on its own timer.",
+      "command": "mkdir -p out && cd ../.. && ./target/release/zena-cli build examples/zenafx/counter/main.zena -o packages/zenafx/out/counter.wasm --target component --wit examples/zenafx/counter.wit --world app",
+      "files": [
+        "../../examples/zenafx/counter/**/*.zena",
+        "../../examples/zenafx/counter.wit",
+        "../../examples/zenafx/framework.zena",
+        "wit/*.wit",
+        "../../zena-package.json"
+      ],
+      "output": ["out/counter.wasm"],
+      "dependencies": ["../stdlib:lib", "../zena-cli:build"]
+    }
+  }
+}
