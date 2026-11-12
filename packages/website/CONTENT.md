@@ -732,7 +732,7 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Accounts for packages, scopes, teams, and organizations
     - Permission delegation and release publishing
     - The registry App View
-    - Language-specific processing via WebAssembly plugins
+    - Planned WebAssembly plugins
     - Current status and roadmap
 
 ## Projects — ZenaFX

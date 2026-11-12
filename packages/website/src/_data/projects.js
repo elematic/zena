@@ -24,9 +24,9 @@ export default [
     status: 'In progress',
     statusType: 'warning',
     tagline:
-      'AT Protocol package manager and registry, extensible with Wasm plugins',
+      'AT Protocol package manager and registry, with planned Wasm plugins',
     summary:
-      'Manages AT Protocol accounts for packages, scopes, teams, and organizations, delegated publishing permissions, and the registry App View—with language-specific config parsing, README extraction, and static analysis designed for Wasm plugins.',
+      'Manages AT Protocol accounts for packages, scopes, teams, and organizations, delegated publishing permissions, and the registry App View. Zena-specific config reading and README extraction are built in today, with plans to move language-specific processing into Wasm plugins.',
     stack: ['Zena', 'AT Protocol', 'Wasm'],
   },
   {

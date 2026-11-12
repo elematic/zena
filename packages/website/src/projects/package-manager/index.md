@@ -1,9 +1,9 @@
 ---
 title: 'Package Manager'
-description: 'An AT Protocol package manager and registry App View for managing package, scope, team, and organization accounts, permission delegation, and release publishing, extensible with WebAssembly plugins.'
+description: 'An AT Protocol package manager and registry App View for managing package, scope, team, and organization accounts, permission delegation, and release publishing, with planned WebAssembly plugins.'
 status: 'In progress'
 statusType: 'warning'
-lead: 'A package manager and registry built on the AT Protocol—managing accounts for packages, scopes, teams, and organizations, delegated publishing permissions, and a registry App View, while isolating language-specific package processing into WebAssembly plugins.'
+lead: 'A package manager and registry built on the AT Protocol—managing accounts for packages, scopes, teams, and organizations, delegated publishing permissions, and a registry App View.'
 ---
 
 Zena's package manager (`packages/package-manager`, invoked via `zena pkg`) and
@@ -11,12 +11,13 @@ registry service (`packages/registry`) publish, govern, and distribute packages
 on the [AT Protocol](https://atproto.com/), backed by our
 [multi-tenant AT Protocol PDS](/projects/pds/) or other compatible PDS hosts.
 
-Although it serves as Zena's native package manager today, its core is not
-inherently tied to Zena. Account management for packages and organizations,
+Today it is built specifically for Zena, with Zena manifest reading and README
+extraction implemented directly in the CLI and registry. Its core, however, is
+not inherently tied to Zena: account management for packages and organizations,
 permission delegation, multi-party release approvals, version resolution, and
 the registry App View operate on language-neutral identities and release
-archives—leaving Zena-specific manifest reading, documentation extraction, and
-static analysis to be modularized as WebAssembly plugins.
+archives. There is no plugin system yet, though we plan to move Zena-specific
+package processing into WebAssembly plugins over time.
 
 ## Accounts for packages, scopes, teams, and organizations
 
@@ -87,33 +88,35 @@ the package manager's App View in Zena:
   packages, inspecting files and rendered READMEs, and managing scopes and teams
   in the browser via AT Protocol OAuth.
 
-## Language-specific processing via WebAssembly plugins
+## Planned WebAssembly plugins
 
-The registry and client core—account lifecycle for packages, scopes, teams, and
-organizations, permission delegation, threshold attestations, archive storage,
-and the App View—has nothing specific to Zena's syntax or compiler.
+The package manager does not support plugins yet—today `zena-package.json`
+parsing and README extraction are hardcoded directly in `packages/package-manager`
+and `packages/registry`.
 
-The Zena-specific processing that the toolchain performs today or plans to add
-can instead be handled by capability-sandboxed WebAssembly plugins (built on the
+Because the governance and distribution core (accounts for packages, scopes,
+teams, and organizations, permission delegation, threshold attestations, archive
+storage, and the App View) has nothing specific to Zena's syntax or compiler,
+the language-specific work it does today—and additional checks planned for the
+future—could move into capability-sandboxed WebAssembly plugins (built on the
 [`zena:host` extension interfaces](/projects/runtime/#sandboxed-wasm-extensions)):
 
-- **Config and manifest adapters** — Reading `zena-package.json` (or manifests
-  from other ecosystems such as `Cargo.toml`, `package.json`, or WIT component
-  worlds) to extract package metadata, exported entry points, file lists, and
-  dependency declarations.
-- **README and API documentation extraction** — Locating documentation files in
-  a release archive, rendering Markdown, and generating browseable API docs
-  (such as `zenadoc` output) for the App View without coupling the server to a
-  single language's doc extractor.
-- **Static analysis and publish checks** — Running sandboxed pre-publish or
-  derived-content analyzers on uploaded packages: lint rules, capability and
-  import audits, public-API diffing for semantic versioning checks, or test
-  compilation inside bounded memory and CPU limits.
+- **Config and manifest adapters** — A plugin could read `zena-package.json` (or
+  manifests from other ecosystems such as `Cargo.toml`, `package.json`, or WIT
+  component worlds) to extract package metadata, exported entry points, file
+  lists, and dependency declarations.
+- **README and API documentation extraction** — Plugins could locate
+  documentation files in a release archive, render Markdown, and generate
+  browseable API docs (such as `zenadoc` output) for the App View without
+  coupling the registry server to a single language's doc extractor.
+- **Static analysis and publish checks** — Future plugins could run sandboxed
+  pre-publish or derived-content checks on uploaded packages: lint rules,
+  capability and import audits, public-API diffing for semantic versioning
+  checks, or test compilation inside bounded memory and CPU limits.
 
-Separating the package governance and distribution core from Wasm-hosted
-language plugins lets new Zena analysis passes ship without modifying the core
-registry, while making the system usable as a package manager for general
-WebAssembly components and other languages.
+Moving those steps into Wasm components would let new Zena analysis passes ship
+without modifying the core registry, and would open the same package manager
+core to general WebAssembly components and other languages.
 
 ## Current status and roadmap
 
@@ -123,13 +126,14 @@ in Zena, with end-to-end test suites and a local self-contained stack
 (`npm run demo -w @zena-lang/registry`). Today `zena pkg login`, `scope`,
 `create`, `publish`, `add`, `update`, and `fetch`, minimal version selection,
 `zena-lock.json` pinning, organization/team/maintainer threshold approvals,
-derived README and file views, and the server-rendered registry web UI all run
-against in-memory and Firestore + Google Cloud Storage backends.
+built-in Zena manifest and README handling, and the server-rendered registry web
+UI all run against in-memory and Firestore + Google Cloud Storage backends.
 
 Planned work includes:
 
-- Defining WIT plugin interfaces to move Zena config parsing, README/doc
-  extraction, and static package analysis into sandboxed WebAssembly components.
+- Designing a Wasm plugin system so Zena config reading, README/API-doc
+  extraction, and static package analysis are decoupled from the core client and
+  registry.
 - An append-only public checksum transparency log so clients independently
   verify that release contents and approvals match across all observers.
 - Indexing packages hosted across external PDS instances from the AT Protocol

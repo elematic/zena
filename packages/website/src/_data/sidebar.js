@@ -1299,7 +1299,7 @@ const packageManager = projectMicrosite('Package Manager', 'package-manager', [
       'Accounts for packages, scopes, teams, and organizations',
       'Permission delegation and release publishing',
       'The registry App View',
-      'Language-specific processing via WebAssembly plugins',
+      'Planned WebAssembly plugins',
       'Current status and roadmap',
     ],
   },
