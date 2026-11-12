@@ -217,6 +217,24 @@ markdown-alert-<kind>">`.
 - `softBreak: String` (default `"\n"`): string emitted for `SoftBreak`.
 - `extensions: Array<MarkdownExtension>`: custom `NodeRenderer` providers.
 
+## Nesting limits
+
+The parser, the renderer and the extensions' transformers walk the tree
+recursively, so a document that nested without bound, such as a hundred
+thousand `>`, would overflow the stack, which ends the program. The App
+View renders the README of every release it is given, so the parser
+bounds the tree it builds:
+
+- At most 100 blocks are open at once, the document included. Past that,
+  a marker that would open a quote, a list or a list item is text.
+- Emphasis, links and images nest at most 100 deep, custom delimiters
+  such as `~~` included. A closer whose match would nest deeper matches
+  nothing, so its delimiters stay text, and a link or image whose text is
+  that deep stays brackets and text.
+
+No document a person writes comes near either; markdown-it's default
+preset allows the same depth.
+
 ## Alternatives considered
 
 ### Porting `markdown-it`

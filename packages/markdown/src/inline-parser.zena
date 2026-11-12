@@ -20,8 +20,30 @@ final class InlineEntry {
   var node: Inline;
   var prev: InlineEntry | null = null;
   var next: InlineEntry | null = null;
+  /** How deep `node` nests other inlines: 0 when it holds none. */
+  var depth = 0;
 
   new(this.node) {}
+}
+
+/**
+ * How deep emphasis, links and images may nest. A run of delimiters or
+ * brackets that would nest deeper stays text: every walk over the tree
+ * recurses through the inlines, and a deeper one would overflow the stack.
+ */
+let MAX_INLINE_NESTING = 100;
+
+/** The deepest of the entries from `first` up to `end`, not including it. */
+function deepestBetween(first: InlineEntry | null, end: InlineEntry | null) {
+  var deepest = 0;
+  var curr = first;
+  while (curr != null && curr != end) {
+    if (curr.depth > deepest) {
+      deepest = curr.depth;
+    }
+    curr = curr.next;
+  }
+  return deepest;
 }
 
 /**
@@ -638,10 +660,21 @@ export final class InlineParser implements InlineParserRunner {
       return;
     }
 
-    r.reset(nextPos);
-
     // Resolve delimiters strictly inside the bracketed text
     this.#processDelimiters(opener.previousDelimiter);
+
+    // Text inside it too deep to wrap again, as a bracket that matches
+    // nothing is.
+    let deepest = deepestBetween(opener.entry.next, null);
+    if (deepest >= MAX_INLINE_NESTING) {
+      r.reset(afterClose);
+      this.#removeLastBracket();
+      this.#appendNode(
+        new Text(']', new Span(baseOffset + index, baseOffset + afterClose))
+      );
+      return;
+    }
+    r.reset(nextPos);
 
     // Collect children after opener.entry
     let children = new GrowableArray<Inline>(4);
@@ -654,6 +687,7 @@ export final class InlineParser implements InlineParserRunner {
     }
 
     let span = new Span(opener.startOffset, baseOffset + nextPos);
+    opener.entry.depth = deepest + 1;
     if (opener.isImage) {
       opener.entry.node = new Image(dest, title, children, span);
     } else {
@@ -861,6 +895,7 @@ export final class InlineParser implements InlineParserRunner {
       var matchedOpener: Delimiter | null = null;
       var usedDelims = 0;
       var wrappedNode: Inline | null = null;
+      var wrappedDepth = 0;
 
       while (opener != null && opener != stackBottom && opener != lowerBound) {
         let o = opener;
@@ -873,6 +908,14 @@ export final class InlineParser implements InlineParserRunner {
             opener = o.prev;
             continue;
           }
+
+          // What it would wrap is too deep to wrap again, so the closer
+          // matches nothing, and its delimiters stay text.
+          let deepest = deepestBetween(o.entry.next, c.entry);
+          if (deepest >= MAX_INLINE_NESTING) {
+            break;
+          }
+          wrappedDepth = deepest + 1;
 
           // Collect children strictly between `o.entry` and `c.entry`
           let children = new GrowableArray<Inline>(4);
@@ -950,7 +993,9 @@ export final class InlineParser implements InlineParserRunner {
       }
 
       // Insert `wrappedNode` before `c.entry`
-      this.#insertEntryBefore(c.entry, new InlineEntry(wrappedNode));
+      let wrapped = new InlineEntry(wrappedNode);
+      wrapped.depth = wrappedDepth;
+      this.#insertEntryBefore(c.entry, wrapped);
 
       // Remove any delimiters strictly between `o` and `c`
       this.#removeDelimitersBetween(o, c);

@@ -1,0 +1,44 @@
+/**
+ * Documents that nest deeply. The App View renders the README of every
+ * release it is given, so a README of a hundred thousand `>` must render,
+ * not overflow the stack, which would end the server.
+ */
+
+import {suite, test, TestContext} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {StringBuilder} from 'zena:core';
+import {markdownToHtml} from 'markdown';
+import {gfmExtensions} from 'markdown/plugins/gfm';
+
+/** `unit` `count` times, then `rest`. */
+function repeated(unit: String, count: i32, rest: String) {
+  let sb = new StringBuilder();
+  for (var i = 0; i < count; i += 1) {
+    sb.append(unit);
+  }
+  sb.append(rest);
+  return sb.toString();
+}
+
+/** `text` rendered with GitHub's extensions in safe mode, as the App View renders a README. */
+function render(text: String) {
+  return markdownToHtml(text, {extensions: gfmExtensions(), safe: true});
+}
+
+export let tests = suite('Deep nesting', () => {
+  test('blockquotes nested a hundred thousand deep', (ctx: TestContext) => {
+    isTrue(render(repeated('>', 100000, ' deep')).contains('deep'), 'the text');
+  });
+
+  test('lists nested a hundred thousand deep on one line', (ctx: TestContext) => {
+    isTrue(render(repeated('- ', 100000, 'deep')).contains('deep'), 'the text');
+  });
+
+  test('emphasis nested a hundred thousand deep', (ctx: TestContext) => {
+    isTrue(render(repeated('*', 100000, 'deep') + repeated('*', 100000, '')).contains('deep'), 'the text');
+  });
+
+  test('brackets nested a hundred thousand deep', (ctx: TestContext) => {
+    isTrue(render(repeated('[', 100000, 'deep') + repeated(']', 100000, '')).contains('deep'), 'the text');
+  });
+});
