@@ -189,4 +189,49 @@ printf '%s\\n' '{"scripts":{"build":"wireit"},"wireit":{"build":{"command":"echo
       await run(['rm', '-rf', outside]);
     }
   });
+
+  test('zena build forwards extra arguments after -- to the entry target without caching it', async (ctx) => {
+    let outside = (await run(['mktemp', '-d'])).stdout.trim();
+    try {
+      let setUp = await run(['/bin/sh', '-c', `mkdir -p "$1/packages/lib" "$1/packages/app" &&
+printf '%s\\n' '{"workspace":{"packages":["packages/*"]}}' > "$1/zebra.json" &&
+printf '%s\\n' '{"scripts":{"build":{"command":"printf ok > out.txt","files":[],"output":["out.txt"]}}}' > "$1/packages/lib/zebra.json" &&
+printf '%s\\n' 'printf "%s|%s|%s\\n" "$#" "$1" "$2" > ran.txt' > "$1/packages/app/check.sh" &&
+printf '%s\\n' '{"scripts":{"build":{"command":"sh check.sh","files":["check.sh"],"output":[],"dependencies":["../lib:build"]},"test":{"command":"sh check.sh","files":["check.sh"],"output":[],"dependencies":["../lib:build"]}}}' > "$1/packages/app/zebra.json"`,
+          'sh', outside]);
+      isTrue(setUp.succeeded(), described(setUp));
+      var unset = '';
+      for (let name in CHOOSERS) {
+        unset = `${unset} -u ${name}`;
+      }
+
+      // 1. `zena build <target> -- ...` forwards args only to `<target>`.
+      let filtered = await run(['/bin/sh', '-c',
+          `cd "$1" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" build ./packages/app:test -- --filter "two words"`,
+          'sh', outside, zenaBinary()]);
+      isTrue(filtered.succeeded(), described(filtered));
+      let args1 = (await run(['cat', `${outside}/packages/app/ran.txt`])).stdout;
+      isTrue(args1 == '2|--filter|two words\n', args1);
+
+      // 2. Subsequent plain `zena build ./packages/app:test` keeps `lib:build` fresh while running `app:test` unfiltered.
+      let plainRun = await run(['/bin/sh', '-c',
+          `cd "$1" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" build ./packages/app:test`,
+          'sh', outside, zenaBinary()]);
+      isTrue(plainRun.succeeded(), described(plainRun));
+      isTrue(plainRun.stdout.contains('packages/app:test: ran'), plainRun.stdout);
+      isTrue(plainRun.stdout.contains('1 fresh'), plainRun.stdout);
+      let args2 = (await run(['cat', `${outside}/packages/app/ran.txt`])).stdout;
+      isTrue(args2 == '0||\n', args2);
+
+      // 3. `zena build -- ...` with no explicit target forwards args to default `build` in cwd.
+      let defaultTargetArgs = await run(['/bin/sh', '-c',
+          `cd "$1/packages/app" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" build -- --fast`,
+          'sh', outside, zenaBinary()]);
+      isTrue(defaultTargetArgs.succeeded(), described(defaultTargetArgs));
+      let args3 = (await run(['cat', `${outside}/packages/app/ran.txt`])).stdout;
+      isTrue(args3 == '1|--fast|\n', args3);
+    } finally {
+      await run(['rm', '-rf', outside]);
+    }
+  });
 });

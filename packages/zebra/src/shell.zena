@@ -1,0 +1,114 @@
+/**
+ * POSIX shell argument quoting utilities.
+ *
+ * Kept free of Zebra-internal imports so it can move to a shared shell or CLI
+ * package alongside `colors`, `layout`, and `animation`.
+ *
+ * References:
+ * - POSIX.1-2017 Shell Command Language, XCU §2.2 (Quoting) and §2.2.2
+ *   (Single-Quotes):
+ *   https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_02
+ * - Python standard library `shlex.quote` (`Lib/shlex.py`), which leaves
+ *   ASCII `[A-Za-z0-9_@%+=:,./-]` unquoted and wraps everything else in
+ *   single quotes with `'` escaped as `'\''`.
+ */
+
+import {StringBuilder} from 'zena:core';
+
+let ASCII_SPACE = 0x20; // ' '
+let ASCII_PERCENT = 0x25; // '%'
+let ASCII_SINGLE_QUOTE = 0x27; // '\''
+let ASCII_PLUS = 0x2b; // '+'
+let ASCII_COMMA = 0x2c; // ','
+let ASCII_HYPHEN = 0x2d; // '-'
+let ASCII_DOT = 0x2e; // '.'
+let ASCII_SLASH = 0x2f; // '/'
+let ASCII_DIGIT_0 = 0x30; // '0'
+let ASCII_DIGIT_9 = 0x39; // '9'
+let ASCII_COLON = 0x3a; // ':'
+let ASCII_EQUALS = 0x3d; // '='
+let ASCII_AT = 0x40; // '@'
+let ASCII_UPPER_A = 0x41; // 'A'
+let ASCII_UPPER_Z = 0x5a; // 'Z'
+let ASCII_UNDERSCORE = 0x5f; // '_'
+let ASCII_LOWER_A = 0x61; // 'a'
+let ASCII_LOWER_Z = 0x7a; // 'z'
+
+/**
+ * Whether `b` is in the unquoted safe set `[A-Za-z0-9_@%+=:,./-]` from
+ * Python's `shlex.quote` (`[^\w@%+=:,./-]` with ASCII `\w`).
+ *
+ * None of these bytes are POSIX shell metacharacters (`| & ; < > ( ) $ \` \ " '`,
+ * whitespace) or word-expansion triggers (`* ? [ # ~` in XCU §2.2 and §2.6).
+ * `=` is safe in argument position; a bare `name=value` word in command
+ * position would instead be parsed as an `ASSIGNMENT_WORD` (XCU §2.10.2 Rule 7b).
+ */
+function isUnquotedShellByte(b: i32) {
+  return (b >= ASCII_DIGIT_0 && b <= ASCII_DIGIT_9) ||
+    (b >= ASCII_UPPER_A && b <= ASCII_UPPER_Z) ||
+    (b >= ASCII_LOWER_A && b <= ASCII_LOWER_Z) ||
+    b == ASCII_UNDERSCORE ||
+    b == ASCII_AT ||
+    b == ASCII_PERCENT ||
+    b == ASCII_PLUS ||
+    b == ASCII_EQUALS ||
+    b == ASCII_COLON ||
+    b == ASCII_COMMA ||
+    b == ASCII_DOT ||
+    b == ASCII_SLASH ||
+    b == ASCII_HYPHEN;
+}
+
+/**
+ * Returns a shell-escaped form of `arg` for interpolation as an argument
+ * word in a POSIX `sh -c` command line.
+ *
+ * Non-empty strings containing only `[A-Za-z0-9_@%+=:,./-]` are returned
+ * unchanged. Empty strings return `''`, and all other strings are wrapped in
+ * single quotes (POSIX XCU §2.2.2), replacing each embedded `'` with `'\''`
+ * (close single quote, backslash-escaped `'`, reopen single quote).
+ */
+export function shellQuote(arg: String): String {
+  if (arg == '') {
+    return "''";
+  }
+  var allSafe = true;
+  for (var i = 0; i < arg.length; i += 1) {
+    if (!isUnquotedShellByte(arg.getByteAt(i))) {
+      allSafe = false;
+      break;
+    }
+  }
+  if (allSafe) {
+    return arg;
+  }
+  let sb = new StringBuilder(arg.length + 4);
+  sb.appendByte(ASCII_SINGLE_QUOTE);
+  for (var i = 0; i < arg.length; i += 1) {
+    let b = arg.getByteAt(i);
+    if (b == ASCII_SINGLE_QUOTE) {
+      sb.append("'\\''");
+    } else {
+      sb.appendByte(b);
+    }
+  }
+  sb.appendByte(ASCII_SINGLE_QUOTE);
+  return sb.toString();
+}
+
+/**
+ * Appends `args` as space-separated, shell-quoted argument words after
+ * `command`. Returns `command` unchanged when `args` is empty.
+ */
+export function appendShellArgs(command: String, args: Array<String>): String {
+  if (args.length == 0) {
+    return command;
+  }
+  let sb = new StringBuilder();
+  sb.append(command);
+  for (let arg in args) {
+    sb.appendByte(ASCII_SPACE);
+    sb.append(shellQuote(arg));
+  }
+  return sb.toString();
+}

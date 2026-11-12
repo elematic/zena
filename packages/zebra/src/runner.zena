@@ -31,8 +31,9 @@ import {FileHasher} from './fs-walk.zena';
 import {RailLayout, StepKind, formatDuration} from './layout.zena';
 import {PlanLoadStats, loadOrCollectConfigs} from './plan-cache.zena';
 import {sha256HexOfString} from 'zena:crypto';
+import {appendShellArgs} from './shell.zena';
 import {stateFromJson, stateToJson} from './state-json.zena';
-import {ScriptConfig, ScriptRef, refKey} from './wireit-config.zena';
+import {ConfigError, ScriptConfig, ScriptRef, refKey} from './wireit-config.zena';
 import {MigrationResult} from './zebra-config.zena';
 
 // State is stored per package ('<pkg>/.zebra/state.json'), like wireit's
@@ -301,13 +302,24 @@ export class BuildOutcome {
   );
 }
 
-/** Default max concurrent script executions: ZENA_AVAILABLE_PARALLELISM, or 8. */
-export function defaultParallelism(): i32 {
-  let raw = getEnv('ZENA_AVAILABLE_PARALLELISM');
-  if (raw != null) {
-    if (let (true, n) = parseI32(raw)) {
-      if (n >= 1) {
-        return n;
+/**
+ * Default max concurrent script executions: ZEBRA_PARALLEL, WIREIT_PARALLEL,
+ * ZENA_AVAILABLE_PARALLELISM, or 8.
+ */
+export function defaultParallelism(
+  lookupEnv: (name: String) => String? = getEnv,
+): i32 {
+  for (let varName in [
+    'ZEBRA_PARALLEL',
+    'WIREIT_PARALLEL',
+    'ZENA_AVAILABLE_PARALLELISM',
+  ]) {
+    let raw = lookupEnv(varName);
+    if (raw != null) {
+      if (let (true, n) = parseI32(raw)) {
+        if (n >= 1) {
+          return n;
+        }
       }
     }
   }
@@ -330,28 +342,121 @@ async function verifyManifestOutputs(
   return true;
 }
 
+/** Options for `buildTarget`. Every field is optional. */
+export type BuildOptions = {
+  /** Maximum concurrent script executions (`<= 0` uses `defaultParallelism()`). */
+  parallelism?: i32,
+  /** Bypass freshness and cached outputs to rerun every reachable script. */
+  force?: boolean,
+  /** Read and write outputs through the local `.zebra/` disk cache (`true` if absent). */
+  useCache?: boolean,
+  /** Optional caller-supplied `FileHasher` for inspecting hash and stat counters. */
+  hasherOut?: FileHasher,
+  /** Optional sink populated with warm/cold plan snapshot load statistics. */
+  planStatsOut?: PlanLoadStats,
+  /** Extra CLI arguments after `--` appended to the entry target's command only. */
+  extraArgs?: Array<String>,
+};
+
+/** Options for `watchTarget`. Every field is optional. */
+export type WatchOptions = {
+  /** Maximum concurrent script executions (`<= 0` uses `defaultParallelism()`). */
+  parallelism?: i32,
+  /** Bypass freshness and cached outputs on each rebuild. */
+  force?: boolean,
+  /** Read and write outputs through the local `.zebra/` disk cache (`true` if absent). */
+  useCache?: boolean,
+  /** Polling interval between file-snapshot checks in milliseconds (`150` if absent). */
+  pollIntervalMs?: i64,
+  /**
+   * Callback invoked after each iteration's post-build snapshot is captured.
+   * Returning `false` stops watching and tears down pinned services.
+   * When omitted, each iteration prints `reportBuild(outcome, verbose)`.
+   */
+  onIteration?: (iteration: i32, outcome: BuildOutcome) => Future<boolean>,
+  /** Print `fresh` and `skipped` steps and passing step output on each watch report. */
+  verbose?: boolean,
+  /** Extra CLI arguments after `--` appended to the entry target's command only. */
+  extraArgs?: Array<String>,
+};
+
+type RunTargetOptions = {
+  parallelism: i32,
+  force: boolean,
+  useCache: boolean,
+  hasherOut: FileHasher?,
+  servicePool: ServicePool?,
+  allowForegroundService: boolean,
+  configPathsOut: GrowableArray<String>?,
+  configsOut: GrowableArray<ScriptConfig>?,
+  planStatsOut: PlanLoadStats?,
+  extraArgs: Array<String>?,
+};
+
 async function runTargetOnce(
   root: String,
   entry: ScriptRef,
-  parallelism: i32 = 0,
-  force: boolean = false,
-  useCache: boolean = true,
-  hasherOut: FileHasher? = null,
-  servicePool: ServicePool? = null,
-  allowForegroundService: boolean = true,
-  configPathsOut: GrowableArray<String>? = null,
-  configsOut: GrowableArray<ScriptConfig>? = null,
-  planStatsOut: PlanLoadStats? = null,
-): Future<BuildOutcome> {
+  options: RunTargetOptions,
+) {
+  let {
+    parallelism,
+    force,
+    useCache,
+    hasherOut,
+    servicePool,
+    allowForegroundService,
+    configPathsOut,
+    configsOut,
+    planStatsOut,
+    extraArgs,
+  } = options;
   listenSignals();
   let startNs = monotonic() as i64;
   let jobs = if (parallelism > 0) parallelism else defaultParallelism();
-  let configs = await loadOrCollectConfigs(
+  let entryKey = refKey(entry);
+  let loadedConfigs = await loadOrCollectConfigs(
     root,
     entry,
     configPathsOut,
     planStatsOut,
   );
+  let hasExtraArgs = extraArgs != null && extraArgs.length > 0;
+  var configs = loadedConfigs;
+  if (hasExtraArgs) {
+    let cliExtra = extraArgs as Array<String>;
+    let rewritten = new GrowableArray<ScriptConfig>();
+    for (let config in loadedConfigs) {
+      if (refKey(config.ref) == entryKey) {
+        let baseCommand = config.command;
+        if (config.isFileset || baseCommand == null) {
+          throw new ConfigError(
+            `script "${entryKey}" has no command and cannot accept extra arguments after --`,
+          );
+        }
+        rewritten.push(
+          new ScriptConfig(
+            config.ref,
+            config.isWireit,
+            appendShellArgs(baseCommand, cliExtra),
+            config.files,
+            config.output,
+            config.filesDeclared,
+            config.outputDeclared,
+            config.dependencies,
+            config.clean,
+            config.service,
+            config.env,
+            config.packageLocks,
+            false,
+            config.isFileset,
+          ),
+        );
+      } else {
+        rewritten.push(config);
+      }
+    }
+    configs = rewritten;
+  }
   if (configsOut != null) {
     for (let config in configs) {
       configsOut.push(config);
@@ -362,7 +467,7 @@ async function runTargetOnce(
     configs.length > 0 &&
     configs[0].service != null
   )
-    refKey(entry)
+    entryKey
   else
     null;
   let hasher = hasherOut ?? new FileHasher(root);
@@ -376,11 +481,22 @@ async function runTargetOnce(
   );
   let stateDirs = new GrowableArray<String>();
   let seenDirs = new HashSet<String>();
+  let uncachedSteps = new HashSet<String>();
   for (let config in configs) {
-    let stateDir = stateDirOf(refKey(config.ref));
+    let k = refKey(config.ref);
+    let stateDir = stateDirOf(k);
     if (seenDirs.add(stateDir)) {
       stateDirs.push(stateDir);
     }
+    if (!config.fingerprintable || config.isFileset) {
+      uncachedSteps.add(k);
+    }
+  }
+  if (foregroundServiceKey != null) {
+    uncachedSteps.add(foregroundServiceKey);
+  }
+  if (hasExtraArgs) {
+    uncachedSteps.add(entryKey);
   }
   let cache: StepCache = if (useCache)
     new DiskCache(
@@ -389,6 +505,7 @@ async function runTargetOnce(
         hasher.markMutated();
       },
       (path, fp) => hasher.recordRestored(path, fp),
+      uncachedSteps,
     )
   else
     new NullCache();
@@ -399,7 +516,6 @@ async function runTargetOnce(
   let spinner = new Spinner();
   let inFlight = new GrowableArray<String>();
   var completed = 0;
-  let entryKey = refKey(entry);
   let filesetKeys = new HashSet<String>();
   for (let config in configs) {
     let k = refKey(config.ref);
@@ -457,11 +573,12 @@ async function runTargetOnce(
     spinner.stop();
   }
   let runResult = result as RunResult;
-  await saveState(root, runResult, foregroundServiceKey);
+  let skipStateKey = if (hasExtraArgs) entryKey else foregroundServiceKey;
+  await saveState(root, runResult, skipStateKey);
   await hasher.save();
   let stepKeys = new GrowableArray<String>();
-  for (let config in configs) {
-    let k = refKey(config.ref);
+  for (let step in plan.graph.steps) {
+    let k = step.key.value;
     if (!filesetKeys.has(k)) {
       stepKeys.push(k);
     }
@@ -484,25 +601,33 @@ async function runTargetOnce(
 export async function buildTarget(
   root: String,
   entry: ScriptRef,
-  parallelism: i32 = 0,
-  force: boolean = false,
-  useCache: boolean = true,
-  hasherOut: FileHasher? = null,
-  planStatsOut: PlanLoadStats? = null,
+  options: BuildOptions = {},
 ): Future<BuildOutcome> {
-  return await runTargetOnce(
-    root,
-    entry,
+  let {parallelism = 0, force = false, useCache = true} = options;
+  var hasherOut: FileHasher? = null;
+  if (let {hasherOut: h} = options) {
+    hasherOut = h;
+  }
+  var planStatsOut: PlanLoadStats? = null;
+  if (let {planStatsOut: s} = options) {
+    planStatsOut = s;
+  }
+  var extraArgs: Array<String>? = null;
+  if (let {extraArgs: a} = options) {
+    extraArgs = a;
+  }
+  return await runTargetOnce(root, entry, {
     parallelism,
     force,
     useCache,
     hasherOut,
-    null,
-    true,
-    null,
-    null,
+    servicePool: null,
+    allowForegroundService: true,
+    configPathsOut: null,
+    configsOut: null,
     planStatsOut,
-  );
+    extraArgs,
+  });
 }
 
 /** Formats a Wireit-to-Zebra migration report on a Clack rail. */
@@ -637,13 +762,23 @@ function snapshotsEqual(
 export async function watchTarget(
   root: String,
   entry: ScriptRef,
-  parallelism: i32 = 0,
-  force: boolean = false,
-  useCache: boolean = true,
-  pollIntervalMs: i64 = 150,
-  onIteration: ((iteration: i32, outcome: BuildOutcome) => Future<boolean>)? = null,
-  verbose: boolean = false,
+  options: WatchOptions = {},
 ): Future<BuildOutcome> {
+  let {
+    parallelism = 0,
+    force = false,
+    useCache = true,
+    pollIntervalMs = 150 as i64,
+    verbose = false,
+  } = options;
+  var onIteration: ((iteration: i32, outcome: BuildOutcome) => Future<boolean>)? = null;
+  if (let {onIteration: cb} = options) {
+    onIteration = cb;
+  }
+  var extraArgs: Array<String>? = null;
+  if (let {extraArgs: a} = options) {
+    extraArgs = a;
+  }
   listenSignals();
   let servicePool = new ServicePool();
   let interval = if (pollIntervalMs > (0 as i64)) pollIntervalMs else 50 as i64;
@@ -652,18 +787,18 @@ export async function watchTarget(
     while (true) {
       let configPaths = new GrowableArray<String>();
       let configs = new GrowableArray<ScriptConfig>();
-      let outcome = await runTargetOnce(
-        root,
-        entry,
+      let outcome = await runTargetOnce(root, entry, {
         parallelism,
         force,
         useCache,
-        null,
+        hasherOut: null,
         servicePool,
-        false,
-        configPaths,
-        configs,
-      );
+        allowForegroundService: false,
+        configPathsOut: configPaths,
+        configsOut: configs,
+        planStatsOut: null,
+        extraArgs,
+      });
       if (checkSignal() != 0) {
         return outcome;
       }

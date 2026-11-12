@@ -41,4 +41,62 @@ export let tests = suite('fs-walk', () => {
     equal(matched[0], 'packages/app/local.txt');
     equal(matched[1], 'zena-package.json');
   });
+
+  test('bare and trailing-slash directory globs expand recursively with negation and re-inclusion', async () => {
+    let root = '/tmp/zebra-fswalk-dirs-' + i64ToString(monotonic() as i64);
+    await ensureDir(root);
+    let writeRel = async (rel: String) => {
+      let full = withRoot(root, rel);
+      await ensureParentDir(full);
+      await writeFile(full, 'x\n');
+    };
+    await writeRel('packages/app/lib/index.js');
+    await writeRel('packages/app/lib/nested/helper.js');
+    await writeRel('packages/app/lib/internal/secret.js');
+    await writeRel('packages/app/lib/internal/keep.js');
+    await writeRel('packages/app/test/unit_test.js');
+    await writeRel('packages/app/notdir');
+    await writeRel('packages/app/tsconfig.tsbuildinfo');
+
+    // Bare directory ("lib") + literal file ("tsconfig.tsbuildinfo").
+    let bareDir = await expandGlobs(root, 'packages/app', [
+      'lib',
+      'tsconfig.tsbuildinfo',
+    ]);
+    equal(bareDir.length, 5);
+    equal(bareDir[0], 'packages/app/lib/index.js');
+    equal(bareDir[1], 'packages/app/lib/internal/keep.js');
+    equal(bareDir[2], 'packages/app/lib/internal/secret.js');
+    equal(bareDir[3], 'packages/app/lib/nested/helper.js');
+    equal(bareDir[4], 'packages/app/tsconfig.tsbuildinfo');
+
+    // Trailing-slash directory ("test/") matches directory contents only, not regular files ("notdir/").
+    let slashDir = await expandGlobs(root, 'packages/app', [
+      'test/',
+      'notdir/',
+    ]);
+    equal(slashDir.length, 1);
+    equal(slashDir[0], 'packages/app/test/unit_test.js');
+
+    // Negated bare directory ("!lib/internal") followed by re-included file ("lib/internal/keep.js").
+    let negatedAndReincluded = await expandGlobs(root, 'packages/app', [
+      'lib',
+      '!lib/internal',
+      'lib/internal/keep.js',
+    ]);
+    equal(negatedAndReincluded.length, 3);
+    equal(negatedAndReincluded[0], 'packages/app/lib/index.js');
+    equal(negatedAndReincluded[1], 'packages/app/lib/internal/keep.js');
+    equal(negatedAndReincluded[2], 'packages/app/lib/nested/helper.js');
+
+    // "." and trailing-slash negation ("!test/").
+    let dotMinusTest = await expandGlobs(root, 'packages/app', [
+      '.',
+      '!test/',
+    ]);
+    equal(dotMinusTest.length, 6);
+    equal(dotMinusTest[0], 'packages/app/lib/index.js');
+    equal(dotMinusTest[4], 'packages/app/notdir');
+    equal(dotMinusTest[5], 'packages/app/tsconfig.tsbuildinfo');
+  });
 });

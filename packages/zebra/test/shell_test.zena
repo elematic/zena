@@ -1,0 +1,60 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {run} from 'zena:process';
+import {appendShellArgs, shellQuote} from 'zebra/shell';
+
+export let tests = suite('zebra shell quoting', () => {
+  test('leaves safe ASCII tokens unquoted', () => {
+    equal(shellQuote('build'), 'build');
+    equal(shellQuote('--filter'), '--filter');
+    equal(shellQuote('--jobs=4'), '--jobs=4');
+    equal(shellQuote('packages/zebra/src/main.zena'), 'packages/zebra/src/main.zena');
+    equal(shellQuote('@zena-lang/zebra:test'), '@zena-lang/zebra:test');
+    equal(shellQuote('100%+a,b.c_d-e'), '100%+a,b.c_d-e');
+  });
+
+  test('quotes empty strings, whitespace, metacharacters, and single quotes', () => {
+    equal(shellQuote(''), "''");
+    equal(shellQuote('hello world'), "'hello world'");
+    equal(shellQuote('$HOME'), "'$HOME'");
+    equal(shellQuote('a;b|c&d'), "'a;b|c&d'");
+    equal(shellQuote('*.zena'), "'*.zena'");
+    equal(shellQuote('~user'), "'~user'");
+    equal(shellQuote('#comment'), "'#comment'");
+    equal(shellQuote("it's"), "'it'\\''s'");
+    equal(shellQuote("'"), "''\\'''");
+    equal(shellQuote("''"), "''\\'''\\'''");
+  });
+
+  test('appendShellArgs preserves base command when empty and quotes appended words', () => {
+    equal(appendShellArgs('zena test', []), 'zena test');
+    equal(
+      appendShellArgs('zena test', ['--filter', "it's $HOME", '']),
+      "zena test --filter 'it'\\''s $HOME' ''",
+    );
+  });
+
+  test('round-trips adversarial arguments verbatim through sh -c', async () => {
+    let nlCmd = appendShellArgs("printf '<%s>\\n'", [
+      '',
+      'plain_token-1.2/3:@%=+,',
+      "it's 'nested'",
+      '$HOME $(uname) `id` $((1+1))',
+      'glob* ? [a-z] ~ #comment !bang',
+      'semi; pipe| amp& (sub) <in >out "double" \\backslash',
+      'λ-utf8',
+    ]);
+    let nlProc = await run(['sh', '-c', nlCmd]);
+    isTrue(nlProc.succeeded(), nlProc.stderr);
+    equal(
+      nlProc.stdout,
+      `<>\n<plain_token-1.2/3:@%=+,>\n<it's 'nested'>\n<$HOME $(uname) \`id\` $((1+1))>\n<glob* ? [a-z] ~ #comment !bang>\n<semi; pipe| amp& (sub) <in >out "double" \\backslash>\n<λ-utf8>\n`,
+    );
+
+    // Embedded newlines and tabs also survive verbatim inside a single argument.
+    let multilineCmd = appendShellArgs('printf %s', ['line1\nline2\ttab']);
+    let multilineProc = await run(['sh', '-c', multilineCmd]);
+    isTrue(multilineProc.succeeded(), multilineProc.stderr);
+    equal(multilineProc.stdout, 'line1\nline2\ttab');
+  });
+});

@@ -15,12 +15,13 @@ zena pkg add zena-lang:zebra
 ## CLI Usage
 
 ```sh
-zena build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<target>]
+zena build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<target>] [-- <args>...]
 zena build --migrate [--dry-run] [-f|--force] [<package-dir>...]
 ```
 
 - `<target>` can be a script name in the current package (`zena build test`), a package directory (`zena build ./packages/app`, which runs `build`), or `<package-dir>:<script>` (`zena build ./packages/app:test`). With no `<target>`, `zena build` runs the current package's `build` script.
-- `-j` / `--jobs <n>` bounds parallel command execution (defaulting to `ZENA_AVAILABLE_PARALLELISM`).
+- `-- <args>...` appends shell-quoted arguments to the entry target's command only, running that entry step uncached without overwriting its saved freshness record.
+- `-j` / `--jobs <n>` bounds parallel command execution (defaulting to `ZEBRA_PARALLEL`, `WIREIT_PARALLEL`, or `ZENA_AVAILABLE_PARALLELISM`).
 - `-w` / `--watch` watches input globs, lockfiles, and package manifests for changes, re-running affected steps incrementally while keeping unchanged services alive in a `ServicePool` across rebuilds.
 - `-f` / `--force` bypasses freshness and cached outputs to rerun scripts unconditionally.
 - `--no-cache` disables restoring outputs from `.zebra/blobs/` when a step is not fresh.
@@ -33,7 +34,9 @@ zena build --migrate [--dry-run] [-f|--force] [<package-dir>...]
 import { buildTarget, reportBuild } from 'zena-lang:zebra/runner';
 import { ScriptRef } from 'zena-lang:zebra/wireit-config';
 
-let outcome = await buildTarget('.', new ScriptRef('packages/app', 'build'));
+let outcome = await buildTarget('.', new ScriptRef('packages/app', 'build'), {
+  parallelism: 4,
+});
 let exitCode = reportBuild(outcome);
 ```
 
@@ -91,14 +94,14 @@ A dependency contributes the digest of its _outputs_ to dependents' cache keys r
 ## Libraries
 
 - `zebra` (`zebra/main`) — CLI entry point (`main`).
-- `zebra/runner` — `buildTarget`, `watchTarget`, `reportBuild`, `reportMigration`, `formatBuildReport`, and `BuildOutcome`.
+- `zebra/runner` — `buildTarget`, `watchTarget`, `BuildOptions`, `WatchOptions`, `reportBuild`, `reportMigration`, `formatBuildReport`, and `BuildOutcome`.
 - `zebra/zebra-config` — `zena-package.json` and `zebra.json` parsing (`ZebraWorkspace`), synthesized `source` filesets, and Wireit migration (`migrateWorkspaceToZebra`, `convertPackageJsonToZebraJson`, `mergeWireitIntoZenaPackageJson`).
 - `zebra/wireit-config` — `package.json` Wireit parsing (`WireitWorkspace`) and shared script configuration types (`ScriptConfig`, `ScriptRef`, `DependencySpec`, `ServiceConfig`, `EnvBinding`, `ConfigError`, `refKey`, `resolveDependency`).
 - `zebra/plan-cache` — `.zebra/plans/` snapshot serialization and `stat`-verified warm plan loading (`loadOrCollectConfigs`, `PlanLoadStats`, `ConfigProbe`).
 - `zebra/builder` — Translates `ScriptConfig` closures into `workflow` steps and execution callbacks (`planScripts`, `StepExecution`, `lockfileCandidates`).
 - `zebra/disk-cache` and `zebra/state-json` — `.zebra/` blob/manifest storage (`DiskCache`, `stateDirOf`) and JSON serialization for state, manifests, and hash memos.
 - `zebra/fs-walk` and `zebra/fs-util` — Input glob discovery (`FileHasher`, `expandGlobs`, `hashFile`, `validateGlobs`, `splitBase`) and workspace path utilities.
-- `zebra/colors`, `zebra/layout`, and `zebra/animation` — Terminal color formatting, Clack-style rail layout (`RailLayout`), and interactive spinner animation (`Spinner`).
+- `zebra/colors`, `zebra/layout`, `zebra/animation`, and `zebra/shell` — Terminal color formatting, Clack-style rail layout (`RailLayout`), interactive spinner animation (`Spinner`), and POSIX shell argument quoting (`shellQuote`, `appendShellArgs`).
 
 ## License
 

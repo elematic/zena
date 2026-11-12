@@ -365,9 +365,10 @@ function describe() {
 
 export async function main(): Future<i32> {
   let parser = describe();
+  let rawArgs = getArguments();
   var parsed: ParsedArgs | null = null;
   try {
-    parsed = parser.parse(getArguments(), 1);
+    parsed = parser.parse(rawArgs, 1);
   } catch (e) {
     console.error('Error: ' + e.message);
     console.error('');
@@ -379,7 +380,7 @@ export async function main(): Future<i32> {
     return 2;
   }
   try {
-    return await dispatch(parser, args);
+    return await dispatch(parser, args, rawArgs);
   } catch (e) {
     if (e is CompileFailure) {
       // The compiler has already said what went wrong.
@@ -391,7 +392,11 @@ export async function main(): Future<i32> {
   }
 }
 
-async function dispatch(parser: ArgParser, args: ParsedArgs): Future<i32> {
+async function dispatch(
+  parser: ArgParser,
+  args: ParsedArgs,
+  rawArgs: Array<String>,
+): Future<i32> {
   if (args.getFlag('version')) {
     console.log('zena ' + (getEnv('ZENA_VERSION') ?? 'dev'));
     return 0;
@@ -428,7 +433,7 @@ async function dispatch(parser: ArgParser, args: ParsedArgs): Future<i32> {
   }
   let options = new Options(args.getFlag('verbose'), args.getFlag('debug'), optLevel);
   if (name == 'build') {
-    return await build(sub, options);
+    return await build(sub, options, rawArgs);
   }
   if (name == 'run') {
     return await runCommand(sub, options);
@@ -552,19 +557,62 @@ async function pkgCommand(pkg: ArgParser, args: ParsedArgs, options: Options): F
   return 2;
 }
 
+class SplitBuildArgs(positional: Array<String>, extra: Array<String>)
+
+function splitBuildExtraArgs(
+  rawArgs: Array<String>,
+  rest: Array<String>,
+) {
+  var dashIndex = -1;
+  for (var i = 1; i < rawArgs.length; i += 1) {
+    if (rawArgs[i] == '--') {
+      dashIndex = i;
+      break;
+    }
+  }
+  if (dashIndex < 0) {
+    return new SplitBuildArgs(rest, new GrowableArray<String>());
+  }
+  let extraCount = rawArgs.length - (dashIndex + 1);
+  if (extraCount <= 0) {
+    return new SplitBuildArgs(rest, new GrowableArray<String>());
+  }
+  let splitAt = if (extraCount <= rest.length) rest.length - extraCount else 0;
+  let positional = new GrowableArray<String>();
+  let extra = new GrowableArray<String>();
+  for (var i = 0; i < splitAt; i += 1) {
+    positional.push(rest[i]);
+  }
+  for (var i = splitAt; i < rest.length; i += 1) {
+    extra.push(rest[i]);
+  }
+  return new SplitBuildArgs(positional, extra);
+}
+
 /**
  * `zena build`: an argument naming a `.zena` file compiles that file;
  * anything else is a build target, run with zebra.
  */
-async function build(args: ParsedArgs, options: Options): Future<i32> {
+async function build(
+  args: ParsedArgs,
+  options: Options,
+  rawArgs: Array<String>,
+): Future<i32> {
+  let splitArgs = splitBuildExtraArgs(rawArgs, args.rest);
+  let positional = splitArgs.positional;
+  let extraArgs = splitArgs.extra;
   if (args.getFlag('migrate')) {
-    let startDir = if (args.rest.length == 0)
+    if (extraArgs.length > 0) {
+      console.error('Error: --migrate does not take extra arguments after --');
+      return 2;
+    }
+    let startDir = if (positional.length == 0)
       userCwd()
     else
-      resolveUserPath(args.rest[0]);
+      resolveUserPath(positional[0]);
     let root = await workspaceRoot(startDir);
     let targetDirs = new GrowableArray<String>();
-    if (args.rest.length == 0) {
+    if (positional.length == 0) {
       if (startDir.value != root.value) {
         let rel = startDir.stripPrefix(root);
         if (rel != null) {
@@ -572,7 +620,7 @@ async function build(args: ParsedArgs, options: Options): Future<i32> {
         }
       }
     } else {
-      for (let raw in args.rest) {
+      for (let raw in positional) {
         let dir = resolveUserPath(raw);
         let rel = dir.stripPrefix(root);
         targetDirs.push(if (rel == null) raw else rel.value);
@@ -596,15 +644,19 @@ async function build(args: ParsedArgs, options: Options): Future<i32> {
     console.error('Error: --dry-run is only used with --migrate');
     return 2;
   }
-  if (args.rest.length > 1) {
+  if (positional.length > 1) {
     console.error('Error: build takes one file or target');
     return 2;
   }
   var argument = 'build';
-  if (args.rest.length == 1) {
-    argument = args.rest[0];
+  if (positional.length == 1) {
+    argument = positional[0];
     let path = resolveUserPath(argument);
     if (extname(argument) == '.zena' || await isFile(path.value)) {
+      if (extraArgs.length > 0) {
+        console.error('Error: extra arguments after -- are only supported when building a target');
+        return 2;
+      }
       return await buildFile(args, options, argument, path);
     }
   }
@@ -622,14 +674,14 @@ async function build(args: ParsedArgs, options: Options): Future<i32> {
       return 2;
     }
   }
-  return await buildScript(
-    argument,
+  return await buildScript(argument, {
     jobs,
-    args.getFlag('watch'),
-    args.getFlag('force'),
-    !args.getFlag('no-cache'),
-    options.verbose || args.getFlag('verbose'),
-  );
+    watch: args.getFlag('watch'),
+    force: args.getFlag('force'),
+    useCache: !args.getFlag('no-cache'),
+    verbose: options.verbose || args.getFlag('verbose'),
+    extraArgs,
+  });
 }
 
 /**
@@ -676,6 +728,15 @@ async function buildFile(
   return 0;
 }
 
+type BuildScriptOptions = {
+  jobs: i32,
+  watch: boolean,
+  force: boolean,
+  useCache: boolean,
+  verbose: boolean,
+  extraArgs: Array<String>,
+};
+
 /**
  * Runs a build target with zebra: `test` is a script of the package the
  * user is in, and `./packages/zebra:test` a script of another package, in
@@ -685,12 +746,9 @@ async function buildFile(
  */
 async function buildScript(
   argument: String,
-  jobs: i32 = 0,
-  watch: boolean = false,
-  force: boolean = false,
-  useCache: boolean = true,
-  verbose: boolean = false,
-): Future<i32> {
+  options: BuildScriptOptions,
+) {
+  let {jobs, watch, force, useCache, verbose, extraArgs} = options;
   var packagePath = '.';
   var script = argument;
   if (argument.startsWith('.')) {
@@ -723,9 +781,20 @@ async function buildScript(
   var outcome: BuildOutcome | null = null;
   try {
     outcome = if (watch)
-      await watchTarget(root.value, entry, jobs, force, useCache, 150 as i64, null, verbose)
+      await watchTarget(root.value, entry, {
+        parallelism: jobs,
+        force,
+        useCache,
+        verbose,
+        extraArgs,
+      })
     else
-      await buildTarget(root.value, entry, jobs, force, useCache);
+      await buildTarget(root.value, entry, {
+        parallelism: jobs,
+        force,
+        useCache,
+        extraArgs,
+      });
   } catch (e) {
     console.error(`Error: ${e.message}`);
     return 1;
