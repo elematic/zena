@@ -1575,6 +1575,31 @@ export let tests = suite('zir backend', () => {
         'the result is returned as its fields');
   });
 
+  test('a var tuple updated through a call stays as its elements', async (ctx) => {
+    // `pos` is carried around the loop and through both arms of the `if`
+    // as its elements, and matched at the end: no iteration builds a
+    // tuple.
+    let result = await compileWithZir(dedentRaw`
+        function step(p: (i32, i32)): (i32, i32) { return (p[0] + p[1], p[1] + 1); }
+        export let main = (): i32 => {
+          var pos: (i32, i32) = (0, 1);
+          for (var i = 0; i < 10; i += 1) {
+            if ((i & 1) == 0) {
+              pos = step(pos);
+            } else {
+              pos = (pos[1], pos[0]);
+            }
+          }
+          return match (pos) {
+            case (let x, let y): x * 100 + y
+          };
+        };
+        `);
+    assertNoAllocation(result, '$main', 'the var is carried as its elements');
+    assertNoAllocation(result, '$step.core',
+        'the result is returned as its elements');
+  });
+
   test('-O2 removes a local fat pointer entirely', async (ctx) => {
     // Pack, dispatch, unpack, all in one body: devirtualization makes
     // the call direct, inlining brings the trampoline's receiver cast
