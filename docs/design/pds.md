@@ -57,8 +57,10 @@ blob, which the App View reads one file of an archive with), and the
 it has app-password sign-in (`com.atproto.server.createSession`,
 `refreshSession`, `getSession`, `deleteSession`), `getServiceAuth`, and
 an account's writes to its own repository (`putRecord`, `deleteRecord`),
-in `pds/sessions`; account passwords, `createAppPassword` and the other
-writes wait for ordinary accounts. Of the App View (milestone 6), it
+in `pds/sessions`, served only with `PDS_PASSWORD_SESSIONS=1`, since
+padstone's accounts are all managed and have no password; account
+passwords, `createAppPassword` and the other writes wait for ordinary
+accounts. Of the App View (milestone 6), it
 has account kinds that confine package, organization and automation
 accounts to `dev.zena-lang.*` records, and the methods
 `createOrganization`, `createPackage` (which signs and submits each new

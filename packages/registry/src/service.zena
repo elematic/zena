@@ -35,10 +35,9 @@
  *     for it, as `PDS_BLOB_BUCKET` and `PDS_BLOB_DIR`. With the PDS in the
  *     same process, it is kept beside the PDS's blobs.
  * - `APP_VIEW_SESSION_SECRET`: 32 bytes in hex, which signs the site's web
- *   sessions and the URLs of its avatars (`registry/web-sessions`). By
- *   default the PDS's `PDS_JWT_SECRET` in the same process; required with
- *   `APP_VIEW_PDS_URL` and `APP_VIEW_STORAGE=firestore`, and otherwise made
- *   up at start.
+ *   sessions and the URLs of its avatars (`registry/web-sessions`).
+ *   Required with Firestore, since every server of a deployment checks
+ *   them, and otherwise made up at start.
  * - `APP_VIEW_ROTATION_KEY`: the App View's online PLC rotation key, a
  *   secp256k1 private key in hex; or `APP_VIEW_ROTATION_KMS_KEY`, a Cloud
  *   KMS key version, `projects/…/cryptoKeyVersions/<n>`, on secp256k1 or
@@ -210,7 +209,7 @@ export final class ServiceConfig {
    * the PDS's in the same process, or else the server's own.
    */
   var publicUrl: String | null = null;
-  /** The secret of the site's sessions, or null for the PDS's in the same process, or one made up at start. */
+  /** The secret of the site's sessions, or null to make one up at start. */
   var sessionSecret: FixedArray<u8> | null = null;
   appView: AppViewSettings;
   plcDirectory: String;
@@ -230,7 +229,7 @@ export final class ServiceConfig {
 
 /**
  * A built server, not yet listening: its application, the App View, the
- * PDS in the same process and its password sessions if there is one, where
+ * PDS in the same process and its password sessions if it has them, where
  * the App View writes its handles' DNS records, and the staging PLC
  * directory it is, if it is one.
  */
@@ -310,9 +309,6 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
         let objects: BlobChoice = if (bucket != null) new InBucket(bucket) else new InDirectory(objectDir as String);
         stores = new StoresInFirestore(tenant, value('APP_VIEW_FIRESTORE_DATABASE'), objects);
       }
-      if (secretText == null) {
-        problems.push('APP_VIEW_STORAGE=firestore needs APP_VIEW_SESSION_SECRET');
-      }
     } else if (storageKind == 'memory') {
       stores = new StoresInMemory();
       if (value('APP_VIEW_TENANT') != null || value('APP_VIEW_FIRESTORE_DATABASE') != null ||
@@ -352,6 +348,9 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     pds = inProcess;
   }
 
+  if (secretText == null && firestore != null) {
+    problems.push(`${firestore}=firestore needs APP_VIEW_SESSION_SECRET`);
+  }
   let (rotationKey, kmsKey) = keyFrom(value, problems, 'APP_VIEW_ROTATION_KEY', 'APP_VIEW_ROTATION_KMS_KEY');
   if (value('APP_VIEW_ROTATION_KEY') == null && kmsKey == null && firestore != null) {
     problems.push(`${firestore}=firestore needs APP_VIEW_ROTATION_KEY or APP_VIEW_ROTATION_KMS_KEY`);
@@ -616,9 +615,7 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let appView = new AppView(client as PdsClient, appViewConfig, appViewStore, records, keys, submit,
       (count: i32) => randomBytes(count), dependencies);
   appView.derived = derived;
-  // By default the site's sessions are signed with the secret the PDS in
-  // the same process is given, so that one server needs one secret.
-  let sessionSecret = config.sessionSecret ?? inProcess?.jwtSecret ?? randomBytes(32);
+  let sessionSecret = config.sessionSecret ?? randomBytes(32);
   appView.sessions = new WebSessions(sessionSecret);
   // A DID document is written by whoever controls the DID, so the PDS it
   // names is read only where the App View may read (`AppView.mayRead`):

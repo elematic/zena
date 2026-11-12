@@ -1,7 +1,7 @@
 /**
  * The PDS as a server of its own, padstone: its configuration, read from
  * the environment by `configFromEnv`, and `buildPds`, which builds the
- * storage, the PDS and its sessions the configuration names. `main.zena`
+ * storage, the PDS and the sessions the configuration names. `main.zena`
  * serves it. An App View that runs a PDS in the same process builds it
  * here too, from the same variables (`registry/service`).
  *
@@ -32,8 +32,14 @@
  *   None by default.
  * - `PDS_PLC_DIRECTORY`: where DIDs are resolved, and the managed
  *   accounts' operations read, `https://plc.directory` by default.
+ * - `PDS_PASSWORD_SESSIONS`: `1` serves password sessions
+ *   (`pds/sessions`): `com.atproto.server.createSession` and the methods
+ *   beside it, and an account's writes to its own repository with their
+ *   tokens. Off by default. A managed account has no password, and nothing
+ *   over the network gives an account one, so a PDS of managed accounts,
+ *   as padstone is, has no use for them.
  * - `PDS_JWT_SECRET`: 32 bytes in hex, which signs the access and refresh
- *   tokens of sessions (`pds/sessions`). Required with `firestore`, since
+ *   tokens of password sessions. Required with them and `firestore`, since
  *   sessions outlive the server and every server of a deployment checks
  *   them. With `memory`, a missing secret is made up at start.
  * - `PDS_CLOCK_ID`: 0 to 1023, which keeps this server's revisions apart
@@ -97,17 +103,19 @@ export final class PdsConfig {
   var trustedAppViews: Array<TrustedAppView> = [];
   var plcDirectory = PUBLIC_PLC_DIRECTORY;
   clockId: i32;
-  /** The secret sessions' tokens are signed with, or null to make one up at start. */
+  /** Whether it serves password sessions. */
+  var passwordSessions = false;
+  /** The secret password sessions' tokens are signed with, or null to make one up at start. */
   var jwtSecret: FixedArray<u8> | null = null;
 
   new(this.port, this.storage, this.clockId);
 }
 
-/** A built PDS, not yet listening: its application, the PDS, and its sessions. */
+/** A built PDS, not yet listening: its application, the PDS, and its password sessions if it has them. */
 export final class PdsService {
   app: App;
   pds: Pds;
-  sessions: Sessions;
+  sessions: Sessions | null;
   /** Its DID, which App Views' tokens are addressed to. */
   did: String;
 
@@ -148,7 +156,8 @@ export function refuseProblems(problems: Array<String>): void {
 /** The variables of the PDS's configuration, every one `readPdsConfig` reads but `PORT`. */
 export let PDS_VARIABLES: Array<String> = [
   'PDS_STORAGE', 'PDS_TENANT', 'PDS_BLOB_BUCKET', 'PDS_BLOB_DIR', 'PDS_FIRESTORE_DATABASE', 'PDS_KEY_ENCRYPTION_KMS_KEY',
-  'PDS_PUBLIC_URL', 'PDS_DID', 'PDS_TRUSTED_APP_VIEWS', 'PDS_PLC_DIRECTORY', 'PDS_JWT_SECRET', 'PDS_CLOCK_ID'
+  'PDS_PUBLIC_URL', 'PDS_DID', 'PDS_TRUSTED_APP_VIEWS', 'PDS_PLC_DIRECTORY', 'PDS_PASSWORD_SESSIONS', 'PDS_JWT_SECRET',
+  'PDS_CLOCK_ID'
 ];
 
 /** The port `PORT` gives, 2583 by default, with what is wrong with it added to `problems`. */
@@ -241,14 +250,21 @@ export function readPdsConfig(value: (name: String) => String | null, problems: 
   }
   config.trustedAppViews = trustedAppViewsFrom(value('PDS_TRUSTED_APP_VIEWS'), problems);
   config.plcDirectory = value('PDS_PLC_DIRECTORY') ?? config.plcDirectory;
+  let sessionsText = value('PDS_PASSWORD_SESSIONS');
+  if (sessionsText != null && sessionsText != '1' && sessionsText != '0') {
+    problems.push(`PDS_PASSWORD_SESSIONS is 1 or 0, not ${sessionsText}`);
+  }
+  config.passwordSessions = sessionsText == '1';
   let secretText = value('PDS_JWT_SECRET');
-  if (secretText != null) {
+  if (secretText != null && !config.passwordSessions) {
+    problems.push('PDS_JWT_SECRET signs password sessions, which need PDS_PASSWORD_SESSIONS=1');
+  } else if (secretText != null) {
     config.jwtSecret = decodeKey(secretText);
     if (config.jwtSecret == null) {
       problems.push('PDS_JWT_SECRET is not 32 bytes of hex');
     }
-  } else if (storageKind == 'firestore') {
-    problems.push('PDS_STORAGE=firestore needs PDS_JWT_SECRET');
+  } else if (config.passwordSessions && storageKind == 'firestore') {
+    problems.push('PDS_PASSWORD_SESSIONS=1 with PDS_STORAGE=firestore needs PDS_JWT_SECRET');
   }
   return config;
 }
@@ -351,8 +367,11 @@ export async function buildPds(config: PdsConfig, endpoint: String, also: Array<
     }
   }
   let pds = new Pds(storage, config.clockId);
-  let sessions = new Sessions(storage, credentials, config.jwtSecret ?? randomBytes(32),
-      (count: i32) => randomBytes(count));
+  let sessions = if (config.passwordSessions) {
+    new Sessions(storage, credentials, config.jwtSecret ?? randomBytes(32), (count: i32) => randomBytes(count))
+  } else {
+    null
+  };
   let origin = config.publicUrl ?? endpoint;
   let did = config.did ?? didWebOfOrigin(origin);
   pds.did = did;

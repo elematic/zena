@@ -134,7 +134,7 @@ export let tests = suite('registry/service', () => {
     let config = configFromEnv(envOf([
       ('PORT', '8080'),
       ('PDS_STORAGE', 'firestore'),
-      ('PDS_JWT_SECRET', KEY),
+      ('APP_VIEW_SESSION_SECRET', KEY),
       ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'zena-blobs'),
       ('PDS_FIRESTORE_DATABASE', 'pkg'),
@@ -182,7 +182,7 @@ export let tests = suite('registry/service', () => {
 
     let local = configFromEnv(envOf([
       ('PDS_STORAGE', 'firestore'),
-      ('PDS_JWT_SECRET', KEY),
+      ('APP_VIEW_SESSION_SECRET', KEY),
       ('PDS_TENANT', 'dev'),
       ('PDS_BLOB_DIR', '/var/pds/blobs'),
       ('APP_VIEW_DOMAIN', 'pkg.test'),
@@ -205,7 +205,7 @@ export let tests = suite('registry/service', () => {
     let config = configFromEnv(envOf([
       ('PORT', '8080'),
       ('PDS_STORAGE', 'firestore'),
-      ('PDS_JWT_SECRET', KEY),
+      ('APP_VIEW_SESSION_SECRET', KEY),
       ('PDS_FIRESTORE_DATABASE', 'zena-pkg-staging'),
       ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'meta-garage-420114-zena-pkg-staging'),
@@ -232,7 +232,7 @@ export let tests = suite('registry/service', () => {
     let offline = formatDidKey(publicKeyFor(KeyType.Secp256k1, new FixedArray<u8>(32, 3 as u8)));
     let config = configFromEnv(envOf([
       ('PDS_STORAGE', 'firestore'),
-      ('PDS_JWT_SECRET', KEY),
+      ('APP_VIEW_SESSION_SECRET', KEY),
       ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'zena-blobs'),
       ('APP_VIEW_DOMAIN', 'pkg.example.dev'),
@@ -257,7 +257,7 @@ export let tests = suite('registry/service', () => {
 
   test('refuses to make accounts in the public PLC directory without the offline key', (ctx) => {
     let production: Array<(String, String)> = [
-      ('PDS_STORAGE', 'firestore'), ('PDS_JWT_SECRET', KEY), ('PDS_TENANT', 'pkg'),
+      ('PDS_STORAGE', 'firestore'), ('APP_VIEW_SESSION_SECRET', KEY), ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'zena-blobs'), ('APP_VIEW_DOMAIN', 'pkg.example.dev'),
       ('APP_VIEW_ROTATION_KEY', KEY), ('APP_VIEW_HANDLE_RECORDS', 'cloud-dns'),
       ('APP_VIEW_DNS_ZONE', 'zone'),
@@ -317,7 +317,7 @@ export let tests = suite('registry/service', () => {
     isTrue(firestore.contains('needs PDS_BLOB_BUCKET or PDS_BLOB_DIR'), firestore);
     isTrue(firestore.contains('needs APP_VIEW_ROTATION_KEY or APP_VIEW_ROTATION_KMS_KEY'), firestore);
     isTrue(firestore.contains('needs APP_VIEW_HANDLE_RECORDS'), firestore);
-    isTrue(firestore.contains('needs PDS_JWT_SECRET'), firestore);
+    isTrue(firestore.contains('PDS_STORAGE=firestore needs APP_VIEW_SESSION_SECRET'), firestore);
     let records = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_HANDLE_RECORDS', 'cloud-dns')]);
     isTrue(records.contains('needs APP_VIEW_DNS_ZONE'), records);
     let unknown = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_HANDLE_RECORDS', 'route53'),
@@ -337,10 +337,10 @@ export let tests = suite('registry/service', () => {
       ('PDS_CLOCK_ID', '1024'),
       ('APP_VIEW_DOMAIN', 'pkg.test'),
       ('APP_VIEW_ROTATION_KEY', 'abcd'),
-      ('PDS_JWT_SECRET', 'not hex'),
+      ('APP_VIEW_SESSION_SECRET', 'not hex'),
     ]);
     for (let expected in ['PORT is not a number', 'PDS_STORAGE is memory or firestore', 'PDS_CLOCK_ID is 0 to 1023',
-        'APP_VIEW_ROTATION_KEY is not 32 bytes of hex', 'PDS_JWT_SECRET is not 32 bytes of hex']) {
+        'APP_VIEW_ROTATION_KEY is not 32 bytes of hex', 'APP_VIEW_SESSION_SECRET is not 32 bytes of hex']) {
       isTrue(values.contains(expected), `${expected} in: ${values}`);
     }
 
