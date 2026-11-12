@@ -37,7 +37,7 @@ declare -A ENTRY=(
   [hello]=packages/zena-compiler/zena/test/hello_test.zena
   [cli-module]=packages/zena-cli/zena/main.zena
   [self-hosted]=packages/zena-compiler/zena/cli/main.zena
-  [lsp]=packages/language-service/zena/lsp.zena
+  [lsp]=packages/language-service/src/lsp.zena
 )
 declare -A FLAGS=(
   [hello]=""

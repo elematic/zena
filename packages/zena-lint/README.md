@@ -1,28 +1,35 @@
-# zena-lint
+# `zena-lint`
 
-Lint rules for Zena source, each with a fix. The compiler and type
-checker drive every rule, and when a fix is applied it is checked again
-before it is kept.
+Lint rules for Zena source code, each with an automated fix. The compiler and type checker drive every rule, and when a fix is applied it is type-checked again before it is kept.
+
+## Usage
+
+### Command Line
 
 ```bash
 zena lint [--fix] [--only a,b] [--skip a,b] <paths...>
 zena lint --list-rules
 ```
 
-A path is a `.zena` file or a directory, searched for them. Without
-`--fix` the command prints each finding as `path:line:column: message
-[rule]` and exits 1 when there is one; with `--fix` it rewrites the
-files. `-v` on the command lists every fix and the text of a rejected
-one.
+A path is a `.zena` file or a directory, searched for them. Without `--fix` the command prints each finding as `path:line:column: message [rule]` and exits 1 when there is one; with `--fix` it rewrites the files. `-v` on the command lists every fix and the text of any rejected one.
 
-The language server (`zena lsp`) publishes the findings as warnings and
-offers each as a quick fix, plus a `source.fixAll.zena` code action for
-the whole file. The VS Code extension does the same, and adds the
-command "Zena: Fix lint findings in file".
+The language server (`zena lsp`) publishes the findings as warnings and offers each as a quick fix, plus a `source.fixAll.zena` code action for the whole file.
+
+### Library API
+
+```zena
+import { LintOptions, lintFile } from 'zena-lint';
+import { Project } from 'zena-lint/checking';
+import { allRules } from 'zena-lint/rules';
+
+let project = new Project();
+let options = new LintOptions(allRules());
+let report = await lintFile(project, 'src/main.zena', options);
+```
 
 ## Rules
 
-| rule                     | rewrite                                                                                     |
+| Rule                     | Rewrite                                                                                     |
 | ------------------------ | ------------------------------------------------------------------------------------------- |
 | `function-declaration`   | top-level `let f = (…) => …` → `function f(…) { … }`                                        |
 | `unnecessary-cast`       | `x as T` where `x: T` → `x` (from the checker's warning, less contextually typed operands)  |
@@ -41,45 +48,17 @@ command "Zena: Fix lint findings in file".
 | `immutable-field`        | `var` field nothing assigns → immutable field (`#private`, or the class is not exported)    |
 | `empty-constructor`      | `new() {}` on a class with no other constructor → removed; the default is synthesized       |
 
-## How it works
+## Libraries
 
-Each file is compiled and checked with the real `Compiler`, and the rules
-walk the syntax tree with the `SemanticModel` beside it. A rule proposes
-**text edits** on byte ranges — nothing is re-printed from the AST, so
-comments and layout survive. The edits of a pass are applied in memory,
-and the result is checked again through an overlay `CompilerHost`. When
-the rewrite introduces an error, the driver bisects the edits, keeps the
-ones that check, and reports the rest with the checker's message:
+- `zena-lint` / `zena-lint/lint` — lint driver (`lintFile`, `lintSource`, `LintOptions`, `FileReport`)
+- `zena-lint/checking` — compiler project wrapper and overlay host (`Project`, `CheckedFile`)
+- `zena-lint/checked` — checked module wrapper (`CheckedFile`)
+- `zena-lint/rules` — rule registry (`allRules`, `ruleNamed`)
+- `zena-lint/rule` — rule runner (`NamedRule`, `proposeEdits`, `messageOf`)
+- `zena-lint/context` — rule traversal context (`RuleContext`)
+- `zena-lint/source` — byte-range edits (`Edit`, `applyEdits`, `columnOf`)
+- `zena-lint/files` — `.zena` file discovery (`collectZenaFiles`)
 
-```
-packages/x/y.zena: 12 edits in 3 passes (function-declaration 9, nullish 3)
-  rejected unnecessary-annotation at line 40: 40: Type mismatch: …
-```
+## License
 
-Passes repeat until no rule has anything to propose, so rules compose:
-`var` + `if` becomes `let x = if …`, which becomes `x ?? d`.
-
-A rewrite that holds several edits (a loop header and the line it makes
-redundant) is one _group_, applied or rejected whole.
-
-The check after a rewrite is a type check, not a proof: a rule is still
-written to preserve meaning on its own, and the tests of the package being
-cleaned are the final word. `ZENA_LINT_DEBUG=1` makes some rules say
-why they declined a site.
-
-The compiler's source, and the standard library files it imports, are
-also compiled by the bootstrap (`docs/design/bootstrapping.md`), whose
-checker is older than the one lint checks with, so a rewrite lint keeps
-can still fail `build:cli`. Clean them one rule at a time
-(`--only <rule>`), running `npm run build:cli -w @zena-lang/zena-compiler`
-after each rule and `npm test` at the end.
-
-## Adding a rule
-
-A rule is a function `(ctx: RuleContext) => void` in `zena/lib/rules/`,
-registered in `zena/lib/rules.zena`. `RuleContext` (`zena/lib/context.zena`)
-has the file's text, tree and types, and the questions rules ask: a node's
-text and extent, its parent, whether an expression is pure, whether it is
-contextually typed, whether a binding is ever assigned. Propose a change
-with `replace`, `replaceRange` or `removeRange`; wrap several that belong
-together in `beginGroup()` … `endGroup()`.
+MIT

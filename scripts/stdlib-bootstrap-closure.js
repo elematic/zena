@@ -38,7 +38,7 @@ const PRELUDE = 'packages/zena-compiler/zena/lib/prelude.zena';
 const ENTRY = 'packages/zena-compiler/zena/cli/main.zena';
 const ALSO_COMPILED = [
   'packages/wit-parser/src',
-  'packages/zena-formatter/zena',
+  'packages/zena-formatter/src',
 ];
 
 /** `build:cli` builds no component, so a virtual module's component entry is
