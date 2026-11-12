@@ -261,11 +261,13 @@ final class WorkspaceLoader {
   // its key: `<scope>:<name>` when it has a scope, its own or, inside the
   // workspace, the root's; its `name` when it has none; and its directory
   // when it has no name (docs/design/import-names.md, "Workspace
-  // packages").
+  // packages"). A package in a scope also names itself by its plain
+  // `name`, unless one of its dependencies has that name.
   async #loadPackage(dir: String, manifest: JsonObject): Future<String> {
     let path = normalizePath(dir);
     let nameValue = manifest["name"];
     var name: String | null = null;
+    var plainName: String | null = null;
     if (nameValue != null) {
       if (!(nameValue is String)) {
         throw new Error(`${path}/zena-package.json: the name is not a package name`);
@@ -277,6 +279,7 @@ final class WorkspaceLoader {
       let scope = scopeOf(manifest, `${path}/zena-package.json`) ??
           (if (isInside(path, this.#root)) this.#rootScope else null);
       name = if (scope != null) `${scope}:${plain}` else plain;
+      plainName = plain;
     }
     let key = name ?? path;
     if (let (true, other) = this.#dirs.get(key)) {
@@ -295,6 +298,10 @@ final class WorkspaceLoader {
     this.#dirs[key] = path;
     if (name != null) {
       names[name] = key;
+    }
+    if (plainName != null) {
+      // Set before the dependencies, so that one with the name replaces it.
+      names[plainName] = key;
     }
     let dependencies = manifest["dependencies"];
     if (dependencies == null) {

@@ -115,6 +115,11 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
       let bad = await zena.run(['pkg', 'add', 'acme:log', '--name', '@acme']);
       isTrue(!bad.succeeded() && bad.stderr.contains('not a valid local name'), described(bad));
 
+      // A package in a scope names itself by its plain name as well.
+      await write(manifest, '{"name": "app", "scope": "acme"}\n');
+      let self = await zena.run(['pkg', 'add', 'acme:log', '--name', 'app']);
+      isTrue(!self.succeeded() && self.stderr.contains('this package'), described(self));
+
       // With scopedNames false, a package in a scope gets the name its
       // profile suggests.
       await write(manifest, '{"scopedNames": false}\n');
