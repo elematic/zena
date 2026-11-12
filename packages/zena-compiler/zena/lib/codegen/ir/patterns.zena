@@ -36,7 +36,7 @@ import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
 import { lowerBigIntLiteral, lowerStringLiteral } from './templates.zena';
-import { bindTupleWithRest, lowerExpr, recordRestValue, repackRecordUnion, tupleRestIndexOf } from './lowering.zena';
+import { bindTupleWithRest, inlineMembersMatching, lowerExpr, recordRestValue, repackRecordUnion, tupleRestIndexOf, unboxTuples } from './lowering.zena';
 
 
 /** Bail with the lowering-side message shape (reason @function). */
@@ -125,6 +125,31 @@ let lowerNamedTypeTest = (cx: LoweringContext, patType: Type, value: i32,
     }
   }
 };
+
+/**
+ * The values of a tuple pattern's elements when `value` is a boxed union of
+ * tuples rather than one tuple struct, as an element of a boxed tuple can
+ * be (#1040): the union read into slots, and each element's value for the
+ * members the pattern's literals allow. Null when `value` is a struct.
+ */
+function unionTupleLanes(cx: LoweringContext, tp: TuplePattern, value: i32,
+    nodes: GrowableArray<Node | null>): GrowableArray<i32> | null {
+  if (asWasmStruct(cx.valueTypeOf(value)) != null) {
+    return null;
+  }
+  let t = cx.substitutedNodeType(tp as Node);
+  if (t == null) {
+    return null;
+  }
+  let source = unboxTuples(cx, value, t);
+  if (source == null) {
+    return null;
+  }
+  let lanes = source;
+  let layout = lanes.layout;
+  let allowed = if (layout != null) inlineMembersMatching(layout, tp.elements) else null;
+  return lanes.patternValues(cx, tp.elements, allowed, nodes);
+}
 
 /** The struct behind a (boxed) tuple or class value; bails otherwise. */
 let structOfValue = (cx: LoweringContext, value: i32): WasmStruct => {
@@ -839,6 +864,17 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
       branchUnless(cx, cond, failB);
     }
     case TuplePattern as tp: {
+      let laneNodes = new Array<Node | null>();
+      let lanes = if (tupleRestIndexOf(tp) < 0) unionTupleLanes(cx, tp, value, laneNodes) else null;
+      if (lanes != null) {
+        for (var i = 0; i < laneNodes.length; i += 1) {
+          let el = laneNodes[i];
+          if (el != null && patternRefutable(cx, el)) {
+            lowerPatternTest(cx, el, lanes[i], failB);
+          }
+        }
+        return;
+      }
       // Elements after a `...rest` count from the tuple's end.
       let restIndex = tupleRestIndexOf(tp);
       let count = tp.elements.length;
@@ -997,6 +1033,17 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
     case TuplePattern as tp: {
       if (tupleRestIndexOf(tp) >= 0) {
         bindTupleWithRest(cx, tp, value);
+        return;
+      }
+      let laneNodes = new Array<Node | null>();
+      let lanes = unionTupleLanes(cx, tp, value, laneNodes);
+      if (lanes != null) {
+        for (var i = 0; i < laneNodes.length; i += 1) {
+          let el = laneNodes[i];
+          if (el != null && patternBinds(cx, el)) {
+            lowerPatternBindings(cx, el, lanes[i]);
+          }
+        }
         return;
       }
       for (var i = 0; i < tp.elements.length; i += 1) {

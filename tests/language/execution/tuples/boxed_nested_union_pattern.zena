@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 0
+// A nested tuple pattern on a boxed tuple whose element is a union of
+// tuples (#1040): the element is tested for the member the nested pattern
+// names, then read, as a pattern on the boxed union alone is.
+
+type Reply = (true, i32) | (false, String);
+
+function describe(t: (i32, Reply)): i32 {
+  if (let (n, (false, why)) = t) {
+    return n * 100 + why.length;
+  }
+  if (let (n, (true, v)) = t) {
+    return n + v;
+  }
+  return -1;
+}
+
+function viaMatch(t: (i32, Reply)): i32 {
+  return match (t) {
+    case (let n, (true, let v)): n + v
+    case (let n, (false, let why)): n * 100 + why.length
+  };
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  let a: (i32, Reply) = (4, (false, 'no'));
+  let b: (i32, Reply) = (1, (true, 5));
+  if (describe(a) != 402 || describe(b) != 6) { failures += 1; }
+  if (viaMatch(a) != 402 || viaMatch(b) != 6) { failures += 2; }
+  return failures;
+};

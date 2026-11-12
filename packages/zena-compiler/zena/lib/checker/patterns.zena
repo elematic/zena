@@ -1286,6 +1286,11 @@ export function checkPattern(ctx: CheckerContext, pattern: Node, expectedType: T
         }
         return;
       }
+      // A union of tuples is recorded for codegen, which reads a boxed one
+      // into slots when the pattern is nested in another (#1040).
+      if (unwrapAliases(expectedType) is UnionT) {
+        ctx.setNodeType(tuplePat, expectedType);
+      }
       let narrowed = narrowTupleUnionByPattern(ctx, expectedType, tuplePat);
       let elementTypes = getTuplePatternElementTypes(narrowed);
       if (elementTypes == null) {
