@@ -35,15 +35,17 @@ dependencies (`zena-lock.json`).
 - **Local names.** A package gives each dependency a name of its own,
   used in imports (`import {Router} from 'router/server'`). A package
   suggests a name, and the importer is free to pick another.
-  `zena-package.json` maps local names to DIDs and minimum versions.
+  `zena-package.json` maps local names to DIDs and version ranges.
 - **Releases.** One record per version, keyed by the version string. A
   release lists its artifacts by content hash (a CID) and its dependencies
   by DID.
 - **Artifacts.** Zena source, Wasm components and core modules. An artifact
   too large for one blob is split over several.
-- **Version selection.** Minimal version selection, as in Go modules: the
-  version used is the highest minimum anyone asks for. The lockfile
-  records the result, with the CID of every release and artifact.
+- **Version selection.** npm's version ranges. Selection installs as
+  few versions of each package as the ranges allow, a second version
+  only when no one version is in all of them, and prefers high
+  versions. The lockfile records the result, with the CID of every
+  release and artifact.
 - **Immutability.** A publisher can edit their own repository, so the
   package manager makes edits ineffective. Lockfiles pin CIDs, and a
   public checksum log records the first content seen for each version.
@@ -426,7 +428,7 @@ One per version, at record key equal to the version:
   "dependencies": [
     {
       "did": "did:web:json.example.com",
-      "version": "2.1.0",
+      "version": "^2.1.0",
       "name": "json"
     }
   ]
@@ -438,8 +440,8 @@ allowed in a record key. Pre-release versions (`2.0.0-rc.1`) are allowed.
 The `version` field repeats the record key, and a client rejects a release
 where the two differ. The reference PDS refuses `com.atproto.repo.createRecord` at a key that
 already holds a record, so publishing a version twice fails instead of
-overwriting it. Each dependency names a DID, the minimum version the
-release needs, and the local name it uses for that package in its own
+overwriting it. Each dependency names a DID, the range of versions the
+release accepts, and the local name it uses for that package in its own
 imports.
 
 ### Retraction
@@ -552,14 +554,14 @@ record keeps the PDS from deleting them as unreferenced.
 ### Declaring dependencies
 
 A package's `zena-package.json` maps each local name to a published
-package's DID and the lowest version it needs, or to a package on disk by
+package's DID and the range of versions it accepts, or to a package on disk by
 its directory ([package-manifest.md](package-manifest.md#dependencies)):
 
 ```json
 {
   "dependencies": {
-    "router": {"did": "did:plc:routerrouterrouterrouter", "version": "1.4.2"},
-    "json": {"did": "did:web:json.example.com", "version": "2.0.1"}
+    "router": {"did": "did:plc:routerrouterrouterrouter", "version": "^1.4.2"},
+    "json": {"did": "did:web:json.example.com", "version": "^2.0.1"}
   },
   "exports": {"server": {}}
 }
@@ -570,27 +572,239 @@ its directory ([package-manifest.md](package-manifest.md#dependencies)):
 the package in the current directory, with the name the added package's
 profile suggests unless one is given.
 
+### Version ranges
+
+A dependency gives the versions it accepts as a range, in npm's syntax
+(<https://github.com/npm/node-semver#ranges>):
+
+| Range                | Accepts                       |
+| -------------------- | ----------------------------- |
+| `^1.4.2`             | `>=1.4.2 <2.0.0`              |
+| `^0.3.1`             | `>=0.3.1 <0.4.0`              |
+| `~1.4.2`             | `>=1.4.2 <1.5.0`              |
+| `1.4.2`              | `1.4.2` only                  |
+| `>=1.4.2 <1.7.0`     | the two comparators, together |
+| `^1.4.2 \|\| ^2.0.0` | either range                  |
+
+`zena pkg add` writes `^` and the version it chose. A package that works
+with two major versions of a dependency says so with `||`. A
+pre-release version matches only a range that names a pre-release of
+the same `major.minor.patch`, as in npm, so `^2.0.0` does not take
+`2.1.0-rc.1`. npm's dist-tags (`latest`) and URLs are not ranges here:
+a dependency is a DID and a range.
+
+Versions and ranges are a library of their own, the package `semver`
+(`zena-lang:semver`): parsing and printing, ordering, and whether a
+version is in a range. The package manager's resolver and the App
+View's pages use it.
+
 ### Version selection
 
-The package manager uses minimal version selection: for each package, it
-selects the highest of the minimum versions that the workspace's
-packages and their dependencies require. Suppose a workspace package
-needs `router` 1.4.2 and `json` 2.0.1, and `router` 1.4.2 needs `json`
-2.1.0. Then `json` 2.1.0 is
-selected, even if 2.3.0 exists. Nothing newer than someone asked for is
-used until someone asks, by running `zena pkg update`.
+Selection chooses, from the releases the network has, which versions a
+workspace installs. More than one version of a package may be
+installed, when no one version is in every range that asks for it. Each
+package that depends on it then uses a version in its own range.
 
-A program contains at most one version of a package per major version.
-Zena compiles a whole program, so two versions of one package would be two
-copies of every type in it, and a value from one would not be accepted
-where the other's type is expected. Different major versions of a package
-are selected separately and coexist as two packages, because a new major
-version is the publisher's statement that it is incompatible with the old
-one.
+Zena compiles a whole program, so two versions of one package are two
+copies of every type in it. Code that keeps the two apart compiles. Code
+that passes a value from one to code expecting the other's type gets a
+type error, which names both versions (see [Two versions in one
+program](#two-versions-in-one-program)). So selection installs as few
+versions as it can, and a program pays for a second version only when
+the ranges leave no choice.
 
-Minimal version selection needs no constraint solver. It gives the same
-answer on any machine without a lockfile, because it depends only on the
-releases the dependency graph names.
+Each range uses the highest installed version that is in it.
+Selection minimizes, in this order:
+
+1. the number of versions installed, counting every package;
+2. the number of pins in the lockfile it changes, when there is a
+   lockfile and the command is not `zena pkg update`;
+3. the shortfall: over every range, the number of available versions in
+   the range above the version the range uses.
+
+Ties left after the third are broken by the versions themselves, higher
+before lower, package by package in the order of their DIDs.
+
+The answer depends only on the requests and the releases. It does not
+depend on the order the packages were added in or met, and two machines
+with the same releases get the same answer.
+
+Two examples show the first rule. Suppose A asks for `^1.0.0` and B for
+`~1.1.0`, and 1.1.5 and 1.9.0 are the highest versions of each range.
+Selection installs 1.1.5 alone, which is in both ranges, and not 1.9.0
+for A beside it. Suppose instead the ranges are `1.0–1.1`, `1.1–1.2`,
+`1.2–1.9` and `1.3–1.8` (written `>=1.0.0 <=1.1.0` and so on). Two
+versions, 1.1 and 1.8, are in all four between them, and selection
+installs those two.
+
+#### Finding the selection
+
+Selection runs in two phases.
+
+**The first phase** takes one package at a time. For one package, with
+the ranges asking for it now, the fewest versions in all of them is a
+known problem with an exact answer when each range is an interval of
+versions:
+
+1. Sort the ranges by their highest version.
+2. Find the highest version in the first range. It is in every other
+   range that any version of the first range is in, since every other
+   range ends at or after it.
+3. Any version of the first range that is also in each of those ranges
+   is as good for the count: every version from the highest start among
+   them up to the highest version. Of those, take the one in the most
+   ranges, counting the ranges already met, then the higher. The ranges
+   already met then use a higher version, which lowers the shortfall.
+4. Drop every range the version is in, and repeat.
+
+For the four ranges above, `1.0–1.1` ends first, so 1.1 is taken, and
+it is also in `1.1–1.2`. Of the two left, `1.3–1.8` ends first, so 1.8
+is taken, and it is also in `1.2–1.9`.
+
+The third step matters when a range ends between others. Five ranges
+ask for one package with versions 1 to 8:
+
+```
+     1   2   3   4   5   6   7   8
+A:   |-------------------|
+B:           |-------------------|
+C:       |-------|
+D:                   |-------|
+E:                               |
+```
+
+C ends first, at 4, which is in A, B and C. 3 is in the same ranges,
+and 4 is higher, so 4 is taken. D ends next, at 7, which is in D
+alone among the ranges left, so any version from 5 to 7 will do. 5 and
+6 are also in A and B, and 7 only in B, so 6 is taken. E takes 8. The
+selection is 4, 6 and 8: A and D use 6, B and E use 8, C uses 4. Taking
+D's highest, 7, would install as many versions but leave A on 4, two
+versions short of its highest.
+
+A range joined by `||` is two intervals, met when either is. The step
+sorts the intervals by their highest version, and skips one whose range
+an earlier version already met. With unions the step can take more
+versions than the fewest, which the second phase corrects.
+
+The versions of one package change the ranges on others: `json` 1.3 may
+ask for a different `url` than `json` 1.5 does. So the first phase
+repeats over every package, in the order of their DIDs, until a pass
+changes nothing:
+
+- a package's versions are computed again from every range asking for
+  it at the time, not added to what an earlier pass chose;
+- a version no range needs any more is removed, with the ranges it put
+  on its own dependencies.
+
+The passes can disagree with each other forever in a contrived graph,
+so they stop after a fixed number, and the second phase starts from
+the last.
+
+**The second phase** searches for a better answer than the first phase
+found. It branches on the versions of each package and cuts a branch as
+soon as it cannot beat the best answer so far, which starts as the
+first phase's. The first phase always finds the fewest versions for
+one package, and in random tests also the smallest shortfall nine times
+out of ten; the search finds the rest. Each package's candidates are
+few: the versions that are in the same set of its ranges meet the same
+requests, and only the highest of them (or the lowest, below) can be in
+a best answer. The search has a time limit.
+When the limit is reached it keeps the best answer it has, and the
+command says the answer may not be the smallest.
+
+Duplicates are allowed, so every graph has an answer, however poor:
+install the highest version of every range. The search only improves an
+answer it already has, so it can stop at any time with a correct one. A
+solver that installs one version of each package, such as PubGrub
+(Dart, uv), has to search until it finds an answer or proves that there
+is none.
+
+#### Lowest versions
+
+`--resolution lowest` chooses low versions: each range uses the lowest
+installed version in it, and the shortfall counts the versions below
+it. The first phase's step is the same with the order reversed: sort by
+the lowest version, and take a version from the range that starts
+last.
+Packages that test against both ends of their ranges run three jobs
+in CI: one at the lockfile's versions, which every developer shares,
+one after `zena pkg update --resolution lowest`, and one after
+`zena pkg update`. The last two change the lockfile only in CI's
+checkout.
+
+#### What `zena pkg add` and `zena pkg update` report
+
+A new request can be met three ways: a lower version that is in every
+range, a second version, or an override (below). Selection takes the
+fewer versions, which can mean the lower one. Suppose `router` accepts
+`^1.4.0 || ^2.0.0` and has `json` 2.1.0. Adding `log`, which asks for
+`^1.0.0`, gives one `json`, 1.7.0, for both. The command says so, as a
+warning:
+
+```
+warning: json 2.1.0 -> 1.7.0 for router, to share one version with log
+         keep 2.1.0 for router with an override: zena-package.json "overrides"
+```
+
+Every version installed beside another of the same package is listed
+too. `--duplicates warn` makes each one a warning, and `--duplicates
+error` makes it fail, writing nothing. The root manifest can set either
+as `"duplicates"`, so CI can refuse an unnoticed duplicate.
+
+#### Overrides and exclusions
+
+The root manifest can change what selection may choose, for the whole
+workspace:
+
+```json
+{
+  "overrides": {"json": "2.2.1"},
+  "exclude": {"json": ">=2.3.0 <2.3.2"}
+}
+```
+
+- **`overrides`** replaces every range on a package with one, here the
+  version 2.2.1, whatever its dependents ask for. It is for a fix that a
+  dependent's range does not allow yet, or for keeping one version where
+  selection would install two.
+- **`exclude`** removes versions from every range, as if they were not
+  published. It is for a release known to be broken that its
+  maintainers have not retracted. Selection never chooses an excluded
+  version, and a lockfile that pins one fails to build until
+  `zena pkg update` replaces the pin.
+
+Both are keyed by the root's local names, and apply to the package that
+name stands for, wherever in the graph it appears. Only the root's
+manifest has them, so a package cannot change its dependents' builds.
+
+#### Two versions in one program
+
+Each package's imports resolve through its own names to the version
+selected for it, so a program can hold `json` 1.7.0 and 2.1.0. Their
+types are distinct. When a value crosses from one to the other, the
+type checker's error says which versions the two types come from:
+
+```
+error: json@1.7.0's Value is not assignable to json@2.1.0's Value
+```
+
+The package manager does not compile programs to choose versions. The
+error tells the person which packages exchange the value, and an
+override settles it.
+
+#### Releases that are new
+
+An attacker who takes over a maintainer's account publishes a new
+release, and it is usually found within days. The root manifest can
+hold selection back from releases newer than an age, such as
+`"minimumReleaseAge": "3d"`, unless a range allows only newer ones, as
+pnpm's setting of that name does. `zena pkg add` and `zena pkg update`
+say which releases they skipped for their age.
+
+> **Current status**: designed. The resolver and the records implement
+> minimal version selection, which this replaces: a dependency names the
+> lowest version it needs, and the selection is the highest of those per
+> package and major version.
 
 ### The lockfile
 
@@ -599,15 +813,17 @@ every CID needed to reproduce it. `zena pkg add` and `zena pkg update` write it:
 
 ```json
 {
+  "workspace": {
+    ".": {"router": "did:plc:routerrouterrouterrouter@1.4.2"},
+    "packages/lib": {"json": "did:web:json.example.com@2.1.0"}
+  },
   "resolved": {
-    "did:plc:routerrouterrouterrouter@1": {
-      "version": "1.4.2",
+    "did:plc:routerrouterrouterrouter@1.4.2": {
       "release": "bafyrei...",
       "source": "bafkrei...",
-      "dependencies": {"json": "did:web:json.example.com@2"}
+      "dependencies": {"json": "did:web:json.example.com@2.1.0"}
     },
-    "did:web:json.example.com@2": {
-      "version": "2.1.0",
+    "did:web:json.example.com@2.1.0": {
       "release": "bafyrei...",
       "source": "bafkrei..."
     }
@@ -615,12 +831,15 @@ every CID needed to reproduce it. `zena pkg add` and `zena pkg update` write it:
 }
 ```
 
-It holds one entry per package and major version: the selected version,
-the CID of its release record and of its source artifact, and how the
-release's own local names resolve. The workspace's own names are in its
-manifests, so the lockfile holds only pins. The compiler reads the
-manifests and the pins, and finds each published package in the cache by
-its source artifact's CID ([package-manifest.md](package-manifest.md#how-the-compiler-finds-packages)).
+`resolved` holds one entry per installed version, keyed by the DID and
+the version: the CID of its release record and of its source artifact,
+and the installed version each of the release's local names stands
+for. `workspace` gives the same for each workspace package's own names,
+by the package's directory, since two packages that ask for one
+dependency may get two versions of it. The names themselves, and the
+ranges, are in the manifests. The compiler reads the manifests and the
+pins, and finds each published package in the cache by its source
+artifact's CID ([package-manifest.md](package-manifest.md#how-the-compiler-finds-packages)).
 Writing it again checks the old pins against the new
 ([Lockfiles](#lockfiles)).
 
@@ -2050,10 +2269,12 @@ dependencies:
    package's threshold of maintainers, each made through the maintainer's
    own PDS, and clients refuse releases the log does not have. Whoever
    holds the package's repository cannot publish alone.
-3. **Nothing new arrives unasked.** Minimal version selection uses the
-   lowest version anyone in the graph asks for, so a new release,
-   malicious or not, reaches a workspace only when someone raises a
-   minimum, usually with `zena pkg update`. Nothing in a package runs when it
+3. **Nothing new arrives unasked.** A build uses the lockfile's pins,
+   and `zena pkg add` keeps every pin that is still in its ranges, so a
+   new release, malicious or not, reaches a workspace when someone runs
+   `zena pkg update`, or adds a package whose ranges the pins do not
+   meet. `minimumReleaseAge` holds both back from releases newer than an
+   age. Nothing in a package runs when it
    is added, fetched or compiled: Zena packages have no install or build
    scripts. The macros Zena may add ([macros.md](macros.md)) would run at
    compile time, in the compiler's Wasm sandbox and without its access to
@@ -2234,9 +2455,10 @@ DID, so dependents can move.
 When a maintainer publishes malicious code, or approves it without
 noticing:
 
-- Minimal version selection takes a new release only when someone raises
-  a minimum, so a malicious release reaches the workspaces that update,
-  not every build. A release found out in that time can be retracted and
+- A lockfile's pins change only with `zena pkg update`, or with a `zena
+pkg add` the pins cannot meet, so a malicious release reaches the
+  workspaces that update, not every build. `minimumReleaseAge` keeps
+  those from taking it in its first days. A release found out in that time can be retracted and
   labeled before most workspaces take it.
 - Labelers mark malicious releases `malware`, and clients that follow
   them refuse those releases, pinned ones included.
@@ -2587,12 +2809,51 @@ be moved to other content, and the registry protocol has no request for
 where a tag pointed before, so detecting a moved tag is left to each
 client.
 
-### Version ranges and a solver
+### Minimal version selection
 
-npm, Cargo and others accept version ranges and pick versions with a
-solver, and record the result in a lockfile so builds repeat. Minimal
-version selection gives repeatable answers without the solver. It also
-never selects a release that nobody in the graph has asked for.
+The first design used Go's minimal version selection: a dependency
+names the lowest version it needs, and selection installs the highest
+of those per package and major version. It needs no search, and it
+never installs a release that no one asked for. It was replaced for
+three reasons. A package cannot say that it has not been tested with a
+higher version. It installs two major versions of a package where a
+range that accepted both would install one. And a fix in a new release
+reaches a workspace only when every package that needs it has raised
+its minimum.
+
+### One version per package
+
+Dart and Python's uv install one version of each package, and report a
+conflict when no version is in every range. That avoids the second copy
+of every type, and it is what makes their solvers search: they have to
+prove that no answer exists. Here a second version is the answer of
+last resort, and the type checker reports the places where the two
+versions meet.
+
+### Installing in the order packages are met
+
+npm, and simpler installers, choose a package's versions when they first
+meet it, from the ranges known then, and add a version when a later
+range does not match. The result depends on the order the graph is
+walked in. With A asking for `^1.0.0` (1.9.0 is the highest) and B, met
+later, for `~1.1.0`, it installs 1.9.0 and 1.1.5, where 1.1.5 alone
+would do. The first phase of [selection](#finding-the-selection)
+computes each package's versions again on every pass for that reason.
+
+### Checking ranges at publish
+
+`zena pkg publish` could compile a package against the lowest and
+highest version in each of its ranges, and refuse a range it does not
+build with. Maintainers tend to keep their ranges narrower than what
+works, more often than they claim too much, and the check would make
+publishing depend on fetching and compiling every dependency twice. A
+package that wants the check runs `--resolution lowest` in its CI.
+
+### Per-major minimums
+
+A dependency could list one lowest version per major version it
+accepts: `1.4.0 || 2.0.0`. In npm's syntax that reads as exactly those
+two versions, so a range uses `^1.4.0 || ^2.0.0`.
 
 ### Tar archives
 
