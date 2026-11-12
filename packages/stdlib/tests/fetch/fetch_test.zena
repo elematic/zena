@@ -6,9 +6,10 @@
 import { suite, test } from 'zena:test';
 import { equal, isNull, isTrue } from 'zena:assert';
 import { Future } from 'zena:async';
-import { Borrow } from 'zena:core';
+import { Borrow, StringBuilder } from 'zena:core';
 import { fetch } from 'zena:fetch';
 import { App, Server } from 'zena:http';
+import { StreamLimitError } from 'zena:stream';
 import { URL } from 'zena:url';
 import { TimeoutError, timeout } from 'zena:task';
 import { milliseconds, monotonic, sleep } from 'zena:time';
@@ -76,6 +77,35 @@ export let tests = suite('zena:fetch', () => {
     let bytes = await fetch(`${originOf(server)}/after`);
     equal(bytes.header('x-method') as String, 'GET');
     equal((await bytes.bytes()).length, 12);
+    server.close();
+  });
+
+  test('reads a body only up to the limit it is given', async () => {
+    let server = startEchoServer();
+    let big = new StringBuilder();
+    for (var i = 0; i < 100000; i += 1) {
+      big.append('x');
+    }
+    let body = big.toString();
+    // A body someone else sends stops at the limit, rather than filling memory.
+    for (let asBytes in [false, true]) {
+      let response = await fetch(`${originOf(server)}/big`, {method: 'POST', body: body});
+      var stopped = 0 as i64;
+      try {
+        if (asBytes) {
+          await response.bytes(1000 as i64);
+        } else {
+          await response.text(1000 as i64);
+        }
+      } catch (e) {
+        if (e is StreamLimitError) {
+          stopped = e.limit;
+        }
+      }
+      equal(stopped, 1000 as i64, 'stopped at the limit');
+    }
+    let within = await fetch(`${originOf(server)}/big`, {method: 'POST', body: body});
+    equal((await within.text(200000 as i64)).length, body.length + 'POST /big: '.length);
     server.close();
   });
 

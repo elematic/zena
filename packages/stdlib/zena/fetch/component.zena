@@ -75,18 +75,23 @@ export resource class Response {
     return if (values.length == 0) null else String.fromBytes(values[0]);
   }
 
-  /** The response body, decoded as text. Consumes the response. */
-  async text(this: Own<this>): Future<String> {
+  /**
+   * The response body, decoded as text. Consumes the response. With a
+   * `limit` of zero or more, a body longer than that many bytes stops
+   * being read and fails with `StreamLimitError`, so a server cannot fill
+   * memory with it.
+   */
+  async text(this: Own<this>, limit: i64 = -1 as i64): Future<String> {
     let received = new Completer<Result<void, ErrorCode>>();
-    let text = await readAllText(this.#consumeBody(received.future));
+    let text = await readAllText(this.#consumeBody(received.future), limit);
     received.complete((true, unit()));
     return text;
   }
 
-  /** The response body's bytes. Consumes the response. */
-  async bytes(this: Own<this>): Future<FixedArray<u8>> {
+  /** The response body's bytes, read up to `limit` as `text` reads. Consumes the response. */
+  async bytes(this: Own<this>, limit: i64 = -1 as i64): Future<FixedArray<u8>> {
     let received = new Completer<Result<void, ErrorCode>>();
-    let bytes = await readAllBytes(this.#consumeBody(received.future));
+    let bytes = await readAllBytes(this.#consumeBody(received.future), limit);
     received.complete((true, unit()));
     return bytes;
   }

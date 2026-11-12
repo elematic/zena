@@ -17,6 +17,9 @@
 
 import {StringBuilder, join} from 'zena:core';
 import {fetch} from 'zena:fetch';
+import {StreamLimitError} from 'zena:stream';
+import {TimeoutError, timeout} from 'zena:task';
+import {Duration, milliseconds} from 'zena:time';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {DidDocument, parseDidDocument} from './did.zena';
 import {PublicKey} from './didkey.zena';
@@ -81,6 +84,9 @@ function unquoteTxt(data: String): String {
 /** The public PLC directory, where `did:plc` DIDs are resolved by default. */
 export let PUBLIC_PLC_DIRECTORY = 'https://plc.directory';
 
+/** What a GET of a resolution answered: its status, and its body for a 200. */
+final class Answer(status: i32, text: String)
+
 /** Resolves DIDs and handles. */
 export final class IdentityResolver {
   /** The PLC directory's origin. */
@@ -99,6 +105,14 @@ export final class IdentityResolver {
    * own network this way. Any endpoint by default.
    */
   var allowsPds: (url: String) => boolean = (url) => true;
+  /**
+   * The most one read may take: a DID document, a DNS answer or a
+   * handle's DID, in bytes. Whoever names a DID or a handle chooses the
+   * server it is read from.
+   */
+  var readLimit: i64 = (64 * 1024) as i64;
+  /** How long one read may take, from connecting to its last byte. */
+  var readTimeout: Duration = milliseconds(10000 as i64);
 
   /** The DID document of `did`, a `did:plc` or `did:web`. */
   async resolveDid(did: String): Future<DidDocument> {
@@ -112,11 +126,11 @@ export final class IdentityResolver {
     } else {
       throw new IdentityError(`unsupported DID method: ${did}`)
     };
-    let response = await fetch(url, {headers: [('accept', 'application/json')]});
-    if (response.status != 200) {
-      throw new IdentityError(`${did} did not resolve at ${url}: HTTP ${response.status}`);
+    let answer = await this.#get(url, [('accept', 'application/json')]);
+    if (answer.status != 200) {
+      throw new IdentityError(`${did} did not resolve at ${url}: HTTP ${answer.status}`);
     }
-    let document = parseDidDocument(parseJson(await response.text()), did);
+    let document = parseDidDocument(parseJson(answer.text), did);
     let pds = document.pds;
     if (pds != null && !this.allowsPds(pds)) {
       return new DidDocument(document.id, document.handle, document.signingKey, null, document.json);
@@ -180,11 +194,11 @@ export final class IdentityResolver {
 
   async #resolveHandleDns(handle: String): Future<String | null> {
     let url = `${this.dnsOverHttps}?name=_atproto.${handle}&type=TXT`;
-    let response = await fetch(url, {headers: [('accept', 'application/dns-json')]});
-    if (response.status != 200) {
+    let answer = await this.#get(url, [('accept', 'application/dns-json')]);
+    if (answer.status != 200) {
       return null;
     }
-    let json = parseJson(await response.text());
+    let json = parseJson(answer.text);
     if (!(json is JsonObject)) {
       return null;
     }
@@ -198,12 +212,40 @@ export final class IdentityResolver {
 
   async #resolveHandleHttps(handle: String): Future<String | null> {
     let url = `${this.originOf(handle)}/.well-known/atproto-did`;
-    let response = await fetch(url);
-    if (response.status != 200) {
+    let answer = await this.#get(url, []);
+    if (answer.status != 200) {
       return null;
     }
-    let did = (await response.text()).trim();
+    let did = answer.text.trim();
     return if (isValidDid(did)) did else null;
+  }
+
+  /**
+   * GETs `url` with `headers`, within `readTimeout` and `readLimit`,
+   * reading the body only of a 200. Throws `IdentityError` for a server
+   * that takes longer or sends more.
+   */
+  async #get(url: String, headers: Array<(String, String)>): Future<Answer> {
+    let limit = this.readLimit;
+    let budget = this.readTimeout;
+    try {
+      return await timeout<Answer>(budget, async (): Future<Answer> => {
+        let response = await fetch(url, {headers: headers});
+        let status = response.status;
+        if (status != 200) {
+          return new Answer(status, '');
+        }
+        return new Answer(status, await response.text(limit));
+      })();
+    } catch (e) {
+      if (e is TimeoutError) {
+        throw new IdentityError(`${url} did not answer within the read timeout`);
+      }
+      if (e is StreamLimitError) {
+        throw new IdentityError(`${url} answered with more than ${limit} bytes`);
+      }
+      throw e;
+    }
   }
 
   /**
