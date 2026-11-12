@@ -19,6 +19,7 @@
 
 import { pending } from 'zena:js';
 import { Disposable, Own } from 'zena:core';
+import { StreamLimitError } from 'zena:stream';
 import { URL } from 'zena:url';
 import { RequestInit } from './options.zena';
 export { RequestInit } from './options.zena';
@@ -130,22 +131,41 @@ export resource class Response {
     return __response_header(this.#response, name, name.length);
   }
 
-  /** The response body, decoded as text. Consumes the response. */
-  text(this: Own<this>): Future<String> {
+  /**
+   * The response body, decoded as text. Consumes the response. With a
+   * `limit` of zero or more, a body longer than that many bytes fails with
+   * `StreamLimitError`. The host reads the whole body before the program
+   * sees it, so here the limit bounds what the program keeps, not what the
+   * host receives.
+   */
+  text(this: Own<this>, limit: i64 = -1 as i64): Future<String> {
     let p = pending<String>();
     __response_text(p.handle, this.#response);
-    return p.future;
+    return if (limit < (0 as i64)) p.future else textWithin(p.future, limit);
   }
 
-  /** The response body's bytes. Consumes the response. */
-  bytes(this: Own<this>): Future<FixedArray<u8>> {
+  /** The response body's bytes, read up to `limit` as `text` reads. Consumes the response. */
+  async bytes(this: Own<this>, limit: i64 = -1 as i64): Future<FixedArray<u8>> {
     let p = pending<anyref>();
     __response_bytes(p.handle, this.#response);
-    return bytesOf(p.future);
+    let bytes = await bytesOf(p.future);
+    if (limit >= (0 as i64) && (bytes.length as i64) > limit) {
+      throw new StreamLimitError(limit);
+    }
+    return bytes;
   }
 
   /** The host's response is the garbage collector's: nothing to release. */
   [Disposable.dispose](this: Own<this>): void {}
+}
+
+/** The text `text` completes with, unless it is longer than `limit` bytes. */
+async function textWithin(text: Future<String>, limit: i64): Future<String> {
+  let value = await text;
+  if ((value.length as i64) > limit) {
+    throw new StreamLimitError(limit);
+  }
+  return value;
 }
 
 /** The bytes of the `Uint8Array` the host completes `raw` with. */

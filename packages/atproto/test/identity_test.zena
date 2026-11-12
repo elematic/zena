@@ -8,7 +8,7 @@
 import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue} from 'zena:assert';
 import {Future} from 'zena:async';
-import {Borrow} from 'zena:core';
+import {Borrow, StringBuilder} from 'zena:core';
 import {readFileBytes, readFile} from 'zena:fs';
 import {App, Server} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
@@ -21,6 +21,7 @@ import {Identity, IdentityError, IdentityResolver, didWebFor, didWebHost} from '
 import {RecordProof} from 'atproto/repo';
 import {SyncError, getVerifiedBlob, getVerifiedRecord} from 'atproto/sync';
 import {XrpcClient, XrpcError} from 'atproto/xrpc';
+import {milliseconds, monotonic, sleep} from 'zena:time';
 
 let NETWORK = 'packages/atproto/test/fixtures/network';
 let DID = 'did:plc:ewvi7nxzyoun6zhxrhs64oiz';
@@ -34,6 +35,8 @@ final class World {
   var txt: String | null = null;
   /** What /.well-known/atproto-did answers, or null for a 404. */
   var wellKnownDid: String | null = null;
+  /** How long the PLC directory waits before it answers, in milliseconds. */
+  var plcDelay: i64 = 0 as i64;
 }
 
 async function startServer(world: World) {
@@ -42,6 +45,9 @@ async function startServer(world: World) {
   app.use(async (req, res, next): Future<void> => {
     let path = req.path;
     if (path == `/plc/${DID}`) {
+      if (world.plcDelay > (0 as i64)) {
+        await sleep(milliseconds(world.plcDelay));
+      }
       res.type = 'application/json';
       res.body = world.didDocument;
     } else if (path == '/dns-query') {
@@ -116,6 +122,37 @@ async function message(call: () => Future<String>): Future<String> {
 }
 
 export let tests = suite('atproto/xrpc, atproto/identity and atproto/sync', () => {
+  test('stops reading a DID document that is too large or too slow', async (ctx): Future<void> => {
+    let world = new World();
+    let server = await startServer(world);
+    let resolver = resolverFor(originOf(server));
+    // Whoever names a DID chooses the server it is read from.
+    let big = new StringBuilder();
+    big.append(`{"id": "${DID}", "padding": "`);
+    for (var i = 0; i < 100000; i += 1) {
+      big.append('x');
+    }
+    big.append('"}');
+    world.didDocument = big.toString();
+    let large = await message(async (): Future<String> => {
+      await resolver.resolveDid(DID);
+      return 'resolved';
+    });
+    isTrue(large.contains('more than 65536 bytes'), large);
+
+    world.didDocument = await didDocumentFor(originOf(server));
+    world.plcDelay = 3000 as i64;
+    resolver.readTimeout = milliseconds(200 as i64);
+    let start = monotonic();
+    let slow = await message(async (): Future<String> => {
+      await resolver.resolveDid(DID);
+      return 'resolved';
+    });
+    isTrue(slow.contains('did not answer within'), slow);
+    isTrue(((monotonic() - start) - milliseconds(2000 as i64)).isNegative(), 'stopped waiting');
+    server.close();
+  });
+
   test('an XRPC query sends its parameters encoded', async (ctx): Future<void> => {
     let world = new World();
     let server = await startServer(world);
