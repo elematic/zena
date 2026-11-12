@@ -26,7 +26,7 @@ import {Future} from 'zena:async';
 import {SERVER_CREATE_ACCOUNT, SERVER_RESERVE_SIGNING_KEY} from 'atproto/methods';
 import {PublicKey, formatDidKey} from 'atproto/didkey';
 import {PlcError, PlcOperation, didOfGenesis} from 'atproto/plc';
-import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto/service-auth';
+import {ReplayGuard, ServiceAuthError, SigningKeyLookup, serviceAuthIssuer, verifyServiceAuth} from 'atproto/service-auth';
 import {ARTIFACT_MIME_TYPES} from 'package-manager/validate';
 import {SessionError} from './sessions.zena';
 import {Account} from './storage.zena';
@@ -112,11 +112,8 @@ export final class ManagedAccounts {
    * `com.atproto.server.reserveSigningKey`, is from. Throws `SessionError`.
    */
   async reserver(authorization: String | null, nowSeconds: i64): Future<TrustedAppView> {
-    let caller = await this.caller(authorization, SERVER_RESERVE_SIGNING_KEY, nowSeconds);
-    let appView = this.#trusted(caller);
-    if (appView == null) {
-      throw new SessionError(403, 'Forbidden', `${caller} is not an App View this PDS trusts`);
-    }
+    let appView = this.#trustedIssuer(authorization);
+    await this.caller(authorization, SERVER_RESERVE_SIGNING_KEY, nowSeconds);
     return appView;
   }
 
@@ -127,6 +124,7 @@ export final class ManagedAccounts {
    * `SessionError`.
    */
   async admit(authorization: String | null, did: String, nowSeconds: i64): Future<Admission> {
+    this.#trustedIssuer(authorization);
     let caller = await this.caller(authorization, SERVER_CREATE_ACCOUNT, nowSeconds);
     var log: Array<PlcOperation> = [];
     try {
@@ -162,10 +160,10 @@ export final class ManagedAccounts {
    * `method`. Throws `SessionError`.
    */
   async fromAppView(authorization: String | null, account: Account, method: String, nowSeconds: i64): Future<void> {
-    let caller = await this.caller(authorization, method, nowSeconds);
-    if (caller != account.manager) {
+    if (issuerOf(authorization) != account.manager) {
       throw new SessionError(403, 'Forbidden', `only ${account.manager ?? 'its App View'} writes to ${account.did}`);
     }
+    await this.caller(authorization, method, nowSeconds);
   }
 
   /**
@@ -190,6 +188,21 @@ export final class ManagedAccounts {
     }
   }
 
+  /**
+   * The trusted App View that the token in `authorization` says it is
+   * from, before anything checks it: a token from another issuer is
+   * refused before its key is looked up, which its DID could make as slow
+   * or as large as it liked. Throws `SessionError`.
+   */
+  #trustedIssuer(authorization: String | null): TrustedAppView {
+    let issuer = issuerOf(authorization);
+    let appView = this.#trusted(issuer);
+    if (appView == null) {
+      throw new SessionError(403, 'Forbidden', `${issuer} is not an App View this PDS trusts`);
+    }
+    return appView;
+  }
+
   /** The trusted App View whose DID is `did`, or null. */
   #trusted(did: String): TrustedAppView | null {
     for (let appView in this.#appViews) {
@@ -210,6 +223,25 @@ export final class ManagedAccounts {
       }
     }
     return null;
+  }
+}
+
+/**
+ * The issuer the service-auth token in `authorization` names, unchecked.
+ * Throws `SessionError` when there is no token, or one whose payload
+ * cannot be read.
+ */
+function issuerOf(authorization: String | null): String {
+  if (authorization == null || !authorization.startsWith('Bearer ')) {
+    throw new SessionError(401, 'AuthenticationRequired', 'a service-auth token is required');
+  }
+  try {
+    return serviceAuthIssuer(authorization.sliceBytes(7, authorization.length));
+  } catch (e) {
+    if (e is ServiceAuthError) {
+      throw new SessionError(401, 'InvalidToken', e.message);
+    }
+    throw e;
   }
 }
 
