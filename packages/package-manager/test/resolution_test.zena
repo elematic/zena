@@ -18,22 +18,25 @@ import {
   readPins,
   writeLockfile
 } from 'package-manager/resolution';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
 
 let RELEASE = 'bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm';
 let SOURCE = 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku';
 let OTHER_RELEASE = Cid.forDagCbor(new FixedArray<u8>(1, 1 as u8)).toString();
 let OTHER_SOURCE = Cid.forBlob(new FixedArray<u8>(1, 1 as u8)).toString();
 
-function entry(version: String = '1.4.2', release: String = RELEASE, source: String = SOURCE,
-    extra: String = '') {
-  return `{"version": "${version}", "release": "${release}", "source": "${source}"${extra}}`;
+function entry(release: String = RELEASE, source: String = SOURCE, extra: String = '') {
+  return `{"release": "${release}", "source": "${source}"${extra}}`;
 }
 
 function resolved(did: String, version: String, release: String = RELEASE, source: String = SOURCE) {
   let parsed = Version.parse(version);
-  return new ResolvedPackage(packageKey(did, parsed.major), did, parsed, Cid.parse(release), Cid.parse(source),
+  return new ResolvedPackage(packageKey(did, parsed), did, parsed, Cid.parse(release), Cid.parse(source),
       new OrderedHashMap<String, String>());
+}
+
+function noWorkspace() {
+  return new OrderedHashMap<String, OrderedHashMap<String, String>>();
 }
 
 /** `changes` as one line each, to compare. */
@@ -41,11 +44,10 @@ function describe(changes: GrowableArray<PinChange>) {
   var out = '';
   for (let change in changes) {
     let line = match (change) {
-      case PinAdded {now}: `added ${now.key} ${now.version.toString()}`
-      case PinRemoved {pin}: `removed ${pin.key} ${pin.version.toString()}`
-      case PinVersionChanged {pin, now}: `${pin.key} ${pin.version.toString()} -> ${now.version.toString()}`
-      case PinChangedInPlace {pin, now}:
-        `changed ${pin.key} ${pin.version.toString()}: ${now.release.toString()} ${now.source.toString()}`
+      case PinAdded {now}: `added ${now.key}`
+      case PinRemoved {pin}: `removed ${pin.key}`
+      case PinVersionChanged {pin, now}: `${pin.key} -> ${now.version.toString()}`
+      case PinChangedInPlace {pin, now}: `changed ${pin.key}: ${now.release.toString()} ${now.source.toString()}`
     };
     out = `${out}${line}\n`;
   }
@@ -65,20 +67,21 @@ function rejects(text: String) {
 export let tests = suite('package-manager/resolution', () => {
   test('reads the pins of a lockfile', (ctx) => {
     let pins = readPins(`{
+      "workspace": {".": {"router": "did:plc:router@1.4.2"}},
       "resolved": {
-        "did:plc:router@1": ${entry('1.4.2', RELEASE, SOURCE, ', "dependencies": {"json": "did:web:json.example.com@2"}')},
-        "did:web:json.example.com@2": ${entry('2.1.0-rc.1')}
+        "did:plc:router@1.4.2": ${entry(RELEASE, SOURCE, ', "dependencies": {"json": "did:web:json.example.com@2.1.0-rc.1"}')},
+        "did:web:json.example.com@2.1.0-rc.1": ${entry()}
       }
     }`);
     equal(pins.length, 2);
     let router = pins[0];
-    equal(router.key, 'did:plc:router@1');
+    equal(router.key, 'did:plc:router@1.4.2');
     equal(router.did, 'did:plc:router');
     equal(router.version.toString(), '1.4.2');
     isTrue(router.release.equals(Cid.parse(RELEASE)));
     isTrue(router.source.equals(Cid.parse(SOURCE)));
     equal(router.dependencies.size, 1);
-    equal(router.dependencies['json'], 'did:web:json.example.com@2');
+    equal(router.dependencies['json'], 'did:web:json.example.com@2.1.0-rc.1');
     equal(pins[1].did, 'did:web:json.example.com');
     equal(pins[1].version.toString(), '2.1.0-rc.1');
     equal(pins[1].dependencies.size, 0);
@@ -88,61 +91,82 @@ export let tests = suite('package-manager/resolution', () => {
     equal(readPins('{"packages": {"app": "./src"}}').length, 0);
   });
 
-  test('names packages by DID and major version', (ctx) => {
-    equal(packageKey('did:plc:router', 1 as i64), 'did:plc:router@1');
+  test('names packages by DID and version', (ctx) => {
+    equal(packageKey('did:plc:router', Version.parse('1.4.2')), 'did:plc:router@1.4.2');
   });
 
   test('rejects pins that cannot be fetched as written', (ctx) => {
     rejects('not json');
     rejects('[]');
     rejects('{"resolved": []}');
-    rejects(`{"resolved": {"router@1": ${entry()}}}`);
+    rejects(`{"resolved": {"router@1.4.2": ${entry()}}}`);
     rejects(`{"resolved": {"did:plc:router": ${entry()}}}`);
-    rejects(`{"resolved": {"did:plc:router@2": ${entry()}}}`);
-    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4')}}}`);
-    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', 'not a cid')}}}`);
+    rejects(`{"resolved": {"did:plc:router@1.4": ${entry()}}}`);
+    rejects(`{"resolved": {"did:plc:router@1.4.2+build": ${entry()}}}`);
+    rejects(`{"resolved": {"did:plc:router@1.4.2": ${entry('not a cid')}}}`);
     // The release is a record and the source a blob, not the other way round.
-    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', SOURCE, SOURCE)}}}`);
-    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', RELEASE, RELEASE)}}}`);
-    rejects('{"resolved": {"did:plc:router@1": {"version": "1.4.2"}}}');
-    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', RELEASE, SOURCE, ', "dependencies": []')}}}`);
-    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', RELEASE, SOURCE, ', "dependencies": {"json": 2}')}}}`);
+    rejects(`{"resolved": {"did:plc:router@1.4.2": ${entry(SOURCE, SOURCE)}}}`);
+    rejects(`{"resolved": {"did:plc:router@1.4.2": ${entry(RELEASE, RELEASE)}}}`);
+    rejects('{"resolved": {"did:plc:router@1.4.2": {}}}');
+    rejects(`{"resolved": {"did:plc:router@1.4.2": ${entry(RELEASE, SOURCE, ', "dependencies": []')}}}`);
+    rejects(`{"resolved": {"did:plc:router@1.4.2": ${entry(RELEASE, SOURCE, ', "dependencies": {"json": 2}')}}}`);
   });
+
   test('writes a lockfile that reads back as the same pins', (ctx) => {
     let router = 'did:plc:routerrouterrouterrouter';
     let dependencies = new OrderedHashMap<String, String>();
-    dependencies['json'] = 'did:web:json.example.com@2';
+    dependencies['json'] = 'did:web:json.example.com@2.1.0';
     let packages = new OrderedHashMap<String, ResolvedPackage>();
-    packages[`${router}@1`] = new ResolvedPackage(`${router}@1`, router, Version.parse('1.4.2'),
+    packages[`${router}@1.4.2`] = new ResolvedPackage(`${router}@1.4.2`, router, Version.parse('1.4.2'),
         Cid.parse(RELEASE), Cid.parse(SOURCE), dependencies);
-    packages['did:web:json.example.com@2'] = new ResolvedPackage('did:web:json.example.com@2',
+    packages['did:web:json.example.com@2.1.0'] = new ResolvedPackage('did:web:json.example.com@2.1.0',
         'did:web:json.example.com', Version.parse('2.1.0'), Cid.parse(RELEASE), Cid.parse(SOURCE),
         new OrderedHashMap<String, String>());
-    let text = writeLockfile(new Resolution(packages));
+    let workspace = noWorkspace();
+    let rootNames = new OrderedHashMap<String, String>();
+    rootNames['router'] = `${router}@1.4.2`;
+    workspace['.'] = rootNames;
+    // A package with no published dependencies is left out.
+    workspace['packages/lib'] = new OrderedHashMap<String, String>();
+    let text = writeLockfile(new Resolution(packages), workspace);
     jsonEqual(parseJson(text), parseJson(`{
+      "workspace": {".": {"router": "${router}@1.4.2"}},
       "resolved": {
-        "${router}@1": {
-          "version": "1.4.2", "release": "${RELEASE}", "source": "${SOURCE}",
-          "dependencies": {"json": "did:web:json.example.com@2"}
+        "${router}@1.4.2": {
+          "release": "${RELEASE}", "source": "${SOURCE}",
+          "dependencies": {"json": "did:web:json.example.com@2.1.0"}
         },
-        "did:web:json.example.com@2": {"version": "2.1.0", "release": "${RELEASE}", "source": "${SOURCE}"}
+        "did:web:json.example.com@2.1.0": {"release": "${RELEASE}", "source": "${SOURCE}"}
       }
     }`));
     isTrue(text.endsWith('}\n') && !text.endsWith('\n\n'));
     let pins = readPins(text);
     equal(pins.length, 2);
-    equal(pins[0].key, `${router}@1`);
+    equal(pins[0].key, `${router}@1.4.2`);
+    isTrue(!writeLockfile(new Resolution(packages), noWorkspace()).contains('"workspace"'));
+  });
+
+  test("finds the version selected for a range, at its minimum's major version", (ctx) => {
+    let packages = new OrderedHashMap<String, ResolvedPackage>();
+    for (let pkg in [resolved('did:plc:json', '1.7.0'), resolved('did:plc:json', '2.1.0')]) {
+      packages[pkg.key] = pkg;
+    }
+    let resolution = new Resolution(packages);
+    equal(resolution.keyOf('did:plc:json', Range.parse('^1.4.0')) as String, 'did:plc:json@1.7.0');
+    equal(resolution.keyOf('did:plc:json', Range.parse('^2.0.0 || ^3.0.0')) as String, 'did:plc:json@2.1.0');
+    isTrue(resolution.keyOf('did:plc:json', Range.parse('^3.0.0')) == null);
+    isTrue(resolution.keyOf('did:plc:other', Range.parse('^1.0.0')) == null);
   });
 
   test('sorts what a new resolution changes in the pins', (ctx) => {
     let before = readPins(`{
       "resolved": {
-        "did:plc:kept@1": ${entry('1.0.0')},
-        "did:plc:raised@1": ${entry('1.4.2')},
-        "did:plc:lowered@2": ${entry('2.1.0')},
-        "did:plc:changed@1": ${entry('1.0.0')},
-        "did:plc:sourced@1": ${entry('1.0.0')},
-        "did:plc:dropped@1": ${entry('1.0.0')}
+        "did:plc:kept@1.0.0": ${entry()},
+        "did:plc:raised@1.4.2": ${entry()},
+        "did:plc:lowered@2.1.0": ${entry()},
+        "did:plc:changed@1.0.0": ${entry()},
+        "did:plc:sourced@1.0.0": ${entry()},
+        "did:plc:dropped@1.0.0": ${entry()}
       }
     }`);
     let packages = new OrderedHashMap<String, ResolvedPackage>();
@@ -159,13 +183,13 @@ export let tests = suite('package-manager/resolution', () => {
       packages[pkg.key] = pkg;
     }
     equal(describe(diffPins(before, new Resolution(packages))),
-        `added did:plc:added@3 3.0.0
-changed did:plc:changed@1 1.0.0: ${OTHER_RELEASE} ${SOURCE}
-did:plc:lowered@2 2.1.0 -> 2.0.0
-added did:plc:raised@2 2.0.0
-did:plc:raised@1 1.4.2 -> 1.5.0
-changed did:plc:sourced@1 1.0.0: ${RELEASE} ${OTHER_SOURCE}
-removed did:plc:dropped@1 1.0.0
+        `added did:plc:added@3.0.0
+changed did:plc:changed@1.0.0: ${OTHER_RELEASE} ${SOURCE}
+did:plc:lowered@2.1.0 -> 2.0.0
+added did:plc:raised@2.0.0
+did:plc:raised@1.4.2 -> 1.5.0
+changed did:plc:sourced@1.0.0: ${RELEASE} ${OTHER_SOURCE}
+removed did:plc:dropped@1.0.0
 `);
   });
 
@@ -173,8 +197,8 @@ removed did:plc:dropped@1 1.0.0
     let packages = new OrderedHashMap<String, ResolvedPackage>();
     let kept = resolved('did:plc:kept', '1.0.0');
     packages[kept.key] = kept;
-    let lockfile = writeLockfile(new Resolution(packages));
+    let lockfile = writeLockfile(new Resolution(packages), noWorkspace());
     equal(diffPins(readPins(lockfile), new Resolution(packages)).length, 0);
-    equal(describe(diffPins(new GrowableArray<Pin>(), new Resolution(packages))), 'added did:plc:kept@1 1.0.0\n');
+    equal(describe(diffPins(new GrowableArray<Pin>(), new Resolution(packages))), 'added did:plc:kept@1.0.0\n');
   });
 });

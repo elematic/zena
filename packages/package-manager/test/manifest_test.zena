@@ -5,7 +5,7 @@ import {join} from 'zena:core';
 import {parseJson} from 'zena:json';
 import {ManifestError, readManifest, writeDependencies, writeDid} from 'package-manager/manifest';
 import {Requirement} from 'package-manager/resolve';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
 
 let ROUTER = 'did:plc:routerrouterrouterrouter';
 
@@ -55,7 +55,7 @@ export let tests = suite('package-manager/manifest', () => {
     equal(names[1], 'json');
     equal(names[2], 'acme:http');
     equal(manifest.requirements['router'].did, ROUTER);
-    equal(manifest.requirements['json'].version.toString(), '2.0.1');
+    equal(manifest.requirements['json'].range.text, '2.0.1');
     equal(manifest.paths['lib'], './packages/lib');
     equal(manifest.workspacePackages.length, 2);
     equal(manifest.workspacePackages[1], 'tools/gen');
@@ -112,7 +112,7 @@ export let tests = suite('package-manager/manifest', () => {
     }
     rejects('{"name": "acme:app"}');
     rejects('{"dependencies": {"router": {"did": "router", "version": "1.4.2"}}}');
-    rejects(`{"dependencies": {"router": {"did": "${ROUTER}", "version": "1.4"}}}`);
+    rejects(`{"dependencies": {"router": {"did": "${ROUTER}", "version": "one"}}}`);
     rejects(`{"dependencies": {"router": {"did": "${ROUTER}"}}}`);
     rejects('{"dependencies": {"router": "1.4.2"}}');
     rejects(`{"dependencies": {"lib": {"path": "./lib", "did": "${ROUTER}"}}}`);
@@ -141,7 +141,7 @@ export let tests = suite('package-manager/manifest', () => {
     rejects('{"dependencies": {"gfx": {"wit": 3}}}');
 
     // Writing the published dependencies keeps it, where it was.
-    manifest.requirements['router'] = new Requirement(ROUTER, Version.parse('1.5.0'));
+    manifest.requirements['router'] = new Requirement(ROUTER, Range.parse('1.5.0'));
     let written = writeDependencies(text, manifest.requirements, manifest.paths);
     jsonEqual(parseJson(written), parseJson(`{
       "name": "app",
@@ -162,8 +162,8 @@ export let tests = suite('package-manager/manifest', () => {
       },
       "license": "MIT"
     }`);
-    manifest.requirements['router'] = new Requirement(ROUTER, Version.parse('1.5.0'));
-    manifest.requirements['json'] = new Requirement('did:web:json.example.com', Version.parse('2.1.0'));
+    manifest.requirements['router'] = new Requirement(ROUTER, Range.parse('1.5.0'));
+    manifest.requirements['json'] = new Requirement('did:web:json.example.com', Range.parse('2.1.0'));
     let text = writeDependencies(`{
       "name": "app",
       "dependencies": {

@@ -39,7 +39,7 @@ import {
   isValidScopeName,
   parsePackageVersion
 } from 'package-manager/records';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
 
 function bytes(text: String) {
   let out = new FixedArray<u8>(text.length, 0 as u8);
@@ -157,7 +157,7 @@ export let tests = suite('package-manager/records', () => {
 
     equal(record.dependencies.length, 1);
     equal(record.dependencies[0].did, 'did:web:json.example.com');
-    equal(record.dependencies[0].version.toString(), '2.1.0');
+    equal(record.dependencies[0].range.text, '2.1.0');
     equal(record.dependencies[0].name, 'json');
 
     jsonEqual(toJson(record.toValue()), parseJson(json));
@@ -230,7 +230,9 @@ export let tests = suite('package-manager/records', () => {
     let json = dependency('did:web:json.example.com', '2.1.0', 'json');
     rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, '{}'));
     rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, `[${dependency('json.example.com', '2.1.0', 'json')}]`));
-    rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, `[${dependency('did:web:json.example.com', '2.1', 'json')}]`));
+    rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, `[${dependency('did:web:json.example.com', 'two', 'json')}]`));
+    // A range with no version in it.
+    rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, `[${dependency('did:web:json.example.com', '>2.0.0 <2.0.0', 'json')}]`));
     rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, `[${dependency('did:web:json.example.com', '2.1.0', 'Json')}]`));
     rejectsRelease(release(`[${SOURCE_ARTIFACT}]`,
         `[${json}, ${dependency('did:web:other.example.com', '1.0.0', 'json')}]`));
@@ -323,7 +325,7 @@ export let tests = suite('package-manager/records', () => {
       isFalse(isValidLocalName(name), name);
     }
     // A release names its dependencies as its manifest does.
-    let dependency = new Dependency('did:plc:httphttphttphttphttphttp', Version.parse('3.0.0'), 'acme:http');
+    let dependency = new Dependency('did:plc:httphttphttphttphttphttp', Range.parse('3.0.0'), 'acme:http');
     equal(Dependency.fromValue(dependency.toValue()).name, 'acme:http');
   });
 

@@ -38,7 +38,7 @@ import {
   Pin, PinAdded, PinChange, PinChangedInPlace, PinRemoved, PinVersionChanged, diffPins, readPins, writeLockfile
 } from 'package-manager/resolution';
 import { Requirement, resolve } from 'package-manager/resolve';
-import { Version } from 'zena-lang:semver';
+import { Range, Version } from 'zena-lang:semver';
 import { DiskFiles, Workspace, WorkspacePackage, readWorkspace } from 'package-manager/workspace';
 import { Options, workspaceRoot, userCwd } from './env.zena';
 import { fetchAndReport, packageResolver } from './fetch.zena';
@@ -123,7 +123,7 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
     return 1;
   }
 
-  requirements[name] = new Requirement(did, chosen);
+  requirements[name] = new Requirement(did, Range.parse(`^${chosen.toString()}`));
   console.log(`Adding ${name} to ${target.manifestPath()}: ${did} ${chosen.toString()}`);
   return await resolveWriteAndFetch(workspace, target, resolver, args.getFlag('allow-changed'), options);
 }
@@ -152,10 +152,11 @@ export async function updateCommand(args: ParsedArgs, options: Options): Future<
     if (args.rest.length == 0 || args.rest.contains(name)) {
       let document = await resolver.resolveDid(requirement.did);
       let versions = await listVersions(document);
-      let latest = versions.latest(requirement.version.major);
-      if (latest != null && latest.compareTo(requirement.version) > 0) {
-        console.log(`Updating ${name}: ${requirement.version.toString()} -> ${latest.toString()}`);
-        updated[name] = new Requirement(requirement.did, latest);
+      let latest = versions.latest(requirement.minimum.major);
+      if (latest != null && latest.compareTo(requirement.minimum) > 0) {
+        let raised = Range.parse(`^${latest.toString()}`);
+        console.log(`Updating ${name}: ${requirement.range.text} -> ${raised.text}`);
+        updated[name] = new Requirement(requirement.did, raised);
       }
     }
   }
@@ -241,7 +242,7 @@ async function resolveWriteAndFetch(workspace: Workspace, target: WorkspacePacka
   if (!allowChanged && refuseChangedInPlace(changes)) {
     return 1;
   }
-  let lockfile = writeLockfile(resolution);
+  let lockfile = writeLockfile(resolution, workspace.pinsByPackage(resolution));
   await writeFile(target.manifestPath(), writeDependencies(target.text, requirements, target.manifest.paths));
   await writeFile(lockfilePath, lockfile);
   if (changes.length == 0) {
@@ -265,7 +266,7 @@ function refuseChangedInPlace(changes: GrowableArray<PinChange>): boolean {
         console.error('Error: these releases have other CIDs than zena-lock.json pins, at the same version:');
         refused = true;
       }
-      console.error(`  ${pin.key} ${pin.version.toString()}: ${cidsChanged(pin, now.release, now.source)}`);
+      console.error(`  ${pin.key}: ${cidsChanged(pin, now.release, now.source)}`);
     }
   }
   if (refused) {
@@ -278,14 +279,14 @@ function refuseChangedInPlace(changes: GrowableArray<PinChange>): boolean {
 /** A line saying what `change` does to the lockfile. */
 function describeChange(change: PinChange): String {
   return match (change) {
-    case PinAdded {now}: `Added ${now.key} ${now.version.toString()}`
-    case PinRemoved {pin}: `Removed ${pin.key} ${pin.version.toString()}`
+    case PinAdded {now}: `Added ${now.key}`
+    case PinRemoved {pin}: `Removed ${pin.key}`
     case PinVersionChanged {pin, now}: {
       let verb = if (now.version.compareTo(pin.version) > 0) 'Upgraded' else 'Downgraded';
-      `${verb} ${pin.key} ${pin.version.toString()} -> ${now.version.toString()}`
+      `${verb} ${pin.key} -> ${now.version.toString()}`
     }
     case PinChangedInPlace {pin, now}:
-      `Changed ${pin.key} ${pin.version.toString()} in place: ${cidsChanged(pin, now.release, now.source)}`
+      `Changed ${pin.key} in place: ${cidsChanged(pin, now.release, now.source)}`
   };
 }
 

@@ -40,9 +40,13 @@ export let tests = suite("Package Manifest", () => {
       host.addFile("/ws/packages/tool/zena-package.json", '{"name": "tool"}');
       host.addFile("/ws/packages/notes/README.md", "");
       host.addFile("/ws/zena-lock.json", `{
+        "workspace": {
+          ".": {"router": "did:plc:router@1.4.2"},
+          "packages/lib": {"router2": "did:plc:router@2.0.0"}
+        },
         "resolved": {
-          "did:plc:router@1": {"version": "1.4.2", "release": "bafyrei1", "source": "bafkreione"},
-          "did:plc:router@2": {"version": "2.0.0", "release": "bafyrei2", "source": "bafkreitwo"}
+          "did:plc:router@1.4.2": {"release": "bafyrei1", "source": "bafkreione"},
+          "did:plc:router@2.0.0": {"release": "bafyrei2", "source": "bafkreitwo"}
         }
       }`);
       // Router 1.4.2 is in the cache, with a manifest of its own.
@@ -59,29 +63,47 @@ export let tests = suite("Package Manifest", () => {
       let appNames = app.dependencies as HashMap<String, String>;
       equal(appNames["app"], "app");
       equal(appNames["lib"], "lib");
-      equal(appNames["router"], "did:plc:router@1");
+      equal(appNames["router"], "did:plc:router@1.4.2");
       equal(appNames["gfx"], "gfx");
       equal(packages["gfx"].witRoot as String, "/ws/wit");
 
       let lib = packages["lib"];
       equal(lib.root, "/ws/packages/lib");
       let libNames = lib.dependencies as HashMap<String, String>;
-      equal(libNames["router2"], "did:plc:router@2");
+      equal(libNames["router2"], "did:plc:router@2.0.0");
       isFalse(libNames.has("router"));
       // `tool` is a workspace package; packages/notes has no manifest.
       isTrue(packages.has("tool"));
       isFalse(packages.has("notes"));
 
       // A published package's exports come from its manifest in the cache.
-      let router = packages["did:plc:router@1"];
+      let router = packages["did:plc:router@1.4.2"];
       equal(router.root, "/cache/sources/bafkreione");
       isTrue((router.exports as HashMap<String, ModuleExport>).has("match"));
-      isTrue(packages["did:plc:router@2"].exports == null);
+      isTrue(packages["did:plc:router@2.0.0"].exports == null);
+    });
+
+    test("refuses a published dependency that the lockfile's workspace section does not pin", async () => {
+      let host = workspace();
+      host.addFile("/ws/zena-lock.json", `{
+        "workspace": {".": {"router": "did:plc:router@1.4.2"}},
+        "resolved": {
+          "did:plc:router@1.4.2": {"release": "bafyrei1", "source": "bafkreione"},
+          "did:plc:router@2.0.0": {"release": "bafyrei2", "source": "bafkreitwo"}
+        }
+      }`);
+      var message = "";
+      try {
+        await loadWorkspace(host, "/ws", null, "/cache");
+      } catch (e) {
+        message = e.message;
+      }
+      isTrue(message.contains("zena-lock.json pins no version of 'router2'"), message);
     });
 
     test("leaves published packages out without a package cache", async () => {
       let packages = await loadWorkspace(workspace(), "/ws");
-      isFalse(packages.has("did:plc:router@1"));
+      isFalse(packages.has("did:plc:router@1.4.2"));
       isFalse((packages["app"].dependencies as HashMap<String, String>).has("router"));
       isTrue(packages.has("lib"));
     });
@@ -109,10 +131,10 @@ export let tests = suite("Package Manifest", () => {
       }`);
       host.addFile("/ws/lib/zena-package.json", '{"name": "lib"}');
       host.addFile("/ws/zena-lock.json",
-          '{"resolved": {"did:plc:router@1": {"version": "1.0.0", "source": "bafkreirouter"}}}');
+          '{"workspace": {".": {"router": "did:plc:router@1.0.0"}}, "resolved": {"did:plc:router@1.0.0": {"source": "bafkreirouter"}}}');
       let packages = await loadWorkspace(host, "/ws", null, "/cache");
       equal(packages["library"].aliasOf as String, "lib");
-      equal(packages["router"].aliasOf as String, "did:plc:router@1");
+      equal(packages["router"].aliasOf as String, "did:plc:router@1.0.0");
       equal(packages["gfx"].witRoot as String, "/ws/wit");
       equal(packages["lib"].root, "/ws/lib");
     });
@@ -259,7 +281,7 @@ export let tests = suite("Package Manifest", () => {
       host.addFile("/ws/packages/lib/zena-package.json", '{"name": "lib", "dependencies": {"zena-lang:wit": {"path": "../wit"}}}');
       host.addFile("/elsewhere/tool/zena-package.json", '{"name": "tool"}');
       host.addFile("/ws/zena-lock.json",
-          '{"resolved": {"did:plc:router@1": {"version": "1.0.0", "source": "bafkreirouter"}}}');
+          '{"workspace": {".": {"acme:router": "did:plc:router@1.0.0"}}, "resolved": {"did:plc:router@1.0.0": {"source": "bafkreirouter"}}}');
       let packages = await loadWorkspace(host, "/ws", null, "/cache");
       // The root's scope is the scope of the packages in its workspace that
       // name none, and not of a package outside it.
@@ -271,7 +293,7 @@ export let tests = suite("Package Manifest", () => {
       equal(names["acme:app"], "acme:app");
       equal(names["zena-lang:wit"], "zena-lang:wit");
       equal(names["acme:lib"], "acme:lib");
-      equal(names["acme:router"], "did:plc:router@1");
+      equal(names["acme:router"], "did:plc:router@1.0.0");
       equal((packages["acme:lib"].dependencies as HashMap<String, String>)["zena-lang:wit"], "zena-lang:wit");
     });
 

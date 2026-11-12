@@ -15,7 +15,7 @@ import { HashMap } from 'zena:collections';
 // ============================================================================
 
 // Adds the packages the `resolved` section of `json`, from `file`, pins:
-// each keyed by DID and major version and rooted at its unpacked source
+// each keyed by DID and version and rooted at its unpacked source
 // archive in `packageCache`, with the names its own libraries import.
 // Returns their keys.
 function addPins(
@@ -23,7 +23,7 @@ function addPins(
   packageCache: String,
   result: HashMap<String, PackageConfig>,
   file: String
-): GrowableArray<String> {
+) {
   let manifest = json;
   let keys = new Array<String>();
   let sources = new Map<String, String>();
@@ -32,12 +32,12 @@ function addPins(
     resolved.forEach((key, value) => {
       if (!isPackageKey(key)) {
         throw new Error(
-            `${file}: "resolved" has '${key}', which is not a DID and major version such as did:plc:example@1`);
+            `${file}: "resolved" has '${key}', which is not a DID and version such as did:plc:example@1.4.2`);
       }
       if (!(value is JsonObject)) {
         throw new Error(`${file}: "resolved" entry ${key} is not an object`);
       }
-      let entry = value as JsonObject;
+      let entry = value;
       let source = stringMember(entry, "source", key, file);
       if (!isCidText(source)) {
         throw new Error(`${file}: ${key} has source '${source}', which is not a CID`);
@@ -75,14 +75,14 @@ function nameMap(object: JsonObject, owner: String, file: String): HashMap<Strin
   if (!(dependencies is JsonObject)) {
     throw new Error(`${file}: the dependencies of ${owner} are not an object`);
   }
-  (dependencies as JsonObject).forEach((name, target) => {
+  dependencies.forEach((name, target) => {
     if (!isLocalName(name)) {
       throw new Error(`${file}: ${owner} has a dependency named '${name}'`);
     }
     if (!(target is String)) {
       throw new Error(`${file}: ${owner}'s dependency '${name}' is not a string`);
     }
-    names[name] = target as String;
+    names[name] = target;
   });
   return names;
 }
@@ -99,11 +99,12 @@ function stringMember(object: JsonObject, member: String, owner: String, file: S
   if (!(value is String)) {
     throw new Error(`${file}: ${owner} has no "${member}" string`);
   }
-  return value as String;
+  return value;
 }
 
-// Whether `key` names a package by DID and major version: `did:`, more
-// text, `@`, and a number.
+// Whether `key` names a package by DID and version: `did:`, more text,
+// `@`, a digit, and a version's characters (digits, letters, `.`, `-`
+// and `+`).
 function isPackageKey(key: String): boolean {
   if (!key.startsWith("did:")) {
     return false;
@@ -117,13 +118,57 @@ function isPackageKey(key: String): boolean {
   if (at <= 4 || at == key.length - 1) {
     return false;
   }
+  let first = key.getByteAt(at + 1);
+  if (first < 48 || first > 57) {
+    return false;
+  }
   for (var i = at + 1; i < key.length; i += 1) {
     let b = key.getByteAt(i);
-    if (b < 48 || b > 57) {
+    let allowed = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) ||
+        b == 46 || b == 45 || b == 43; // '.', '-', '+'
+    if (!allowed) {
       return false;
     }
   }
   return true;
+}
+
+// The `workspace` section of the lockfile `json`, from `file`: each
+// workspace package's directory, relative to the root, mapped to its
+// names, each mapped to a package key.
+function workspacePins(json: JsonObject, file: String) {
+  let pins = new Map<String, HashMap<String, String>>();
+  if (!json.has("workspace")) {
+    return pins;
+  }
+  let workspace = json["workspace"];
+  if (!(workspace is JsonObject)) {
+    throw new Error(`${file}: "workspace" is not an object`);
+  }
+  workspace.forEach((dir, names) => {
+    if (!(names is JsonObject)) {
+      throw new Error(`${file}: "workspace" entry ${dir} is not an object`);
+    }
+    let holder = new JsonObject();
+    holder["dependencies"] = names;
+    pins[dir] = nameMap(holder, dir, file);
+  });
+  return pins;
+}
+
+// `dir` relative to the workspace's root `root`, as the lockfile's
+// `workspace` section names packages: `.` for the root, and a directory
+// outside it as it is. package-manager/workspace's relativeDir is the
+// same rule.
+function relativeDir(root: String, dir: String) {
+  if (dir == root) {
+    return ".";
+  }
+  if (root == ".") {
+    return if (dir.startsWith("./")) dir.sliceBytes(2, dir.length) else dir;
+  }
+  let prefix = `${root}/`;
+  return if (dir.startsWith(prefix)) dir.sliceBytes(prefix.length, dir.length) else dir;
 }
 
 // Whether `text` looks like a base32 CID string: `b` and then lowercase
@@ -181,6 +226,9 @@ final class WorkspaceLoader {
   // scope of each package in the workspace that names none.
   var #root = ".";
   var #rootScope: String | null = null;
+  // The lockfile's `workspace` section: the pins each workspace package's
+  // names stand for, by the package's directory relative to the root.
+  var #workspacePins = new Map<String, HashMap<String, String>>();
 
   new(host: CompilerHost, projectRoot: String | null, packageCache: String | null)
     : #host = host, #projectRoot = projectRoot, #packageCache = packageCache;
@@ -190,6 +238,7 @@ final class WorkspaceLoader {
     let lock = joinPath(root, "zena-lock.json");
     if (cache != null && await fileExists(this.#host, lock)) {
       let pins = await this.#readJson(lock);
+      this.#workspacePins = workspacePins(pins, "zena-lock.json");
       for (let key in addPins(pins, cache, this.#result, "zena-lock.json")) {
         // A published package's own manifest gives its exports, once it is
         // in the cache.
@@ -233,7 +282,7 @@ final class WorkspaceLoader {
       if (names == null) {
         throw new Error(`zena-package.json: workspace.packages names ${parent}, which is not a directory`);
       }
-      for (let name in names as Array<String>) {
+      for (let name in names) {
         let dir = joinPath(parent, name);
         if (await fileExists(this.#host, joinPath(dir, "zena-package.json"))) {
           await this.#loadPackageAt(dir);
@@ -349,7 +398,7 @@ final class WorkspaceLoader {
     if (!(value is JsonObject)) {
       throw new Error(`${dir}/zena-package.json: dependency '${localName}' is not an object`);
     }
-    let entry = value as JsonObject;
+    let entry = value;
     if (entry.has("path")) {
       let target = resolveManifestPath(entry["path"] as String, dir, this.#projectRoot);
       return await this.#loadPackageAt(target);
@@ -375,12 +424,23 @@ final class WorkspaceLoader {
     if (!(did is String) || !(version is String)) {
       throw new Error(`${dir}/zena-package.json: dependency '${localName}' has no path, WIT, or DID and version`);
     }
-    let pinned = `${did as String}@${majorOf(version as String)}`;
-    if (!isResolved(this.#result, pinned)) {
-      throw new Error(
-          `${dir}/zena-package.json: '${localName}' is ${pinned}, which zena-lock.json does not pin. Run 'zena pkg add' or 'zena pkg update'.`);
+    // zena-lock.json's `workspace` section says which pin the name stands
+    // for in this package.
+    var pinned: String | null = null;
+    if (let (true, names) = this.#workspacePins.get(relativeDir(this.#root, dir))) {
+      if (let (true, key) = names.get(localName)) {
+        pinned = key;
+      }
     }
-    return pinned;
+    let missing = `${dir}/zena-package.json: zena-lock.json pins no version of '${localName}' (${did}). Run 'zena pkg add' or 'zena pkg update'.`;
+    let found = pinned;
+    if (found == null) {
+      throw new Error(missing);
+    }
+    if (!isResolved(this.#result, found)) {
+      throw new Error(missing);
+    }
+    return found;
   }
 
   async #readJson(path: String): Future<JsonObject> {
@@ -392,7 +452,7 @@ final class WorkspaceLoader {
       // The parser knows where in the text it stopped, not which file the
       // text came from.
       if (e is JsonParseError) {
-        let fault = e as JsonParseError;
+        let fault = e;
         throw new Error(`${path}:${fault.line}:${fault.column}: ${fault.message}`);
       }
       throw e;
@@ -400,7 +460,7 @@ final class WorkspaceLoader {
     if (!(json is JsonObject)) {
       throw new Error(`${path} is not a JSON object`);
     }
-    return json as JsonObject;
+    return json;
   }
 }
 
@@ -431,7 +491,7 @@ async function fileExists(host: CompilerHost, path: String): Future<boolean> {
       base = path.sliceBytes(i + 1, path.length);
     }
   }
-  for (let name in names as Array<String>) {
+  for (let name in names) {
     if (name == base) {
       return true;
     }
@@ -492,16 +552,6 @@ function scopeOf(manifest: JsonObject, manifestPath: String): String | null {
     throw new Error(`${manifestPath}: the scope is not a scope's name`);
   }
   return scope;
-}
-
-// The major version of `version`, such as `1` of `1.4.2`.
-function majorOf(version: String): String {
-  for (var i = 0; i < version.length; i += 1) {
-    if (version.getByteAt(i) == 46) { // '.'
-      return version.sliceBytes(0, i);
-    }
-  }
-  return version;
 }
 
 // The directory a manifest's libraries are in, relative to the manifest:
@@ -579,7 +629,7 @@ function parseModuleExport(value: JsonValue): ModuleExport {
   let obj = value as JsonObject;
   let internalValue = obj["internal"];
   let internal = internalValue is Box<boolean> &&
-      (internalValue as Box<boolean>).value;
+      internalValue.value;
 
   if (obj.has("virtual")) {
     let virtualObj = obj["virtual"] as JsonObject;

@@ -11,8 +11,8 @@ import {
   MAIN, Scratch, ZenaCommand, described, dnsBeside, fakePdsOrigin, read, startFakePds, stopFakePds, write
 } from './cli-support.zena';
 
-let JSON_KEY = 'did:plc:jsonjsonjsonjsonjsonjson@2';
-let LOG_KEY = 'did:plc:loglogloglogloglogloglog@1';
+let JSON_KEY = 'did:plc:jsonjsonjsonjsonjsonjson@2.1.0';
+let LOG_KEY = 'did:plc:loglogloglogloglogloglog@1.0.0';
 
 export let tests = suite('zena pkg add and zena pkg update', () => {
   test('select versions for the whole workspace, pin them, and fetch them', async (ctx) => {
@@ -45,8 +45,8 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
       let text = await read(manifest);
       isTrue(text.contains('"acme:router"') && text.contains('1.4.2'), text);
       let pins = await read(lockfile);
-      isTrue(pins.contains('did:plc:routerrouterrouterrouter@1') &&
-          pins.contains('did:plc:jsonjsonjsonjsonjsonjson@2') && pins.contains('2.1.0'), pins);
+      isTrue(pins.contains('"did:plc:routerrouterrouterrouter@1.4.2"') &&
+          pins.contains('"did:plc:jsonjsonjsonjsonjsonjson@2.1.0"') && pins.contains('"workspace"'), pins);
       succeeds('zena run', await zena.run(['run', 'prog.zena']));
 
       // Update to the latest version that is not retracted: 1.5.0, not 1.6.0.
@@ -146,7 +146,7 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
       let first = await startFakePds(scratch, 'add-pds.zena');
       try {
         let add = await zenaWith(await fakePdsOrigin(scratch, first)).run(['pkg', 'add', 'acme:router@1.5.0']);
-        isTrue(add.succeeded() && add.stdout.contains(`Added ${JSON_KEY} 2.1.0`), described(add));
+        isTrue(add.succeeded() && add.stdout.contains(`Added ${JSON_KEY}`), described(add));
       } finally {
         await stopFakePds(first);
       }
@@ -163,18 +163,18 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
         // Adding a package that does not need json selects json again, and
         // is refused, with nothing written; so is updating.
         let refused = await zena.run(['pkg', 'add', 'acme:log']);
-        isTrue(!refused.succeeded() && refused.stderr.contains(`${JSON_KEY} 2.1.0`) &&
+        isTrue(!refused.succeeded() && refused.stderr.contains(`${JSON_KEY}:`) &&
             refused.stderr.contains('--allow-changed'), described(refused));
         equal(await read(manifest), text);
         equal(await read(lockfile), pins);
         let update = await zena.run(['pkg', 'update']);
-        isTrue(!update.succeeded() && update.stderr.contains(`${JSON_KEY} 2.1.0`), described(update));
+        isTrue(!update.succeeded() && update.stderr.contains(`${JSON_KEY}:`), described(update));
         equal(await read(lockfile), pins);
 
         // Allowed, the new pins replace the old.
         let allowed = await zena.run(['pkg', 'add', 'acme:log', '--allow-changed']);
-        isTrue(allowed.succeeded() && allowed.stdout.contains(`Changed ${JSON_KEY} 2.1.0 in place`) &&
-            allowed.stdout.contains(`Added ${LOG_KEY} 1.0.0`), described(allowed));
+        isTrue(allowed.succeeded() && allowed.stdout.contains(`Changed ${JSON_KEY} in place`) &&
+            allowed.stdout.contains(`Added ${LOG_KEY}`), described(allowed));
         isTrue((await read(lockfile)) != pins && (await read(manifest)).contains('"acme:log"'), await read(lockfile));
         let again = await zena.run(['pkg', 'update']);
         isTrue(again.succeeded() && again.stdout.contains('zena-lock.json is unchanged'), described(again));

@@ -170,6 +170,23 @@ export let tests = suite('zena-lang:semver/range', () => {
     isNull(Range.parse('^3.0.0').highest(available));
   });
 
+  test("finds the lowest version in the range, as node-semver's minVersion does", (ctx) => {
+    let cases = [
+      ('^1.4.2', '1.4.2'), ('~1.4', '1.4.0'), ('>1.2.3', '1.2.4'), ('>1.2.3-rc', '1.2.3-rc.0'),
+      ('<2.0.0', '0.0.0'), ('*', '0.0.0'), ('>=1.2.3 <1.5.0', '1.2.3'), ('^2.0.0 || ^1.4.0', '1.4.0'),
+      ('1.2.3', '1.2.3'), ('>1', '2.0.0'), ('>=1.0.0-rc.1', '1.0.0-rc.1'), ('^0.0.3', '0.0.3'),
+    ];
+    for (let (text, lowest) in cases) {
+      equal((Range.parse(text).minimum() as Version).toString(), lowest, text);
+    }
+    isNull(Range.parse('>2.0.0 <2.0.0').minimum());
+    isNull(Range.parse('<0.0.0-0').minimum());
+  });
+
+  test('keeps the text it was read from', (ctx) => {
+    equal(Range.parse('^1.4.2 || ^2.0.0').text, '^1.4.2 || ^2.0.0');
+  });
+
   test('gives each comparator set as an interval', (ctx) => {
     let intervals = Range.parse('^1.4.2 || 3.0.0 || >=4').intervals();
     equal(intervals.length, 3);

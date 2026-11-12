@@ -30,7 +30,7 @@ import {
 } from 'atproto/data';
 import {isValidCidSyntax, isValidDatetime, isValidDid} from 'atproto/syntax';
 import {URL} from 'zena:url';
-import {Version, VersionError} from 'zena-lang:semver';
+import {Range, Version, VersionError} from 'zena-lang:semver';
 
 export let PROFILE_TYPE = 'dev.zena-lang.package.profile';
 export let RELEASE_TYPE = 'dev.zena-lang.package.release';
@@ -398,12 +398,12 @@ export final class Artifact {
 /** A package a release depends on. */
 export final class Dependency {
   did: String;
-  /** The lowest version the release works with. */
-  version: Version;
+  /** The versions the release works with, in npm's syntax: `^2.1.0`. */
+  range: Range;
   /** The local name the release's own imports use for the package. */
   name: String;
 
-  new(did: String, version: Version, name: String) : did = did, version = version, name = name;
+  new(did: String, range: Range, name: String) : did = did, range = range, name = name;
 
   static fromValue(value: Value): Dependency {
     if (!(value is MapValue)) {
@@ -418,14 +418,14 @@ export final class Dependency {
     if (!isValidLocalName(name)) {
       throw new RecordError(`release: dependency name '${name}' is not a valid local name`);
     }
-    let version = readVersion(requiredString(map, 'version', 'release dependency'), 'release dependency');
-    return new Dependency(did, version, name);
+    let range = readRange(requiredString(map, 'version', 'release dependency'), `release dependency '${name}'`);
+    return new Dependency(did, range, name);
   }
 
   toValue(): MapValue {
     let map = newMap();
     map.entries['did'] = new StringValue(this.did);
-    map.entries['version'] = new StringValue(this.version.toString());
+    map.entries['version'] = new StringValue(this.range.text);
     map.entries['name'] = new StringValue(this.name);
     return map;
   }
@@ -473,7 +473,7 @@ export final class Release {
       artifacts[i] = Artifact.fromValue(artifactItems[i]);
     }
 
-    var dependencies = new FixedArray<Dependency>(0, new Dependency('', version, ''));
+    var dependencies = new FixedArray<Dependency>(0, new Dependency('', Range.parse('*'), ''));
     let dependencyList = field(map, 'dependencies');
     if (dependencyList != null) {
       if (!(dependencyList is ListValue)) {
@@ -564,7 +564,7 @@ export final class Retraction {
 
 /**
  * A release's dependencies give each local name once, and each package's
- * major version once.
+ * major version once, the major version of the lowest version in the range.
  */
 function checkDependencies(dependencies: FixedArray<Dependency>): void {
   let names = new HashSet<String>();
@@ -574,7 +574,11 @@ function checkDependencies(dependencies: FixedArray<Dependency>): void {
       throw new RecordError(`release: two dependencies are named '${dependency.name}'`);
     }
     names.add(dependency.name);
-    let key = `${dependency.did}@${dependency.version.major}`;
+    let minimum = dependency.range.minimum();
+    if (minimum == null) {
+      throw new RecordError(`release: no version is in dependency '${dependency.name}''s range, '${dependency.range.text}'`);
+    }
+    let key = `${dependency.did}@${minimum.major}`;
     if (packages.has(key)) {
       throw new RecordError(`release: ${key} is a dependency twice`);
     }
@@ -1180,6 +1184,21 @@ export function parsePackageVersion(text: String): Version {
     throw new VersionError(`'${text}' has build metadata, which a package version cannot have`);
   }
   return version;
+}
+
+/** Reads a range in npm's syntax, which must have a version in it. */
+export function readRange(text: String, what: String): Range {
+  var range: Range | null = null;
+  try {
+    range = Range.parse(text);
+  } catch (e) {
+    throw new RecordError(`${what}: ${e.message}`);
+  }
+  let read = range;
+  if (read.minimum() == null) {
+    throw new RecordError(`${what}: no version is in '${text}'`);
+  }
+  return read;
 }
 
 function readVersion(text: String, what: String): Version {

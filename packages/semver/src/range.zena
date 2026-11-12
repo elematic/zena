@@ -118,8 +118,10 @@ export final class Range {
    * version.
    */
   sets: GrowableArray<GrowableArray<Comparator>>;
+  /** The text the range was read from, as written: `^1.4.2`. */
+  text: String;
 
-  new(sets: GrowableArray<GrowableArray<Comparator>>) : sets = sets;
+  new(sets: GrowableArray<GrowableArray<Comparator>>, text: String) : sets = sets, text = text;
 
   /** Reads a range in npm's syntax. Throws `VersionError` for anything else. */
   static parse(text: String): Range {
@@ -134,7 +136,7 @@ export final class Range {
       if (set.length == 0) {
         let any = new GrowableArray<GrowableArray<Comparator>>();
         any.push(set);
-        return new Range(any);
+        return new Range(any, text);
       }
       if (!isNothing(set)) {
         sets.push(set);
@@ -143,7 +145,7 @@ export final class Range {
     if (sets.length == 0) {
       sets.push(parsed[0]);
     }
-    return new Range(sets);
+    return new Range(sets, text);
   }
 
   /**
@@ -153,18 +155,44 @@ export final class Range {
    */
   includes(version: Version, includePrerelease: boolean = false): boolean {
     for (let set in this.sets) {
-      if (meetsAll(set, version)) {
-        if (!version.isPrerelease || includePrerelease) {
-          return true;
-        }
-        for (let comparator in set) {
-          if (comparator.version.isPrerelease && comparator.version.hasSameCore(version)) {
-            return true;
-          }
-        }
+      if (inSet(set, version, includePrerelease)) {
+        return true;
       }
     }
     return false;
+  }
+
+  /**
+   * The lowest version in the range, whether or not it is published, or
+   * null when no version is in it: `1.4.2` for `^1.4.2`, `1.2.4` for
+   * `>1.2.3`, `0.0.0` for `<2.0.0`. node-semver calls it `minVersion`.
+   */
+  minimum(): Version | null {
+    var found: Version | null = null;
+    for (let set in this.sets) {
+      // The highest lower bound of the set, or the lowest version of all.
+      var lowest = new Version(0 as i64, 0 as i64, 0 as i64, none());
+      for (let comparator in set) {
+        let v = comparator.version;
+        let candidate = match (comparator.relation) {
+          case Relation.Greater: justAbove(v)
+          case Relation.GreaterOrEqual: v
+          case Relation.Equal: v
+          case Relation.Less: null
+          case Relation.LessOrEqual: null
+        };
+        if (candidate != null && candidate.compareTo(lowest) > 0) {
+          lowest = candidate;
+        }
+      }
+      if (inSet(set, lowest, false)) {
+        let current = found;
+        if (current == null || lowest.compareTo(current) < 0) {
+          found = lowest;
+        }
+      }
+    }
+    return found;
   }
 
   /** The highest of `versions` in the range, or null when none is. */
@@ -239,6 +267,37 @@ export final class Range {
     }
     return text;
   }
+}
+
+/**
+ * The lowest version above `v`: its next pre-release when it is one
+ * (`1.2.3-rc` becomes `1.2.3-rc.0`), and otherwise its next patch.
+ */
+function justAbove(v: Version): Version {
+  if (v.isPrerelease) {
+    let prerelease = new FixedArray<String>(v.prerelease.length + 1, '0');
+    for (var i = 0; i < v.prerelease.length; i += 1) {
+      prerelease[i] = v.prerelease[i];
+    }
+    return new Version(v.major, v.minor, v.patch, prerelease);
+  }
+  return new Version(v.major, v.minor, v.patch + (1 as i64), none());
+}
+
+/** Whether `version` is in `set`, with the pre-release rule unless `includePrerelease`. */
+function inSet(set: GrowableArray<Comparator>, version: Version, includePrerelease: boolean): boolean {
+  if (!meetsAll(set, version)) {
+    return false;
+  }
+  if (!version.isPrerelease || includePrerelease) {
+    return true;
+  }
+  for (let comparator in set) {
+    if (comparator.version.isPrerelease && comparator.version.hasSameCore(version)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Whether `version` meets every comparator of `set`. */

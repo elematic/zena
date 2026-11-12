@@ -28,8 +28,9 @@ import {getVerifiedBlob, getVerifiedRecord} from 'atproto/sync';
 import {SourceFile, unpackSource} from './archive.zena';
 import {checkSource} from './validate.zena';
 import {PackageCache} from './cache.zena';
-import {Artifact, RELEASE_TYPE, Release, SOURCE} from './records.zena';
-import {Pin, packageKey} from './resolution.zena';
+import {Artifact, Dependency, RELEASE_TYPE, Release, SOURCE} from './records.zena';
+import {Pin} from './resolution.zena';
+import {Version} from 'zena-lang:semver';
 
 /** A pinned package that cannot be fetched as pinned. */
 export class FetchError extends Error {
@@ -131,25 +132,49 @@ function readRelease(record: Value, versionText: String, pin: Pin): Release {
 
 /**
  * The lockfile maps each of the package's own names to a pinned
- * package, and the release says which package each name is: they must
- * agree, name for name.
+ * package, and the release says which package each name is and which
+ * versions it accepts: they must agree, name for name. Until selection
+ * reads ranges (#1087), the pin is at the major version of the range's
+ * lowest version.
  */
 function checkDependencies(pin: Pin, release: Release): void {
   for (let dependency in release.dependencies) {
-    let key = packageKey(dependency.did, dependency.version.major);
+    let wanted = `${dependency.did} ${dependency.range.text}`;
     if (let (true, pinned) = pin.dependencies.get(dependency.name)) {
-      if (pinned != key) {
+      if (!pinMatches(pinned, dependency)) {
         throw new FetchError(
-            `${pin.key}: its dependency '${dependency.name}' is ${key}, but zena-lock.json maps it to ${pinned}`);
+            `${pin.key}: its dependency '${dependency.name}' is ${wanted}, but zena-lock.json maps it to ${pinned}`);
       }
     } else {
       throw new FetchError(
-          `${pin.key}: its dependency '${dependency.name}' (${key}) is not in zena-lock.json`);
+          `${pin.key}: its dependency '${dependency.name}' (${wanted}) is not in zena-lock.json`);
     }
   }
   if (pin.dependencies.size != release.dependencies.length) {
     throw new FetchError(
         `${pin.key}: zena-lock.json gives it ${pin.dependencies.size} dependencies, but release ${pin.version.toString()} has ${release.dependencies.length}`);
+  }
+}
+
+/** Whether the pin `key`, `did@version`, is a version selection may give `dependency`. */
+function pinMatches(key: String, dependency: Dependency): boolean {
+  var at = -1;
+  for (var i = 0; i < key.length; i += 1) {
+    if (key.getByteAt(i) == 64) { // '@'
+      at = i;
+    }
+  }
+  if (at < 0 || key.sliceBytes(0, at) != dependency.did) {
+    return false;
+  }
+  let minimum = dependency.range.minimum();
+  if (minimum == null) {
+    return false;
+  }
+  try {
+    return Version.parse(key.sliceBytes(at + 1, key.length)).major == minimum.major;
+  } catch (e) {
+    return false;
   }
 }
 

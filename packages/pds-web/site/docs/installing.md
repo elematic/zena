@@ -42,14 +42,14 @@ zena pkg add acme:router
 # By full handle (including packages on custom domains)
 zena pkg add router.acme.pkg.zena-lang.dev
 
-# Pinning a specific minimum version
+# Starting from a specific version (the manifest gets ^1.4.2)
 zena pkg add acme:router@1.4.2
 ```
 
 When you run `zena pkg add`, the CLI performs three steps:
 
-1. Resolves the package's identity and records its DID and minimum version in `zena-package.json` under `dependencies`.
-2. Selects versions across your workspace using minimal version selection and writes the exact versions and content hashes (CIDs) to `zena-lock.json`.
+1. Resolves the package's identity and records its DID and a version range, `^` and the version it chose, in `zena-package.json` under `dependencies`.
+2. Selects versions across your workspace and writes the exact versions and content hashes (CIDs) to `zena-lock.json`.
 3. Fetches each package's source archive into the local package cache and verifies its CID against `zena-lock.json`.
 
 After running `zena pkg add acme:router`, your `zena-package.json` looks like this:
@@ -61,7 +61,7 @@ After running `zena pkg add acme:router`, your `zena-package.json` looks like th
   "dependencies": {
     "acme:router": {
       "did": "did:plc:routerrouterrouterrouter",
-      "version": "1.4.2"
+      "version": "^1.4.2"
     }
   }
 }

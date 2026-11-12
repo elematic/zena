@@ -1,10 +1,15 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {Future} from 'zena:async';
-import {HashMap} from 'zena:collections';
+import {HashMap, OrderedHashMap} from 'zena:collections';
 import {join} from 'zena:core';
 import {ManifestError} from 'package-manager/manifest';
-import {WorkspaceFiles, readWorkspace} from 'package-manager/workspace';
+import {WorkspaceFiles, readWorkspace, relativeDir} from 'package-manager/workspace';
+import {Resolution, ResolvedPackage, packageKey} from 'package-manager/resolution';
+import {Cid} from 'atproto/cid';
+import {Version} from 'zena-lang:semver';
+
+let CID = Cid.forBlob(new FixedArray<u8>(1, 1 as u8));
 
 let ROUTER = 'did:plc:routerrouterrouterrouter';
 let JSON = 'did:web:json.example.com';
@@ -94,9 +99,33 @@ export let tests = suite('package-manager/workspace', () => {
     let requirements = (await readWorkspace('/ws', files())).requirements();
     equal(requirements.length, 3);
     equal(requirements[0].did, ROUTER);
-    equal(requirements[0].version.toString(), '1.4.2');
+    equal(requirements[0].range.text, '1.4.2');
     equal(requirements[1].did, JSON);
-    equal(requirements[2].version.toString(), '1.5.0');
+    equal(requirements[2].range.text, '1.5.0');
+  });
+
+  test("gives the lockfile each package's pins, by its directory relative to the root", async (ctx) => {
+    let workspace = await readWorkspace('/ws', files());
+    let packages = new OrderedHashMap<String, ResolvedPackage>();
+    for (let (did, version) in [(ROUTER, '1.5.0'), (JSON, '2.1.0')]) {
+      let parsed = Version.parse(version);
+      let key = packageKey(did, parsed);
+      packages[key] = new ResolvedPackage(key, did, parsed, CID, CID, new OrderedHashMap<String, String>());
+    }
+    let pins = workspace.pinsByPackage(new Resolution(packages));
+    equal(pins.size, 3);
+    equal(pins['.']['router'], `${ROUTER}@1.5.0`);
+    equal(pins['packages/lib']['json'], `${JSON}@2.1.0`);
+    equal(pins['/tool']['router'], `${ROUTER}@1.5.0`);
+  });
+
+  test('names a directory relative to the root as the compiler does', (ctx) => {
+    equal(relativeDir('/ws', '/ws'), '.');
+    equal(relativeDir('/ws', '/ws/packages/lib'), 'packages/lib');
+    equal(relativeDir('/ws', '/tool'), '/tool');
+    equal(relativeDir('.', 'packages/lib'), 'packages/lib');
+    equal(relativeDir('.', './packages/lib'), 'packages/lib');
+    equal(relativeDir('.', '.'), '.');
   });
 
   test('finds the package a directory is in', async (ctx) => {

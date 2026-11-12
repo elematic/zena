@@ -9,7 +9,7 @@ import {BlobRef} from 'atproto/data';
 import {Artifact, COMPONENT, Dependency, Release, SOURCE} from 'package-manager/records';
 import {CheckedRelease, ReleaseSource, Requirement, resolve} from 'package-manager/resolve';
 import {Resolution, ResolutionError} from 'package-manager/resolution';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
 
 let ROUTER = 'did:plc:routerrouterrouterrouter';
 let JSON = 'did:web:json.example.com';
@@ -34,7 +34,7 @@ final class Registry {
     let artifact = Artifact.whole(kind, new BlobRef(Cid.forBlob(bytesOf(`${did} ${version}`)),
         'application/vnd.ipld.car', 1 as i64), if (kind == COMPONENT) 'wasi:cli/command' else null,
         if (kind == COMPONENT) new BlobRef(Cid.forBlob(bytesOf('wit')), 'text/plain', 3 as i64) else null);
-    let list = new FixedArray<Dependency>(dependencies.length, new Dependency('', Version.parse('0.0.0'), ''));
+    let list = new FixedArray<Dependency>(dependencies.length, new Dependency('', Range.parse('0.0.0'), ''));
     for (var i = 0; i < dependencies.length; i += 1) {
       list[i] = dependencies[i];
     }
@@ -55,13 +55,13 @@ final class Registry {
 }
 
 function needs(did: String, version: String, name: String) {
-  return new Dependency(did, Version.parse(version), name);
+  return new Dependency(did, Range.parse(version), name);
 }
 
 function requirements(entries: Array<(String, String)>) {
   let list = new GrowableArray<Requirement>();
   for (let (did, version) in entries) {
-    list.push(new Requirement(did, Version.parse(version)));
+    list.push(new Requirement(did, Range.parse(version)));
   }
   return list;
 }
@@ -80,11 +80,11 @@ export let tests = suite('package-manager/resolve', () => {
     let resolution = await resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.0.1')]);
 
     equal(resolution.packages.size, 2);
-    let json = resolution.packages[`${JSON}@2`];
+    let json = resolution.packages[`${JSON}@2.1.0`];
     equal(json.version.toString(), '2.1.0');
     isTrue(json.source.equals(Cid.forBlob(bytesOf(`${JSON} 2.1.0`))));
-    let router = resolution.packages[`${ROUTER}@1`];
-    equal(router.dependencies['json'], `${JSON}@2`);
+    let router = resolution.packages[`${ROUTER}@1.4.2`];
+    equal(router.dependencies['json'], `${JSON}@2.1.0`);
     isTrue(router.release.equals(Cid.forDagCbor(encodeCbor(registry.releases[`${ROUTER} 1.4.2`].toValue()))));
   });
 
@@ -95,7 +95,7 @@ export let tests = suite('package-manager/resolve', () => {
     // Two workspace packages need json 2, at different minimums.
     let resolution = await resolved(registry, [(JSON, '2.0.1'), (JSON, '2.1.0')]);
     equal(resolution.packages.size, 1);
-    equal(resolution.packages[`${JSON}@2`].version.toString(), '2.1.0');
+    equal(resolution.packages[`${JSON}@2.1.0`].version.toString(), '2.1.0');
   });
 
   test('keeps a version that a higher minimum overrides, for its dependencies', async (ctx): Future<void> => {
@@ -109,8 +109,8 @@ export let tests = suite('package-manager/resolve', () => {
     registry.add(JSON, '2.0.0', growable([needs(ROUTER, '1.5.0', 'router')]));
     registry.add(LOG, '1.2.0');
     let resolution = await resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.0.0')]);
-    equal(resolution.packages[`${ROUTER}@1`].version.toString(), '1.5.0');
-    equal(resolution.packages[`${LOG}@1`].version.toString(), '1.2.0');
+    equal(resolution.packages[`${ROUTER}@1.5.0`].version.toString(), '1.5.0');
+    equal(resolution.packages[`${LOG}@1.2.0`].version.toString(), '1.2.0');
   });
 
   test('selects each major version of a package on its own', async (ctx): Future<void> => {
@@ -120,9 +120,31 @@ export let tests = suite('package-manager/resolve', () => {
     registry.add(JSON, '3.0.0');
     let resolution = await resolved(registry, [(ROUTER, '1.4.2'), (JSON, '2.1.0')]);
     equal(resolution.packages.size, 3);
-    equal(resolution.packages[`${JSON}@2`].version.toString(), '2.1.0');
-    equal(resolution.packages[`${JSON}@3`].version.toString(), '3.0.0');
-    equal(resolution.packages[`${ROUTER}@1`].dependencies['json3'], `${JSON}@3`);
+    equal(resolution.packages[`${JSON}@2.1.0`].version.toString(), '2.1.0');
+    equal(resolution.packages[`${JSON}@3.0.0`].version.toString(), '3.0.0');
+    equal(resolution.packages[`${ROUTER}@1.4.2`].dependencies['json3'], `${JSON}@3.0.0`);
+  });
+
+  test('requires the lowest version in each range, and maps names to what was selected', async (ctx): Future<void> => {
+    let registry = new Registry();
+    registry.add(ROUTER, '1.4.2', growable([needs(JSON, '^2.0.1', 'json')]));
+    registry.add(JSON, '2.0.1');
+    registry.add(JSON, '2.1.0');
+    registry.add(JSON, '2.3.0');
+    let resolution = await resolved(registry, [(ROUTER, '~1.4.2'), (JSON, '>=2.1.0 <3.0.0')]);
+    equal(resolution.packages.size, 2);
+    equal(resolution.packages[`${JSON}@2.1.0`].version.toString(), '2.1.0');
+    equal(resolution.packages[`${ROUTER}@1.4.2`].dependencies['json'], `${JSON}@2.1.0`);
+  });
+
+  test('refuses a range with no version in it', async (ctx): Future<void> => {
+    var message = '';
+    try {
+      requirements([(JSON, '>2.0.0 <2.0.0')]);
+    } catch (e) {
+      message = e.message;
+    }
+    isTrue(message.contains("no version is in '>2.0.0 <2.0.0'"), message);
   });
 
   test('lists packages in key order', async (ctx): Future<void> => {
@@ -135,9 +157,9 @@ export let tests = suite('package-manager/resolve', () => {
       keys.push(key);
     }
     equal(keys.length, 3);
-    equal(keys[0], `${LOG}@1`);
-    equal(keys[1], `${ROUTER}@1`);
-    equal(keys[2], `${JSON}@2`);
+    equal(keys[0], `${LOG}@1.0.0`);
+    equal(keys[1], `${ROUTER}@1.0.0`);
+    equal(keys[2], `${JSON}@2.0.0`);
   });
 
   test('reads each release once', async (ctx): Future<void> => {

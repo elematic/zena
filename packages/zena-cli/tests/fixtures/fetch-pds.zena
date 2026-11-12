@@ -18,7 +18,7 @@ import {BlobRef} from 'atproto/data';
 import {packSource} from 'package-manager/archive';
 import {Artifact, Dependency, Release, SOURCE} from 'package-manager/records';
 import {DID, FakePds} from 'package-manager/testing/fake-pds';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
 
 function bytesOf(text: String) {
   let out = new FixedArray<u8>(text.length, 0 as u8);
@@ -42,7 +42,7 @@ export async function main(): Future<i32> {
       new BlobRef(source, 'application/vnd.ipld.car', archive.length as i64));
   let release = new Release(Version.parse('1.4.2'), '2026-10-22T00:00:00.000Z',
       new FixedArray<Artifact>(1, artifact),
-      new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+      new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')));
   let record = pds.publish(release);
 
   await writeFile('/out/zena-package.json', `{
@@ -50,9 +50,9 @@ export async function main(): Future<i32> {
 }
 `);
   await writeFile('/out/zena-lock.json', `{
+  "workspace": {".": {"router": "${DID}@1.4.2"}},
   "resolved": {
-    "${DID}@1": {
-      "version": "1.4.2",
+    "${DID}@1.4.2": {
       "release": "${record.toString()}",
       "source": "${source.toString()}"
     }

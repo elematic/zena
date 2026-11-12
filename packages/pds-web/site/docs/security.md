@@ -8,7 +8,7 @@ The package manager is built so that a stolen account, a compromised CI job or a
 
 - `zena-lock.json` pins every dependency to the content hashes (CIDs) of its release and its source archive. Fetching checks each download against them, so every machine builds the same code, whatever a registry serves later.
 - A published version is never replaced. A registry refuses a second release of the same version, and `zena pkg add` and `zena pkg update` refuse a pinned release whose hashes changed unless you pass `--allow-changed`.
-- A new release reaches your project only when you ask for it. Version selection picks the lowest version that every dependent accepts, so nothing moves until you, or a package you depend on, raise a minimum version ([Workspaces & Lockfiles](/docs/workspaces/)).
+- A new release reaches your project only when you ask for it. Version selection picks the lowest version that every dependent accepts, so nothing moves until you, or a package you depend on, raise the lowest version of a range ([Workspaces & Lockfiles](/docs/workspaces/)).
 - Installing a package runs none of its code. A Zena package is source code, compiled into your program when you build it.
 
 ## A release needs its maintainers
