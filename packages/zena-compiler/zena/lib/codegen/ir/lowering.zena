@@ -4270,25 +4270,12 @@ export final class FunctionLowerer {
     if (slot == null) {
       this.#bail('return value in void function');
     }
-    var v = value;
-    let have = this.#valueType(v);
-    if (!this.#cx().refConforms(have, slot)) {
-      // Returns conform like stores (the signature is the binding):
-      // a nullable value whose non-null form conforms re-asserts (the
-      // checker proved the return non-null); a wider ref value (an
-      // erased eqref out of a merge-typed expression) casts down at
-      // the boundary; anything else bails.
-      if (have is ValTypeRefNull && slot is ValTypeRef &&
-          isValSubtype(new ValTypeRef(have.target) as ValType, slot)) {
-        v = this.b.emit(IrOp.ref_as_non_null,
-            new ValTypeRef(have.target) as ValType, v, -1);
-      } else if (isRefValType(have) && isValSubtype(slot, have)) {
-        v = this.b.emit(IrOp.ref_cast, slot, v, this.b.internType(slot));
-      } else {
-        this.#failConformance(v, slot, 'return requires conversion');
-      }
-    }
-    this.b.ret(v);
+    // Returns conform like stores (the signature is the binding): a
+    // nullable value whose non-null form conforms re-asserts (the
+    // checker proved the return non-null), a wider ref value (an erased
+    // eqref out of a merge-typed expression) casts down at the boundary,
+    // and a tuple of subtypes is copied.
+    this.b.ret(this.#conformToSlot(value, slot, 'return requires conversion'));
   }
 
   // -- Statements ------------------------------------------------------
@@ -7387,11 +7374,8 @@ export final class FunctionLowerer {
       let v = this.#lowerExpressionCtx(el, elemVt);
       // Packed i8 elements store i32 values; everything else must
       // conform to the element type.
-      if (!(elemVt is ValTypeI8) &&
-          !isValSubtype(this.#valueType(v), elemVt)) {
-        this.#bail('array literal element type');
-      }
-      args.push(v);
+      args.push(if (elemVt is ValTypeI8) v
+          else this.#conformToSlot(v, elemVt, 'array literal element type'));
     }
     return this.b.emit(IrOp.array_new_fixed, vt,
         this.b.pushArgList(args), this.b.addRef(new IrRefType(arr)));
@@ -7483,7 +7467,12 @@ export final class FunctionLowerer {
       let layout = source.layout ?? sourceLayout;
       return this.#inlineIsTest(source.values, layout, targetType);
     }
-    let value = this.#lowerExpression(isExpr.expression);
+    return this.#isTestOf(this.#lowerExpression(isExpr.expression),
+        sourceType, targetType);
+  }
+
+  /** Whether `value`, of type `sourceType`, is a `targetType`, as an i32. */
+  #isTestOf(value: i32, sourceType: Type, targetType: Type): i32 {
     // An existential holds a record of a shape only the run time knows:
     // `is` asks whether it is exactly a value of the closed target type.
     let sourceBase = unwrapAliases(sourceType);
@@ -7514,6 +7503,12 @@ export final class FunctionLowerer {
         isTupleTag(targetBase.elementTypes[0])) {
       return this.#tupleTagTest(value, targetBase);
     }
+    if (sourceBase is TupleType && targetBase is TupleType) {
+      let elementwise = this.#tupleIsTest(value, sourceBase, targetBase);
+      if (elementwise >= 0) {
+        return elementwise;
+      }
+    }
     let targetVt = typeToValTypeWithSub(this.wasm, targetType, this.func);
     let target = refTargetOf(targetVt);
     if (target == null) {
@@ -7534,6 +7529,38 @@ export final class FunctionLowerer {
     // Streaming emits a plain (non-null) ref.test either way.
     return this.b.emit(IrOp.ref_test, new ValTypeI32(), tested,
         this.b.internType(new ValTypeRef(target) as ValType));
+  }
+
+  /**
+   * `value is target` for a tuple `value` of type `source`, when the two
+   * tuple types have different structs: whether each element is the
+   * target's element type. The structs are unrelated (#483), so a test
+   * of the tuple itself would always be false, while a `(Animal, i32)`
+   * whose element is a `Bird` is a `(Bird, i32)`. -1 when the structs
+   * are the same, or the arities differ.
+   */
+  #tupleIsTest(value: i32, source: TupleType, target: TupleType): i32 {
+    let from = this.#tupleStruct(source);
+    if (from === this.#tupleStruct(target) ||
+        source.elementTypes.length != target.elementTypes.length) {
+      return -1;
+    }
+    let i32Vt = new ValTypeI32() as ValType;
+    var all = this.b.constI32(1, i32Vt);
+    for (var i = 0; i < source.elementTypes.length; i += 1) {
+      let name = i32ToString(i);
+      let index = from.fieldIndexByName(name);
+      if (index < 0) {
+        // A zero-width element has no field to test.
+        continue;
+      }
+      let element = this.b.emit(IrOp.struct_get, from.fields[index].type, value,
+          this.b.addRef(new IrRefField(from, name)));
+      let test = this.#isTestOf(element, source.elementTypes[i],
+          target.elementTypes[i]);
+      all = this.b.binary(IrOp.i32_and, i32Vt, all, test);
+    }
+    return all;
   }
 
   /**
@@ -7810,6 +7837,13 @@ export final class FunctionLowerer {
         return this.b.emit(IrOp.ref_cast, wantVt, inner,
             this.b.internType(wantVt));
       }
+    }
+    // A tuple narrowed by `t is (Bird, i32)` is read at a struct unrelated
+    // to the one in hand (#483): a copy with each element cast down.
+    let copied = this.#cx().copyTuple(value, haveVt, wantVt,
+        `identifier type shift: ${ident.name}`);
+    if (copied >= 0) {
+      return copied;
     }
     return this.#bailValue(`identifier type shift: ${ident.name}`);
   }

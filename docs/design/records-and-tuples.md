@@ -181,6 +181,21 @@ The compiler will maintain a registry of used record shapes.
 
 - `{ x: i32, y: i32 }` -> `(type $Record_i32_i32 (struct (field $x i32) (field $y i32)))`
 
+A tuple is a struct with one immutable field per element, named by its
+position, interned by the elements' wasm types (`WasmModule.getTupleStruct`).
+It declares no supertype. The checker treats tuples as covariant element
+by element, so a `(Bird, i32)` stands for an `(Animal, i32)`, but the two
+are unrelated structs: a wasm struct has one supertype, and `(Bird, Bird)`
+would need three. So the conversion copies (#483): `conformToSlot` and
+`conformToBinding` build the wanted tuple from the source's elements,
+each conformed to its slot (`LoweringContext.copyTuple`), which handles
+nested tuples and a nullable tuple. Tuples have no identity, so the
+copy cannot be observed. The other direction goes element by element as
+well. `t is (Bird, i32)` with `t: (Animal, i32)` tests each element, and
+`t as (Bird, i32)` and a read of a `t` narrowed by `is` copy with each
+element cast down. An element that becomes an interface value needs a
+pack the copy cannot make from wasm types alone (#1132).
+
 ### 4.2 Allocation Sinking (The "Unboxed" Optimization)
 
 The user explicitly requested that we avoid allocations for common patterns like named arguments and multiple return values.
