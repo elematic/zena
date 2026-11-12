@@ -189,11 +189,11 @@ function boxingUse(ctx: CheckerContext, node: Node, result: Type | null): String
     case MatchExpression {discriminant}: if (discriminant === node) null else "this use"
     case IndexExpression {object}: if (object === node) null else "indexing with it"
     case MemberExpression {object}: if (object === node) null else "this use"
-    // Comparing slot by slot is not implemented yet, and boxing both
-    // sides is what the binding rules out.
+    // `==` and `!=` compare slot by slot (#812), boxing neither side.
     case BinaryExpression {operator}:
-      if (operator == "==" || operator == "!=") "comparing it with '=='" else "this use"
-    case IsExpression {}: "testing it with 'is'"
+      if (operator == "==" || operator == "!=") null else "this use"
+    // `is` tests the literals in its slots (#812).
+    case IsExpression {}: null
     case ExpressionStatement {}: statementUse(ctx, parent, result)
     case ReturnStatement {}: returnedUse(result)
     case FunctionExpression {}: returnedUse(result)

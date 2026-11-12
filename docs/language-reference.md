@@ -5210,7 +5210,8 @@ parameter, held by another `let`, and returned as an inline result. A `let`
 initialized from one, directly or through an `if` or `match` arm, is inline
 too. Anything
 that would box it is an error at that use: storing it, passing it for a
-parameter that is not inline, capturing it in a closure, `==`, `is` and `as`.
+parameter that is not inline, capturing it in a closure, and `as`. `==`, `!=`
+and `is` compare and test it slot by slot, without boxing it.
 A boxed value may be passed for an inline parameter, which reads it without
 allocating.
 

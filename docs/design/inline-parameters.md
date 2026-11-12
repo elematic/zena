@@ -70,12 +70,23 @@ An inline binding is only read or passed on. Each use of one is one of:
 Anything else would box the value, and is an error at that use: storing
 it in a field or an array element, passing it for a parameter that is
 not inline, capturing it in a nested function, converting it with `as`,
-returning it from a function whose result is boxed. `==`, `!=` and `is`
-are errors too in this round: each lowers by reading the value whole,
-which would box it, and comparing or testing slot by slot is not
-implemented. A pattern tests an inline union's members without boxing. A boxed value may
-still be passed for an inline parameter, which reads it into slots
-without allocating.
+returning it from a function whose result is boxed. A pattern tests an
+inline union's members without boxing, and so do `==`, `!=` and `is`
+(#812, below). A boxed value may still be passed for an inline
+parameter, which reads it into slots without allocating.
+
+`==` and `!=` on an inline tuple or union compare slot by slot
+(`lowerInlineEq`): both operands are lowered into the inline one's
+layout, and each slot compares with the `==` of the type a member puts
+there, null-safely where a member leaves it empty. A write fills the
+slots its member does not use with defaults, so equal values agree on
+those too, and the discriminant slots are among the pairs compared.
+Reachability notes what each slot's type needs to compare, never the
+inline type. `is` on an inline union tests the members whose literals
+the tested tuples agree with (`#inlineIsTest`), and destructuring a
+binding narrowed by it reads only those members. An inline record's
+binding is a record held as its fields, so `==` on it already compares
+the fields where it is.
 
 The checker enforces this with one walk over each body that declares an
 inline binding (`checkInlineBindingUses`), after the body is checked.

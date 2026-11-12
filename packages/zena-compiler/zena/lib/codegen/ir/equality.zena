@@ -9,7 +9,7 @@
 import { CallExpression } from '../../ast.zena';
 import {
   BooleanType, ClassType, F32Type, F64Type, FieldInfo, I32Type, I64Type, NullType,
-  RecordType, TupleType, Type, UnionType, baseType, instantiateClassType,
+  HoleType, RecordType, TupleType, Type, UnionType, baseType, instantiateClassType,
 } from '../../types.zena';
 import {
   ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeStructRef, isNullableAnyRef, isRefValType, refTargetOf, sameHeapType,
@@ -24,7 +24,7 @@ import {
   getClassKey, getClassMethodKey, getMemberRootClass, presentWordName,
 } from '../codegen-utils.zena';
 import {
-  eraseTypeParameters, getClassTypeParameters, recordWasmFields, sortedOptionalNames,
+  InlineLayout, eraseTypeParameters, getClassTypeParameters, recordWasmFields, sortedOptionalNames,
   substituteTypeParamsInCodegen,
 } from '../type-mapping.zena';
 import {
@@ -906,6 +906,84 @@ function valueFieldEq(cx: LoweringContext, tl: Type, a: i32, tr: Type, b2: i32) 
     bail(cx, 'structural equality field type');
   }
   return lowerErasedEq(cx, a, b2);
+}
+
+/**
+ * `a == b2` for two inline values in the slots of one layout (#812): every
+ * pair of slots equal. A write fills the slots its member does not use
+ * with defaults, so equal values agree on those too, and the discriminant
+ * slots are among the pairs compared. Each slot compares with the `==` of
+ * the type a member puts there, null-safely where a member leaves it
+ * empty.
+ */
+export function lowerInlineEq(cx: LoweringContext, layout: InlineLayout,
+    a: GrowableArray<i32>, b2: GrowableArray<i32>): i32 {
+  let i32vt = new ValTypeI32() as ValType;
+  let falseB = cx.b.newBlock();
+  let mergeB = cx.b.newBlock();
+  let result = cx.b.blockParam(mergeB, i32vt);
+  for (var s = 0; s < layout.slots.length; s += 1) {
+    let t = slotElementType(layout, s);
+    if (t == null) {
+      continue;
+    }
+    let same = nullSafeFieldEq(cx, t, a[s], b2[s]);
+    let next = cx.b.newBlock();
+    cx.b.brIf(same, next, noValues(), falseB, noValues());
+    cx.b.switchTo(next);
+  }
+  cx.b.br(mergeB, oneValue(cx.b.constI32(1, i32vt)));
+  cx.b.switchTo(falseB);
+  cx.b.br(mergeB, oneValue(cx.b.constI32(0, i32vt)));
+  cx.b.switchTo(mergeB);
+  return result;
+}
+
+/**
+ * The type a member puts in slot `s` of `layout`, a literal's base type
+ * for a discriminant, or null for a slot that only `_` fills.
+ */
+function slotElementType(layout: InlineLayout, s: i32): Type | null {
+  for (var m = 0; m < layout.members.length; m += 1) {
+    let row = layout.memberSlots[m];
+    for (var i = 0; i < row.length; i += 1) {
+      if (row[i] != s) {
+        continue;
+      }
+      let el = layout.members[m].elementTypes[i];
+      if (el is HoleType) {
+        continue;
+      }
+      return baseType(el);
+    }
+  }
+  return null;
+}
+
+/** `valueFieldEq`, with both null equal and one null unequal. */
+function nullSafeFieldEq(cx: LoweringContext, t: Type, a: i32, b2: i32): i32 {
+  let i32vt = new ValTypeI32() as ValType;
+  let aNullable = isNullableRef(cx.valueTypeOf(a));
+  let bNullable = isNullableRef(cx.valueTypeOf(b2));
+  if (!aNullable && !bNullable) {
+    return valueFieldEq(cx, t, a, t, b2);
+  }
+  let aNull = if (aNullable) cx.b.emit(IrOp.ref_is_null, i32vt, a, -1) else cx.b.constI32(0, i32vt);
+  let bNull = if (bNullable) cx.b.emit(IrOp.ref_is_null, i32vt, b2, -1) else cx.b.constI32(0, i32vt);
+  let anyNull = cx.b.binary(IrOp.i32_or, i32vt, aNull, bNull);
+  let nullB = cx.b.newBlock();
+  let valueB = cx.b.newBlock();
+  let mergeB = cx.b.newBlock();
+  let result = cx.b.blockParam(mergeB, i32vt);
+  cx.b.brIf(anyNull, nullB, noValues(), valueB, noValues());
+  cx.b.switchTo(nullB);
+  cx.b.br(mergeB, oneValue(cx.b.binary(IrOp.i32_and, i32vt, aNull, bNull)));
+  cx.b.switchTo(valueB);
+  let aValue = if (aNullable) cx.reassertNonNull(a, cx.nonNullOf(cx.valueTypeOf(a))) else a;
+  let bValue = if (bNullable) cx.reassertNonNull(b2, cx.nonNullOf(cx.valueTypeOf(b2))) else b2;
+  cx.b.br(mergeB, oneValue(valueFieldEq(cx, t, aValue, t, bValue)));
+  cx.b.switchTo(mergeB);
+  return result;
 }
 
 /**

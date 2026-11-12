@@ -11,7 +11,7 @@ import {
 } from './context.zena';
 import { SemanticModel, memberKeyOf, accessKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, InlineRecordType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, I32Type, U64Type, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
+  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, HoleType, InlineRecordType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, I32Type, U64Type, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
   isBigIntLiteralRaw, isScopedType, scopedInner, soleNonNullMember, internFunctionType, forInLowersToIndexLoop,
   isIterableRangeClass } from '../../types.zena';
 import {
@@ -28,7 +28,7 @@ import {
   getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass, parseBigIntLiteralLimbs, bigIntLiteralCacheKey,
 } from '../codegen-utils.zena';
 import {
-  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedWellKnownInterface, findImplementedInterfaceType, findExtendedWellKnownInterface, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture, getNonNullableType, boxedRecordWithFields,
+  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedWellKnownInterface, findImplementedInterfaceType, findExtendedWellKnownInterface, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture, getNonNullableType, boxedRecordWithFields, InlineLayout, inlineLayoutOf,
 } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -782,6 +782,29 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (bin.operator != "==" && bin.operator != "!=") { return; }
     let lt = model.getNodeType(bin.left);
     let rt = model.getNodeType(bin.right);
+    // An inline operand compares slot by slot (#812): what each slot's
+    // type needs to compare is noted, the inline type itself never is.
+    let inlineType = if (lt != null && inlineLayoutOf(this.pass.wasm, resolveType(lt)) != null) {
+      resolveType(lt)
+    } else if (rt != null && inlineLayoutOf(this.pass.wasm, resolveType(rt)) != null) {
+      resolveType(rt)
+    } else {
+      null
+    };
+    if (inlineType != null) {
+      let layout = inlineLayoutOf(this.pass.wasm, inlineType) as InlineLayout;
+      for (let member in layout.members) {
+        for (let el in member.elementTypes) {
+          if (el is HoleType) {
+            continue;
+          }
+          let leaf = baseType(el);
+          this.#noteEqualityOperand(leaf, model);
+          this.noteValueEquality(leaf, leaf, model);
+        }
+      }
+      return;
+    }
     if (lt != null) {
       this.#noteEqualityOperand(resolveType(lt), model);
     }

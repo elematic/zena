@@ -24,17 +24,17 @@ import {
   ValTypeI64, ValTypeNullRef, ValTypeRefExtern, ValTypeRefNull, ValTypeV128, isExternValType,
   isRefValType, valTypeEquals,
 } from '../wasm.zena';
-import { eraseTypeParameters, getNonNullableType, typeToValTypeWithSub } from '../type-mapping.zena';
+import { InlineLayout, eraseTypeParameters, getNonNullableType, inlineLayoutOf, typeToValTypeWithSub } from '../type-mapping.zena';
 import { getClassKey, parseFloatLiteral, parseI64OrU64Literal, unwrapAliases } from '../codegen-utils.zena';
 import { IrOp } from './ir.zena';
 import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
-import { lowerClassEquality, lowerErasedEq, lowerValueEq } from './equality.zena';
+import { lowerClassEquality, lowerErasedEq, lowerInlineEq, lowerValueEq } from './equality.zena';
 import { valueEqOperand } from '../value-equality.zena';
 import { lowerNullishCoalesce } from './control-flow.zena';
 import { lowerBigIntLiteral } from './templates.zena';
-import { exactLiteralFields, isTupleTag, lowerExpr, tupleTagTest } from './lowering.zena';
+import { exactLiteralFields, isTupleTag, lowerExpr, lowerIntoSlots, tupleTagTest } from './lowering.zena';
 import { growable } from 'zena:core';
 
 
@@ -413,6 +413,24 @@ export function lowerBinary(cx: LoweringContext, bin: BinaryExpression): i32 {
   // virtually there). String concat and String equality are the
   // dominant users.
   let leftBase = substitutedBaseType(cx, bin.left);
+  // `==` on an inline tuple or union compares slot by slot, both operands
+  // in the inline one's layout, so neither is boxed (#812).
+  if ((bin.operator == "==" || bin.operator == "!=") && leftBase != null) {
+    let rightType = substitutedBaseType(cx, bin.right);
+    let leftLayout = inlineLayoutOf(cx.wasm, leftBase);
+    let layout = leftLayout ??
+        (if (rightType != null) inlineLayoutOf(cx.wasm, rightType) else null);
+    if (layout != null) {
+      let shape = layout;
+      let left = lowerIntoSlots(cx, bin.left, shape, shape.slots);
+      let right = lowerIntoSlots(cx, bin.right, shape, shape.slots);
+      let same = lowerInlineEq(cx, shape, left, right);
+      if (bin.operator == "!=") {
+        return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);
+      }
+      return same;
+    }
+  }
   // `==` on a class is a virtual call whose root default is identity
   // (equality.md, "Virtual equality with an identity default"); null
   // operands compare first.
