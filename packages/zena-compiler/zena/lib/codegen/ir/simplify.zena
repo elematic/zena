@@ -348,6 +348,18 @@ function runSimplifyOn(body: IrBody, scratch: IrScratch): i32 {
         }
       }
     }
+    // A tuple built from every field of another tuple of its struct, in
+    // order, is that tuple (#529): tuples are immutable and their
+    // identity unobservable (docs/design/equality.md), so the copy and
+    // the original are interchangeable. Its counterpart above forwards
+    // a read off an allocation; this forwards an allocation off reads.
+    if (op == IrOp.struct_new) {
+      let source = rebuiltTupleSource(body, inst);
+      if (source >= 0) {
+        replaceWithValue(inst, source);
+        continue;
+      }
+    }
     if (op == IrOp.iface_instance && av >= 0 &&
         body.op(av) == IrOp.iface_pack) {
       let instance = body.a[av];
@@ -472,6 +484,49 @@ export function allocatedStruct(body: IrBody, alloc: i32): WasmStruct | null {
     }
   }
   return null;
+}
+
+/**
+ * The tuple the allocation `alloc` copies: one non-null value of a
+ * tuple struct whose every field, in order, `alloc` is built from. -1
+ * when the fields come from different values, from another struct, or
+ * from only some of the fields.
+ */
+function rebuiltTupleSource(body: IrBody, alloc: i32): i32 {
+  let s = allocatedStruct(body, alloc);
+  if (s == null || !s.isTuple) {
+    return -1;
+  }
+  let argsIdx = body.a[alloc];
+  let argc = body.extra[argsIdx];
+  if (argc == 0 || argc != s.fields.length) {
+    return -1;
+  }
+  var source = -1;
+  for (var i = 0; i < argc; i += 1) {
+    let arg = body.extra[argsIdx + 1 + i];
+    if (arg < 0 || body.op(arg) != IrOp.struct_get) {
+      return -1;
+    }
+    let fieldRef = body.refTable[body.b[arg]];
+    if (!(fieldRef is IrRefField)) {
+      return -1;
+    }
+    if (fieldRef.owner !== s || s.fieldIndexByName(fieldRef.fieldName) != i) {
+      return -1;
+    }
+    let from = body.a[arg];
+    if (from < 0 || (source >= 0 && from != source)) {
+      return -1;
+    }
+    source = from;
+  }
+  // The copy is non-null, so the source must be typed so too.
+  let t = body.resultType(source);
+  if (t is ValTypeRef && t.target === s) {
+    return source;
+  }
+  return -1;
 }
 
 function isPowerOfTwoI32(v: i32): boolean {

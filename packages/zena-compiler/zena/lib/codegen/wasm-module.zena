@@ -247,6 +247,12 @@ function getArrayKey(elementType: ValType, isMutable: boolean) {
 export final class WasmStruct extends WasmType {
   var superStruct: WasmStruct | null = null;
   var classType: ClassType | null = null;
+  /**
+   * A boxed tuple's struct (`WasmModule.getTupleStruct`): immutable
+   * fields named by position, and an identity no program can observe,
+   * so a copy of one is interchangeable with it.
+   */
+  var isTuple: boolean = false;
   name: String | null;
   fields: GrowableArray<WasmField>;
   /** Lazy name→index cache; sized-guarded because RTA appends fields. */
@@ -2085,6 +2091,23 @@ export final class WasmModule {
     if (name == null) {
       this.anonymousStructs.push(st);
     }
+    return st;
+  }
+
+  /**
+   * The struct a boxed tuple with elements of types `elements` lowers
+   * to: one immutable field per element, named by its position, except a
+   * zero-width (`void`) element, which has none.
+   */
+  getTupleStruct(elements: GrowableArray<ValType>): WasmStruct {
+    let fields = new Array<WasmField>(elements.length);
+    for (var i = 0; i < elements.length; i += 1) {
+      if (!(elements[i] is ValTypeVoid)) {
+        fields.push(new WasmField(i32ToString(i), elements[i], false));
+      }
+    }
+    let st = this.getStruct(null, fields);
+    st.isTuple = true;
     return st;
   }
 

@@ -1,0 +1,49 @@
+// @mode: run
+// @result: 0
+// A tuple rebuilt from every field of another tuple of the same type, in
+// order, is that tuple (#529), so the compiler may return the original
+// box. Rebuilds with the fields in another order, from two tuples, or from
+// part of a wider tuple are new tuples. Each must hold the same values
+// either way, including the tuples a `for` over an iterable binds whole.
+
+var kept: (i32, i32) = (0, 0);
+
+function copy(t: (i32, i32)): (i32, i32) {
+  kept = t;
+  return (t[0], t[1]);
+}
+
+function swapped(t: (i32, i32)): (i32, i32) {
+  return (t[1], t[0]);
+}
+
+function mixed(a: (i32, i32), b: (i32, i32)): (i32, i32) {
+  return (a[0], b[1]);
+}
+
+function prefix(t: (i32, i32, i32)): (i32, i32) {
+  return (t[0], t[1]);
+}
+
+function keepAll(pairs: Iterable<(i32, String)>, out: GrowableArray<(i32, String)>): void {
+  for (let p in pairs) {
+    out.push(p);
+  }
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  let c = copy((5, 6));
+  if (c[0] != 5 || c[1] != 6 || kept != c) { failures += 1; }
+  let (s0, s1) = swapped((1, 2));
+  if (s0 != 2 || s1 != 1) { failures += 2; }
+  let (m0, m1) = mixed((1, 2), (3, 4));
+  if (m0 != 1 || m1 != 4) { failures += 4; }
+  let (p0, p1) = prefix((7, 8, 9));
+  if (p0 != 7 || p1 != 8) { failures += 8; }
+  let pairs: Array<(i32, String)> = [(1, 'a'), (2, 'bb')];
+  let out = new GrowableArray<(i32, String)>();
+  keepAll(pairs, out);
+  if (out.length != 2 || out[1][0] != 2 || out[1][1] != 'bb') { failures += 16; }
+  return failures;
+};
