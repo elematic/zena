@@ -275,7 +275,7 @@ disagrees with the file. Below, `<project>` is the settings' `PROJECT`.
 With `gcloud` signed in to the project:
 
 ```sh
-export ZENA_DEPLOY_SETTINGS=~/zena-deploy PDS_ENV=staging
+export ZENA_DEPLOY_SETTINGS=~/zena-team/deploy PDS_ENV=staging
 npm run deploy:setup -w @zena-lang/registry    # once: the resources, the key and the zone
 npm run deploy -w @zena-lang/registry          # builds the image with Cloud Build, and deploys both services
 npm run deploy:domain -w @zena-lang/registry   # once: maps both names, with gcloud's beta component
@@ -357,7 +357,7 @@ packages there:
 3. Deploy, with `gcloud` signed in to the project:
 
    ```sh
-   export ZENA_DEPLOY_SETTINGS=~/zena-deploy PDS_ENV=staging
+   export ZENA_DEPLOY_SETTINGS=~/zena-team/deploy PDS_ENV=staging
    npm run deploy:setup -w @zena-lang/registry   # when a change adds a resource; it changes nothing otherwise
    npm run deploy -w @zena-lang/registry
    npm run deploy:smoke -w @zena-lang/registry
@@ -411,7 +411,7 @@ every account, with staging's own PLC directory, which is in the same
 database:
 
 ```sh
-export ZENA_DEPLOY_SETTINGS=~/zena-deploy PDS_ENV=staging
+export ZENA_DEPLOY_SETTINGS=~/zena-team/deploy PDS_ENV=staging
 gcloud firestore bulk-delete --database=zena-pkg-staging --project <project>
 gcloud storage rm "gs://<project>-zena-pkg-staging/**"
 gcloud dns record-sets list --zone zena-pkg-staging --filter 'type=TXT' --project <project>
