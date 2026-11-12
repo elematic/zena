@@ -103,6 +103,13 @@ export final class Manifest {
    * library").
    */
   var main: String | null = null;
+  /**
+   * The entry file of the library `main` names, relative to the manifest's
+   * directory, for a package that names a `main` and lists no `exports`:
+   * one that does has it among `exportFiles`. A published archive must
+   * hold it.
+   */
+  var mainFile: String | null = null;
 
   new(name: String | null, did: String | null, requirements: OrderedHashMap<String, Requirement>,
       paths: OrderedHashMap<String, String>, workspacePackages: GrowableArray<String>,
@@ -226,7 +233,11 @@ export function readManifest(text: String | null): Manifest {
   manifest.files = filePatterns(root);
   manifest.source = sourceDirectory(root);
   manifest.exportFiles = exportedFiles(root, manifest.source);
-  manifest.main = mainLibrary(root);
+  let main = mainLibrary(root);
+  manifest.main = main;
+  if (main != null && !(root['exports'] is JsonObject)) {
+    manifest.mainFile = underSource(manifest.source, `${main}.zena`);
+  }
   return manifest;
 }
 
