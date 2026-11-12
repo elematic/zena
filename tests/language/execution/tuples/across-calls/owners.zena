@@ -1,0 +1,60 @@
+// @mode: run
+// @result: 0
+// A tuple holding an owner crosses calls as its elements, as a parameter
+// that only reads them and a result that is only destructured, and a
+// `var` holding one that is reassigned stays boxed, so its old value is
+// dropped. Each file adds its number to `released` when it is disposed,
+// so the total shows every owner was released exactly once.
+
+import { Own, Disposable } from 'zena:core';
+
+var released = 0;
+
+resource class File {
+  var #fd: i32;
+  new(fd: i32) : #fd = fd;
+  [Disposable.dispose](this: Own<this>): void {
+    released += this.#fd;
+  }
+  fd(): i32 { return this.#fd; }
+}
+
+function open(fd: i32): Own<File> {
+  return new File(fd);
+}
+
+// The parameter owns the tuple, so the function releases it.
+function readFd(t: (i32, Own<File>)): i32 {
+  return t[0] + t[1].fd();
+}
+
+function opened(n: i32, fd: i32): (i32, Own<File>) {
+  return (n, open(fd));
+}
+
+function destructured(): i32 {
+  let (n, f) = opened(1, 4);
+  return n + f.fd();
+}
+
+function reassigned(): i32 {
+  var t = (1, open(8));
+  for (var i = 0; i < 2; i += 1) {
+    t = (i, open(16 << i));
+  }
+  return t[0];
+}
+
+export let main = (): i32 => {
+  // 3 + 1 and 2 + 2
+  if (readFd((3, open(1))) + readFd((2, open(2))) != 8) {
+    return -1;
+  }
+  if (destructured() != 5) {
+    return -2;
+  }
+  if (reassigned() != 1) {
+    return -3;
+  }
+  return released - (1 + 2 + 4 + 8 + 16 + 32);
+};

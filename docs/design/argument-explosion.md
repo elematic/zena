@@ -2,9 +2,8 @@
 
 **Status: Implemented for top-level functions and constructors, and
 for top-level functions' record results** (`ir/explode.zena`). Boxed
-tuple parameters and results explode too ([Tuples](#tuples)); held
-tuple variables do not yet. The later phases below are not
-implemented.
+tuples explode everywhere records do ([Tuples](#tuples)). The later
+phases below are not implemented.
 
 A function that takes a record parameter also gets a version whose
 signature carries the record's fields as individual parameters, and a
@@ -508,6 +507,20 @@ record result counts. In the standard library, `takeBuffer` in
 `wasi/abi.zena` now returns its pair as two wasm results to the callers
 that destructure it.
 
+A `var` of a boxed tuple type is held as its elements by the record
+rule ([Held vars](#held-vars)), with element reads, `let (...) =`, and
+matching that takes it apart among its uses, and tuple literals among
+its writes. `valueDispatchOf` is the one place that maps a parameter,
+result or variable type to its record dispatch or tuple stand-in.
+
+A tuple holding an owner (`typeCarriesOwner`, ownership.md) explodes as
+a parameter or result: the core's parameter binds to a tuple rebuilt
+from the elements, which the drop at scope exit releases, and a caller
+destructuring a result binds the owner itself. A `var` holding one
+stays boxed, because reassigning it drops the old value, and that drop
+reads the tuple whole. `tuples/across-calls/owners.zena` counts each
+release.
+
 ## Verification
 
 - `zena/test/zir-backend_test.zena`:
@@ -766,7 +779,6 @@ Not yet covered:
 ## Later phases
 
 - The `inline` parameter guarantee above.
-- Held tuple variables, as for records (#373).
 - Weighting call sites, for example by loop depth, for a function with
   few unpacked and many heap callers, whose heap callers each pay the
   forwarder's up-front field reads.

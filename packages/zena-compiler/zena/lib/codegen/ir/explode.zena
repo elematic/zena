@@ -49,7 +49,9 @@ import {
 } from '../../ast.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import { Symbol, SymbolId, noSymbolId } from '../../scope/symbol.zena';
-import { ClassType, FunctionType, RecordType, TupleType, Type, baseType } from '../../types.zena';
+import {
+  ClassType, FunctionType, RecordType, TupleType, Type, baseType, typeCarriesOwner,
+} from '../../types.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType } from '../wasm.zena';
 import { valueEqOperand } from '../value-equality.zena';
@@ -679,8 +681,8 @@ function heldById(list: GrowableArray<HeldVar>): HashMap<SymbolId, HeldVar> {
 
 /**
  * Whether every value written to `hv` has its fields on hand: a record
- * literal, a call whose result explodes, or another held var, of the
- * same record type.
+ * or tuple literal, a call whose result explodes, or another held var,
+ * of the same type.
  */
 function writesHaveFields(hv: HeldVar, byKey: HashMap<String, Candidate>,
     held: HashMap<SymbolId, HeldVar>): boolean {
@@ -695,7 +697,7 @@ function writesHaveFields(hv: HeldVar, byKey: HashMap<String, Candidate>,
 function writeHasFields(w: Expression, hv: HeldVar,
     byKey: HashMap<String, Candidate>,
     held: HashMap<SymbolId, HeldVar>): boolean {
-  if (w is RecordLiteral) {
+  if (w is RecordLiteral || w is TupleLiteral) {
     return true;
   }
   let model = (hv.dc.f as WasmFunction).model;
@@ -743,10 +745,10 @@ function returnsFieldsOf(dc: DemandContext, call: CallExpression,
 }
 
 /**
- * The `var` locals of record types, in reached functions, whose every
- * use only needs the fields: field reads, destructuring, plain
- * assignment, and passing it to a fields-only parameter of the same
- * record type. Their writes are checked against the result verdicts by
+ * The `var` locals of record and boxed tuple types, in reached
+ * functions, whose every use only needs the fields: field and element
+ * reads, destructuring and matching, plain assignment, and passing it to
+ * a fields-only parameter of the same type. Their writes are checked against the result verdicts by
  * the caller.
  */
 function heldVarCandidates(wasm: WasmModule, pass: ReachabilityAnalysis,
@@ -802,15 +804,12 @@ function noteHeldVarCandidate(dc: DemandContext, f: WasmFunction, owner: Node,
   if (bindingType == null) {
     return;
   }
-  let rt = baseType(substituteTypeParamsInFunctionContext(dc.wasm, f, bindingType));
-  if (!(rt is RecordType)) {
+  // Reassigning a var that holds an owner drops the old value, which the
+  // release bookkeeping reads as one tuple (#495).
+  if (typeCarriesOwner(substituteTypeParamsInFunctionContext(dc.wasm, f, bindingType))) {
     return;
   }
-  if (rt.isExistential) {
-    return;
-  }
-  let d = dc.wasm.findRecordDispatch(
-      recordWasmFields(dc.wasm, rt, f), sortedOptionalNames(rt));
+  let d = valueDispatchOf(dc.wasm, f, bindingType);
   if (d == null || d.fields.length == 0) {
     return;
   }
@@ -1109,22 +1108,7 @@ function resultDispatchOfType(wasm: WasmModule, f: WasmFunction,
   if (!(ft is FunctionType)) {
     return null;
   }
-  let rt = baseType(substituteTypeParamsInFunctionContext(wasm, f, ft.returnType));
-  if (rt is TupleType) {
-    let st = asWasmStruct(typeToValTypeWithSub(wasm, rt, f));
-    if (st == null || st.fields.length == 0) {
-      return null;
-    }
-    return wasm.getTupleDispatch(f.model, st);
-  }
-  if (!(rt is RecordType)) {
-    return null;
-  }
-  if (rt.isExistential) {
-    return null;
-  }
-  let d = wasm.findRecordDispatch(
-      recordWasmFields(wasm, rt, f), sortedOptionalNames(rt));
+  let d = valueDispatchOf(wasm, f, ft.returnType);
   if (d == null || d.fields.length == 0) {
     return null;
   }
@@ -1709,11 +1693,7 @@ function classifyParams(dc: DemandContext, f: WasmFunction, owner: Node,
       available, result, returns);
 }
 
-/**
- * The dispatch of a parameter whose declared type is a record type, or
- * the stand-in dispatch of one whose type is a boxed tuple
- * (`RecordDispatchInfo.isTuple`).
- */
+/** The dispatch of a parameter of a record or boxed tuple type. */
 function recordDispatchOfParam(wasm: WasmModule, f: WasmFunction,
     name: Identifier): RecordDispatchInfo | null {
   let sym = f.model.resolveDeclaration(name);
@@ -1724,7 +1704,17 @@ function recordDispatchOfParam(wasm: WasmModule, f: WasmFunction,
   if (declared == null) {
     return null;
   }
-  let rt = baseType(substituteTypeParamsInFunctionContext(wasm, f, declared));
+  return valueDispatchOf(wasm, f, declared);
+}
+
+/**
+ * The dispatch a value of type `t` in `f` can be taken apart through: a
+ * closed record type's, or a boxed tuple's stand-in
+ * (`RecordDispatchInfo.isTuple`). Null for any other type.
+ */
+function valueDispatchOf(wasm: WasmModule, f: WasmFunction,
+    t: Type): RecordDispatchInfo | null {
+  let rt = baseType(substituteTypeParamsInFunctionContext(wasm, f, t));
   if (rt is TupleType) {
     let st = asWasmStruct(typeToValTypeWithSub(wasm, rt, f));
     return if (st != null) wasm.getTupleDispatch(f.model, st) else null;
