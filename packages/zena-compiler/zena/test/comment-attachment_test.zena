@@ -10,7 +10,7 @@ import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { parse } from '../lib/parser.zena';
 import {
-  Comment, VariableDeclaration, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, BlockStatement, FunctionExpression, FieldDefinition, MethodDefinition, MethodSignature, BinaryExpression, CallExpression, ArrayLiteral, NumberLiteral,
+  Comment, VariableDeclaration, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, BlockStatement, FunctionExpression, FieldDefinition, MethodDefinition, MethodSignature, RecordTypeAnnotation, SealedVariant, CaseClassParam, BinaryExpression, CallExpression, ArrayLiteral, NumberLiteral,
 } from '../lib/ast.zena';
 import { attachComments } from '../lib/comment-attachment.zena';
 
@@ -181,6 +181,59 @@ export let tests = suite('comment-attachment', () => {
       let comments = leading as GrowableArray<Comment>;
       equal(comments.length, 1);
       equal(comments[0].value, '* Render to screen ');
+    });
+
+    test('doc comments on record type fields stay on fields', (t) => {
+      let source = "/** Config type. */\ntype Config = {\n  /** Host name. */\n  host: String,\n  /** Port number. */\n  port?: i32\n};\n\n/** Next declaration. */\nlet next = 1;";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let alias = mod.body[0] as TypeAliasDeclaration;
+      let nextDecl = mod.body[1] as VariableDeclaration;
+      let rec = alias.typeAnnotation as RecordTypeAnnotation;
+      let hostProp = rec.properties[0];
+      let portProp = rec.properties[1];
+
+      let aliasLeading = map.getLeading(alias);
+      isTrue(aliasLeading != null);
+      equal((aliasLeading as GrowableArray<Comment>)[0].value, '* Config type. ');
+
+      let hostLeading = map.getLeading(hostProp);
+      isTrue(hostLeading != null);
+      equal((hostLeading as GrowableArray<Comment>)[0].value, '* Host name. ');
+
+      let portLeading = map.getLeading(portProp);
+      isTrue(portLeading != null);
+      equal((portLeading as GrowableArray<Comment>)[0].value, '* Port number. ');
+
+      let nextLeading = map.getLeading(nextDecl);
+      isTrue(nextLeading != null);
+      equal((nextLeading as GrowableArray<Comment>).length, 1);
+      equal((nextLeading as GrowableArray<Comment>)[0].value, '* Next declaration. ');
+    });
+
+    test('doc comments on sealed variants and case class params', (t) => {
+      let source = "sealed class Value {\n  /** Boolean flag. */\n  case Flag(/** Flag value. */ value: boolean)\n  /** Text value. */\n  case Text(text: String)\n}";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let cls = mod.body[0] as ClassDeclaration;
+      let variants = cls.sealedVariants as GrowableArray<SealedVariant>;
+      let flagVariant = variants[0];
+      let textVariant = variants[1];
+      let flagParam = (flagVariant.params as GrowableArray<CaseClassParam>)[0];
+
+      let flagLeading = map.getLeading(flagVariant);
+      isTrue(flagLeading != null);
+      equal((flagLeading as GrowableArray<Comment>)[0].value, '* Boolean flag. ');
+
+      let paramLeading = map.getLeading(flagParam);
+      isTrue(paramLeading != null);
+      equal((paramLeading as GrowableArray<Comment>)[0].value, '* Flag value. ');
+
+      let textLeading = map.getLeading(textVariant);
+      isTrue(textLeading != null);
+      equal((textLeading as GrowableArray<Comment>)[0].value, '* Text value. ');
     });
   });
 

@@ -149,10 +149,38 @@ let tests = suite('extract', () => {
   });
 
   test('renders a type alias', (t) => {
-    let module = extract('export type Point = {x: f64, y: f64};\n');
+    let module = extract('export type Point = {x: f64, y: f64};\nexport declare type Handle;\n');
     let point = declaration(module, 'Point');
     equal(point.kind == DeclarationKind.TypeAlias, true);
     equal(point.signature, 'type Point = {x: f64, y: f64}');
+    equal(point.members.length, 2);
+    equal(member(point, 'x').kind == MemberKind.Field, true);
+    equal(member(point, 'x').signature, 'x: f64');
+
+    let handle = declaration(module, 'Handle');
+    equal(handle.kind == DeclarationKind.TypeAlias, true);
+    equal(handle.members.length, 0);
+  });
+
+  test('extracts doc comments on record type fields, sealed variants, and case params', (t) => {
+    let module = extract(
+        '/** Options. */\nexport type Options = {\n  /** Output path. */\n  out?: String,\n  /** Retry count. */\n  retries: i32\n};\n\n/** Parsed value. */\nexport sealed class Value {\n  /** Boolean flag. */\n  case Flag(\n    /** Flag state. */\n    on: boolean\n  )\n  /** Text value. */\n  case Text(text: String)\n}\n\n/** Pair of values. */\nexport class Pair(\n  /** First item. */\n  first: i32\n)\n');
+    let opts = declaration(module, 'Options');
+    equal(opts.doc?.summary, 'Options.');
+    equal(opts.members.length, 2);
+    equal(member(opts, 'out').signature, 'out?: String');
+    equal(member(opts, 'out').doc?.summary, 'Output path.');
+    equal(member(opts, 'retries').signature, 'retries: i32');
+    equal(member(opts, 'retries').doc?.summary, 'Retry count.');
+
+    let val = declaration(module, 'Value');
+    equal(val.doc?.summary, 'Parsed value.');
+    equal(member(val, 'Flag').doc?.summary, 'Boolean flag.');
+    equal(member(val, 'Text').doc?.summary, 'Text value.');
+
+    let pair = declaration(module, 'Pair');
+    equal(pair.doc?.summary, 'Pair of values.');
+    equal(member(pair, 'first').doc?.summary, 'First item.');
   });
 
   test('documents an arrow binding as a function', (t) => {

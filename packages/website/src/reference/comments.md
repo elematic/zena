@@ -79,7 +79,9 @@ A doc comment attaches to any declaration it immediately precedes, including:
 - Top-level declarations (`function`, `class`, `interface`, `mixin`, `enum`, `type`)
 - Class and interface members (methods, fields, accessors, constructors, operators)
 - Enum members
+- Sealed class variants
 - Case class parameters
+- Record type fields
 
 Line comments (`//` or `///`) are never treated as doc comments. If a declaration
 is preceded only by line comments, it is considered undocumented by tooling.

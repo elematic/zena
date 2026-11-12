@@ -12,7 +12,8 @@
  */
 
 import {
-  Module, Node, Statement, TypeAnnotation, Parameter, TypeParameter,
+  Module, Node, Statement, TypeAnnotation, RecordTypeAnnotation,
+  PropertySignature, Parameter, TypeParameter,
   Identifier, IdentifierPattern, SymbolPropertyName,
   ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration,
   TypeAliasDeclaration, VariableDeclaration, FunctionDeclaration,
@@ -405,6 +406,44 @@ function typeAliasDeclaration(
   out.type = walk.ref(decl.typeAnnotation);
   out.doc = walk.docFor(decl);
   out.loc = walk.locFor(decl.loc);
+  if (target != null) {
+    if (let RecordTypeAnnotation {properties} = target) {
+      let members = new Array<DocMember>(properties.length);
+      for (let prop in properties) {
+        let member = recordPropertyMember(walk, out, prop);
+        if (member != null) {
+          members.push(member);
+        }
+      }
+      out.members = members;
+    }
+  }
+  return out;
+}
+
+/** A property of a record type alias. */
+function recordPropertyMember(
+  walk: Walk,
+  owner: DocDeclaration,
+  prop: PropertySignature
+): DocMember | null {
+  let name = prop.name.name;
+  if (!walk.visible(name)) {
+    return null;
+  }
+  let type = walk.refOf(prop.typeAnnotation);
+  let sb = new StringBuilder(48);
+  sb.append(name);
+  if (prop.optional) {
+    sb.append('?');
+  }
+  sb.append(': ');
+  sb.append(type.text);
+
+  let out = startMember(walk, owner, MemberKind.Field, name, sb.toString());
+  out.type = type;
+  out.doc = walk.docFor(prop);
+  out.loc = walk.locFor(prop.loc);
   return out;
 }
 
