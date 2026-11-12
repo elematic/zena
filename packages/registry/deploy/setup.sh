@@ -6,7 +6,7 @@
 # replaces a key once made: the rotation key, or the key that encrypts
 # accounts' signing keys.
 #
-#   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 npm run deploy:setup -w @zena-lang/registry
+#   PDS_ENV=staging npm run deploy:setup -w @zena-lang/registry
 #
 # Then `npm run deploy` deploys the services, `npm run deploy:domain` maps
 # their names, once, and `npm run deploy:alerts` watches them.
@@ -224,7 +224,7 @@ NAMESERVERS="$(gcloud dns managed-zones describe "$ZONE" --project "$PROJECT" \
   --format 'value(nameServers.list())' | tr ';' ',')"
 # zena-lang.dev's zone delegates the domain to this one: NS records for
 # the domain, naming this zone's nameservers. When that zone is a Cloud
-# DNS zone, in this project or ZENA_DNS_PARENT_PROJECT, they are written
+# DNS zone, in this project or DNS_PARENT_PROJECT, they are written
 # here. When zena-lang.dev's DNS is elsewhere, such as at the registrar,
 # they are printed for you to add there.
 find_parent_zone
@@ -232,8 +232,8 @@ DELEGATE_BY_HAND=
 if [ -z "$PARENT_ZONE" ]; then
   DELEGATE_BY_HAND=1
   echo "    zena-lang.dev. is not a Cloud DNS zone in $PARENT_PROJECT, so delegate ${DOMAIN} where"
-  echo "    zena-lang.dev's DNS is kept, with these NS records (or set ZENA_DNS_PARENT_PROJECT"
-  echo "    and ZENA_DNS_PARENT_ZONE, and run this again):"
+  echo "    zena-lang.dev's DNS is kept, with these NS records (or set DNS_PARENT_PROJECT"
+  echo "    and DNS_PARENT_ZONE in $SETTINGS, and run this again):"
   for ns in ${NAMESERVERS//,/ }; do
     echo "      ${DOMAIN}.  NS  ${ns}"
   done

@@ -9,7 +9,7 @@
 # what is missing; to change a check or an alert, delete it in the console
 # and run this again.
 #
-#   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 ZENA_ALERT_EMAIL=you@example.com \
+#   PDS_ENV=staging ZENA_ALERT_EMAIL=you@example.com \
 #     npm run deploy:alerts -w @zena-lang/registry
 #
 # Needs gcloud's beta component, for the email channel.

@@ -2,8 +2,9 @@
  * The README's configuration reference names every variable that the App
  * View, padstone, the image and the deploy scripts read, found in their
  * sources: the App View's quoted `APP_VIEW_*` names, `PDS_VARIABLES`,
- * Google Cloud's `getEnv` calls, the image's `ENV` lines, and the
- * `${ZENA_*}` and `PDS_ENV` of the deploy scripts.
+ * Google Cloud's `getEnv` calls, the image's `ENV` lines, the
+ * `${ZENA_*}` and `PDS_ENV` of the deploy scripts, and the settings the
+ * environments' files assign.
  */
 
 import {suite, test} from 'zena:test';
@@ -48,6 +49,11 @@ export let tests = suite('registry/configuration', () => {
       }
     }
     namesAfter(await readFile('packages/registry/deploy/Dockerfile'), '\nENV ', '', names);
+    for (let entry in await listDir('packages/registry/deploy/environments')) {
+      if (entry.name.endsWith('.sh')) {
+        namesAfter(await readFile(`packages/registry/deploy/environments/${entry.name}`), '\n', '', names);
+      }
+    }
     for (let entry in await listDir('packages/registry/deploy')) {
       if (entry.name.endsWith('.sh')) {
         let script = await readFile(`packages/registry/deploy/${entry.name}`);
@@ -58,7 +64,8 @@ export let tests = suite('registry/configuration', () => {
       }
     }
     // The scan found what it looks for.
-    for (let expected in ['APP_VIEW_DOMAIN', 'PDS_STORAGE', 'GOOGLE_OAUTH_ACCESS_TOKEN', 'HOST', 'ZENA_GCP_PROJECT', 'PDS_ENV']) {
+    for (let expected in ['APP_VIEW_DOMAIN', 'PDS_STORAGE', 'GOOGLE_OAUTH_ACCESS_TOKEN', 'HOST', 'ZENA_ALERT_EMAIL', 'PDS_ENV',
+        'OFFLINE_ROTATION_KEY']) {
       isTrue(names.has(expected), expected);
     }
     let readme = await readFile('packages/registry/README.md');

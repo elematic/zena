@@ -2,8 +2,12 @@
 # The names of one environment of the App View, for the deploy scripts
 # beside this file to source. PDS_ENV picks it: staging (the default, so a
 # command run without thinking about it never touches production) or
-# production. ZENA_GCP_PROJECT is the project; ZENA_GCP_REGION and
-# ZENA_GCP_REPO default as the website's scripts do.
+# production. Its settings are checked in, in environments/<PDS_ENV>.sh:
+# the project, the domains, the PLC mode, where the rotation key is, the
+# offline key's did:key and the admins. Nothing is read from the shell, so
+# every operator's deploy is the same, and changing production is a pull
+# request. A ZENA_* variable that the settings once came from is refused
+# when it disagrees with the file, rather than ignored.
 #
 #   staging      the App View, its site and handles at
 #                pkg-staging.zena-lang.dev, with its own PLC directory at
@@ -23,48 +27,54 @@
 # staging's are production's with -staging after them.
 #
 # The App View's online rotation key (packages/pds/src/signer.zena) is in
-# Cloud KMS for production, which signs with it and never lets it out.
-# Staging keeps the secret its accounts were made with, since an App View
-# whose key changed could no longer sign their operations; ZENA_ROTATION_KMS=1
-# moves it to Cloud KMS too, for a staging whose data was reset. The App
-# View's signing key, which its tokens to padstone are checked with, is in
-# Cloud KMS in both: replacing it only changes the App View's DID document. The
-# operator's offline rotation key, ranked above the online one, is
-# ZENA_OFFLINE_ROTATION_KEY: its did:key, from
-# `zena-cli run packages/registry/src/main.zena -- generate-key`, whose private
-# key is kept offline. Production needs it. ZENA_ADMIN_DIDS lists the DIDs
-# of the App View's admins, who see everything it holds in the web app,
-# separated by spaces or commas.
+# Cloud KMS when ROTATION_KMS is 1, which signs with it and never lets it
+# out, and otherwise a Secret Manager secret. The App View's signing key,
+# which its tokens to padstone are checked with, is in Cloud KMS in both:
+# replacing it only changes the App View's DID document. The operator's
+# offline rotation key, ranked above the online one, is
+# OFFLINE_ROTATION_KEY: its did:key, from
+# `zena-cli run packages/registry/src/main.zena -- generate-key`, whose
+# private key is kept offline. Production needs it.
 
-PROJECT="${ZENA_GCP_PROJECT:?set ZENA_GCP_PROJECT to the project id, such as meta-garage-420114}"
-REGION="${ZENA_GCP_REGION:-us-central1}"
-REPO="${ZENA_GCP_REPO:-cloud-run-images}"
 PDS_ENV="${PDS_ENV:-staging}"
-
 case "$PDS_ENV" in
-  staging)
-    SUFFIX=-staging
-    DOMAIN=pkg-staging.zena-lang.dev
-    PDS_DOMAIN=padstone-staging.zena-lang.dev
-    PLC_MODE=staging
-    ROTATION_KMS="${ZENA_ROTATION_KMS:-0}"
-    WEEKLY_BACKUPS=0
-    SOFT_DELETE=7d
-    ;;
-  production)
-    SUFFIX=
-    DOMAIN=pkg.zena-lang.dev
-    PDS_DOMAIN=padstone.zena-lang.dev
-    PLC_MODE=public
-    ROTATION_KMS=1
-    WEEKLY_BACKUPS=1
-    SOFT_DELETE=30d
-    ;;
+  staging) SUFFIX=-staging ;;
+  production) SUFFIX= ;;
   *)
     echo "PDS_ENV is staging or production, not $PDS_ENV" >&2
     exit 2
     ;;
 esac
+SETTINGS="$(dirname "${BASH_SOURCE[0]}")/environments/${PDS_ENV}.sh"
+# shellcheck source=environments/staging.sh
+source "$SETTINGS"
+
+# Every setting the scripts need, which an empty one would change silently.
+for name in PROJECT REGION REPO FIRESTORE_LOCATION KMS_LOCATION DOMAIN PDS_DOMAIN PLC_MODE ROTATION_KMS \
+    ADMIN_DIDS WEEKLY_BACKUPS SOFT_DELETE SMOKE_SCOPE; do
+  if [ -z "${!name:-}" ]; then
+    echo "$SETTINGS sets no $name" >&2
+    exit 2
+  fi
+done
+if [ "$PDS_ENV" = production ] && { [ -z "$OFFLINE_ROTATION_KEY" ] || [ "$ROTATION_KMS" != 1 ] ||
+    [ "$PLC_MODE" != public ]; }; then
+  echo "$SETTINGS: production needs OFFLINE_ROTATION_KEY, ROTATION_KMS=1 and PLC_MODE=public" >&2
+  exit 2
+fi
+# The variables these settings were once read from: one still set in the
+# shell is a mistake when it says something else.
+for pair in ZENA_GCP_PROJECT=PROJECT ZENA_GCP_REGION=REGION ZENA_GCP_REPO=REPO \
+    ZENA_FIRESTORE_LOCATION=FIRESTORE_LOCATION ZENA_KMS_LOCATION=KMS_LOCATION ZENA_ROTATION_KMS=ROTATION_KMS \
+    ZENA_OFFLINE_ROTATION_KEY=OFFLINE_ROTATION_KEY ZENA_ADMIN_DIDS=ADMIN_DIDS ZENA_SMOKE_SCOPE=SMOKE_SCOPE \
+    ZENA_DNS_PARENT_PROJECT=DNS_PARENT_PROJECT ZENA_DNS_PARENT_ZONE=DNS_PARENT_ZONE; do
+  old="${pair%%=*}"
+  setting="${pair#*=}"
+  if [ -n "${!old:-}" ] && [ "${!old}" != "${!setting}" ]; then
+    echo "$old is ${!old}, but $SETTINGS sets $setting to ${!setting:-nothing}: unset $old, or change the file" >&2
+    exit 2
+  fi
+done
 
 # The image is the same for both environments.
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${REPO}/zena-pkg"
@@ -74,7 +84,6 @@ APP_VIEW_SERVICE="zena-pkg${SUFFIX}"
 PDS_SERVICE="padstone${SUFFIX}"
 # Firestore database IDs are 4 to 63 lowercase letters, digits and hyphens.
 DATABASE="zena-pkg${SUFFIX}"
-FIRESTORE_LOCATION="${ZENA_FIRESTORE_LOCATION:-$REGION}"
 # Bucket names are global, so the project's id goes in front.
 BUCKET="${PROJECT}-zena-pkg${SUFFIX}"
 SERVICE_ACCOUNT="zena-pkg${SUFFIX}"
@@ -85,12 +94,10 @@ SECRET="zena-pkg${SUFFIX}-rotation-key"
 JWT_SECRET="zena-pkg${SUFFIX}-jwt-secret"
 # The smoke test's (smoke.sh): the scope of its canary package, and the
 # secret that keeps the token of the automation account it publishes as.
-SMOKE_SCOPE="${ZENA_SMOKE_SCOPE:-zena-lang}"
 SMOKE_SECRET="zena-pkg${SUFFIX}-smoke-token"
 # The online rotation key in Cloud KMS, when ROTATION_KMS is 1: an
 # asymmetric secp256k1 key, at HSM protection, the only level Cloud KMS
 # offers secp256k1 at.
-KMS_LOCATION="${ZENA_KMS_LOCATION:-$REGION}"
 KMS_KEYRING="zena-pkg${SUFFIX}"
 KMS_KEY=rotation
 KMS_KEY_VERSION="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_KEY}/cryptoKeyVersions/1"
@@ -102,25 +109,23 @@ SIGNING_KMS_KEY_VERSION="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/
 # environments.
 SIGNING_KEYS_KMS_KEY=signing-keys
 SIGNING_KEYS_KMS_NAME="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${SIGNING_KEYS_KMS_KEY}"
-OFFLINE_ROTATION_KEY="${ZENA_OFFLINE_ROTATION_KEY:-}"
-ADMIN_DIDS="${ZENA_ADMIN_DIDS:-}"
 # The environment's own zone, delegated from zena-lang.dev's, so the
 # service account can write handle records there and nowhere else. setup.sh
 # writes the delegation when zena-lang.dev is a Cloud DNS zone, in the
-# project or ZENA_DNS_PARENT_PROJECT (ZENA_DNS_PARENT_ZONE names it), and
-# otherwise prints the NS records to add where its DNS is kept.
+# project or DNS_PARENT_PROJECT (DNS_PARENT_ZONE names it), and otherwise
+# prints the NS records to add where its DNS is kept.
 ZONE="zena-pkg${SUFFIX}"
 # zena-lang.dev's own zone, which holds that delegation and the PDS's name,
 # PDS_DOMAIN, which is beside DOMAIN rather than under it.
-# find_parent_zone sets PARENT_ZONE to it: ZENA_DNS_PARENT_ZONE, or the
+# find_parent_zone sets PARENT_ZONE to it: DNS_PARENT_ZONE, or the
 # zone in PARENT_PROJECT whose DNS name is exactly zena-lang.dev., rather
 # than a --filter, whose matching of a dotted name depends on gcloud's
 # filter rules. It is empty when zena-lang.dev's DNS is kept elsewhere,
 # such as at the registrar. A function, so that sourcing this file runs no
 # gcloud.
-PARENT_PROJECT="${ZENA_DNS_PARENT_PROJECT:-$PROJECT}"
+PARENT_PROJECT="${DNS_PARENT_PROJECT:-$PROJECT}"
 find_parent_zone() {
-  PARENT_ZONE="${ZENA_DNS_PARENT_ZONE:-$(gcloud dns managed-zones list --project "$PARENT_PROJECT" \
+  PARENT_ZONE="${DNS_PARENT_ZONE:-$(gcloud dns managed-zones list --project "$PARENT_PROJECT" \
     --format 'value(name,dnsName)' | awk '$2 == "zena-lang.dev." { print $1; exit }')}"
 }
 # Backups (setup.sh): point-in-time recovery of the database's last 7
@@ -159,10 +164,8 @@ if [ "$ROTATION_KMS" = 1 ]; then
 else
   APP_VIEW_SECRETS+=("APP_VIEW_ROTATION_KEY=${SECRET}")
 fi
-if [ -n "$ADMIN_DIDS" ]; then
-  # Spaces, since gcloud's --set-env-vars splits on commas.
-  APP_VIEW_VARS+=("APP_VIEW_ADMIN_DIDS=${ADMIN_DIDS//,/ }")
-fi
+# Spaces, since gcloud's --set-env-vars splits on commas.
+APP_VIEW_VARS+=("APP_VIEW_ADMIN_DIDS=${ADMIN_DIDS//,/ }")
 if [ -n "$OFFLINE_ROTATION_KEY" ]; then
   APP_VIEW_VARS+=("APP_VIEW_OFFLINE_ROTATION_KEY=${OFFLINE_ROTATION_KEY}")
 fi

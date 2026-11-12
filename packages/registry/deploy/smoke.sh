@@ -6,15 +6,15 @@
 # withdraws a version of it as an automation account
 # (packages/registry/dev/smoke.zena). It exits 1 if any check fails.
 #
-#   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 npm run deploy:smoke -w @zena-lang/registry
+#   PDS_ENV=staging npm run deploy:smoke -w @zena-lang/registry
 #
 # Once per environment, `smoke.sh setup` makes what it uses, as you, signed
-# in with `zena pkg login` as an owner of the scope SMOKE_SCOPE (`zena-lang`
-# unless ZENA_SMOKE_SCOPE is set): the canary package `smoke` at 1.0.0,
+# in with `zena pkg login` as an owner of the scope SMOKE_SCOPE (set in
+# environments/<PDS_ENV>.sh): the canary package `smoke` at 1.0.0,
 # and the automation account `smoke-ci`, one of its publishers, whose token
 # it keeps in Secret Manager as SMOKE_SECRET.
 #
-#   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 packages/registry/deploy/smoke.sh setup
+#   PDS_ENV=staging packages/registry/deploy/smoke.sh setup
 #
 # A withdrawn version's archive stays on padstone, unreferenced, a few
 # hundred bytes a run, until unreferenced blobs are cleaned up

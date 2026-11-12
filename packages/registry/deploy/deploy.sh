@@ -5,7 +5,7 @@
 # them: padstone, which runs pds.wasm, and then the App View, which keeps
 # its accounts on it. Then checks that each answers.
 #
-#   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 npm run deploy -w @zena-lang/registry
+#   PDS_ENV=staging npm run deploy -w @zena-lang/registry
 #
 # Every prompt is answered by a flag, and --quiet turns off the rest, since
 # this runs under wireit.
@@ -21,12 +21,6 @@ PDS_URL="https://${PDS_DOMAIN}"
 APP_VIEW_DID="did:web:${DOMAIN}"
 # The repository's own zena-run, beside the image's Linux one in deploy/.
 ZENA_RUN=../../../target/release/zena-run
-
-if [ -z "$OFFLINE_ROTATION_KEY" ] && [ "$PDS_ENV" = production ]; then
-  echo "production needs the operator's offline rotation key: set ZENA_OFFLINE_ROTATION_KEY to its did:key," >&2
-  echo "from zena-cli run packages/registry/src/main.zena -- generate-key on a machine you trust" >&2
-  exit 2
-fi
 
 # The did:key of the App View's online rotation key, which signs the
 # genesis operations of the accounts padstone creates for it, read by the
