@@ -52,6 +52,8 @@ final class Fixture {
   logs = new HashMap<String, Array<PlcOperation>>();
   /** The signing key each DID's document names now. */
   keys = new HashMap<String, PublicKey>();
+  /** The DIDs the PDS asked for a log or a key of, in order. */
+  asked = new GrowableArray<String>();
   var #jti = 0;
 
   new() : pds = new Pds(new MemoryStorage()), app = new App() {
@@ -59,16 +61,19 @@ final class Fixture {
     this.keys[OTHER_DID] = this.otherSigning.publicKey();
     let logs = this.logs;
     let keys = this.keys;
+    let asked = this.asked;
     this.pds.managed = new ManagedAccounts(PDS_DID, PDS_URL,
         [new TrustedAppView(APP_VIEW_DID, [this.appViewRotation.publicKey()]),
          new TrustedAppView(OTHER_DID, [this.otherRotation.publicKey()])],
         async (did: String): Future<Array<PlcOperation>> => {
+          asked.push(did);
           if (let (true, log) = logs.get(did)) {
             return log;
           }
           return [];
         },
         async (did: String, fresh: boolean): Future<PublicKey | null> => {
+          asked.push(did);
           if (let (true, found) = keys.get(did)) {
             return found;
           }
@@ -186,6 +191,32 @@ export let tests = suite('pds/managed', () => {
         'InvalidToken');
     // It reads its input, as its lexicon gives it one.
     equal(errorOf(await fixture.call(method, 'POST', fixture.appViewToken(method), 'a key, please')), 'InvalidRequest');
+  });
+
+  test('refuses a token from an issuer it does not trust before reading anything about it', async (ctx) => {
+    let fixture = new Fixture();
+    let did = await fixture.created();
+    let minted = fixture.mint(fixture.appViewRotation, await fixture.reserve());
+    // Each token would verify, and the issuer could make its key lookup
+    // as slow or as large as it liked, so none is looked up.
+    let stranger = key(41);
+    fixture.keys['did:web:stranger.test'] = stranger.publicKey();
+    let asked = fixture.asked.length;
+    let reserve = 'com.atproto.server.reserveSigningKey';
+    equal(errorOf(await fixture.call(reserve, 'POST', fixture.token('did:web:stranger.test', stranger, reserve), '{}')),
+        'Forbidden');
+    equal(errorOf(await fixture.create(minted, fixture.token('did:web:stranger.test', stranger,
+        'com.atproto.server.createAccount'))), 'Forbidden');
+    // A trusted App View writes only to the accounts it manages.
+    let put = 'com.atproto.repo.putRecord';
+    equal(errorOf(await fixture.call(put, 'POST', fixture.token(OTHER_DID, fixture.otherSigning, put),
+        `{"repo": "${did}", "collection": "${PROFILE}", "rkey": "self", "record": {"$type": "${PROFILE}", "name": "router"}}`)),
+        'Forbidden');
+    var looked = '';
+    for (var i = asked; i < fixture.asked.length; i += 1) {
+      looked = `${looked} ${fixture.asked[i]}`;
+    }
+    equal(looked, '', 'looked up');
   });
 
   test('refuses an account no trusted App View made, or with a key it did not reserve', async (ctx) => {

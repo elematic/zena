@@ -126,6 +126,21 @@ function withSignature(signingInput: String, signature: FixedArray<u8>): String 
 export type SigningKeyLookup = (did: String, fresh: boolean) => Future<PublicKey | null>;
 
 /**
+ * The issuer `token` names, read without checking anything else about it.
+ * A service that takes tokens only from issuers it knows refuses the others
+ * with this before `verifyServiceAuth` looks up their keys, which an issuer
+ * serves from wherever its DID says. Throws `ServiceAuthError` for a token
+ * whose payload cannot be read.
+ */
+export function serviceAuthIssuer(token: String): String {
+  let parts = token.split('.');
+  if (parts.length != 3) {
+    throw new ServiceAuthError('not a JWT: it does not have three parts');
+  }
+  return readClaims(decodeObject(parts[1], 'payload')).iss;
+}
+
+/**
  * Checks `token` and returns its claims. Throws `ServiceAuthError` unless:
  *
  * - its header names `ES256` or `ES256K`, and `typ`, if it has one, is `JWT`;
