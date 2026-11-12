@@ -15,7 +15,7 @@ import {Cid} from 'atproto/cid';
 import {SYNC_GET_BLOB, SYNC_GET_LATEST_COMMIT, SYNC_GET_RECORD, SYNC_GET_REPO, xrpcPath} from 'atproto/methods';
 import {Pds} from '../pds.zena';
 import {AccountStore} from '../storage.zena';
-import {accountFor, fail, json, parseCid, required} from './common.zena';
+import {accountFor, fail, json, parseCid, required, validRecordPath} from './common.zena';
 
 /** How much of a blob `sync.getBlob` reads at a time. */
 let BLOB_CHUNK = (1024 * 1024) as i64;
@@ -47,7 +47,7 @@ export function syncRoutes(router: Router, pds: Pds): void {
 
   router.get(xrpcPath(SYNC_GET_RECORD), async (req, res, next, params) => {
     let given = required(req, res, ['did', 'collection', 'rkey']);
-    if (given == null) {
+    if (given == null || !validRecordPath(res, given[1], given[2])) {
       return;
     }
     let account = await accountFor(pds, given[0], res);

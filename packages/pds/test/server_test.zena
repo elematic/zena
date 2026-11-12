@@ -235,6 +235,27 @@ export let tests = suite('pds/server', () => {
     equal(((oldest['records'] as JsonArray)[0] as JsonObject)['uri'] as String, `at://${DID}/${POST}/post1`);
   });
 
+  test('refuses a repo, collection or record key that is not one before reading anything', async (ctx) => {
+    let app = await aliceApp();
+    // Each part names where storage reads from, so a `/` or `..` in one
+    // would read somewhere else.
+    let reads = [
+      `/xrpc/com.atproto.repo.getRecord?repo=${DID}&collection=com.example.post/x&rkey=post2`,
+      `/xrpc/com.atproto.repo.getRecord?repo=${DID}&collection=${POST}&rkey=..`,
+      `/xrpc/com.atproto.repo.getRecord?repo=a/b&collection=${POST}&rkey=post2`,
+      `/xrpc/com.atproto.repo.listRecords?repo=${DID}&collection=..`,
+      `/xrpc/com.atproto.repo.describeRepo?repo=..`,
+      `/xrpc/com.atproto.sync.getRecord?did=${DID}&collection=${POST}&rkey=a/b`,
+      `/xrpc/com.atproto.sync.getRecord?did=${DID}&collection=com..post&rkey=post2`,
+      `/xrpc/com.atproto.sync.getLatestCommit?did=did:plc:alice/x`,
+    ];
+    for (let path in reads) {
+      let res = await getFrom(app, path);
+      equal(res.statusCode, 400, path);
+      equal(errorOf(res), 'InvalidRequest', path);
+    }
+  });
+
   test('repo.describeRepo lists the collections', async (ctx) => {
     let described = jsonOf(await getFrom(await aliceApp(), `/xrpc/com.atproto.repo.describeRepo?repo=${DID}`));
     equal(described['handle'] as String, 'alice.test');
