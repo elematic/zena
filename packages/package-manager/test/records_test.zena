@@ -36,9 +36,10 @@ import {
   isValidLicenseExpression,
   isValidLocalName,
   isValidPackageName,
-  isValidScopeName
+  isValidScopeName,
+  parsePackageVersion
 } from 'package-manager/records';
-import {Version} from 'package-manager/version';
+import {Version} from 'zena-lang:semver';
 
 function bytes(text: String) {
   let out = new FixedArray<u8>(text.length, 0 as u8);
@@ -109,6 +110,19 @@ export let tests = suite('package-manager/records', () => {
       let path = `packages/package-manager/lexicons/dev/zena-lang/package/${parts[parts.length - 1]}.json`;
       let lexicon = parseJson(await readFile(path)) as JsonObject;
       equal(lexicon['id'] as String, type);
+    }
+  });
+
+  test("refuses build metadata in a package's version, which is a record key", (ctx) => {
+    equal(parsePackageVersion('2.0.0-rc.1').toString(), '2.0.0-rc.1');
+    for (let text in ['1.2.3+build', '1.2.3-rc.1+build.5']) {
+      var refused = false;
+      try {
+        parsePackageVersion(text);
+      } catch (e) {
+        refused = true;
+      }
+      isTrue(refused, text);
     }
   });
 

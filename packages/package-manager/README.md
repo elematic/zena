@@ -1,22 +1,20 @@
 # package-manager
 
-Client libraries for Zena packages published on AT Protocol: package manifests (`zena-package.json`), lockfiles (`zena-lock.json`), semantic versions, deterministic CAR source archives, dependency resolution, and registry queries.
+Client libraries for Zena packages published on AT Protocol: package manifests (`zena-package.json`), lockfiles (`zena-lock.json`), deterministic CAR source archives, dependency resolution, and registry queries. Versions and ranges are the package `zena-lang:semver` (`packages/semver`).
 
 ## Usage
 
 ```zena
 import {readManifest} from 'package-manager/manifest';
-import {parseVersion, parseVersionRange} from 'package-manager/version';
+import {Range} from 'zena-lang:semver';
 
 let manifest = readManifest('{"name": "hello", "version": "1.0.0"}');
-let version = parseVersion(manifest.version ?? '0.0.0');
-let range = parseVersionRange('^1.0.0');
-let matches = range.allows(version);
+let version = manifest.version;
+let matches = version != null && Range.parse('^1.0.0').includes(version);
 ```
 
 ## Libraries
 
-- `package-manager/version`: semantic versions without build metadata, version ranges, and their precedence.
 - `package-manager/manifest`: reading a package's `zena-package.json`, and rewriting its dependencies while keeping the rest of the file.
 - `package-manager/workspace`: a workspace's packages, read from disk: the root's manifest, the packages it lists, and the ones they depend on by path.
 - `package-manager/files`: which files a package publishes: its manifest's `files` patterns, or by default every file but tests, and always the manifest, README, and license, never hidden files, `node_modules`, or the lockfile.

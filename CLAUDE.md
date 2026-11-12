@@ -13,4 +13,5 @@ read the CONTEXT.md nearest their work before editing:
 - `packages/registry/CONTEXT.md` — the App View: the registry methods, the site, and the service
 - `packages/pds-web/CONTEXT.md` — the App View's server-rendered pages and their assets
 - `packages/markdown/CONTEXT.md` — CommonMark and GFM parser, AST, plugin API, and HTML renderer
+- `packages/semver/CONTEXT.md` — semantic versions and npm's version ranges
 - `packages/workspace-hack/CONTEXT.md` — generated crate unifying the Rust crates' dependency features

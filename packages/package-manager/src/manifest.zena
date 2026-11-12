@@ -29,9 +29,9 @@ import {join} from 'zena:core';
 import {globToRegex} from 'zena:glob';
 import {JsonArray, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {isValidDid} from 'atproto/syntax';
-import {isValidLocalName, isValidPackageName, isValidScopeName} from './records.zena';
+import {isValidLocalName, isValidPackageName, isValidScopeName, parsePackageVersion} from './records.zena';
 import {Requirement} from './resolve.zena';
-import {Version} from './version.zena';
+import {Version} from 'zena-lang:semver';
 
 /** A manifest the package manager cannot read or update. */
 export class ManifestError extends Error {
@@ -136,7 +136,7 @@ export function readManifest(text: String | null): Manifest {
   var version: Version | null = null;
   if (versionText != null) {
     try {
-      version = Version.parse(versionText);
+      version = parsePackageVersion(versionText);
     } catch (e) {
       throw new ManifestError(`zena-package.json: version: ${e.message}`);
     }
@@ -497,7 +497,7 @@ function optionalString(root: JsonObject, name: String): String | null {
 
 function parseVersion(text: String, localName: String): Version {
   try {
-    return Version.parse(text);
+    return parsePackageVersion(text);
   } catch (e) {
     throw new ManifestError(`zena-package.json: dependency '${localName}': ${e.message}`);
   }

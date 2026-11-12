@@ -30,7 +30,7 @@ import {
 } from 'atproto/data';
 import {isValidCidSyntax, isValidDatetime, isValidDid} from 'atproto/syntax';
 import {URL} from 'zena:url';
-import {Version} from './version.zena';
+import {Version, VersionError} from 'zena-lang:semver';
 
 export let PROFILE_TYPE = 'dev.zena-lang.package.profile';
 export let RELEASE_TYPE = 'dev.zena-lang.package.release';
@@ -1169,9 +1169,22 @@ function readBlob(value: Value, what: String): BlobRef {
   }
 }
 
+/**
+ * Reads a package's version: a semantic version without build metadata,
+ * since a release's version is its record key, and a record key cannot
+ * contain `+`.
+ */
+export function parsePackageVersion(text: String): Version {
+  let version = Version.parse(text);
+  if (version.build.length > 0) {
+    throw new VersionError(`'${text}' has build metadata, which a package version cannot have`);
+  }
+  return version;
+}
+
 function readVersion(text: String, what: String): Version {
   try {
-    return Version.parse(text);
+    return parsePackageVersion(text);
   } catch (e) {
     throw new RecordError(`${what}: ${e.message}`);
   }
