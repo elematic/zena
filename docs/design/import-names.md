@@ -109,15 +109,26 @@ off once, and its imports read `router/server`.
 ## Workspace packages
 
 A workspace package with a `scope` in its manifest, its own or the
-workspace root's, is `<scope>:<name>` in its workspace, and nothing
-else: to the packages that depend on it by path, to the workspace's files
-that belong to no package, and to its own tests. One without a scope is
-`<name>`. So the workspace's code imports a package with the specifier
-its published dependents will use, and its README's examples run as they
-are.
+workspace root's, is `<scope>:<name>` in its workspace; one without a
+scope is `<name>`. Its own libraries and tests can also import it by its
+plain `name`, unless one of its dependencies has that name, and
+`zena pkg add` refuses to give a dependency that name. A package that
+depends on it by path calls it by the dependency's key, which can be
+either name, as for any dependency: with `"markdown": {"path":
+"../markdown"}`, `import {parse} from 'markdown'` imports
+`zena-lang:markdown`. The workspace's files that belong to no package
+see the packages by their names, and by the keys of the root manifest's
+dependencies.
 
-In this repository, `packages/wit-parser` gets `"scope": "zena-lang"`,
-and the compiler imports it as `zena-lang:wit-parser`.
+So giving a package a scope renames nothing in its workspace. Its
+published dependents import it as `<scope>:<name>`, the name
+`zena pkg add` gives it, which is what its README's examples show.
+
+In this repository, the packages the Zena project publishes have
+`"scope": "zena-lang"`. The compiler imports `packages/wit-parser` as
+`zena-lang:wit-parser` and the registry imports `packages/markdown` as
+`markdown`; the root manifest names `workflow` and `zebra` for the
+libraries of the `zena` command, which are in no package.
 
 ## The `zena-lang` scope
 

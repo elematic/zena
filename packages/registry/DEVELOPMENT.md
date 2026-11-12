@@ -26,7 +26,7 @@ From the repository root:
 npm test -w @zena-lang/registry                  # its tests, through wireit
 npm run test:emulator -w @zena-lang/registry     # the store tests against the Firestore emulator
 npm run demo -w @zena-lang/registry              # an App View to try zena against, on this machine
-npm run demo:publish -w @zena-lang/registry      # or: the same, with zena-lang:wit-parser published in it
+npm run demo:publish -w @zena-lang/registry      # or: the same, with the repository's packages published in it
 ./target/release/zena-cli test "packages/registry/test/*_test.zena"
 APP_VIEW_DOMAIN=pkg.test ./target/release/zena-cli run packages/registry/src/main.zena   # serve on $PORT, default 2583
 ```
@@ -47,7 +47,50 @@ Each start writes the variables `zena` needs to use the demo to `.zena/demo/env.
 source .zena/demo/env.sh
 ```
 
-`npm run demo:publish -w @zena-lang/registry` runs in place of `npm run demo`, with the scope `zena-lang` and the packages `DEMO_PUBLISH` names (`packages/wit-parser` by default) published in it.
+### The repository's packages
+
+`npm run demo:publish -w @zena-lang/registry` runs in place of `npm run demo`, not after it: it starts a demo of its own, on the same ports, so stop one that is running first. Its demo has the scope `zena-lang` and the repository's packages published in it, as their maintainers will publish them on a registry:
+
+- `DEMO_SCOPES` creates `zena-lang`, owned by the demo's maintainer. The App View reserves the name, so only the operator can create it.
+- The demo signs in as its maintainer with `zena pkg login`, and runs `zena pkg publish --yes` for each directory `DEMO_PUBLISH` names, separated by spaces, in order: by default `packages/wit-parser`, `packages/markdown`, `packages/workflow`, and `packages/zebra`. It publishes each from a fresh copy in `.zena/demo/packages`, since `publish` writes the new package's DID into the manifest, and the repository's manifest must not name a DID that is gone when the demo stops.
+
+It prints what each `zena` command prints, and keeps serving if a publish fails. A package can be published when its manifest has a scope, a version, a description, and a license. A `path` dependency is published as the DID and version in the other package's manifest, so that package goes first: zebra depends on workflow, and the copies sit side by side, so `../workflow` is workflow's copy, with its DID.
+
+```sh
+npm run demo:publish -w @zena-lang/registry
+# and the scope zena, owned by you
+DEMO_SCOPES="zena-lang=did:plc:maintainermaintainermain zena=alice.bsky.social" npm run demo:publish -w @zena-lang/registry
+```
+
+The maintainer stays signed in, so in another shell:
+
+```sh
+source .zena/demo/env.sh
+mkdir -p ~/demo/try-wit && cd ~/demo/try-wit
+echo '{"name": "try-wit"}' > zena-package.json
+zena pkg add zena-lang:wit-parser
+cat > main.zena <<'EOF'
+import {parse} from 'zena-lang:wit-parser';
+import {serializeAstToJson} from 'zena-lang:wit-parser/ast-json';
+
+export function main(): i32 {
+  let ast = parse('package demo:greeter;\n\ninterface greet {\n  hello: func(name: string) -> string;\n}\n');
+  console.log(serializeAstToJson(ast));
+  return 0;
+}
+EOF
+zena run main.zena
+zena pkg add zena-lang:markdown
+cat > render.zena <<'EOF'
+import {gfmExtensions, markdownToHtml} from 'zena-lang:markdown';
+
+export function main(): i32 {
+  console.log(markdownToHtml('# Hello\n\nSome ~~old~~ **new** text.', {extensions: gfmExtensions(), safe: true}));
+  return 0;
+}
+EOF
+zena run render.zena
+```
 
 ## Deploying
 

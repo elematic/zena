@@ -274,6 +274,24 @@ export let tests = suite("Package Manifest", () => {
       equal(names["acme:router"], "did:plc:router@1");
       equal((packages["acme:lib"].dependencies as HashMap<String, String>)["zena-lang:wit"], "zena-lang:wit");
     });
+
+    test("names a scoped package by its plain name too, to itself and to a dependent whose key it is", async () => {
+      let host = new MockHost();
+      host.addFile("/ws/zena-package.json", '{"workspace": {"packages": ["markdown", "site", "json"]}}');
+      host.addFile("/ws/markdown/zena-package.json", '{"name": "markdown", "scope": "zena-lang"}');
+      host.addFile("/ws/site/zena-package.json", '{"name": "site", "dependencies": {"markdown": {"path": "../markdown"}}}');
+      // A dependency named as the package is gives the name its meaning.
+      host.addFile("/ws/json/zena-package.json",
+          '{"name": "json", "scope": "acme", "dependencies": {"json": {"path": "../markdown"}}}');
+      let packages = await loadWorkspace(host, "/ws", null, "/cache");
+      let markdown = packages["zena-lang:markdown"].dependencies as HashMap<String, String>;
+      equal(markdown["zena-lang:markdown"], "zena-lang:markdown");
+      equal(markdown["markdown"], "zena-lang:markdown");
+      equal((packages["site"].dependencies as HashMap<String, String>)["markdown"], "zena-lang:markdown");
+      // Only the package itself and its dependents have the plain name.
+      isFalse(packages.has("markdown"));
+      equal((packages["acme:json"].dependencies as HashMap<String, String>)["json"], "zena-lang:markdown");
+    });
   });
 
   suite("buildStdlibConfig", () => {

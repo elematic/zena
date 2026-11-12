@@ -1,6 +1,6 @@
 # zebra
 
-An incremental script and service runner for Zena (`zena-package.json`), standalone Zebra (`zebra.json`), and [Wireit](https://github.com/google/wireit) (`package.json`) workspaces, built on `@zena/workflow`.
+An incremental script and service runner for Zena (`zena-package.json`), standalone Zebra (`zebra.json`), and [Wireit](https://github.com/google/wireit) (`package.json`) workspaces, built on `zena-lang:workflow`.
 
 Zebra runs a dependency graph of scripts and long-running services with declared inputs, outputs, and dependencies, rerunning only what changed. For each script, Zebra content-hashes the declared inputs and asks the workflow engine what to do: nothing (when the previous run recorded the same fingerprints and declared outputs are intact), restore from the local content-addressed cache, or execute the command (`sh -c` in the package directory with `node_modules/.bin` on `PATH`).
 
@@ -9,7 +9,7 @@ Zebra runs a dependency graph of scripts and long-running services with declared
 `zebra` is built into the `zena` CLI (`zena build <target>`). To use it as a library or standalone runner:
 
 ```sh
-zena pkg add @zena/zebra
+zena pkg add zena-lang:zebra
 ```
 
 ## CLI Usage
@@ -30,8 +30,8 @@ zena build --migrate [--dry-run] [-f|--force] [<package-dir>...]
 ## Programmatic Usage
 
 ```zena
-import { buildTarget, reportBuild } from 'zebra/runner';
-import { ScriptRef } from 'zebra/wireit-config';
+import { buildTarget, reportBuild } from 'zena-lang:zebra/runner';
+import { ScriptRef } from 'zena-lang:zebra/wireit-config';
 
 let outcome = await buildTarget('.', new ScriptRef('packages/app', 'build'));
 let exitCode = reportBuild(outcome);

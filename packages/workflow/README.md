@@ -7,19 +7,19 @@ An incremental workflow execution engine for Zena: dependency graphs, content fi
 ## Installation
 
 ```sh
-zena pkg add @zena/workflow
+zena pkg add zena-lang:workflow
 ```
 
 ## Example
 
 ```zena
-import { NullCache } from 'workflow/cache';
-import { Engine, StepSource, Succeeded } from 'workflow/engine';
-import { Fingerprint } from 'workflow/fingerprint';
-import { Graph } from 'workflow/graph';
-import { OutputEntry, OutputManifest } from 'workflow/manifest';
-import { EngineState } from 'workflow/state';
-import { LeafInput, StepKey, StepOutputs, TaskStep } from 'workflow/step';
+import { NullCache } from 'zena-lang:workflow/cache';
+import { Engine, StepSource, Succeeded } from 'zena-lang:workflow/engine';
+import { Fingerprint } from 'zena-lang:workflow/fingerprint';
+import { Graph } from 'zena-lang:workflow/graph';
+import { OutputEntry, OutputManifest } from 'zena-lang:workflow/manifest';
+import { EngineState } from 'zena-lang:workflow/state';
+import { LeafInput, StepKey, StepOutputs, TaskStep } from 'zena-lang:workflow/step';
 
 let compile = new TaskStep(
   new StepKey('compile'),
