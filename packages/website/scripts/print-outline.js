@@ -13,6 +13,7 @@ import {existsSync} from 'node:fs';
 import {writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import projects from '../src/_data/projects.js';
 import sidebar from '../src/_data/sidebar.js';
 
 const SRC = fileURLToPath(new URL('../src/', import.meta.url));
@@ -23,11 +24,15 @@ const SECTION_TITLES = {
   '/reference/': 'Reference',
   '/api/': 'API',
   '/development/': 'Development',
+  ...Object.fromEntries(
+    projects.map((project) => [project.link, `Projects — ${project.title}`]),
+  ),
 };
 
 /** Mirrors the path mapping in scaffold-docs.js. */
-const sourcePathFor = (link, allLinks) => {
-  const isDirectory = allLinks.some((l) => l !== link && l.startsWith(link));
+const sourcePathFor = (link, allLinks, prefix) => {
+  const isDirectory =
+    link === prefix || allLinks.some((l) => l !== link && l.startsWith(link));
   const segments = link.split('/').filter(Boolean);
   return isDirectory
     ? join(...segments, 'index.md')
@@ -36,7 +41,7 @@ const sourcePathFor = (link, allLinks) => {
 
 const collectLinks = (items) =>
   items.flatMap((item) => [
-    ...(item.link ? [item.link] : []),
+    ...(item.link && !item.back ? [item.link] : []),
     ...collectLinks(item.items ?? []),
   ]);
 
@@ -77,6 +82,7 @@ for (const [prefix, tree] of Object.entries(sidebar)) {
 
   const walk = async (items, depth) => {
     for (const item of items) {
+      if (item.back) continue;
       const indent = '  '.repeat(depth);
 
       if (!item.link) {
@@ -87,7 +93,7 @@ for (const [prefix, tree] of Object.entries(sidebar)) {
         lines.push(`${indent}- ⚙️ ${item.text} — \`${item.link}\``);
       } else {
         total++;
-        const path = sourcePathFor(item.link, links);
+        const path = sourcePathFor(item.link, links, prefix);
         const draft = await isDraft(path);
         if (!draft) written++;
         lines.push(

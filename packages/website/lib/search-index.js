@@ -5,6 +5,7 @@ import {toPlainText} from './toc.js';
 const H2_SPLIT = /<h2\b[^>]*\bid="([^"]+)"[^>]*>([\s\S]*?)<\/h2>/g;
 const MAIN_RE = /<main class="main">([\s\S]*?)<\/main>/;
 const TITLE_RE = /<h1\b[^>]*>([\s\S]*?)<\/h1>/;
+const BADGE_RE = /<span class="badge\b[^>]*>[\s\S]*?<\/span>/g;
 
 /**
  * Splits one page's rendered HTML into per-section search entries.
@@ -16,7 +17,8 @@ const entriesForPage = (url, breadcrumb, html) => {
   const main = MAIN_RE.exec(html)?.[1];
   if (main === undefined) return [];
 
-  const pageTitle = toPlainText(TITLE_RE.exec(main)?.[1] ?? '') || url;
+  const rawTitle = (TITLE_RE.exec(main)?.[1] ?? '').replace(BADGE_RE, '');
+  const pageTitle = toPlainText(rawTitle) || url;
   const entries = [];
 
   // Everything before the first h2 belongs to the page itself.
@@ -53,6 +55,7 @@ const SECTIONS = [
   ['/api/', 'API'],
   ['/development/design/', 'Design'],
   ['/development/', 'Development'],
+  ['/projects/', 'Projects'],
   ['/blog/', 'Blog'],
 ];
 

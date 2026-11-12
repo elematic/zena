@@ -1257,9 +1257,149 @@ const api = [
   ...stdlibModules(),
 ];
 
+/**
+ * Builds a dedicated micro-site sidebar for one project under `/projects/`.
+ *
+ * `/projects/` itself has no entry in `sidebar` so the overview renders full
+ * width; each project owns its own URL prefix and can grow into multiple pages
+ * without sharing a monolithic tree with sibling projects.
+ */
+const projectMicrosite = (title, slug, items) => [
+  {
+    text: '← All Projects',
+    link: '/projects/',
+    back: true,
+  },
+  {
+    text: title,
+    collapsed: false,
+    items,
+  },
+];
+
+const zebra = projectMicrosite('Zebra', 'zebra', [
+  {
+    text: 'Overview',
+    link: '/projects/zebra/',
+    outline: [
+      'Build and run model',
+      'Task graphs, caching, and dev services',
+      'Custom build rules as WebAssembly components',
+      'Incremental steps, resident workers, and graph queries',
+      'Current status and roadmap',
+    ],
+  },
+]);
+
+const packageManager = projectMicrosite('Package Manager', 'package-manager', [
+  {
+    text: 'Overview',
+    link: '/projects/package-manager/',
+    outline: [
+      'Accounts for packages, scopes, teams, and organizations',
+      'Permission delegation and release publishing',
+      'The registry App View',
+      'Planned WebAssembly plugins',
+      'Current status and roadmap',
+    ],
+  },
+]);
+
+const zenafx = projectMicrosite('ZenaFX', 'zenafx', [
+  {
+    text: 'Overview',
+    link: '/projects/zenafx/',
+    outline: [
+      'Isolation and the shared scene graph',
+      'Authoring components',
+      'Architecture: Rust host and Zena engine',
+      'Target platforms and use cases',
+      'Current status and roadmap',
+    ],
+  },
+]);
+
+const pds = projectMicrosite('AT Protocol PDS', 'pds', [
+  {
+    text: 'Overview',
+    link: '/projects/pds/',
+    outline: [
+      'Accounts for objects and documents',
+      'Account creation, delegation, and content policies',
+      'WebAssembly extensions',
+      'Current status and roadmap',
+    ],
+  },
+]);
+
+const wasmWebUi = projectMicrosite('Wasm Web UI', 'wasm-web-ui', [
+  {
+    text: 'Overview',
+    link: '/projects/wasm-web-ui/',
+    outline: [
+      'Capability isolation and zero DOM access',
+      'Declarative templates across the boundary',
+      'Interactive example',
+      'Multi-language components and server-side rendering',
+      'Current status and roadmap',
+    ],
+  },
+]);
+
+const playgroundProject = projectMicrosite(
+  'WebAssembly Playground',
+  'playground',
+  [
+    {
+      text: 'Overview',
+      link: '/projects/playground/',
+      outline: [
+        'Current browser architecture',
+        'Sandboxed multi-file preview',
+        'Pluggable compiler, LSP, and console protocol',
+        'Current status and roadmap',
+      ],
+    },
+  ],
+);
+
+const runtimeProject = projectMicrosite('Zena CLI & Host Runtime', 'runtime', [
+  {
+    text: 'Overview',
+    link: '/projects/runtime/',
+    outline: [
+      'Extending WASI with zena:host',
+      'Layered host crates',
+      'Sandboxed Wasm extensions',
+      'Generalizing beyond Zena',
+    ],
+  },
+]);
+
+const ssgProject = projectMicrosite('Static Site Generator', 'ssg', [
+  {
+    text: 'Overview',
+    link: '/projects/ssg/',
+    outline: [
+      'Static site generators as build systems',
+      'Workflows, Zebra, and Markdown',
+      'WebAssembly pipeline plugins',
+      'Current status',
+    ],
+  },
+]);
+
 export default {
   '/guide/': guide,
   '/reference/': reference,
   '/api/': api,
   '/development/': development,
+  '/projects/zebra/': zebra,
+  '/projects/package-manager/': packageManager,
+  '/projects/zenafx/': zenafx,
+  '/projects/pds/': pds,
+  '/projects/wasm-web-ui/': wasmWebUi,
+  '/projects/playground/': playgroundProject,
+  '/projects/runtime/': runtimeProject,
+  '/projects/ssg/': ssgProject,
 };

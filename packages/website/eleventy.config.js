@@ -7,6 +7,7 @@ import {configureMarkdown} from './lib/markdown.js';
 import {writeSearchIndex} from './lib/search-index.js';
 import {compressSite} from './lib/compress.js';
 import {extractOutline} from './lib/toc.js';
+import {containsActive, flattenSidebar, sidebarFor} from './lib/sidebar.js';
 import {
   escapeXml,
   getNewestDate,
@@ -158,28 +159,9 @@ export default async function (eleventyConfig) {
     match ? url.startsWith(match) : url === link,
   );
 
-  /** True when any descendant of a sidebar group is the current page. */
-  const containsActive = (item, url) => {
-    if (item.link && url === item.link) return true;
-    return (item.items ?? []).some((child) => containsActive(child, url));
-  };
   eleventyConfig.addFilter('containsActive', containsActive);
-
-  /** Picks the sidebar tree whose prefix matches the current URL. */
-  eleventyConfig.addFilter('sidebarFor', (sidebar, url) => {
-    const prefix = Object.keys(sidebar)
-      .filter((p) => url.startsWith(p))
-      .sort((a, b) => b.length - a.length)[0];
-    return prefix ? sidebar[prefix] : null;
-  });
-
-  /** Flattens a sidebar tree to the ordered list of linked pages. */
-  const flatten = (items) =>
-    items.flatMap((item) => [
-      ...(item.link ? [item] : []),
-      ...flatten(item.items ?? []),
-    ]);
-  eleventyConfig.addFilter('flattenSidebar', flatten);
+  eleventyConfig.addFilter('sidebarFor', sidebarFor);
+  eleventyConfig.addFilter('flattenSidebar', flattenSidebar);
 
   /**
    * Renders a markdown string. Used for the design docs, which are read from
