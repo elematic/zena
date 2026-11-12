@@ -85,22 +85,50 @@ function prepareGlobs(
       negated = true;
       pattern = pattern.sliceBytes(1, pattern.length);
     }
+    let trailingSlash = pattern.endsWith('/');
     let workspaceRelative = joinWorkspace(packageDir, pattern);
     if (workspaceRelative.startsWith('..') || isAbsolute(workspaceRelative)) {
       throw new ConfigError(
         `glob "${raw}" in ${packageDir} escapes the workspace`,
       );
     }
-    rewritten.push(if (negated) '!' + workspaceRelative else workspaceRelative);
-    if (!negated) {
-      // A pattern with no glob syntax checks that single path directly
-      // instead of listing its parent directory (or the workspace root).
-      let base = if (hasMagic(workspaceRelative))
-        splitBase(workspaceRelative).base
-      else
-        workspaceRelative;
-      if (seenBases.add(base)) {
-        bases.push(base);
+    let prefix = if (negated) '!' else '';
+    if (trailingSlash) {
+      // A trailing-slash pattern ("test/", "!lib/", "./") names a directory
+      // tree only, never a regular file with the same name.
+      let treeGlob = if (workspaceRelative == '') '**' else `${workspaceRelative}/**`;
+      rewritten.push(prefix + treeGlob);
+      if (!negated) {
+        let base = if (hasMagic(workspaceRelative))
+          splitBase(workspaceRelative).base
+        else
+          workspaceRelative;
+        if (seenBases.add(base)) {
+          bases.push(base);
+        }
+      }
+    } else if (!hasMagic(workspaceRelative)) {
+      // A bare literal path ("lib", "local.txt", "!src/tmp", ".") may name
+      // either a regular file or a directory tree on disk. Since collectFiles
+      // only tests non-directory paths against GlobSet, pushing both the exact
+      // path and `<path>/**` matches whichever exists without extra stats
+      // while preserving negation and re-inclusion order.
+      if (workspaceRelative == '') {
+        rewritten.push(prefix + '**');
+      } else {
+        rewritten.push(prefix + workspaceRelative);
+        rewritten.push(`${prefix}${workspaceRelative}/**`);
+      }
+      if (!negated && seenBases.add(workspaceRelative)) {
+        bases.push(workspaceRelative);
+      }
+    } else {
+      rewritten.push(prefix + workspaceRelative);
+      if (!negated) {
+        let base = splitBase(workspaceRelative).base;
+        if (seenBases.add(base)) {
+          bases.push(base);
+        }
       }
     }
   }

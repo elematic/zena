@@ -16,14 +16,14 @@ import {migrateWorkspaceToZebra} from './zebra-config.zena';
  * zebra: an incremental build runner for Zena (`zena-package.json`),
  * standalone Zebra (`zebra.json`), and Wireit (`package.json`) workspaces.
  *
- *     zebra [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<package-dir>] [<script>]
+ *     zebra [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<package-dir>] [<script>] [-- <args>...]
  *     zebra [-C <workspace-root>] --migrate [--dry-run] [-f|--force] [<package-dir>...]
  *
  * The workspace root defaults to the current directory (`-C` points at a
  * nested workspace), and `<script>` defaults to `build`.
  */
 let usage =
-  'usage: zebra [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [--migrate [--dry-run]] [<package-dir>] [<script>]';
+  'usage: zebra [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [--migrate [--dry-run]] [<package-dir>] [<script>] [-- <args>...]';
 
 function parseCliEntry(args: Array<String>, next: i32) {
   let rest = args.length - next;
@@ -104,20 +104,36 @@ export async function main(): Future<i32> {
     } else if (flag == '--dry-run') {
       dryRun = true;
       next += 1;
+    } else if (flag == '--') {
+      break;
     } else {
       console.log(usage);
       return 2;
     }
   }
 
+  let targetArgs = new GrowableArray<String>();
+  let extraArgs = new GrowableArray<String>();
+  var afterDashDash = false;
+  while (next < args.length) {
+    let arg = args[next];
+    if (!afterDashDash && arg == '--') {
+      afterDashDash = true;
+    } else if (afterDashDash) {
+      extraArgs.push(arg);
+    } else {
+      targetArgs.push(arg);
+    }
+    next += 1;
+  }
+
   if (migrate) {
-    let targetDirs = new GrowableArray<String>();
-    while (next < args.length) {
-      targetDirs.push(args[next]);
-      next += 1;
+    if (extraArgs.length > 0) {
+      console.log(usage);
+      return 2;
     }
     try {
-      let result = await migrateWorkspaceToZebra(root, targetDirs, force, dryRun);
+      let result = await migrateWorkspaceToZebra(root, targetArgs, force, dryRun);
       return reportMigration(result, dryRun);
     } catch (e) {
       console.log('zebra: ' + e.message);
@@ -128,19 +144,37 @@ export async function main(): Future<i32> {
     console.log(usage);
     return 2;
   }
-  let rest = args.length - next;
-  if (rest > 2) {
+  if (targetArgs.length > 2) {
     console.log(usage);
     return 2;
   }
-  let entry = parseCliEntry(args, next);
+  let entry = parseCliEntry(targetArgs, 0);
 
   var outcome: BuildOutcome | null = null;
   try {
     outcome = if (watch)
-      await watchTarget(root, entry, jobs, force, useCache, 150 as i64, null, verbose)
+      await watchTarget(
+        root,
+        entry,
+        jobs,
+        force,
+        useCache,
+        150 as i64,
+        null,
+        verbose,
+        extraArgs,
+      )
     else
-      await buildTarget(root, entry, jobs, force, useCache);
+      await buildTarget(
+        root,
+        entry,
+        jobs,
+        force,
+        useCache,
+        null,
+        null,
+        extraArgs,
+      );
   } catch (e) {
     let sig = checkSignal();
     if (sig != 0) {

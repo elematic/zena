@@ -1,8 +1,8 @@
 import {suite, test} from 'zena:test';
-import {equal, fail, isFalse, isTrue} from 'zena:assert';
+import {equal, fail, isFalse, isTrue, rejects} from 'zena:assert';
 import {getEnv} from 'zena:cli';
-import {isFile, readFile, unlink, writeFile} from 'zena:fs';
-import {spawnWith} from 'zena:process';
+import {isFile, listDir, readFile, unlink, writeFile} from 'zena:fs';
+import {runWith, spawnWith} from 'zena:process';
 import {milliseconds, monotonic, sleep} from 'zena:time';
 import {
   Failed,
@@ -15,7 +15,13 @@ import {Colors} from 'zebra/colors';
 import {ensureDir, ensureParentDir, withRoot} from 'zebra/fs-util';
 import {FileHasher} from 'zebra/fs-walk';
 import {PlanLoadStats} from 'zebra/plan-cache';
-import {BuildOutcome, buildTarget, formatBuildReport, watchTarget} from 'zebra/runner';
+import {
+  BuildOutcome,
+  buildTarget,
+  defaultParallelism,
+  formatBuildReport,
+  watchTarget,
+} from 'zebra/runner';
 import {ScriptRef} from 'zebra/wireit-config';
 
 /**
@@ -1222,5 +1228,188 @@ export let tests = suite('zebra end to end', () => {
     isTrue(
       (await readFile(withRoot(root, 'packages/app/out/bundle.txt'))).contains('answer = 42'),
     );
+  });
+
+  test('bare directory output globs cache nested files and restore atomically without truncating existing inodes', async () => {
+    let root = `/tmp/zebra-dir-out-atomic-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    await write(root, 'packages/lib/src/in.txt', 'v1\n');
+    await write(root, 'packages/lib/zebra.json', `{
+      "scripts": {
+        "build": {
+          "command": "mkdir -p lib/sub && printf 'index-%s\\n' \"$(cat src/in.txt)\" > lib/index.js && printf 'util-%s\\n' \"$(cat src/in.txt)\" > lib/sub/util.js && printf 'tsb\\n' > tsconfig.tsbuildinfo",
+          "files": ["src"],
+          "output": ["lib", "tsconfig.tsbuildinfo"]
+        }
+      }
+    }`);
+    let entry = new ScriptRef('packages/lib', 'build');
+
+    let first = await buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+    isTrue(sourceOf(first.result, 'packages/lib:build') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/lib/lib/sub/util.js')), 'util-v1\n');
+
+    // Deleting a nested file inside bare `"output": ["lib"]` invalidates freshness and restores from DiskCache.
+    await unlink(withRoot(root, 'packages/lib/lib/sub/util.js'));
+    let restoredMissing = await buildTarget(root, entry);
+    isTrue(restoredMissing.result.allSucceeded);
+    isTrue(sourceOf(restoredMissing.result, 'packages/lib:build') == StepSource.Cache);
+    equal(await readFile(withRoot(root, 'packages/lib/lib/sub/util.js')), 'util-v1\n');
+
+    // Corrupt `lib/index.js` and pin its inode via a second hardlink (`pinned.js` outside `lib/`).
+    // Restoring from DiskCache must unlink/rename over `lib/index.js` rather than truncating the pinned inode in place.
+    await sleep(milliseconds(10));
+    await write(root, 'packages/lib/lib/index.js', 'corrupted-inode\n');
+    let linked = await runWith(['ln', 'lib/index.js', 'pinned.js'], {
+      cwd: withRoot(root, 'packages/lib'),
+    });
+    isTrue(linked.succeeded(), linked.stderr);
+
+    let restoredAtomic = await buildTarget(root, entry);
+    isTrue(restoredAtomic.result.allSucceeded);
+    isTrue(sourceOf(restoredAtomic.result, 'packages/lib:build') == StepSource.Cache);
+    equal(await readFile(withRoot(root, 'packages/lib/lib/index.js')), 'index-v1\n');
+    equal(
+      await readFile(withRoot(root, 'packages/lib/pinned.js')),
+      'corrupted-inode\n',
+      'existing inode must not be truncated in place during cache restore',
+    );
+    for (let dirent in await listDir(withRoot(root, 'packages/lib/lib'))) {
+      isFalse(dirent.name.contains('.tmp-'), `leftover temp file ${dirent.name}`);
+    }
+  });
+
+  test('stepKeys and reports follow topological dependency order, and defaultParallelism honors ZEBRA_PARALLEL and WIREIT_PARALLEL', async () => {
+    let root = `/tmp/zebra-topo-order-${i64ToString(monotonic() as i64)}`;
+    await mkFixture(root);
+    await write(root, 'packages/app/greeting.txt', 'hi\n');
+
+    let outcome = await buildTarget(root, new ScriptRef('', 'build'));
+    isTrue(outcome.result.allSucceeded);
+    equal(outcome.stepKeys.length, 3);
+    equal(outcome.stepKeys[0], 'packages/lib:build');
+    equal(outcome.stepKeys[1], 'packages/app:build');
+    equal(outcome.stepKeys[2], ':build');
+
+    let report = formatBuildReport(outcome, false, Colors.plain());
+    var libLine = -1;
+    var appLine = -1;
+    var rootLine = -1;
+    let reportLines = report.split('\n');
+    for (var i = 0; i < reportLines.length; i += 1) {
+      let line = reportLines[i];
+      if (line.contains('packages/lib:build: ran')) libLine = i;
+      else if (line.contains('packages/app:build: ran')) appLine = i;
+      else if (line.contains(':build: ran')) rootLine = i;
+    }
+    isTrue(libLine >= 0 && appLine > libLine && rootLine > appLine, report);
+
+    // ZEBRA_PARALLEL takes precedence over WIREIT_PARALLEL and ZENA_AVAILABLE_PARALLELISM.
+    equal(
+      defaultParallelism((k): String? => {
+        if (k == 'ZEBRA_PARALLEL') return '3';
+        if (k == 'WIREIT_PARALLEL') return '5';
+        if (k == 'ZENA_AVAILABLE_PARALLELISM') return '12';
+        return null;
+      }),
+      3,
+    );
+    equal(
+      defaultParallelism((k): String? => {
+        if (k == 'WIREIT_PARALLEL') return '5';
+        if (k == 'ZENA_AVAILABLE_PARALLELISM') return '12';
+        return null;
+      }),
+      5,
+    );
+    equal(
+      defaultParallelism((k): String? => {
+        if (k == 'ZEBRA_PARALLEL') return 'invalid';
+        if (k == 'WIREIT_PARALLEL') return '4';
+        return null;
+      }),
+      4,
+    );
+    equal(defaultParallelism((_): String? => null), 8);
+  });
+
+  test('extraArgs run only on the entry script with shell quoting and never cache or clobber saved freshness', async () => {
+    let root = `/tmp/zebra-extra-args-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    await write(root, 'zebra.json', `{
+      "scripts": {
+        "build": {
+          "dependencies": ["./packages/app:test"]
+        }
+      }
+    }`);
+    await write(root, 'packages/lib/in.txt', 'lib-1\n');
+    await write(root, 'packages/lib/zebra.json', `{
+      "scripts": {
+        "build": {
+          "command": "printf '%s:%s\\n' \"$#\" \"$(cat in.txt)\" > out.txt",
+          "files": ["in.txt"],
+          "output": ["out.txt"]
+        }
+      }
+    }`);
+    await write(root, 'packages/app/src/app.txt', 'app-1\n');
+    await write(root, 'packages/app/run-tests.sh', `printf '%s|%s|%s\\n' "$#" "$1" "$2" > last-run.txt\n`);
+    await write(root, 'packages/app/zebra.json', `{
+      "scripts": {
+        "test": {
+          "command": "sh run-tests.sh",
+          "files": ["src/**", "run-tests.sh"],
+          "output": [],
+          "dependencies": ["../lib:build"]
+        }
+      }
+    }`);
+
+    let entry = new ScriptRef('packages/app', 'test');
+
+    // 1. Cold filtered run: dependency runs with 0 extra args and is saved fresh;
+    // entry runs with quoted extra args (preserving single quotes and `$HOME` literally).
+    let r1 = await buildTarget(root, entry, 0, false, true, null, null, [
+      '--filter',
+      "it's $HOME",
+    ]);
+    isTrue(r1.result.allSucceeded);
+    isTrue(sourceOf(r1.result, 'packages/lib:build') == StepSource.Ran);
+    isTrue(sourceOf(r1.result, 'packages/app:test') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/lib/out.txt')), '0:lib-1\n');
+    equal(
+      await readFile(withRoot(root, 'packages/app/last-run.txt')),
+      "2|--filter|it's $HOME\n",
+    );
+
+    // 2. Subsequent plain run: dependency is Fresh, while entry MUST run unfiltered
+    // because the filtered run did not persist freshness or cache for the entry step.
+    let r2 = await buildTarget(root, entry);
+    isTrue(r2.result.allSucceeded);
+    isTrue(sourceOf(r2.result, 'packages/lib:build') == StepSource.Fresh);
+    isTrue(sourceOf(r2.result, 'packages/app:test') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/app/last-run.txt')), '0||\n');
+
+    // 3. Filtered run over an already-fresh entry still executes with extraArgs...
+    let r3 = await buildTarget(root, entry, 0, false, true, null, null, ['variables']);
+    isTrue(r3.result.allSucceeded);
+    isTrue(sourceOf(r3.result, 'packages/lib:build') == StepSource.Fresh);
+    isTrue(sourceOf(r3.result, 'packages/app:test') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/app/last-run.txt')), '1|variables|\n');
+
+    // 4. ...and does not clobber the prior unfiltered freshness record when nothing changed.
+    let r4 = await buildTarget(root, entry);
+    isTrue(r4.result.allSucceeded);
+    isTrue(sourceOf(r4.result, 'packages/app:test') == StepSource.Fresh);
+
+    // 5. Passing extraArgs to a command-less group target fails cleanly.
+    await rejects(async () => {
+      await buildTarget(root, new ScriptRef('', 'build'), 0, false, true, null, null, [
+        '--filter',
+        'x',
+      ]);
+    });
   });
 });

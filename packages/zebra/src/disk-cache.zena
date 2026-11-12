@@ -7,6 +7,7 @@ import {
   writeFile,
   writeFileBytes,
 } from 'zena:fs';
+import {HashSet} from 'zena:collections';
 import {StepCache} from 'workflow/cache';
 import {CacheKey, Fingerprint} from 'workflow/fingerprint';
 import {OutputManifest} from 'workflow/manifest';
@@ -42,6 +43,16 @@ function isFileEntry(fp: Fingerprint) {
   return fp.value.startsWith('sha256:');
 }
 
+function hasVolatileEntry(manifest: OutputManifest) {
+  for (let entry in manifest.outputs) {
+    let v = entry.fingerprint.value;
+    if (v.startsWith('volatile:') || v.startsWith('ref:volatile:')) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function blobName(fp: Fingerprint) {
   // 'sha256:<hex>' -> 'sha256-<hex>', a safe file name.
   let colonSplit = fp.value.split(':');
@@ -64,15 +75,18 @@ export class DiskCache implements StepCache {
   #root: String;
   #onRestore: (() => void)?;
   #onFileRestore: ((path: String, fp: Fingerprint) => Future<void>)?;
+  #uncachedSteps: HashSet<String>?;
   var #nextTempId = 0;
 
   new(
     root: String,
     onRestore: (() => void)? = null,
     onFileRestore: ((path: String, fp: Fingerprint) => Future<void>)? = null,
+    uncachedSteps: HashSet<String>? = null,
   ) : #root = root,
       #onRestore = onRestore,
-      #onFileRestore = onFileRestore;
+      #onFileRestore = onFileRestore,
+      #uncachedSteps = uncachedSteps;
 
   #tempSuffix(): String {
     let id = this.#nextTempId;
@@ -89,6 +103,10 @@ export class DiskCache implements StepCache {
   }
 
   async get(step: StepKey, key: CacheKey): Future<OutputManifest?> {
+    let uncached = this.#uncachedSteps;
+    if (uncached != null && uncached.has(step.value)) {
+      return null;
+    }
     let manifestPath = this.#manifestPath(step, key);
     if (!(await isFile(manifestPath))) {
       return null;
@@ -106,7 +124,11 @@ export class DiskCache implements StepCache {
       }
       let target = withRoot(this.#root, entry.name);
       await ensureParentDir(target);
-      await writeFileBytes(target, await readFileBytes(this.#blobPath(step, entry.fingerprint)));
+      // Restore via sibling temp file + rename so an existing inode (for
+      // example an mmap'd .cwasm or running binary) is never truncated in place.
+      let tmp = target + this.#tempSuffix();
+      await writeFileBytes(tmp, await readFileBytes(this.#blobPath(step, entry.fingerprint)));
+      await rename(tmp, target);
       if (onFileRestore != null) {
         await onFileRestore(entry.name, entry.fingerprint);
       }
@@ -119,6 +141,10 @@ export class DiskCache implements StepCache {
   }
 
   async put(step: StepKey, key: CacheKey, manifest: OutputManifest): Future<void> {
+    let uncached = this.#uncachedSteps;
+    if ((uncached != null && uncached.has(step.value)) || hasVolatileEntry(manifest)) {
+      return;
+    }
     let stateDir = withRoot(this.#root, stateDirOf(step.value));
     await ensureDir(stateDir + '/blobs');
     await ensureDir(stateDir + '/cache');

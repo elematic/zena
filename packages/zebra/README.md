@@ -15,12 +15,13 @@ zena pkg add zena-lang:zebra
 ## CLI Usage
 
 ```sh
-zena build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<target>]
+zena build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<target>] [-- <args>...]
 zena build --migrate [--dry-run] [-f|--force] [<package-dir>...]
 ```
 
 - `<target>` can be a script name in the current package (`zena build test`), a package directory (`zena build ./packages/app`, which runs `build`), or `<package-dir>:<script>` (`zena build ./packages/app:test`). With no `<target>`, `zena build` runs the current package's `build` script.
-- `-j` / `--jobs <n>` bounds parallel command execution (defaulting to `ZENA_AVAILABLE_PARALLELISM`).
+- `-- <args>...` appends shell-quoted arguments to the entry target's command only, running that entry step uncached without overwriting its saved freshness record.
+- `-j` / `--jobs <n>` bounds parallel command execution (defaulting to `ZEBRA_PARALLEL`, `WIREIT_PARALLEL`, or `ZENA_AVAILABLE_PARALLELISM`).
 - `-w` / `--watch` watches input globs, lockfiles, and package manifests for changes, re-running affected steps incrementally while keeping unchanged services alive in a `ServicePool` across rebuilds.
 - `-f` / `--force` bypasses freshness and cached outputs to rerun scripts unconditionally.
 - `--no-cache` disables restoring outputs from `.zebra/blobs/` when a step is not fresh.
