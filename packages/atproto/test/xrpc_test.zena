@@ -1,0 +1,33 @@
+/**
+ * `atproto/xrpc`'s client, against a server in the same process: the
+ * headers it sends.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal} from 'zena:assert';
+import {App, Router, Server} from 'zena:http';
+import {JsonObject, stringify} from 'zena:json';
+import {XrpcClient} from 'atproto/xrpc';
+
+export let tests = suite('atproto/xrpc', () => {
+  test('names the client in its user-agent when it is given one', async (ctx) => {
+    let router = new Router();
+    router.get('/xrpc/dev.example.echo', async (req, res, next, params) => {
+      let answer = new JsonObject();
+      answer['agent'] = req.getHeader('user-agent') ?? '';
+      res.type = 'application/json';
+      res.body = stringify(answer);
+    });
+    let app = new App();
+    app.use(router.routes());
+    let server = new Server(app, 0 as u16);
+    server.start();
+    try {
+      let client = new XrpcClient(`http://127.0.0.1:${server.port as i32}`);
+      client.userAgent = 'zena/9.9.9 (test)';
+      equal(((await client.query('dev.example.echo')) as JsonObject)['agent'] as String, 'zena/9.9.9 (test)');
+    } finally {
+      server.close();
+    }
+  });
+});

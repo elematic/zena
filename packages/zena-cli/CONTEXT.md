@@ -34,7 +34,9 @@ the `zena` command. The design is in
      release waiting for its maintainers and asks the registry to complete
      it, `ci.zena`, for `zena pkg ci create` and `zena pkg ci token`, and
      `admin.zena`, for `zena pkg admin`, the registry admins' list of who
-     may create scopes.
+     may create scopes. `version.zena` holds the command's version, which
+     `zena --version` prints and every registry call names in its
+     `user-agent`.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler/compile-file`), zebra, zenadoc, the language service and
      the formatter linked

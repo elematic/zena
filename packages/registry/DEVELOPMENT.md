@@ -444,6 +444,24 @@ is also the only way to change where staging's online rotation key is
 (`ROTATION_KMS`), since the App View cannot sign for accounts made with
 another key.
 
+### Requiring a newer zena
+
+`zena` names its version to every registry call, in its `user-agent`
+(`zena/0.1.0 (linux-x86_64)`), from `CLI_VERSION` in
+`packages/zena-cli/zena/version.zena`. Raise that with each release of the
+command, and in any change a registry will need its clients to have. The
+App View logs each call to its methods as a JSON line, with the method,
+the caller, that client and the answer's status, which Cloud Logging keeps.
+
+To make people upgrade, set the settings' `MIN_CLIENT_VERSION` and deploy:
+`describeRegistry` names it, `zena` stops before it calls and says to
+upgrade, and the App View refuses an older `zena`'s calls with
+`UpgradeRequired`. A client that names no `zena` version, such as the
+site's script, is not judged. `CLIENT_NOTICE` is a message `zena` prints
+before each command that calls the App View, such as a warning a week
+before the minimum rises. Commands that only read packages, `zena pkg add`
+and `zena pkg fetch`, do not call the App View and are not stopped.
+
 ### Backups and alerts
 
 Releases are permanent, so `deploy:setup` keeps the database from

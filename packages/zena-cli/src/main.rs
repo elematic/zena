@@ -268,6 +268,11 @@ fn main() -> Result<()> {
             module_path.to_string_lossy().into_owned(),
         ),
         ("ZENA_AVAILABLE_PARALLELISM".to_string(), cpus.to_string()),
+        // The platform `zena` names itself on to registries (zena/version.zena).
+        (
+            "ZENA_HOST_PLATFORM".to_string(),
+            format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        ),
         ("ZENA_STDLIB_DIR".to_string(), "/stdlib".to_string()),
         (
             "ZENA_WORKSPACE_ROOT".to_string(),

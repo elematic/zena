@@ -48,7 +48,17 @@ if [ "$PLC_MODE" = staging ]; then
 fi
 
 # The App View's configuration, as env.sh gives it, in gcloud's form.
-ENV_VARS="$(IFS=,; echo "${APP_VIEW_VARS[*]}")"
+# A file, since a value such as CLIENT_NOTICE may have commas in it, which
+# --set-env-vars would split on. Each value is quoted as YAML reads a
+# double-quoted string.
+ENV_FILE="$(mktemp)"
+trap 'rm -f "$ENV_FILE"' EXIT
+for pair in "${APP_VIEW_VARS[@]}"; do
+  value="${pair#*=}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s: "%s"\n' "${pair%%=*}" "$value" >> "$ENV_FILE"
+done
 SECRETS=""
 for pair in "${APP_VIEW_SECRETS[@]}"; do
   SECRETS+="${SECRETS:+,}${pair}:latest"
@@ -86,7 +96,7 @@ gcloud run deploy "$APP_VIEW_SERVICE" \
   --platform managed \
   --image "$IMAGE" \
   --service-account "$SERVICE_ACCOUNT_EMAIL" \
-  --set-env-vars "$ENV_VARS" \
+  --env-vars-file "$ENV_FILE" \
   --set-secrets "$SECRETS" \
   --memory 1Gi \
   --cpu 1 \

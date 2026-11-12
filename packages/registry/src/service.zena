@@ -77,6 +77,13 @@
  * - `APP_VIEW_SCOPE_CREATORS`: who may create a scope: `anyone`, the
  *   default, or `listed`, the admins and the accounts they list with
  *   `putScopeCreator` (`zena pkg admin allow`), as during a preview.
+ * - `APP_VIEW_MIN_CLIENT_VERSION`: the oldest `zena` whose calls the App
+ *   View's methods take, a version such as `0.2.0`: an older one is refused
+ *   with `UpgradeRequired`, and `describeRegistry` names it, so `zena`
+ *   stops before it calls. Any by default.
+ * - `APP_VIEW_CLIENT_NOTICE`: a message `describeRegistry` gives, which
+ *   `zena` prints before each command that calls the App View, such as one
+ *   asking people to upgrade before the minimum rises.
  * - `APP_VIEW_PRIVATE_READS`: `1` lets the App View read PDSes at
  *   addresses on this machine or a private network, as a stack on one
  *   machine needs (tests, demos). Off by default, so a DID document cannot
@@ -106,8 +113,10 @@
 import {Future} from 'zena:async';
 import {Unmanaged} from 'zena:core';
 import {App, Server, mount, serve as serveFiles} from 'zena:http';
+import {stringify} from 'zena:json';
 import {randomBytes} from 'zena:random';
 import {URL} from 'zena:url';
+import {Version} from 'zena-lang:semver';
 import {defaultProjectId} from 'google-cloud/auth';
 import {CloudDns} from 'google-cloud/dns';
 import {Firestore} from 'google-cloud/firestore';
@@ -176,6 +185,10 @@ export final class AppViewSettings {
   var privateReads = false;
   /** Who may create a scope (`APP_VIEW_SCOPE_CREATORS`). */
   var scopeCreation = ScopeCreation.Anyone;
+  /** The oldest `zena` the App View takes (`APP_VIEW_MIN_CLIENT_VERSION`), or null for any. */
+  var minimumClientVersion: Version | null = null;
+  /** The message for `zena`'s users (`APP_VIEW_CLIENT_NOTICE`), or null. */
+  var clientNotice: String | null = null;
   records: RecordsChoice;
 
   new(this.domain, this.serviceDid, this.rotationKey, this.reservedScopes, this.records);
@@ -383,6 +396,15 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
       }
     }
   }
+  var minimumClient: Version | null = null;
+  let minimumText = value('APP_VIEW_MIN_CLIENT_VERSION');
+  if (minimumText != null) {
+    try {
+      minimumClient = Version.parse(minimumText);
+    } catch (e) {
+      problems.push(`APP_VIEW_MIN_CLIENT_VERSION is a version, such as 0.2.0, not ${minimumText}`);
+    }
+  }
   let creatorsText = value('APP_VIEW_SCOPE_CREATORS') ?? 'anyone';
   if (creatorsText != 'anyone' && creatorsText != 'listed') {
     problems.push(`APP_VIEW_SCOPE_CREATORS is anyone or listed, not ${creatorsText}`);
@@ -450,6 +472,8 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
   settings.offlineRotationKey = offlineKey;
   settings.privateReads = privateReads == '1';
   settings.scopeCreation = if (creatorsText == 'listed') ScopeCreation.Listed else ScopeCreation.Anyone;
+  settings.minimumClientVersion = minimumClient;
+  settings.clientNotice = value('APP_VIEW_CLIENT_NOTICE');
 
   var plcStaging = false;
   let plcMode = value('APP_VIEW_PLC') ?? 'public';
@@ -572,6 +596,8 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   appViewConfig.offlineRotationKey = settings.offlineRotationKey;
   appViewConfig.privateReads = settings.privateReads;
   appViewConfig.scopeCreation = settings.scopeCreation;
+  appViewConfig.minimumClientVersion = settings.minimumClientVersion;
+  appViewConfig.clientNotice = settings.clientNotice;
   for (let did in settings.admins) {
     appViewConfig.admins.add(did);
   }
@@ -626,6 +652,10 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let appView = new AppView(client as PdsClient, appViewConfig, appViewStore, records, keys, submit,
       (count: i32) => randomBytes(count), dependencies);
   appView.derived = derived;
+  // A JSON line on standard output, which Cloud Run gives Cloud Logging.
+  appView.log = (entry) => {
+    console.log(stringify(entry.toJson()));
+  };
   let sessionSecret = config.sessionSecret ?? randomBytes(32);
   appView.sessions = new WebSessions(sessionSecret);
   // A DID document is written by whoever controls the DID, so the PDS it

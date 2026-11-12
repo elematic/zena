@@ -57,6 +57,7 @@ import { packageResolver } from './fetch.zena';
 import { IdentityError, didWebHost } from 'atproto/identity';
 import { URL } from 'zena:url';
 import { configDir, currentSession, saveSession } from './login.zena';
+import { CLI_VERSION, clientAgent } from './version.zena';
 import { REPO_GET_RECORD, REPO_PUT_RECORD } from 'atproto/methods';
 import {
   COMPLETE_RELEASE, CREATE_ORGANIZATION, CREATE_PACKAGE, DESCRIBE_REGISTRY, PUBLISH, UPLOAD_ARTIFACT
@@ -250,7 +251,7 @@ async function saveCaller(caller: Caller): Future<void> {
 /** A client for `registry` that calls `method` as `caller`. */
 export async function callerClient(caller: Caller, registry: Registry, method: String): Future<XrpcClient> {
   if (let AutomationToken {token} = caller) {
-    let client = new XrpcClient(registry.origin);
+    let client = registryXrpc(registry.origin);
     client.authorization = `Bearer ${token}`;
     return client;
   }
@@ -262,12 +263,37 @@ export async function findRegistry(args: ParsedArgs): Future<Registry> {
   if (let (true, given) = args.getOption('registry')) {
     origin = given;
   }
-  let described = (await new XrpcClient(origin).query(DESCRIBE_REGISTRY)) as JsonObject;
+  let described = (await registryXrpc(origin).query(DESCRIBE_REGISTRY)) as JsonObject;
   let did = described['did'] as String;
   await checkRegistryDid(origin, did);
+  let notice = described['clientNotice'];
+  if (notice is String && notice != '') {
+    console.error(`${origin} says: ${notice}`);
+  }
+  let minimum = described['minimumClientVersion'];
+  if (minimum is String && newerThanThis(minimum)) {
+    throw new PublishError(
+        `${origin} needs zena ${minimum} or newer, and this is zena ${CLI_VERSION}. Upgrade zena: in a checkout of Zena, git pull and npm run build.`);
+  }
   let registry = new Registry(origin, did, described['domain'] as String);
   registry.listsScopeCreators = described['scopeCreation'] == 'listed';
   return registry;
+}
+
+/** A client for the registry at `origin`, which names this command (`clientAgent`). */
+function registryXrpc(origin: String): XrpcClient {
+  let client = new XrpcClient(origin);
+  client.userAgent = clientAgent();
+  return client;
+}
+
+/** Whether `version`, a registry's minimum, is newer than this command; false when it is not a version. */
+function newerThanThis(version: String): boolean {
+  try {
+    return Version.parse(version).compareTo(Version.parse(CLI_VERSION)) > 0;
+  } catch (e) {
+    return false;
+  }
 }
 
 /**
@@ -332,7 +358,7 @@ function trimSlash(url: String): String {
 /** A client for `registry` that calls `method` as the signed-in maintainer. */
 export async function registryClient(session: Session, registry: Registry, method: String): Future<XrpcClient> {
   let token = await getServiceAuth(session, registry.did, method);
-  let client = new XrpcClient(registry.origin);
+  let client = registryXrpc(registry.origin);
   client.authorization = `Bearer ${token}`;
   return client;
 }

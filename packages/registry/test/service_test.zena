@@ -18,6 +18,7 @@ import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {parseDidDocument} from 'atproto/did';
 import {PlcOperation} from 'atproto/plc';
 import {AppView, ScopeCreation} from 'registry/app-view';
+import {Version} from 'zena-lang:semver';
 import {TrustedAppView} from 'pds/managed';
 import {Pds} from 'pds/pds';
 import {SigningKey} from 'pds/storage';
@@ -150,6 +151,8 @@ export let tests = suite('registry/service', () => {
       ('APP_VIEW_DNS_ZONE', 'pkg-zone'),
       ('APP_VIEW_DNS_PROJECT', 'dns-project'),
       ('APP_VIEW_SCOPE_CREATORS', 'listed'),
+      ('APP_VIEW_MIN_CLIENT_VERSION', '0.2.0'),
+      ('APP_VIEW_CLIENT_NOTICE', 'Upgrade zena, please'),
     ]));
     equal(pdsOf(config).port as i32, 8080);
     equal(pdsOf(config).clockId, 7);
@@ -175,6 +178,8 @@ export let tests = suite('registry/service', () => {
     equal(appView.reservedScopes.length, 2);
     equal(appView.reservedScopes[1], 'core');
     equal(appView.scopeCreation, ScopeCreation.Listed);
+    equal((appView.minimumClientVersion as Version).toString(), '0.2.0');
+    equal(appView.clientNotice as String, 'Upgrade zena, please');
     if (let InCloudDns {project, zone} = appView.records) {
       equal(project as String, 'dns-project');
         equal(zone, 'pkg-zone');
@@ -321,6 +326,8 @@ export let tests = suite('registry/service', () => {
     isTrue(firestore.contains('needs APP_VIEW_ROTATION_KEY or APP_VIEW_ROTATION_KMS_KEY'), firestore);
     isTrue(firestore.contains('needs APP_VIEW_HANDLE_RECORDS'), firestore);
     isTrue(firestore.contains('PDS_STORAGE=firestore needs APP_VIEW_SESSION_SECRET'), firestore);
+    let minimum = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_MIN_CLIENT_VERSION', 'soon')]);
+    isTrue(minimum.contains('APP_VIEW_MIN_CLIENT_VERSION is a version, such as 0.2.0, not soon'), minimum);
     let creators = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_SCOPE_CREATORS', 'everyone')]);
     isTrue(creators.contains('APP_VIEW_SCOPE_CREATORS is anyone or listed, not everyone'), creators);
     let records = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_HANDLE_RECORDS', 'cloud-dns')]);
