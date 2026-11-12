@@ -242,6 +242,13 @@ export let tests = suite('package-manager/records', () => {
     let twoMajors = release(`[${SOURCE_ARTIFACT}]`,
         `[${json}, ${dependency('did:web:json.example.com', '3.0.0', 'json3')}]`);
     equal(Release.fromValue(value(twoMajors), '1.4.2').dependencies.length, 2);
+    // Before 1.0, a minor version is a line of its own, and a patch version
+    // before 0.1.
+    let early = (first: String, second: String) => release(`[${SOURCE_ARTIFACT}]`,
+        `[${dependency('did:web:json.example.com', first, 'json')}, ${dependency('did:web:json.example.com', second, 'json2')}]`);
+    equal(Release.fromValue(value(early('^0.1.2', '^0.2.0')), '1.4.2').dependencies.length, 2);
+    equal(Release.fromValue(value(early('0.0.3', '0.0.4')), '1.4.2').dependencies.length, 2);
+    rejectsRelease(early('^0.1.2', '0.1.5'));
   });
 
   test('reads profiles', (ctx) => {

@@ -32,6 +32,17 @@ export let tests = suite('zena-lang:semver/version', () => {
     isFalse(Version.parse('2.0.0').isPrerelease);
   });
 
+  test('names the line of versions compatible with each, which is the major version only from 1.0', (ctx) => {
+    for (let (text, line) in [
+      ('1.4.2', '1'), ('2.0.0-rc.1', '2'), ('10.0.3', '10'),
+      // Before 1.0, the first number that is not zero is the one a breaking
+      // change raises.
+      ('0.2.3', '0.2'), ('0.2.0', '0.2'), ('0.0.3', '0.0.3'), ('0.0.0', '0.0.0'), ('0.1.0-beta', '0.1'),
+    ]) {
+      equal(Version.parse(text).compatibleLine(), line, text);
+    }
+  });
+
   test('rejects what is not a version', (ctx) => {
     let texts = [
       '', '1', '1.2', '1.2.3.4', 'v1.2.3', ' 1.2.3', '1.2.3 ', '01.2.3', '1.02.3', '1.2.03',

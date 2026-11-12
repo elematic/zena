@@ -105,17 +105,20 @@ export let tests = suite('package-manager/registry', () => {
   test('lists versions, and picks the latest that is not retracted', async (ctx): Future<void> => {
     let pds = started();
     let account = pds.main;
-    for (let version in ['1.0.0', '1.4.2', '1.5.0', '2.0.0-rc.1', '2.0.0', '2.1.0']) {
+    for (let version in ['0.1.0', '0.1.4', '0.2.0', '1.0.0', '1.4.2', '1.5.0', '2.0.0-rc.1', '2.0.0', '2.1.0']) {
       publish(account, version);
     }
     account.retract(new Retraction(Version.parse('2.1.0'), 'broken'));
     let document = await pds.resolver().resolveDid(DID);
     let versions = await listVersions(document);
-    equal(versions.releases.length, 6);
+    equal(versions.releases.length, 9);
     equal((versions.latest() as Version).toString(), '2.0.0');
-    equal((versions.latest(1 as i64) as Version).toString(), '1.5.0');
-    equal((versions.latest(2 as i64, true) as Version).toString(), '2.0.0');
-    isNull(versions.latest(3 as i64));
+    equal((versions.latest('1') as Version).toString(), '1.5.0');
+    equal((versions.latest('2', true) as Version).toString(), '2.0.0');
+    isNull(versions.latest('3'));
+    // Before 1.0, each minor version is a line of its own.
+    equal((versions.latest('0.1') as Version).toString(), '0.1.4');
+    equal((versions.latest('0.2') as Version).toString(), '0.2.0');
     isTrue(versions.has(Version.parse('1.4.2')));
     pds.close();
   });
