@@ -10,7 +10,6 @@ import { tryInstantiateGenericFunction } from './generics.zena';
 import { recordUnionMembersOf } from './members.zena';
 import { isAssignableTo, typesEqual } from './relations.zena';
 import { subtractNullFromType } from './unions.zena';
-import { inlineRecordOf } from './annotations.zena';
 import { growable } from 'zena:core';
 
 /**
@@ -24,7 +23,7 @@ import { growable } from 'zena:core';
  */
 function noteRecordErasure(ctx: CheckerContext, source: Type, target: Type) {
   // An inline record slot is its record's fields: it knows the shape.
-  let targetBase = baseType(subtractNullFromType(inlineRecordOf(target) ?? target));
+  let targetBase = baseType(unwrapAliases(subtractNullFromType(target)));
   if (targetBase is RecordT) {
     let targetRecord = targetBase;
     if (!targetRecord.isExistential) {
@@ -33,13 +32,13 @@ function noteRecordErasure(ctx: CheckerContext, source: Type, target: Type) {
   } else if (targetBase is TypeParameterType || targetBase is ErrorType) {
     return;
   }
-  match (baseType(subtractNullFromType(source))) {
+  match (baseType(unwrapAliases(subtractNullFromType(source)))) {
     case RecordT as rec: {
       noteErasedRecord(ctx, rec);
     }
     case UnionT {types}: {
       for (let member in types) {
-        let memberBase = baseType(member);
+        let memberBase = baseType(unwrapAliases(member));
         if (memberBase is RecordT) {
           noteErasedRecord(ctx, memberBase);
         }
@@ -54,8 +53,8 @@ function noteRecordErasure(ctx: CheckerContext, source: Type, target: Type) {
  * one, notes `other` for the erased `==` they compare through.
  */
 export function noteExistentialComparison(ctx: CheckerContext, existential: Type, other: Type): void {
-  let e = baseType(subtractNullFromType(existential));
-  let o = baseType(subtractNullFromType(other));
+  let e = baseType(unwrapAliases(subtractNullFromType(existential)));
+  let o = baseType(unwrapAliases(subtractNullFromType(other)));
   if (e is RecordT && o is RecordT) {
     let eRecord = e;
     let oRecord = o;
@@ -79,7 +78,7 @@ function noteErasedRecord(ctx: CheckerContext, rec: RecordT): void {
   }
   ctx.model.erasedRecordTypes.push(rec);
   for (let key in rec.properties.keys()) {
-    let fieldBase = baseType(subtractNullFromType(rec.properties[key]));
+    let fieldBase = baseType(unwrapAliases(subtractNullFromType(rec.properties[key])));
     if (fieldBase is RecordT) {
       noteErasedRecord(ctx, fieldBase);
     }
@@ -124,14 +123,14 @@ export function checkAndRegisterInterfaceAdaptation(ctx: CheckerContext, node: N
   // carried to codegen, which packs the fat pointer under a null guard
   // (null stays null rather than becoming a pointer to nothing).
   let sourceIsNullable = isNullableType(sourceType);
-  let effectiveSource = if (sourceIsNullable) subtractNullFromType(sourceType)
-      else sourceType;
+  let effectiveSource = unwrapAliases(if (sourceIsNullable) subtractNullFromType(sourceType)
+      else sourceType);
 
   var effectiveTarget = unwrapAliases(targetType);
   if (let UnionT {types} = effectiveTarget) {
     for (let member in types) {
       if (isAssignableTo(ctx, effectiveSource, member)) {
-        effectiveTarget = member;
+        effectiveTarget = unwrapAliases(member);
         break;
       }
     }
@@ -185,8 +184,8 @@ export function checkAndRegisterInterfaceAdaptation(ctx: CheckerContext, node: N
     }
   }
 
-  let nonNullSrc = subtractNullFromType(sourceType);
-  let nonNullTgt = subtractNullFromType(effectiveTarget);
+  let nonNullSrc = unwrapAliases(subtractNullFromType(sourceType));
+  let nonNullTgt = unwrapAliases(subtractNullFromType(effectiveTarget));
   if (nonNullSrc is RecordT && nonNullTgt is RecordT) {
     // A row stands for fields each specialization fills in differently,
     // so `{x: i32, ...R}` to `{x: i32}` adapts though both name only `x`.
@@ -237,7 +236,7 @@ export function checkAndRegisterInterfaceAdaptation(ctx: CheckerContext, node: N
   // others hold — and the repack is a view, so the member chain at the
   // next use then casts that view's instance to the wrong layout and
   // traps.
-  let declaredTgt = subtractNullFromType(targetType);
+  let declaredTgt = unwrapAliases(subtractNullFromType(targetType));
   if (nonNullSrc is UnionT && declaredTgt is RecordT) {
     let members = recordUnionMembersOf(nonNullSrc);
     if (members != null) {

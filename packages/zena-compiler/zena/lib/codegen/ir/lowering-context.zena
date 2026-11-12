@@ -36,7 +36,7 @@ import {
 import { getCellKey, getCellStruct } from '../type-mapping.zena';
 import {
   getClassInterfaceKey, getClassKey, getClassMethodKey, getInterfaceKey,
-  getSignatureKey, ClassKey, InterfaceKey,
+  getSignatureKey, ClassKey, InterfaceKey, unwrapAliases,
 } from '../codegen-utils.zena';
 import { IrRefField, IrRefFunc, IrRefGlobal, IrRefType } from './ir.zena';
 import { IrBuilder } from './builder.zena';
@@ -818,7 +818,8 @@ export final class LoweringContext {
    * value becomes its eq-typed instance (field 0); everything else
    * passes through unchanged.
    */
-  unwrapFatPointer(base: Type, value: i32): i32 {
+  unwrapFatPointer(rawBase: Type, value: i32): i32 {
+    let base = unwrapAliases(rawBase);
     if (base is RecordType) {
       let dispatch = this.recordDispatchOf(base);
       return this.fatPointerInstance(dispatch.fatPtrType, value);
@@ -848,7 +849,7 @@ export final class LoweringContext {
       if (nonNullCount != 1 || nullCount == 0) {
         return value;
       }
-      let inner = baseType(nonNull as Type);
+      let inner = unwrapAliases(nonNull as Type);
       var fatOpt: WasmStruct | null = null;
       if (inner is RecordType) {
         fatOpt = this.recordDispatchOf(inner).fatPtrType;

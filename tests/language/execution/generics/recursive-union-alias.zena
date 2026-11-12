@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 6
+// @invoke: main
+
+// Recursive union type aliases used as type arguments to generic classes
+// keep their nominal specialization key across `eraseTypeParameters`, both
+// when nothing inside needs erasure and when a `distinct type` member is
+// erased to its underlying representation.
+distinct type Tag = String;
+
+type NodeValue = String | Iterable<NodeValue> | Box<i32> | null;
+type TaggedValue = Tag | Iterable<TaggedValue> | null;
+
+export function main(): i32 {
+  let nodes = new GrowableArray<NodeValue>();
+  nodes.push('a');
+  nodes.push(new Box(10));
+  let nested = new GrowableArray<NodeValue>();
+  nested.push('b');
+  nodes.push(nested);
+
+  let tagged = new GrowableArray<TaggedValue>();
+  tagged.push('x' as Tag);
+  tagged.push(null);
+  let nestedTagged = new GrowableArray<TaggedValue>();
+  nestedTagged.push('y' as Tag);
+  tagged.push(nestedTagged);
+
+  return nodes.length + tagged.length;
+}

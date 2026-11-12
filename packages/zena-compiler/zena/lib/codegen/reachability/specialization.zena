@@ -474,14 +474,17 @@ export final class Specializer implements SpecializerInterface {
   }
 
   registerSpecializedClass(ct: ClassType, classDecl: Node | null, sourceModel: SemanticModel): void {
-    let cKey = getClassKey(ct);
-    if (this.pass.wasm.classInfos.has(cKey)) {
+    if (!this.preRegisterClassStruct(ct)) {
       return;
     }
-    let ctVtable = this.pass.wasm.classVtable(cKey);
+    this.finishSpecializedClass(ct, classDecl, sourceModel);
+  }
 
-    let ctParams = getClassTypeParameters(ct);
-    let isErasedClass = containsErasedType(ct as Type);
+  preRegisterClassStruct(ct: ClassType): boolean {
+    let cKey = getClassKey(ct);
+    if (this.pass.wasm.classInfos.has(cKey)) {
+      return false;
+    }
 
     // 1. Pre-register empty structs
     let structName = cKey as String;
@@ -499,6 +502,18 @@ export final class Specializer implements SpecializerInterface {
       this.pass.wasm.types.push(emptyVTableStruct);
     }
     info.vtableStructType = emptyVTableStruct;
+    return true;
+  }
+
+  finishSpecializedClass(ct: ClassType, classDecl: Node | null, sourceModel: SemanticModel): void {
+    let cKey = getClassKey(ct);
+    let info = this.pass.wasm.classInfos[cKey];
+    let emptyStruct = info.structType;
+    let emptyVTableStruct = info.vtableStructType as WasmStruct;
+    let ctVtable = this.pass.wasm.classVtable(cKey);
+
+    let ctParams = getClassTypeParameters(ct);
+    let isErasedClass = containsErasedType(ct as Type);
 
     // 2. Link super types
     let {superType} = ct;
@@ -933,13 +948,18 @@ export final class Specializer implements SpecializerInterface {
   }
 
   registerSpecializedInterface(it: InterfaceType, ifaceDecl: InterfaceDeclaration | null, sourceModel: SemanticModel): void {
+    if (!this.preRegisterInterfaceStruct(it)) {
+      return;
+    }
+    this.finishSpecializedInterface(it, ifaceDecl, sourceModel);
+  }
+
+  preRegisterInterfaceStruct(it: InterfaceType): boolean {
     let iKey = getInterfaceKey(it);
 
     if (this.pass.wasm.interfaceStructs.has(iKey)) {
-      return;
+      return false;
     }
-
-    let itParams = getInterfaceTypeParameters(it);
 
     // 1. Pre-register empty vtable and fat ptr structs
     let structName = iKey as String;
@@ -954,6 +974,15 @@ export final class Specializer implements SpecializerInterface {
     let emptyStruct = new WasmStruct(structName + "_FatPtr", fatPtrFields);
     this.pass.wasm.types.push(emptyStruct);
     this.pass.wasm.interfaceStructs[iKey] = emptyStruct;
+
+    // The vtable's slots are added for the members reached code calls
+    // (ReachabilityAnalysis.#syncInterfaceSlots).
+    this.pass.specializedInterfaces.push(it);
+    return true;
+  }
+
+  finishSpecializedInterface(it: InterfaceType, ifaceDecl: InterfaceDeclaration | null, sourceModel: SemanticModel): void {
+    let itParams = getInterfaceTypeParameters(it);
 
     // 2. Discover referenced types in members (fields, methods) — as
     // SIGNATURES: an interface method's function type is not a value,
@@ -976,10 +1005,6 @@ export final class Specializer implements SpecializerInterface {
       }
     }
     this.pass.suppressNameEvidence = savedSuppress;
-
-    // The vtable's slots are added for the members reached code calls
-    // (ReachabilityAnalysis.#syncInterfaceSlots).
-    this.pass.specializedInterfaces.push(it);
   }
 
   /**
