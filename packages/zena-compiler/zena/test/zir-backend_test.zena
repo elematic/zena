@@ -778,6 +778,75 @@ export let tests = suite('zir backend', () => {
         'no getter dispatch on the forwarded record');
   });
 
+  test('a tuple literal argument is passed as its elements', async (ctx) => {
+    // Boxed tuples explode as records do (#373): `area` only reads
+    // elements, `perimeter` destructures, and `both` passes its tuple on
+    // whole to both, so `main` calls `both.core` with the literal's
+    // elements and no tuple is built.
+    let result = await compileWithZir(dedentRaw`
+        function area(p: (i32, i32)): i32 { return p[0] * p[1]; }
+        function perimeter(p: (i32, i32)): i32 { let (w, h) = p; return 2 * (w + h); }
+        function both(p: (i32, i32)): i32 { return area(p) + perimeter(p); }
+        export let main = (): i32 => area((3, 4)) + both((2, 5));
+        `);
+    assertNoAllocation(result, '$main', 'a tuple literal argument is never built');
+    let coreCalls = growable<String>(['call $area.core', 'call $both.core']);
+    assertFunctionUses(result, '$main', coreCalls,
+        'a call passing a literal goes to the core');
+    assertNoAllocation(result, '$both.core',
+        'the tuple the core rebuilds for its parameter has no uses');
+    let innerCores = growable<String>(['call $area.core', 'call $perimeter.core']);
+    assertFunctionUses(result, '$both.core', innerCores,
+        'a tuple passed on whole is passed as its elements');
+  });
+
+  test('a tuple passed to a constructor, super(...) or a method is passed as its elements', async (ctx) => {
+    let result = await compileWithZir(dedentRaw`
+        class Base {
+          x: i32;
+          y: i32;
+          new(p: (i32, i32)) : x = p[0], y = p[1];
+        }
+        final class Sub extends Base {
+          new(z: i32) : super((z, z + 1));
+        }
+        final class Scale {
+          k: i32;
+          new(this.k);
+          apply(p: (i32, i32)): i32 { return this.k * (p[0] + p[1]); }
+        }
+        function sum<T>(p: (i32, T)): i32 { return p[0]; }
+        export let main = (): i32 => {
+          let b = new Base((1, 2));
+          let s = new Sub(3);
+          let k = new Scale(2);
+          return b.x + s.y + k.apply((5, 6)) + sum<i32>((7, 8));
+        };
+        `);
+    // The instances are allocated by their factories.
+    assertNoAllocation(result, '$main', 'no tuple literal is built');
+    let named = (prefix: String, suffix: String) => {
+      var found = '';
+      for (let chunk in result.split('(func $')) {
+        let name = chunk.split(' ')[0];
+        if (name.startsWith(prefix) && name.endsWith(suffix)) {
+          found = '$' + name;
+        }
+      }
+      isTrue(found.length > 0, `no function ${prefix}…${suffix}`);
+      return found;
+    };
+    assertFunctionUsesTimes(result, named('Sub_', '<constructor>'),
+        'struct.new', 1, 'the tuple passed to super is never built');
+    let cores = growable<String>([
+      `call ${named('Base_', '<constructor>.core')}`,
+      `call ${named('Scale_', 'apply.core')}`,
+      'call $sum_spec_i32.core',
+    ]);
+    assertFunctionUses(result, '$main', cores,
+        'a constructor, a method and a specialization take the elements');
+  });
+
   test('a record literal passed to a constructor is passed as its fields', async (ctx) => {
     // The named-arguments idiom for a class: `P`'s constructor only reads
     // fields of its record parameter, so `new P({x: 3})` calls the

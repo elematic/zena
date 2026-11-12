@@ -1,8 +1,10 @@
 # Argument Explosion
 
 **Status: Implemented for top-level functions and constructors, and
-for top-level functions' record results** (`ir/explode.zena`). The later
-phases below are not.
+for top-level functions' record results** (`ir/explode.zena`). Boxed
+tuple parameters explode too ([Tuples](#tuples)); tuple results and
+held tuple variables do not yet. The later phases below are not
+implemented.
 
 A function that takes a record parameter also gets a version whose
 signature carries the record's fields as individual parameters, and a
@@ -350,7 +352,9 @@ every use of it, outside any nested function (which would capture it),
 is one of:
 
 - `p.field` (not `p?.field`), including under `??`;
-- `let {...} = p`, and a destructuring parameter's own pattern;
+- `p[0]`, an element of a tuple;
+- `let {...} = p` or `let (...) = p`, and a destructuring parameter's
+  own pattern;
 - `{...p, ...}` in a record literal. A spread copies the fields of the
   source's static type, each read through `recordDispatchRead`, which
   answers from the fields of a record held as them, presence words
@@ -457,6 +461,39 @@ Explosion does not retire a record shape's dispatch: the forwarder and
 any other boxed use still read through it. When no call reaches the
 forwarder, harvest (`ir/harvest.zena`, `-O1` and up) deletes it, and the
 dispatch's getters and vtable with it if nothing else uses them.
+
+### Tuples
+
+A boxed tuple parameter explodes into its elements wherever a record
+parameter would, in functions, specializations, constructors,
+`super(...)` and methods, and by the same two facts (#373):
+
+```zena
+function area(p: (i32, i32)): i32 {
+  return p[0] * p[1];
+}
+
+area((3, 4));   // calls area.core(3, 4): no tuple is built
+```
+
+A tuple is a struct with one immutable field per element, named by its
+position, with no table and no getters. `getTupleDispatch` gives each
+tuple struct a stand-in `RecordDispatchInfo`, flagged `isTuple`. Its
+fields are the struct's, and the struct is its fat pointer, concrete type
+and table. So the explosion's data structures (`Candidate`,
+`ExplosionSpec`, `explodedRecords`) carry tuples unchanged, and only the
+primitives under them branch on the flag. `recordDispatchRead` reads an
+element with `struct_get`, and `packRecord` builds a tuple with
+`struct_new` alone. `#exactLiteralFields` lowers a tuple literal whose
+type has the parameter's struct to its elements
+(`#lowerTupleLiteralFields`, which builds the literal itself too).
+Reachability records tuple literal arguments under the same keys as
+record literal ones.
+
+A core binds the parameter to a tuple built from its elements, as it
+binds a record. An element read in the body is a `struct_get` off that
+`struct_new`, which simplify's allocation forwarding answers from the
+operand, and dead-code elimination then deletes the tuple.
 
 ## Verification
 
@@ -716,6 +753,9 @@ Not yet covered:
 ## Later phases
 
 - The `inline` parameter guarantee above.
+- Tuple results and held tuple variables, as for records, and a tuple
+  parameter that is matched (`match (p) { case (a, b): ... }`) counting
+  as fields-only (#373).
 - Weighting call sites, for example by loop depth, for a function with
   few unpacked and many heap callers, whose heap callers each pay the
   forwarder's up-front field reads.

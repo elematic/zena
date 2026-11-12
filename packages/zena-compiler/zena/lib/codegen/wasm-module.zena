@@ -1023,6 +1023,14 @@ export final class RecordDispatchInfo {
    * never emitted.
    */
   var isExistential: boolean = false;
+  /**
+   * A boxed tuple's stand-in (`getTupleDispatch`), so that argument
+   * explosion carries tuples as it does records: `fields` are the tuple
+   * struct's, read with `struct_get` and built with `struct_new` alone.
+   * The struct is its fat pointer, concrete type and table, and
+   * `vtableGlobal` is a placeholder that is never emitted.
+   */
+  var isTuple: boolean = false;
 
   new(this.fatPtrType, this.vtableType, this.concreteType, this.vtableGlobal, this.fields, this.getterTypes, this.optionalNames, this.inOptionalNames);
 
@@ -1860,6 +1868,8 @@ export final class WasmModule {
   adaptedDispatchInfos = new Array<RecordDispatchInfo>();
   /** Existential record types' dispatches (`getExistentialDispatch`). */
   existentialDispatchInfos = new Array<RecordDispatchInfo>();
+  /** Boxed tuples' stand-in dispatches, by tuple struct (`getTupleDispatch`). */
+  tupleDispatchInfos = new HashMap<WasmStruct, RecordDispatchInfo>();
   /** Tables that pack a record into an existential (`getExistentialPack`). */
   existentialPacks = new Array<RecordForwardTable>();
   /** Tables reading a closed record through another fat pointer (`getForwardDispatch`). */
@@ -2220,6 +2230,25 @@ export final class WasmModule {
    * an existential's) into the existential `target`. A packed value's
    * instance is the source value itself, and each slot forwards to it.
    */
+  /**
+   * The stand-in dispatch through which argument explosion reads and
+   * builds the boxed tuples of struct `st` (`RecordDispatchInfo.isTuple`):
+   * one per struct, so dispatches compare by identity as records' do.
+   */
+  getTupleDispatch(model: SemanticModel, st: WasmStruct): RecordDispatchInfo {
+    if (let (true, existing) = this.tupleDispatchInfos.get(st)) {
+      return existing;
+    }
+    let placeholder = new WasmGlobal("tuple", "tuple", new ValTypeRef(st),
+        false, null, null, model);
+    let none = new Array<String>();
+    let info = new RecordDispatchInfo(st, st, st, placeholder, st.fields,
+        new Array<WasmSignature>(), none, none);
+    info.isTuple = true;
+    this.tupleDispatchInfos[st] = info;
+    return info;
+  }
+
   getExistentialPack(model: SemanticModel, source: RecordDispatchInfo, target: RecordDispatchInfo,
       hashFunc: WasmFunction | null): RecordForwardTable {
     for (let pack in this.existentialPacks) {

@@ -42,23 +42,24 @@ import {
   AssignmentExpression, BinaryExpression, BlockStatement, CallExpression,
   ClassDeclaration, Expression,
   ExpressionStatement, FunctionExpression, FunctionDeclaration, IfExpression, MatchCase,
-  MatchExpression, ReturnStatement,
+  IndexExpression, MatchExpression, ReturnStatement,
   VariableDeclaration, IdentifierPattern, Identifier, MemberExpression,
-  MethodDefinition, Parameter, RecordLiteral, RecordPattern,
+  MethodDefinition, Parameter, RecordLiteral, RecordPattern, TupleLiteral, TuplePattern,
   SpreadElement, SuperInitializer, Node, hasEnsuresClause,
 } from '../../ast.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import { Symbol, SymbolId, noSymbolId } from '../../scope/symbol.zena';
-import { ClassType, FunctionType, RecordType, Type, baseType } from '../../types.zena';
+import { ClassType, FunctionType, RecordType, TupleType, Type, baseType } from '../../types.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType } from '../wasm.zena';
 import { valueEqOperand } from '../value-equality.zena';
 import {
   ClassCodegenInfo, WasmModule, WasmFunction, RecordDispatchInfo, ExplosionSpec,
+  asWasmStruct,
 } from '../wasm-module.zena';
 import {
   inlineParamLayoutOf, inlineRecordResultOf, recordWasmFields, sortedOptionalNames,
-  substituteTypeParamsInFunctionContext,
+  substituteTypeParamsInFunctionContext, typeToValTypeWithSub,
 } from '../type-mapping.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
@@ -1231,7 +1232,7 @@ function noteLiteralSuperArgs(md: MethodDefinition, ct: ClassType,
     let superKey = getClassKey(superCt) as String;
     let ctorMethod = ctorMethodOf(model, si.constructorName);
     for (var k = 0; k < si.args.length; k += 1) {
-      if (si.args[k] is RecordLiteral) {
+      if (si.args[k] is RecordLiteral || si.args[k] is TupleLiteral) {
         out.add(recordLiteralCtorArgKey(superKey, ctorMethod, k));
       }
     }
@@ -1691,7 +1692,11 @@ function classifyParams(dc: DemandContext, f: WasmFunction, owner: Node,
       available, result, returns);
 }
 
-/** The dispatch of a parameter whose declared type is a record type. */
+/**
+ * The dispatch of a parameter whose declared type is a record type, or
+ * the stand-in dispatch of one whose type is a boxed tuple
+ * (`RecordDispatchInfo.isTuple`).
+ */
 function recordDispatchOfParam(wasm: WasmModule, f: WasmFunction,
     name: Identifier): RecordDispatchInfo | null {
   let sym = f.model.resolveDeclaration(name);
@@ -1703,6 +1708,10 @@ function recordDispatchOfParam(wasm: WasmModule, f: WasmFunction,
     return null;
   }
   let rt = baseType(substituteTypeParamsInFunctionContext(wasm, f, declared));
+  if (rt is TupleType) {
+    let st = asWasmStruct(typeToValTypeWithSub(wasm, rt, f));
+    return if (st != null) wasm.getTupleDispatch(f.model, st) else null;
+  }
   if (!(rt is RecordType)) {
     return null;
   }
@@ -1760,7 +1769,8 @@ function usesOnlyFields(dc: DemandContext, owner: Node,
 }
 
 /**
- * `ident.field`, `let {...} = ident`, `{...ident}` in a record literal,
+ * `ident.field`, `ident[0]` (a tuple's element), `let {...} = ident` or
+ * `let (...) = ident`, `{...ident}` in a record literal,
  * `g(..., ident, ...)` for a top-level function `g`, or
  * `super(..., ident, ...)` (or `super.name(...)`) to the constructor
  * keyed `superKey`, outside any nested function: a closure would capture
@@ -1790,10 +1800,14 @@ function isFieldUse(dc: DemandContext, ident: Identifier, owner: Node,
   } else if (parent is MemberExpression) {
     accepted = (parent.object as Node) === (ident as Node) &&
         !parent.optional && !parent.isSymbolAccess;
+  } else if (parent is IndexExpression) {
+    // A tuple's element, read with `struct_get`, which simplify answers
+    // from the struct the core builds on entry.
+    accepted = (parent.object as Node) === (ident as Node) && !parent.optional;
   } else if (parent is VariableDeclaration) {
     let pattern = parent.pattern;
     accepted = (parent.init as Node) === (ident as Node) &&
-        pattern is RecordPattern;
+        (pattern is RecordPattern || pattern is TuplePattern);
   } else if (parent is CallExpression) {
     forward = forwardOf(dc, parent, ident, model);
     accepted = forward != null;

@@ -721,6 +721,10 @@ export final class LoweringContext {
         return exploded.values[fieldIdx];
       }
     }
+    if (dispatch.isTuple) {
+      return this.b.emit(IrOp.struct_get, dispatch.fields[fieldIdx].type, receiver,
+          this.b.addRef(new IrRefField(dispatch.concreteType, propName)));
+    }
     let recv = this.stripNonNull(receiver);
     let instance = this.b.emit(IrOp.iface_instance,
         new ValTypeStructRef() as ValType, recv, -1);
@@ -2021,18 +2025,29 @@ export final class LoweringContext {
   }
 
   /**
+   * A record value: the struct built from `values`, packed with its
+   * table; a tuple's (`RecordDispatchInfo.isTuple`) is the struct.
+   */
+  packRecord(d: RecordDispatchInfo, values: GrowableArray<i32>): i32 {
+    let instance = this.b.emit(IrOp.struct_new,
+        new ValTypeRef(d.concreteType) as ValType,
+        this.b.pushArgList(values),
+        this.b.addRef(new IrRefType(d.concreteType)));
+    if (d.isTuple) {
+      return instance;
+    }
+    return this.b.emit(IrOp.iface_pack,
+        new ValTypeRef(d.fatPtrType) as ValType, instance,
+        this.b.addRef(new IrRefGlobal(d.vtableGlobal)));
+  }
+
+  /**
    * A record value built from field values in `d.fields` order, held
    * as those fields (`explodedRecords`): it dies unless some use needs
    * the record whole.
    */
   heldRecord(d: RecordDispatchInfo, values: GrowableArray<i32>): i32 {
-    let instance = this.b.emit(IrOp.struct_new,
-        new ValTypeRef(d.concreteType) as ValType,
-        this.b.pushArgList(values),
-        this.b.addRef(new IrRefType(d.concreteType)));
-    let record = this.b.emit(IrOp.iface_pack,
-        new ValTypeRef(d.fatPtrType) as ValType, instance,
-        this.b.addRef(new IrRefGlobal(d.vtableGlobal)));
+    let record = this.packRecord(d, values);
     this.explodedRecords[record] = new ExplodedRecord(d, values);
     return record;
   }

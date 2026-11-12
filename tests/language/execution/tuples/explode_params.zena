@@ -1,0 +1,36 @@
+// @mode: run
+// @result: 0
+// A boxed tuple parameter whose every use reads an element is passed as its
+// elements when a call has them on hand (#373), as a record parameter is
+// (docs/design/argument-explosion.md): no tuple is built for the call.
+
+function area(p: (i32, i32)): i32 {
+  return p[0] * p[1];
+}
+
+function perimeter(p: (i32, i32)): i32 {
+  let (w, h) = p;
+  return 2 * (w + h);
+}
+
+// Passed on whole to another function that only reads elements.
+function both(p: (i32, i32)): i32 {
+  return area(p) + perimeter(p);
+}
+
+// Not every use reads an element: the tuple is stored, so it stays boxed.
+function keep(p: (i32, i32)): Array<(i32, i32)> {
+  return [p];
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (area((3, 4)) != 12) { failures += 1; }
+  if (perimeter((3, 4)) != 14) { failures += 2; }
+  if (both((2, 5)) != 24) { failures += 4; }
+  // A boxed tuple passed in is read once, by the forwarder.
+  let stored: (i32, i32) = (6, 7);
+  if (area(stored) != 42 || both(stored) != 68) { failures += 8; }
+  if (keep((1, 2))[0][1] != 2) { failures += 16; }
+  return failures;
+};
