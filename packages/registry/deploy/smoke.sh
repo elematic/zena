@@ -9,8 +9,8 @@
 #   PDS_ENV=staging npm run deploy:smoke -w @zena-lang/registry
 #
 # Once per environment, `smoke.sh setup` makes what it uses, as you, signed
-# in with `zena pkg login` as an owner of the scope SMOKE_SCOPE (set in
-# environments/<PDS_ENV>.sh): the canary package `smoke` at 1.0.0,
+# in with `zena pkg login` as an owner of the scope SMOKE_SCOPE (from the
+# environment's settings): the canary package `smoke` at 1.0.0,
 # and the automation account `smoke-ci`, one of its publishers, whose token
 # it keeps in Secret Manager as SMOKE_SECRET.
 #

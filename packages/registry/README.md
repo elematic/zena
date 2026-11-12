@@ -128,33 +128,34 @@ padstone reads these, and so does the App View for the PDS it runs in the same p
 | `ZENA_HTTP_HEADER_TIMEOUT_SECONDS` | How long a client may take to send a request's headers.                                                                               | `30`                         |                        |                                            |
 | `ZENA_HTTP_MAX_CONNECTIONS`        | How many connections the server keeps open at once.                                                                                   | `1024`                       |                        |                                            |
 
-### The environments' settings (`deploy/environments/`)
+### The environments' settings
 
-Each environment's settings are checked in, as `deploy/environments/staging.sh` and `production.sh`, which `deploy/env.sh` reads for `PDS_ENV`. They hold public values only. A deploy script refuses a missing setting, and a `ZENA_*` variable that once gave one, such as `ZENA_GCP_PROJECT`, when it disagrees with the file.
+Each environment's settings are checked in to the operator's private repository, as `staging.sh` and `production.sh`, shaped as `deploy/environments/example.sh` is. `deploy/env.sh` reads `$ZENA_DEPLOY_SETTINGS/<PDS_ENV>.sh`. They hold public values only, but this repository does not name the project or the admins. A deploy script refuses a missing setting, and a `ZENA_*` variable that once gave one, such as `ZENA_GCP_PROJECT`, when it disagrees with the file.
 
-| Setting                | What it is                                                                                                         | Staging                          | Production               |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------- | ------------------------ |
-| `PROJECT`              | The Google Cloud project.                                                                                          | `meta-garage-420114`             | `meta-garage-420114`     |
-| `REGION`               | The region of the services, the bucket and the image.                                                              | `us-central1`                    | `us-central1`            |
-| `REPO`                 | The Artifact Registry repository of the image.                                                                     | `cloud-run-images`               | `cloud-run-images`       |
-| `FIRESTORE_LOCATION`   | The Firestore database's location.                                                                                 | `us-central1`                    | `us-central1`            |
-| `KMS_LOCATION`         | The key ring's location.                                                                                           | `us-central1`                    | `us-central1`            |
-| `DOMAIN`               | The App View's domain, for `APP_VIEW_DOMAIN`.                                                                      | `pkg-staging.zena-lang.dev`      | `pkg.zena-lang.dev`      |
-| `PDS_DOMAIN`           | padstone's domain.                                                                                                 | `padstone-staging.zena-lang.dev` | `padstone.zena-lang.dev` |
-| `PLC_MODE`             | `APP_VIEW_PLC`.                                                                                                    | `staging`                        | `public`, required       |
-| `ROTATION_KMS`         | `1` keeps the online rotation key in Cloud KMS; `0` in a Secret Manager secret. Changing it needs a reset staging. | `1`                              | `1`, required            |
-| `OFFLINE_ROTATION_KEY` | The `did:key` of the operator's offline rotation key, for `APP_VIEW_OFFLINE_ROTATION_KEY`.                         | none                             | the operator's, required |
-| `ADMIN_DIDS`           | The admins' DIDs, for `APP_VIEW_ADMIN_DIDS`.                                                                       | the operator's                   | the operator's           |
-| `WEEKLY_BACKUPS`       | `1` adds a weekly backup, kept 14 weeks, to the daily ones.                                                        | `0`                              | `1`                      |
-| `SOFT_DELETE`          | How long a deleted blob stays recoverable from the bucket.                                                         | `7d`                             | `30d`                    |
-| `SMOKE_SCOPE`          | The scope of the smoke test's canary package.                                                                      | `zena-lang`                      | `zena-lang`              |
-| `DNS_PARENT_PROJECT`   | The project of `zena-lang.dev`'s Cloud DNS zone.                                                                   | the project                      | the project              |
-| `DNS_PARENT_ZONE`      | That zone's name. Empty while `zena-lang.dev` is at the registrar: the scripts print the records to add there.     | none                             | none                     |
+| Setting                | What it is                                                                                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PROJECT`              | The Google Cloud project.                                                                                                                  |
+| `REGION`               | The region of the services, the bucket and the image.                                                                                      |
+| `REPO`                 | The Artifact Registry repository of the image.                                                                                             |
+| `FIRESTORE_LOCATION`   | The Firestore database's location.                                                                                                         |
+| `KMS_LOCATION`         | The key ring's location.                                                                                                                   |
+| `DOMAIN`               | The App View's domain, for `APP_VIEW_DOMAIN`: `pkg-staging.zena-lang.dev` and `pkg.zena-lang.dev`.                                         |
+| `PDS_DOMAIN`           | padstone's domain: `padstone-staging.zena-lang.dev` and `padstone.zena-lang.dev`.                                                          |
+| `PLC_MODE`             | `APP_VIEW_PLC`. Production must be `public`.                                                                                               |
+| `ROTATION_KMS`         | `1` keeps the online rotation key in Cloud KMS; `0` in a Secret Manager secret. Changing it needs a reset staging. Production must be `1`. |
+| `OFFLINE_ROTATION_KEY` | The `did:key` of the operator's offline rotation key, for `APP_VIEW_OFFLINE_ROTATION_KEY`. Production must have one.                       |
+| `ADMIN_DIDS`           | The admins' DIDs, for `APP_VIEW_ADMIN_DIDS`.                                                                                               |
+| `WEEKLY_BACKUPS`       | `1` adds a weekly backup, kept 14 weeks, to the daily ones.                                                                                |
+| `SOFT_DELETE`          | How long a deleted blob stays recoverable from the bucket.                                                                                 |
+| `SMOKE_SCOPE`          | The scope of the smoke test's canary package.                                                                                              |
+| `DNS_PARENT_PROJECT`   | The project of `zena-lang.dev`'s Cloud DNS zone, by default the project.                                                                   |
+| `DNS_PARENT_ZONE`      | That zone's name. Empty while `zena-lang.dev` is at the registrar: the scripts print the records to add there.                             |
 
 ### The deploy scripts (`deploy/`)
 
-| Variable              | What it is                                                           | Default   |
-| --------------------- | -------------------------------------------------------------------- | --------- |
-| `PDS_ENV`             | The environment: `staging` or `production`.                          | `staging` |
-| `ZENA_ALERT_EMAIL`    | Where `deploy:alerts` sends alerts. Required by it.                  |           |
-| `ZENA_MONTHLY_BUDGET` | A monthly budget on the project, in US dollars, for `deploy:alerts`. | none      |
+| Variable               | What it is                                                                                                                            | Default   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `PDS_ENV`              | The environment: `staging` or `production`.                                                                                           | `staging` |
+| `ZENA_DEPLOY_SETTINGS` | The directory of the environments' settings, `staging.sh` and `production.sh`: a checkout of the private deploy repository. Required. |           |
+| `ZENA_ALERT_EMAIL`     | Where `deploy:alerts` sends alerts. Required by it.                                                                                   |           |
+| `ZENA_MONTHLY_BUDGET`  | A monthly budget on the project, in US dollars, for `deploy:alerts`.                                                                  | none      |

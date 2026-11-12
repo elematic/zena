@@ -2,12 +2,14 @@
 # The names of one environment of the App View, for the deploy scripts
 # beside this file to source. PDS_ENV picks it: staging (the default, so a
 # command run without thinking about it never touches production) or
-# production. Its settings are checked in, in environments/<PDS_ENV>.sh:
-# the project, the domains, the PLC mode, where the rotation key is, the
-# offline key's did:key and the admins. Nothing is read from the shell, so
-# every operator's deploy is the same, and changing production is a pull
-# request. A ZENA_* variable that the settings once came from is refused
-# when it disagrees with the file, rather than ignored.
+# production. Its settings are checked in, in the operator's private
+# repository, which ZENA_DEPLOY_SETTINGS names a directory of: staging.sh
+# and production.sh, shaped as environments/example.sh is: the project,
+# the domains, the PLC mode, where the rotation key is, the offline key's
+# did:key and the admins. Nothing else is read from the shell, so every
+# operator's deploy is the same, and changing production is a pull request
+# there. A ZENA_* variable that the settings once came from is refused when
+# it disagrees with the file, rather than ignored.
 #
 #   staging      the App View, its site and handles at
 #                pkg-staging.zena-lang.dev, with its own PLC directory at
@@ -45,8 +47,12 @@ case "$PDS_ENV" in
     exit 2
     ;;
 esac
-SETTINGS="$(dirname "${BASH_SOURCE[0]}")/environments/${PDS_ENV}.sh"
-# shellcheck source=environments/staging.sh
+SETTINGS="${ZENA_DEPLOY_SETTINGS:?set ZENA_DEPLOY_SETTINGS to the directory of staging.sh and production.sh, a checkout of the private deploy repository}/${PDS_ENV}.sh"
+if [ ! -f "$SETTINGS" ]; then
+  echo "$SETTINGS does not exist: ZENA_DEPLOY_SETTINGS names a directory with staging.sh and production.sh in it" >&2
+  exit 2
+fi
+# shellcheck source=environments/example.sh
 source "$SETTINGS"
 
 # Every setting the scripts need, which an empty one would change silently.

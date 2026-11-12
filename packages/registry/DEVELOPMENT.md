@@ -263,16 +263,19 @@ trusts it by its DID, `did:web:<domain>`, and its online rotation key.
 one tenant, a bucket, a service account with roles on those alone, a
 rotation key, a signing key, a session secret, and a Cloud DNS zone
 delegated from `zena-lang.dev`'s for its handle records. Each
-environment's settings are checked in, in
-`deploy/environments/staging.sh` and `production.sh`: the project, the
-domains, where the rotation key is, the offline key's `did:key` and the
-admins. Nothing else comes from your shell, so changing production is a
-pull request; a `ZENA_GCP_PROJECT` or another variable the settings once
-came from stops the scripts when it disagrees with the file. With
-`gcloud` signed in to the project:
+environment's settings are checked in to the operator's private deploy
+repository, as `staging.sh` and `production.sh`, shaped as
+`deploy/environments/example.sh` is: the project, the domains, where the
+rotation key is, the offline key's `did:key` and the admins. This
+repository names neither the project nor the admins. `ZENA_DEPLOY_SETTINGS`
+is the directory of a checkout of it. Nothing else comes from your shell,
+so changing production is a pull request there; a `ZENA_GCP_PROJECT` or
+another variable the settings once came from stops the scripts when it
+disagrees with the file. Below, `<project>` is the settings' `PROJECT`.
+With `gcloud` signed in to the project:
 
 ```sh
-export PDS_ENV=staging
+export ZENA_DEPLOY_SETTINGS=~/zena-deploy PDS_ENV=staging
 npm run deploy:setup -w @zena-lang/registry    # once: the resources, the key and the zone
 npm run deploy -w @zena-lang/registry          # builds the image with Cloud Build, and deploys both services
 npm run deploy:domain -w @zena-lang/registry   # once: maps both names, with gcloud's beta component
@@ -354,7 +357,7 @@ packages there:
 3. Deploy, with `gcloud` signed in to the project:
 
    ```sh
-   export PDS_ENV=staging
+   export ZENA_DEPLOY_SETTINGS=~/zena-deploy PDS_ENV=staging
    npm run deploy:setup -w @zena-lang/registry   # when a change adds a resource; it changes nothing otherwise
    npm run deploy -w @zena-lang/registry
    npm run deploy:smoke -w @zena-lang/registry
@@ -408,13 +411,13 @@ every account, with staging's own PLC directory, which is in the same
 database:
 
 ```sh
-export PDS_ENV=staging
-gcloud firestore bulk-delete --database=zena-pkg-staging --project meta-garage-420114
-gcloud storage rm "gs://meta-garage-420114-zena-pkg-staging/**"
-gcloud dns record-sets list --zone zena-pkg-staging --filter 'type=TXT' --project meta-garage-420114
+export ZENA_DEPLOY_SETTINGS=~/zena-deploy PDS_ENV=staging
+gcloud firestore bulk-delete --database=zena-pkg-staging --project <project>
+gcloud storage rm "gs://<project>-zena-pkg-staging/**"
+gcloud dns record-sets list --zone zena-pkg-staging --filter 'type=TXT' --project <project>
 # for each _atproto. record:
-gcloud dns record-sets delete <name> --type TXT --zone zena-pkg-staging --project meta-garage-420114
-gcloud secrets delete zena-pkg-staging-smoke-token --project meta-garage-420114
+gcloud dns record-sets delete <name> --type TXT --zone zena-pkg-staging --project <project>
+gcloud secrets delete zena-pkg-staging-smoke-token --project <project>
 npm run deploy:setup -w @zena-lang/registry   # makes a KMS rotation key the settings ask for
 npm run deploy -w @zena-lang/registry
 packages/registry/deploy/smoke.sh setup       # the canary and its token, again
@@ -440,9 +443,9 @@ new database beside the old one:
 ```sh
 gcloud firestore backups list --location us-central1
 gcloud firestore databases restore --source-backup <backup> --destination-database zena-pkg-restored
-gcloud firestore databases clone --source-database projects/meta-garage-420114/databases/zena-pkg \
+gcloud firestore databases clone --source-database projects/<project>/databases/zena-pkg \
   --snapshot-time 2026-11-08T10:20:00Z --destination-database zena-pkg-restored
-gcloud storage restore gs://meta-garage-420114-zena-pkg/pkg/<did>/<cid>
+gcloud storage restore gs://<project>-zena-pkg/pkg/<did>/<cid>
 ```
 
 To serve from a restored database, set `DATABASE` in `deploy/env.sh` to
