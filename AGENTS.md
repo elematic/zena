@@ -176,6 +176,7 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 - [packages/registry/CONTEXT.md](packages/registry/CONTEXT.md) — the App View: the registry methods, the site, and the service
 - [packages/pds-web/CONTEXT.md](packages/pds-web/CONTEXT.md) — the App View's server-rendered pages and their assets (Radica)
 - [packages/markdown/CONTEXT.md](packages/markdown/CONTEXT.md) — CommonMark and GFM parser, AST, plugin API, and HTML renderer
+- [packages/semver/CONTEXT.md](packages/semver/CONTEXT.md) — semantic versions and npm's version ranges
 - [packages/workspace-hack/CONTEXT.md](packages/workspace-hack/CONTEXT.md) — the generated crate that gives the Rust crates one set of dependency features
 
 ### Packages & Directories
@@ -201,6 +202,7 @@ in the root `CLAUDE.md`.
 - **`packages/google-cloud`**: Google Cloud client libraries for Zena (`@zena-lang/google-cloud`).
 - **`packages/runtime`**: JS runtime helpers (`@zena-lang/runtime`).
 - **`packages/atproto`**: AT Protocol libraries: the data model, DAG-CBOR, CIDs, repositories and their proofs, keys and signatures, identity resolution, XRPC, service auth and sessions (`@zena-lang/atproto`).
+- **`packages/semver`**: Semantic versions and npm's version ranges (`zena-lang:semver`): parsing, precedence, whether a version is in a range, and the highest or lowest version in one.
 - **`packages/package-manager`**: The package manager's libraries: records, source archives, fetching, version selection, manifests and workspaces, and the registry's lexicons (`@zena-lang/package-manager`).
 - **`packages/pds`**: An AT Protocol PDS written in Zena, ported from pds.js, with managed accounts for the App Views it trusts (`@zena-lang/pds`). (See [pds.md](docs/design/pds.md)).
 - **`packages/registry`**: The Zena App View, the package manager's service: the registry methods, the site, and the service that runs them with the PDS (`@zena-lang/registry`). (See [package-manager.md](docs/design/package-manager.md)).

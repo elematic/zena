@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, isFalse, isTrue} from 'zena:assert';
-import {Version, VersionError} from 'package-manager/version';
+import {Version, VersionError} from 'zena-lang:semver';
 
 function rejects(text: String) {
   var caught = false;
@@ -12,7 +12,7 @@ function rejects(text: String) {
   isTrue(caught, `'${text}' is not a version`);
 }
 
-export let tests = suite('package-manager/version', () => {
+export let tests = suite('zena-lang:semver/version', () => {
   test('reads versions and writes them back', (ctx) => {
     let texts = [
       '0.0.0', '1.4.2', '10.20.30', '1.0.0-alpha', '1.0.0-alpha.1', '1.0.0-0.3.7',
@@ -43,9 +43,17 @@ export let tests = suite('package-manager/version', () => {
     }
   });
 
-  test('rejects build metadata', (ctx) => {
-    rejects('1.2.3+build');
-    rejects('1.2.3-rc.1+build.5');
+  test('keeps build metadata, which does not count in precedence', (ctx) => {
+    let built = Version.parse('1.2.3-rc.1+build.005');
+    equal(built.toString(), '1.2.3-rc.1+build.005');
+    equal(built.prerelease.length, 2);
+    equal(built.build.length, 2);
+    equal(built.build[1], '005');
+    equal(Version.parse('1.2.3+a').compareTo(Version.parse('1.2.3+b')), 0);
+    equal(Version.parse('1.2.3+a').build[0], 'a');
+    rejects('1.2.3+');
+    rejects('1.2.3+a..b');
+    rejects('1.2.3+a_b');
   });
 
   test('orders versions by semver precedence', (ctx) => {
