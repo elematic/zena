@@ -18,6 +18,18 @@ export default [
     stack: ['Zena', 'WASI', 'Wasmtime'],
   },
   {
+    slug: 'package-manager',
+    title: 'Package Manager',
+    link: '/projects/package-manager/',
+    status: 'In progress',
+    statusType: 'warning',
+    tagline:
+      'AT Protocol package manager and registry, extensible with Wasm plugins',
+    summary:
+      'Manages AT Protocol accounts for packages, scopes, teams, and organizations, delegated publishing permissions, and the registry App View—with language-specific config parsing, README extraction, and static analysis designed for Wasm plugins.',
+    stack: ['Zena', 'AT Protocol', 'Wasm'],
+  },
+  {
     slug: 'zenafx',
     title: 'ZenaFX',
     link: '/projects/zenafx/',

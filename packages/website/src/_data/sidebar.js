@@ -1291,6 +1291,20 @@ const zebra = projectMicrosite('Zebra', 'zebra', [
   },
 ]);
 
+const packageManager = projectMicrosite('Package Manager', 'package-manager', [
+  {
+    text: 'Overview',
+    link: '/projects/package-manager/',
+    outline: [
+      'Accounts for packages, scopes, teams, and organizations',
+      'Permission delegation and release publishing',
+      'The registry App View',
+      'Language-specific processing via WebAssembly plugins',
+      'Current status and roadmap',
+    ],
+  },
+]);
+
 const zenafx = projectMicrosite('ZenaFX', 'zenafx', [
   {
     text: 'Overview',
@@ -1381,6 +1395,7 @@ export default {
   '/api/': api,
   '/development/': development,
   '/projects/zebra/': zebra,
+  '/projects/package-manager/': packageManager,
   '/projects/zenafx/': zenafx,
   '/projects/pds/': pds,
   '/projects/wasm-web-ui/': wasmWebUi,

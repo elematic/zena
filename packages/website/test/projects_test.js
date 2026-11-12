@@ -30,7 +30,7 @@ describe('projects section navigation, sidebars, and content', () => {
   });
 
   it('wires an isolated micro-site sidebar and matching page for every project', async () => {
-    assert.equal(projects.length, 7);
+    assert.equal(projects.length, 8);
 
     for (const project of projects) {
       const prefix = `/projects/${project.slug}/`;

@@ -725,6 +725,16 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Incremental steps, resident workers, and graph queries
     - Current status and roadmap
 
+## /projects/package-manager/
+
+- **Package Manager**
+  - ✅ [Overview](src/projects/package-manager/index.md) — `/projects/package-manager/`
+    - Accounts for packages, scopes, teams, and organizations
+    - Permission delegation and release publishing
+    - The registry App View
+    - Language-specific processing via WebAssembly plugins
+    - Current status and roadmap
+
 ## Projects — ZenaFX
 
 - **ZenaFX**
@@ -783,4 +793,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-89 of 110 pages written; 21 still placeholders.
+90 of 111 pages written; 21 still placeholders.

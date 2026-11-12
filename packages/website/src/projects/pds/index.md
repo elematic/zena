@@ -28,10 +28,11 @@ Because an AT Protocol account is a portable identity paired with a signed
 collection of records and files, an account does not have to represent a person.
 Separate accounts can represent:
 
-- **Packages and scopes** — In Zena's package registry (`packages/registry`),
-  publishing scopes (organizations), individual packages, and CI release bots
-  are distinct accounts hosted on the PDS, each publishing signed release
-  records into its own repository.
+- **Packages and scopes** — In Zena's
+  [package manager and registry](/projects/package-manager/)
+  (`packages/registry`), publishing scopes (organizations), individual packages,
+  and CI release bots are distinct accounts hosted on the PDS, each publishing
+  signed release records into its own repository.
 - **Collaborative documents and workspaces** — A document, project board, wiki
   space, or dataset can have its own account, versioned history, and independent
   storage quota, so moving a document between hosts uses standard AT Protocol
