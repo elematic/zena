@@ -26,7 +26,7 @@ A package is defined by the `zena-package.json` manifest at its root: its name, 
     }
   },
   "dependencies": {
-    "url": {"did": "did:plc:urlurlurlurlurlurlurlurl", "version": "1.1.0"},
+    "url": {"did": "did:plc:urlurlurlurlurlurlurlurl", "version": "^1.1.0"},
     "internal-utils": {"path": "../internal-utils"}
   }
 }
@@ -119,11 +119,11 @@ Each key in `dependencies` is the **local name** used by imports inside this pac
 ```json
 "router": {
   "did": "did:plc:routerrouterrouterrouter",
-  "version": "1.4.2"
+  "version": "^1.4.2"
 }
 ```
 
-Written automatically by `zena pkg add`. Names a published package by its DID and the minimum version this package requires.
+Written automatically by `zena pkg add`. Names a published package by its DID and the range of versions this package accepts, in npm's syntax: `^1.4.2` accepts 1.4.2 and any later 1.x release, `~1.4.2` only 1.4.x, and `1.4.2` only that version.
 
 ### 2. Path dependency (`path`)
 

@@ -12,10 +12,10 @@ The `zena` CLI includes all package manager commands alongside the compiler, tes
 zena pkg add <package>[@<version>] [--name <local-name>]
 ```
 
-Adds a published package to the current package's `zena-package.json`, runs minimal version selection across the workspace, updates `zena-lock.json`, and fetches the resolved archives into the package cache.
+Adds a published package to the current package's `zena-package.json`, selects versions across the workspace, updates `zena-lock.json`, and fetches the resolved archives into the package cache.
 
 - `<package>`: `scope:name`, a handle (`router.acme.pkg.zena-lang.dev`), or a DID (`did:plc:...`, `did:web:...`).
-- `@<version>`: Optional minimum version to require (defaults to the package's latest non-retracted release).
+- `@<version>`: Optional version to start the range from; the manifest gets `^<version>` (defaults to the package's latest non-retracted release).
 - `--name <local-name>`: Local import alias in `zena-package.json` (defaults to the name in the package's profile).
 
 ### `zena pkg update`

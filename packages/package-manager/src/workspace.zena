@@ -10,11 +10,12 @@
  */
 
 import {Future} from 'zena:async';
-import {HashMap} from 'zena:collections';
+import {HashMap, OrderedHashMap} from 'zena:collections';
 import {isDirectory, isFile, listDir, readFile} from 'zena:fs';
 import {join2, normalize} from 'zena:path';
 import {Manifest, ManifestError, readManifest} from './manifest.zena';
 import {Requirement} from './resolve.zena';
+import {Resolution, ResolutionError} from './resolution.zena';
 
 /** The manifest's file name. */
 export let MANIFEST = 'zena-package.json';
@@ -92,6 +93,31 @@ export final class Workspace {
       });
     }
     return all;
+  }
+
+  /**
+   * The lockfile's `workspace` section for `resolution`: each package's
+   * published dependencies, by the package's directory relative to the
+   * root (`.` for the root), each name mapped to the key of the version
+   * selected for it. Throws `ResolutionError` for a dependency the
+   * resolution has no version for.
+   */
+  pinsByPackage(resolution: Resolution): OrderedHashMap<String, OrderedHashMap<String, String>> {
+    let out = new OrderedHashMap<String, OrderedHashMap<String, String>>();
+    for (let pkg in this.packages) {
+      let pins = new OrderedHashMap<String, String>();
+      pkg.manifest.requirements.forEach((name, requirement) => {
+        let key = resolution.keyOf(requirement.did, requirement.range);
+        if (key == null) {
+          throw new ResolutionError(`${pkg.manifestPath()}: no version of '${name}' was selected`);
+        }
+        pins[name] = key;
+      });
+      if (pins.size > 0) {
+        out[relativeDir(this.root.dir, pkg.dir)] = pins;
+      }
+    }
+    return out;
   }
 
   /**
@@ -191,4 +217,20 @@ final class WorkspaceReader {
     }
     return pkg;
   }
+}
+
+/**
+ * `dir` relative to the workspace's root `root`, as the lockfile's
+ * `workspace` section and the compiler name packages: `.` for the root,
+ * and a directory outside it as it is.
+ */
+export function relativeDir(root: String, dir: String): String {
+  if (dir == root) {
+    return '.';
+  }
+  if (root == '.') {
+    return if (dir.startsWith('./')) dir.sliceBytes(2, dir.length) else dir;
+  }
+  let prefix = `${root}/`;
+  return if (dir.startsWith(prefix)) dir.sliceBytes(prefix.length, dir.length) else dir;
 }

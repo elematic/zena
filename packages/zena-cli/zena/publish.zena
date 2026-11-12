@@ -50,7 +50,7 @@ import {
   ATTESTATION_TYPE, Artifact, Attestation, Dependency, Maintainer, Maintainers, OWNER, POLICY_TYPE, Policy, Profile,
   Release, SOURCE
 } from 'package-manager/records';
-import { Version } from 'zena-lang:semver';
+import { Range, Version } from 'zena-lang:semver';
 import { DiskFiles, WorkspacePackage, readWorkspace } from 'package-manager/workspace';
 import { Options, workspaceRoot, userCwd } from './env.zena';
 import { packageResolver } from './fetch.zena';
@@ -658,7 +658,7 @@ export async function attest(session: Session, uri: String, cid: Cid): Future<vo
 async function dependenciesOf(target: WorkspacePackage, manifest: Manifest): Future<FixedArray<Dependency>> {
   let all = new GrowableArray<Dependency>();
   manifest.requirements.forEach((name, requirement) => {
-    all.push(new Dependency(requirement.did, requirement.version, name));
+    all.push(new Dependency(requirement.did, requirement.range, name));
   });
   for (let name in manifest.paths.keys()) {
     let path = manifest.paths[name];
@@ -667,9 +667,9 @@ async function dependenciesOf(target: WorkspacePackage, manifest: Manifest): Fut
     if (other.did == null || other.version == null) {
       throw new PublishError(`${name} (${dir}) has no DID and version yet; publish it first`);
     }
-    all.push(new Dependency(other.did as String, other.version as Version, name));
+    all.push(new Dependency(other.did as String, Range.parse(`^${(other.version as Version).toString()}`), name));
   }
-  let fixed = new FixedArray<Dependency>(all.length, new Dependency('', Version.parse('0.0.0'), ''));
+  let fixed = new FixedArray<Dependency>(all.length, new Dependency('', Range.parse('*'), ''));
   for (var i = 0; i < all.length; i += 1) {
     fixed[i] = all[i];
   }

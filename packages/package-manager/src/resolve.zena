@@ -1,7 +1,9 @@
 /**
- * Minimal version selection (docs/design/package-manager.md, "Version
- * selection"): for each package and major version, the highest of the
- * minimum versions a workspace's packages and their dependencies require.
+ * Minimal version selection: for each package and major version, the
+ * highest of the minimum versions a workspace's packages and their
+ * dependencies require. A requirement is a range
+ * (docs/design/package-manager.md, "Version ranges"), and until selection
+ * reads ranges (#1087) its minimum is the version it requires.
  *
  * Resolution starts from the requirements in all of a workspace's
  * manifests, so that the workspace uses one version of each package and
@@ -17,14 +19,30 @@ import {HashMap, HashSet, OrderedHashMap} from 'zena:collections';
 import {Cid} from 'atproto/cid';
 import {Release, SOURCE} from './records.zena';
 import {Resolution, ResolutionError, ResolvedPackage, packageKey} from './resolution.zena';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
 
-/** A published package a package depends on, and the lowest version it needs. */
+/** A published package a package depends on, and the versions it accepts. */
 export final class Requirement {
   did: String;
-  version: Version;
+  range: Range;
+  /** The lowest version in the range, which minimal version selection requires. */
+  minimum: Version;
 
-  new(did: String, version: Version) : did = did, version = version;
+  new(did: String, range: Range) : did = did, range = range, minimum = minimumOf(range, did);
+}
+
+/** The lowest version in `range`; throws `ResolutionError` when it has none. */
+function minimumOf(range: Range, did: String): Version {
+  let minimum = range.minimum();
+  if (minimum == null) {
+    throw new ResolutionError(`${did}: no version is in '${range.text}'`);
+  }
+  return minimum;
+}
+
+/** The selection's slot for `version` of `did`: one per package and major version. */
+function slotOf(did: String, version: Version) {
+  return `${did}@${version.major}`;
 }
 
 /** A release record, and its CID, fetched with its proof. */
@@ -69,38 +87,46 @@ export async function resolve(requirements: Array<Requirement>,
   while (next < queue.length) {
     let requirement = queue[next];
     next += 1;
-    let key = packageKey(requirement.did, requirement.version.major);
-    let id = `${key} ${requirement.version.toString()}`;
+    let slot = slotOf(requirement.did, requirement.minimum);
+    let id = `${slot} ${requirement.minimum.toString()}`;
     if (visited.has(id)) {
       continue;
     }
     visited.add(id);
-    if (let (true, current) = selected.get(key)) {
-      if (requirement.version.compareTo(current.version) > 0) {
-        selected[key] = requirement;
+    if (let (true, current) = selected.get(slot)) {
+      if (requirement.minimum.compareTo(current.minimum) > 0) {
+        selected[slot] = requirement;
       }
     } else {
-      selected[key] = requirement;
+      selected[slot] = requirement;
     }
-    let checked = await read(requirement.did, requirement.version);
+    let checked = await read(requirement.did, requirement.minimum);
     for (let dependency in checked.release.dependencies) {
-      queue.push(new Requirement(dependency.did, dependency.version));
+      queue.push(new Requirement(dependency.did, dependency.range));
     }
   }
 
+  // The key each slot's selected version is pinned under.
+  let keys = new HashMap<String, String>();
+  for (let slot in selected.keys()) {
+    let requirement = selected[slot];
+    keys[slot] = packageKey(requirement.did, requirement.minimum);
+  }
   let packages = new OrderedHashMap<String, ResolvedPackage>();
-  for (let key in sortedKeys(selected)) {
-    let requirement = selected[key];
-    let checked = await read(requirement.did, requirement.version);
+  for (let slot in sortedKeys(selected)) {
+    let requirement = selected[slot];
+    let key = keys[slot];
+    let checked = await read(requirement.did, requirement.minimum);
     let artifact = checked.release.artifact(SOURCE);
     if (artifact == null) {
-      throw new ResolutionError(`${key}: release ${requirement.version.toString()} has no source artifact`);
+      throw new ResolutionError(`${key}: release ${requirement.minimum.toString()} has no source artifact`);
     }
     let dependencies = new OrderedHashMap<String, String>();
     for (let dependency in checked.release.dependencies) {
-      dependencies[dependency.name] = packageKey(dependency.did, dependency.version.major);
+      let minimum = minimumOf(dependency.range, dependency.did);
+      dependencies[dependency.name] = keys[slotOf(dependency.did, minimum)];
     }
-    packages[key] = new ResolvedPackage(key, requirement.did, requirement.version, checked.cid,
+    packages[key] = new ResolvedPackage(key, requirement.did, requirement.minimum, checked.cid,
         artifact.cid, dependencies);
   }
   return new Resolution(packages);

@@ -1,42 +1,47 @@
 /**
  * The packages a workspace pins: the `resolved` section of its lockfile
- * (docs/design/package-manifest.md, "zena-lock.json"). `zena pkg fetch`
- * fetches them, and the compiler reads them from the package cache.
+ * (docs/design/package-manifest.md, "zena-lock.json"), keyed by DID and
+ * version. `zena pkg fetch` fetches them, and the compiler reads them from
+ * the package cache. The `workspace` section gives the pin each workspace
+ * package's names stand for, by the package's directory.
  *
  * `writeLockfile` writes a `Resolution` as `zena-lock.json`, and
  * `diffPins` sorts what writing it changes in the pins already there.
  *
  * ```json
- * "resolved": {
- *   "did:plc:...@1": {
- *     "version": "1.4.2",
- *     "release": "bafyrei...",
- *     "source": "bafkrei...",
- *     "dependencies": {"json": "did:web:json.example.com@2"}
+ * {
+ *   "workspace": {".": {"router": "did:plc:...@1.4.2"}},
+ *   "resolved": {
+ *     "did:plc:...@1.4.2": {
+ *       "release": "bafyrei...",
+ *       "source": "bafkrei...",
+ *       "dependencies": {"json": "did:web:json.example.com@2.1.0"}
+ *     }
  *   }
  * }
  * ```
  */
 
-import {HashMap, OrderedHashMap} from 'zena:collections';
+import {HashMap, HashSet, OrderedHashMap} from 'zena:collections';
 import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {CODEC_DAG_CBOR, CODEC_RAW, Cid} from 'atproto/cid';
 import {isValidCidSyntax, isValidDid} from 'atproto/syntax';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
+import {parsePackageVersion} from './records.zena';
 
 /** A lockfile whose pins cannot be read. */
 export class ResolutionError extends Error {
   new(message: String) : super(message);
 }
 
-/** How a lockfile names a package: its DID and major version. */
-export function packageKey(did: String, major: i64): String {
-  return `${did}@${major}`;
+/** How a lockfile names a version of a package: `did:plc:...@1.4.2`. */
+export function packageKey(did: String, version: Version): String {
+  return `${did}@${version.toString()}`;
 }
 
 /** A package a lockfile pins. */
 export final class Pin {
-  /** The package's DID and major version, `did:plc:...@1`. */
+  /** The package's DID and version, `did:plc:...@1.4.2`. */
   key: String;
   did: String;
   version: Version;
@@ -91,18 +96,14 @@ function readPin(key: String, value: JsonValue): Pin {
     }
   }
   let did = if (at < 0) key else key.sliceBytes(0, at);
-  if (!isValidDid(did)) {
-    throw new ResolutionError(`'${key}' is not a DID and major version, such as did:plc:example@1`);
+  if (at < 0 || !isValidDid(did)) {
+    throw new ResolutionError(`'${key}' is not a DID and version, such as did:plc:example@1.4.2`);
   }
   if (!(value is JsonObject)) {
     throw new ResolutionError(`${key} is not an object`);
   }
   let entry = value;
-  let versionText = member(entry, 'version', key);
-  let version = parseVersion(versionText, key);
-  if (packageKey(did, version.major) != key) {
-    throw new ResolutionError(`${key} pins version ${versionText}, which is not major version ${key.sliceBytes(at + 1, key.length)}`);
-  }
+  let version = parseVersion(key.sliceBytes(at + 1, key.length), key);
   let release = cidMember(entry, 'release', key);
   if (release.codec != CODEC_DAG_CBOR) {
     throw new ResolutionError(`${key}: release ${release.toString()} is not the CID of a record`);
@@ -146,7 +147,7 @@ function cidMember(entry: JsonObject, name: String, key: String): Cid {
 
 function parseVersion(text: String, key: String): Version {
   try {
-    return Version.parse(text);
+    return parsePackageVersion(text);
   } catch (e) {
     throw new ResolutionError(`${key}: ${e.message}`);
   }
@@ -154,7 +155,7 @@ function parseVersion(text: String, key: String): Version {
 
 /** A published package as the lockfile pins it. */
 export final class ResolvedPackage {
-  /** The package's DID and major version. */
+  /** The package's DID and version, `did:plc:...@1.4.2`. */
   key: String;
   did: String;
   version: Version;
@@ -171,23 +172,58 @@ export final class ResolvedPackage {
         dependencies = dependencies;
 }
 
-/** What minimal version selection chose for a workspace. */
+/** What selection chose for a workspace. */
 export final class Resolution {
-  /** The selected packages, by key, in key order. */
+  /** The selected packages, by key. */
   packages: OrderedHashMap<String, ResolvedPackage>;
 
   new(packages: OrderedHashMap<String, ResolvedPackage>) : packages = packages;
+
+  /**
+   * The key of the version selected for a dependency on `did` with
+   * `range`, or null when none was. Minimal version selection selects one
+   * version per package and major version, that of the range's minimum.
+   */
+  keyOf(did: String, range: Range): String | null {
+    let minimum = range.minimum();
+    if (minimum == null) {
+      return null;
+    }
+    for (let key in this.packages.keys()) {
+      let pkg = this.packages[key];
+      if (pkg.did == did && pkg.version.major == minimum.major) {
+        return key;
+      }
+    }
+    return null;
+  }
 }
 
 /**
- * `zena-lock.json` text pinning `resolution`'s packages. The lockfile holds
- * nothing else, so it is written whole.
+ * `zena-lock.json` text pinning `resolution`'s packages, with `workspace`,
+ * each workspace package's names by its directory, each mapped to a key
+ * of `resolution`. The lockfile holds nothing else, so it is written
+ * whole.
  */
-export function writeLockfile(resolution: Resolution): String {
+export function writeLockfile(resolution: Resolution,
+    workspace: OrderedHashMap<String, OrderedHashMap<String, String>>): String {
+  let root = new JsonObject();
+  let names = new JsonObject();
+  workspace.forEach((dir, pins) => {
+    if (pins.size > 0) {
+      let entry = new JsonObject();
+      pins.forEach((name, key) => {
+        entry[name] = key;
+      });
+      names[dir] = entry;
+    }
+  });
+  if (names.size > 0) {
+    root['workspace'] = names;
+  }
   let resolved = new JsonObject();
   resolution.packages.forEach((key, pkg) => {
     let entry = new JsonObject();
-    entry['version'] = pkg.version.toString();
     entry['release'] = pkg.release.toString();
     entry['source'] = pkg.source.toString();
     if (pkg.dependencies.size > 0) {
@@ -199,7 +235,6 @@ export function writeLockfile(resolution: Resolution): String {
     }
     resolved[key] = entry;
   });
-  let root = new JsonObject();
   root['resolved'] = resolved;
   return stringify(root, '  ');
 }
@@ -213,7 +248,7 @@ export sealed class PinChange {
   case PinAdded(now: ResolvedPackage)
   /** A package the lockfile pinned, and no longer does. */
   case PinRemoved(pin: Pin)
-  /** A package pinned at another version of its major version, higher or lower. */
+  /** A package pinned at another version of the same major version, higher or lower. */
   case PinVersionChanged(pin: Pin, now: ResolvedPackage)
   /**
    * A package at the version it was pinned at, with another release
@@ -231,13 +266,19 @@ export sealed class PinChange {
  * same has no change.
  */
 export function diffPins(before: GrowableArray<Pin>, after: Resolution): GrowableArray<PinChange> {
+  // Minimal version selection pins one version per package and major
+  // version, so a pin's counterpart is the one at the same major version.
   let pinned = new HashMap<String, Pin>();
   for (let pin in before) {
-    pinned[pin.key] = pin;
+    pinned[`${pin.did}@${pin.version.major}`] = pin;
   }
+  let selected = new HashSet<String>();
+  after.packages.forEach((key, pkg) => {
+    selected.add(`${pkg.did}@${pkg.version.major}`);
+  });
   let changes = new GrowableArray<PinChange>();
   after.packages.forEach((key, now) => {
-    if (let (true, pin) = pinned.get(key)) {
+    if (let (true, pin) = pinned.get(`${now.did}@${now.version.major}`)) {
       if (pin.version.compareTo(now.version) != 0) {
         changes.push(new PinVersionChanged(pin, now));
       } else if (!pin.release.equals(now.release) || !pin.source.equals(now.source)) {
@@ -248,7 +289,7 @@ export function diffPins(before: GrowableArray<Pin>, after: Resolution): Growabl
     }
   });
   for (let pin in before) {
-    if (!after.packages.has(pin.key)) {
+    if (!selected.has(`${pin.did}@${pin.version.major}`)) {
       changes.push(new PinRemoved(pin));
     }
   }

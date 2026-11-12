@@ -13,7 +13,7 @@ import {packSource} from 'package-manager/archive';
 import {Artifact, Dependency, Release, SOURCE, Retraction} from 'package-manager/records';
 import {FakeAccount, FakePds} from 'package-manager/testing/fake-pds';
 import {SOURCE_MIME_TYPE, checkDependencies, checkSource, validateRelease} from 'package-manager/validate';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
 
 let PACKAGE = 'did:plc:routerrouterrouterrouter';
 let JSON_DID = 'did:plc:jsonjsonjsonjsonjsonjson';
@@ -31,7 +31,7 @@ function archiveOf(manifest: String) {
 function releaseOf(version: String, source: FixedArray<u8>, dependencies: Array<Dependency>,
     mimeType: String = SOURCE_MIME_TYPE) {
   let blob = new BlobRef(Cid.forBlob(source), mimeType, source.length as i64);
-  let deps = new FixedArray<Dependency>(dependencies.length, new Dependency('', Version.parse('0.0.0'), ''));
+  let deps = new FixedArray<Dependency>(dependencies.length, new Dependency('', Range.parse('0.0.0'), ''));
   for (var i = 0; i < dependencies.length; i += 1) {
     deps[i] = dependencies[i];
   }
@@ -41,7 +41,7 @@ function releaseOf(version: String, source: FixedArray<u8>, dependencies: Array<
 
 function json(version: String) {
   let list = new GrowableArray<Dependency>();
-  list.push(new Dependency(JSON_DID, Version.parse(version), 'json'));
+  list.push(new Dependency(JSON_DID, Range.parse(version), 'json'));
   return list;
 }
 
@@ -138,7 +138,7 @@ export let tests = suite('package-manager/validate', () => {
     isTrue(has(checkSource(releaseOf('1.4.2', source, new GrowableArray<Dependency>()), PACKAGE, source),
         'depends on json, which the release does not list'));
     let extra = json('2.0.0');
-    extra.push(new Dependency('did:plc:yamlyamlyamlyamlyamlyaml', Version.parse('1.0.0'), 'yaml'));
+    extra.push(new Dependency('did:plc:yamlyamlyamlyamlyamlyaml', Range.parse('1.0.0'), 'yaml'));
     isTrue(has(checkSource(releaseOf('1.4.2', source, extra), PACKAGE, source), 'depends on yaml, which the archive'));
 
     let wit = archiveOf(`{"name": "router", "version": "1.4.2", "dependencies": {"gfx": {"wit": "./wit"}}}`);
@@ -169,7 +169,7 @@ export let tests = suite('package-manager/validate', () => {
         'is text/plain'));
     let none = new Release(Version.parse('1.4.2'), '2026-10-26T00:00:00.000Z', new FixedArray<Artifact>(0,
         Artifact.whole(SOURCE, new BlobRef(Cid.forBlob(source), SOURCE_MIME_TYPE, 1 as i64))),
-        new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+        new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')));
     isTrue(has(checkSource(none, PACKAGE, source), 'has no source artifact'));
   });
 
@@ -187,7 +187,7 @@ export let tests = suite('package-manager/validate', () => {
     isTrue(has(await checkDependencies(json('3.0.0'), resolver), 'is not published'));
     isTrue(has(await checkDependencies(json('2.1.0'), resolver), 'is retracted'));
     let nowhere = new GrowableArray<Dependency>();
-    nowhere.push(new Dependency('did:plc:nowherenowherenowherenow', Version.parse('1.0.0'), 'nowhere'));
+    nowhere.push(new Dependency('did:plc:nowherenowherenowherenow', Range.parse('1.0.0'), 'nowhere'));
     isTrue(has(await checkDependencies(nowhere, resolver), 'cannot be found'));
 
     // Publishing checks both, and reports every problem at once.
@@ -216,7 +216,7 @@ export let tests = suite('package-manager/validate', () => {
     isTrue(has(terse, 'json 2.0.0') && has(terse, 'its PDS cannot be read') && !has(terse, 'names no PDS'),
         lines(terse));
     let nowhere = new GrowableArray<Dependency>();
-    nowhere.push(new Dependency('did:plc:nowherenowherenowherenow', Version.parse('1.0.0'), 'nowhere'));
+    nowhere.push(new Dependency('did:plc:nowherenowherenowherenow', Range.parse('1.0.0'), 'nowhere'));
     let unknown = await checkDependencies(nowhere, resolver, false);
     isTrue(has(unknown, 'its DID does not resolve') && !has(unknown, 'http'), lines(unknown));
     pds.close();
@@ -229,5 +229,5 @@ function publish(account: FakeAccount, version: String) {
   let cid = account.addBlob(source);
   account.publish(new Release(Version.parse(version), '2026-10-26T00:00:00.000Z',
       new FixedArray<Artifact>(1, Artifact.whole(SOURCE, new BlobRef(cid, SOURCE_MIME_TYPE, source.length as i64))),
-      new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), ''))));
+      new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), ''))));
 }

@@ -21,7 +21,7 @@ import {BlobRef} from 'atproto/data';
 import {packSource} from 'package-manager/archive';
 import {Artifact, Dependency, Profile, Release, SOURCE, Retraction} from 'package-manager/records';
 import {DID, FakeAccount, FakePds} from 'package-manager/testing/fake-pds';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
 
 let JSON_DID = 'did:plc:jsonjsonjsonjsonjsonjson';
 let LOG_DID = 'did:plc:loglogloglogloglogloglog';
@@ -40,7 +40,7 @@ function publish(account: FakeAccount, version: String, files: OrderedHashMap<St
   // The archive's manifest agrees with the release, as fetching checks.
   var listed = '';
   for (let dependency in dependencies) {
-    let entry = `"${dependency.name}": {"did": "${dependency.did}", "version": "${dependency.version.toString()}"}`;
+    let entry = `"${dependency.name}": {"did": "${dependency.did}", "version": "${dependency.range.text}"}`;
     listed = if (listed.length == 0) entry else `${listed}, ${entry}`;
   }
   files['zena-package.json'] = bytesOf(`{"name": "pkg", "version": "${version}", "dependencies": {${listed}}}`);
@@ -74,13 +74,13 @@ export async function main(): Future<i32> {
   json.setProfile(new Profile('json'));
   log.setProfile(new Profile('log'));
 
-  let none = new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), ''));
+  let none = new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), ''));
   publish(json, '2.0.0', jsonFiles('2.0.0'), none);
   publish(json, '2.1.0', jsonFiles(if (await exists('/out/republish')) '2.1.0, republished' else '2.1.0'), none);
   let logFiles = new OrderedHashMap<String, FixedArray<u8>>();
   logFiles['src/log.zena'] = bytesOf('export function log(): i32 { return 0; }\n');
   publish(log, '1.0.0', logFiles, none);
-  let needsJson = new FixedArray<Dependency>(1, new Dependency(JSON_DID, Version.parse('2.1.0'), 'json'));
+  let needsJson = new FixedArray<Dependency>(1, new Dependency(JSON_DID, Range.parse('2.1.0'), 'json'));
   publish(router, '1.4.2', routerFiles('1.4.2'), needsJson);
   publish(router, '1.5.0', routerFiles('1.5.0'), needsJson);
   publish(router, '1.6.0', routerFiles('1.6.0'), needsJson);

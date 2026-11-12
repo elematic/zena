@@ -801,10 +801,11 @@ hold selection back from releases newer than an age, such as
 pnpm's setting of that name does. `zena pkg add` and `zena pkg update`
 say which releases they skipped for their age.
 
-> **Current status**: designed. The resolver and the records implement
-> minimal version selection, which this replaces: a dependency names the
-> lowest version it needs, and the selection is the highest of those per
-> package and major version.
+> **Current status**: ranges are implemented in manifests, release
+> records and the lockfile, which is keyed by DID and version and has its
+> `workspace` section (#1086). Selection is still minimal version
+> selection over each range's lowest version: the highest of those per
+> package and major version (#1087 replaces it).
 
 ### The lockfile
 

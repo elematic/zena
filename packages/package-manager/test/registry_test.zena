@@ -21,7 +21,7 @@ import {
 } from 'package-manager/registry';
 import {Requirement, resolve} from 'package-manager/resolve';
 import {DID, FakeAccount, FakePds} from 'package-manager/testing/fake-pds';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
 
 let JSON_DID = 'did:plc:jsonjsonjsonjsonjsonjson';
 
@@ -36,7 +36,7 @@ function bytesOf(text: String) {
 /** Publishes `version` on `account`, depending on `dependencies`. */
 function publish(account: FakeAccount, version: String,
     dependencies: FixedArray<Dependency> = new FixedArray<Dependency>(0,
-        new Dependency('', Version.parse('0.0.0'), ''))) {
+        new Dependency('', Range.parse('0.0.0'), ''))) {
   let source = account.addBlob(bytesOf(`${account.did} ${version}`));
   let artifact = Artifact.whole(SOURCE, new BlobRef(source, 'application/vnd.ipld.car', 1 as i64));
   return account.publish(new Release(Version.parse(version), '2026-10-22T00:00:00.000Z',
@@ -134,20 +134,20 @@ export let tests = suite('package-manager/registry', () => {
     let json = pds.account(JSON_DID);
     publish(json, '2.0.0');
     publish(json, '2.1.0');
-    let needsJson = new FixedArray<Dependency>(1, new Dependency(JSON_DID, Version.parse('2.1.0'), 'json'));
+    let needsJson = new FixedArray<Dependency>(1, new Dependency(JSON_DID, Range.parse('2.1.0'), 'json'));
     let routerRecord = publish(pds.main, '1.4.2', needsJson);
     let requirements = new GrowableArray<Requirement>();
-    requirements.push(new Requirement(DID, Version.parse('1.4.2')));
-    requirements.push(new Requirement(JSON_DID, Version.parse('2.0.0')));
+    requirements.push(new Requirement(DID, Range.parse('1.4.2')));
+    requirements.push(new Requirement(JSON_DID, Range.parse('2.0.0')));
 
     let resolution = await resolve(requirements, networkReleases(pds.resolver()));
-    equal(resolution.packages[`${JSON_DID}@2`].version.toString(), '2.1.0');
-    isTrue(resolution.packages[`${DID}@1`].release.equals(routerRecord));
-    isTrue(resolution.packages[`${DID}@1`].source.equals(Cid.forBlob(bytesOf(`${DID} 1.4.2`))));
+    equal(resolution.packages[`${JSON_DID}@2.1.0`].version.toString(), '2.1.0');
+    isTrue(resolution.packages[`${DID}@1.4.2`].release.equals(routerRecord));
+    isTrue(resolution.packages[`${DID}@1.4.2`].source.equals(Cid.forBlob(bytesOf(`${DID} 1.4.2`))));
 
     var message = '';
     try {
-      requirements[1] = new Requirement(JSON_DID, Version.parse('2.9.0'));
+      requirements[1] = new Requirement(JSON_DID, Range.parse('2.9.0'));
       await resolve(requirements, networkReleases(pds.resolver()));
     } catch (e) {
       message = e.message;

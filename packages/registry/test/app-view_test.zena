@@ -28,7 +28,7 @@ import {
   MEMBERS_TYPE, Maintainers, Members, OWNER, PROFILE_TYPE, PUBLISHER, Profile,
   Policy, RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, TEAM_TYPE, Team, TeamRole
 } from 'package-manager/records';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
 import {MemoryHandleRecords} from 'registry/handles';
 import {
   ClaimedName, ClaimedScope, AppViewAccount, AppViewConfig, AppViewError, AppViewStore, MemoryAppViewStore, PENDING_MICROS, AppView,
@@ -597,7 +597,7 @@ function approvedBy(answer: JsonObject) {
 function releaseJson(version: String, blob: BlobRef): String {
   let release = new Release(Version.parse(version), '2026-10-23T00:00:00.000Z',
       new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
-      new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+      new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')));
   return stringify(toJson(release.toValue()));
 }
 
@@ -684,7 +684,7 @@ export let tests = suite('registry/app-view', () => {
     equal(ok(await fixture.call(ALICE, 'publish', body))['cid'] as String, cid);
     let other = new Release(Version.parse('1.0.0'), '2026-10-24T00:00:00.000Z',
         new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
-        new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+        new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')));
     let refused = await fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${stringify(toJson(other.toValue()))}}`);
     equal(errorOf(refused), 'VersionExists');
 
@@ -782,7 +782,7 @@ export let tests = suite('registry/app-view', () => {
     let blob = await upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
     let publish = (caller: String, created: String) => {
       let release = new Release(Version.parse('1.0.0'), created, new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
-          new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+          new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')));
       return fixture.call(caller, 'publish', `{"package": "${pkgDid}", "release": ${stringify(toJson(release.toValue()))}}`);
     };
     let withdraw = (caller: String) =>
@@ -1420,7 +1420,7 @@ export let tests = suite('registry/app-view', () => {
         `?package=${router}`, 'application/wasm'))['blob'] as JsonObject));
     let withModule = new Release(Version.parse('0.1.0'), '2026-11-09T00:00:00.000Z',
         [Artifact.whole(SOURCE, source), Artifact.whole('core-module', wasm)],
-        new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+        new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')));
     let module = await fixture.call(ALICE, 'publish',
         `{"package": "${router}", "release": ${stringify(toJson(withModule.toValue()))}}`);
     equal(errorOf(module), 'InvalidRelease');
@@ -1799,13 +1799,13 @@ export let tests = suite('registry/app-view', () => {
     let blob = await upload(fixture, parser.did, archiveOf(parser.did, '0.3.0'));
     let withDependency = new Release(Version.parse('0.3.0'), '2026-10-24T00:00:00.000Z',
         new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
-        [new Dependency(router, Version.parse('1.0.0'), 'router'),
-         new Dependency('did:plc:elsewhereelsewhereelsewh', Version.parse('0.2.1'), 'other')]);
+        [new Dependency(router, Range.parse('^1.0.0'), 'router'),
+         new Dependency('did:plc:elsewhereelsewhereelsewh', Range.parse('~0.2.1'), 'other')]);
     await fixture.pds.repositoryOf(parser).applyWrites([new CreateRecord(RELEASE_TYPE, '0.3.0',
         withDependency.toValue()) as Write], 0 as i64);
     let parserHtml = pageOf(await fixture.get('/packages/parser.acme.pkg.test'));
     for (let expected in ['href="/scopes/acme"', 'href="/packages/router.acme.pkg.test">router</a>',
-        '≥ 1.0.0 (1.x)', 'did:plc:elsewhereelsewhereelsewh', '≥ 0.2.1 (0.x)']) {
+        '^1.0.0', 'did:plc:elsewhereelsewhereelsewh', '~0.2.1', 'title="&gt;=0.2.1 &lt;0.3.0-0"']) {
       isTrue(parserHtml.contains(expected), `${expected} in parser's page`);
     }
 
@@ -2239,7 +2239,7 @@ export let tests = suite('registry/app-view', () => {
     let blob = await upload(fixture, pkgDid, dependent);
     let release = new Release(Version.parse('2.4.0'), '2026-10-26T00:00:00.000Z',
         new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
-        new FixedArray<Dependency>(1, new Dependency('did:plc:jsonjsonjsonjsonjsonjson', Version.parse('1.0.0'), 'json')));
+        new FixedArray<Dependency>(1, new Dependency('did:plc:jsonjsonjsonjsonjsonjson', Range.parse('1.0.0'), 'json')));
     let missing = refusal(await fixture.call(ALICE, 'publish',
         `{"package": "${pkgDid}", "release": ${stringify(toJson(release.toValue()))}}`));
     isTrue(missing.contains('json 1.0.0') && missing.contains('cannot be found'), missing);

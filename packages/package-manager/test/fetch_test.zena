@@ -21,7 +21,7 @@ import {FetchError, fetchAll, fetchPackage} from 'package-manager/fetch';
 import {Artifact, Dependency, Release, SOURCE} from 'package-manager/records';
 import {Pin, readPins} from 'package-manager/resolution';
 import {DID, FakePds, didDocument} from 'package-manager/testing/fake-pds';
-import {Version} from 'zena-lang:semver';
+import {Range, Version} from 'zena-lang:semver';
 
 let OTHER_KEY = hex.decode('0000000000000000000000000000000000000000000000000000000000000001');
 
@@ -55,7 +55,7 @@ function sourceFiles(dependencies: String = '') {
 /** A release of 1.4.2 with these artifacts and dependencies. */
 function release(artifacts: FixedArray<Artifact>,
     dependencies: FixedArray<Dependency> = new FixedArray<Dependency>(0,
-        new Dependency('', Version.parse('0.0.0'), ''))) {
+        new Dependency('', Range.parse('0.0.0'), ''))) {
   return new Release(Version.parse('1.4.2'), '2026-10-22T00:00:00.000Z', artifacts, dependencies);
 }
 
@@ -67,8 +67,7 @@ function sourceArtifact(archive: FixedArray<u8>) {
 /** The pin a lockfile would hold for 1.4.2. */
 function pinFor(release: Cid, source: Cid, version: String = '1.4.2',
     dependencies: String = '') {
-  let text = `{"resolved": {"${DID}@1": {
-    "version": "${version}",
+  let text = `{"resolved": {"${DID}@${version}": {
     "release": "${release.toString()}",
     "source": "${source.toString()}"${dependencies}
   }}}`;
@@ -138,13 +137,13 @@ export let tests = suite('package-manager/fetch', () => {
     // lists one, as a PDS that checks nothing would keep it.
     let archive = packSource(sourceFiles());
     pds.addBlob(archive);
-    let json = new Dependency('did:web:json.example.com', Version.parse('2.1.0'), 'json');
+    let json = new Dependency('did:web:json.example.com', Range.parse('2.1.0'), 'json');
     let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive)),
         new FixedArray<Dependency>(1, json)));
     let cache = freshCache();
 
     let message = await failure(pinFor(recordCid, Cid.forBlob(archive), '1.4.2',
-        ', "dependencies": {"json": "did:web:json.example.com@2"}'), cache, pds);
+        ', "dependencies": {"json": "did:web:json.example.com@2.1.0"}'), cache, pds);
     isTrue(message.startsWith('FetchError: ') && message.contains('does not agree with its source archive') &&
         message.contains('depends on json, which the archive'), message);
     isFalse(await exists(cache.sourceDir(Cid.forBlob(archive))));
@@ -218,22 +217,22 @@ export let tests = suite('package-manager/fetch', () => {
     let archive = packSource(sourceFiles(
         ', "dependencies": {"json": {"did": "did:web:json.example.com", "version": "2.1.0"}}'));
     pds.addBlob(archive);
-    let json = new Dependency('did:web:json.example.com', Version.parse('2.1.0'), 'json');
+    let json = new Dependency('did:web:json.example.com', Range.parse('2.1.0'), 'json');
     let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive)),
         new FixedArray<Dependency>(1, json)));
     let source = Cid.forBlob(archive);
 
     let wrongMajor = await failure(pinFor(recordCid, source, '1.4.2',
-        ', "dependencies": {"json": "did:web:json.example.com@3"}'), freshCache(), pds);
-    isTrue(wrongMajor.startsWith('FetchError: ') && wrongMajor.contains('@3'), wrongMajor);
+        ', "dependencies": {"json": "did:web:json.example.com@3.0.0"}'), freshCache(), pds);
+    isTrue(wrongMajor.startsWith('FetchError: ') && wrongMajor.contains('@3.0.0'), wrongMajor);
     let missing = await failure(pinFor(recordCid, source), freshCache(), pds);
     isTrue(missing.startsWith('FetchError: ') && missing.contains('not in zena-lock.json'), missing);
     let extra = await failure(pinFor(recordCid, source, '1.4.2',
-        ', "dependencies": {"json": "did:web:json.example.com@2", "more": "did:web:more.example.com@1"}'),
+        ', "dependencies": {"json": "did:web:json.example.com@2.1.0", "more": "did:web:more.example.com@1.0.0"}'),
         freshCache(), pds);
     isTrue(extra.startsWith('FetchError: '), extra);
     isTrue(await fetchPackage(pinFor(recordCid, source, '1.4.2',
-        ', "dependencies": {"json": "did:web:json.example.com@2"}'), freshCache(), pds.resolver()));
+        ', "dependencies": {"json": "did:web:json.example.com@2.1.0"}'), freshCache(), pds.resolver()));
     pds.close();
   });
 
