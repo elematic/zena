@@ -2,7 +2,7 @@
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse, throws} from 'zena:assert';
 import {StringBuilder} from 'zena:core';
-import {parseJson, jsonGet, JsonObject, JsonArray, JsonOptions, JsonParseError, stringify} from 'zena:json';
+import {JsonBuilder, parseJson, jsonGet, JsonObject, JsonArray, JsonOptions, JsonParseError, stringify} from 'zena:json';
 
 // Helper to test that parsing throws JsonParseError
 let expectParseError = (input: String) => {
@@ -1006,6 +1006,31 @@ export let tests = suite('JSON Parser', () => {
       let countVal = countBox.value;
       let EXPECTED: f64 = 42.0;
       isTrue(countVal == EXPECTED);
+    });
+
+    test('non-ASCII text, unpaired surrogate escapes, and code-point columns', (ctx) => {
+      let opts: JsonOptions = {allowComments: false, trackLocations: true};
+      let doc = '{"😀": "em — dash • bullet Ŝ", "pair": "\\ud83d\\u0041"}';
+      let parsed = parseJson(doc, opts) as JsonObject;
+      equal(parsed['😀'] as String, 'em — dash • bullet Ŝ');
+      equal(parsed['pair'] as String, String.fromCodePoint(0xFFFD) + 'A');
+      equal(jsonGet(parsed, '.😀') as String, 'em — dash • bullet Ŝ');
+
+      // `{` (1), `"` (2), `😀` (3), `"` (4), `:` (5), ` ` (6), value starts at 7.
+      let loc = parsed.locationOf('😀');
+      isTrue(loc != null);
+      if (loc != null) {
+        equal(loc.line, 1);
+        equal(loc.column, 7);
+      }
+
+      let obj = new JsonObject();
+      obj['😀'] = 'em — dash • bullet Ŝ';
+      equal(stringify(obj), '{"😀":"em — dash • bullet Ŝ"}');
+      equal(
+        new JsonBuilder().beginObject().key('😀').string('em — dash • bullet Ŝ').endObject().toString(),
+        '{"😀":"em — dash • bullet Ŝ"}',
+      );
     });
   });
 });
