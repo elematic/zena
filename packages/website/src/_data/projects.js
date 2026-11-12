@@ -11,10 +11,9 @@ export default [
     link: '/projects/zebra/',
     status: 'In progress',
     statusType: 'success',
-    tagline:
-      'Build and run tool inspired by Wireit, with planned Wasm build rules',
+    tagline: 'Incremental build and task runner, with planned Wasm build rules',
     summary:
-      'Native task graph, content-addressed cache, and dev service runner iterating on Wireit with faster startup, plus planned Wasm build-rule components, incremental and resident steps, and Blaze-style graph queries.',
+      'Runs builds, tests, scripts, and long-running dev services across packages in dependency order and in parallel, rebuilding only what changed and watching files during development. Planned extensions add custom build rules as Wasm components and dependency graph queries.',
     stack: ['Zena', 'WASI', 'Wasmtime'],
   },
   {
