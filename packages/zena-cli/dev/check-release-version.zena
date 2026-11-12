@@ -1,0 +1,109 @@
+/**
+ * Verifies the CLI release version before `.github/workflows/release.yml`
+ * builds and publishes release artifacts:
+ *
+ * 1. `packages/zena-cli/zena-package.json` holds a valid release version
+ *    (`M.m.p` or `M.m.p-preview.<int>`).
+ * 2. `packages/zena-cli/zena/versions.zena` matches the manifests
+ *    (`npm run versions`).
+ * 3. `packages/zena-cli/CHANGELOG.md` has a non-empty `## [<version>]`
+ *    section.
+ * 4. The version has not already been released and follows the increment
+ *    rules relative to existing `v*` tags (`--tags-file`).
+ */
+
+import {ArgParser} from 'zena:args';
+import {Future} from 'zena:async';
+import {exit, getArguments} from 'zena:cli';
+import {exists, readFile, writeFile} from 'zena:fs';
+import {JsonObject, parseJson} from 'zena:json';
+import {
+  checkReleaseTags,
+  extractChangelogNotes,
+  parseReleaseVersion,
+} from './release-version.zena';
+import {VERSIONS_FILE, versionsSource} from './version-file.zena';
+
+let MANIFEST_PATH = 'packages/zena-cli/zena-package.json';
+let CHANGELOG_PATH = 'packages/zena-cli/CHANGELOG.md';
+
+export async function main(): Future<void> {
+  let parser = new ArgParser({
+    name: 'check-release-version',
+    help: 'Validates the zena-cli release version, changelog, and tag progression.',
+    options: {
+      'tags-file' => {
+        help: 'File listing existing Git and GitHub Release tags, one per line',
+      },
+      'notes-out' => {
+        help: 'Where to write the extracted changelog section for this version',
+      },
+      'github-output' => {
+        help: 'GitHub Actions $GITHUB_OUTPUT file to append version metadata to',
+      },
+    },
+  });
+
+  let parsed = parser.parse(getArguments(), 1);
+
+  let manifest = parseJson(await readFile(MANIFEST_PATH)) as JsonObject;
+  let versionRaw = manifest['version'];
+  if (!(versionRaw is String)) {
+    console.error(`Error: ${MANIFEST_PATH} has no "version" string`);
+    exit(1);
+  }
+  var version = parseReleaseVersion('0.0.0');
+  try {
+    version = parseReleaseVersion(versionRaw as String);
+  } catch (e) {
+    console.error(`Error: ${MANIFEST_PATH}: ${e.message}`);
+    exit(1);
+  }
+  let versionText = version.toString();
+
+  let keptVersions = await readFile(VERSIONS_FILE);
+  if (keptVersions != (await versionsSource())) {
+    console.error(
+      `Error: ${VERSIONS_FILE} does not match the manifests; run 'npm run versions'`,
+    );
+    exit(1);
+  }
+
+  if (!(await exists(CHANGELOG_PATH))) {
+    console.error(`Error: ${CHANGELOG_PATH} is missing`);
+    exit(1);
+  }
+  let notes = extractChangelogNotes(await readFile(CHANGELOG_PATH), versionText);
+  if (notes == null) {
+    console.error(
+      `Error: ${CHANGELOG_PATH} has no non-empty '## [${versionText}]' section`,
+    );
+    exit(1);
+  }
+  let validNotes = notes as String;
+
+  if (let (true, tagsPath) = parsed.getOption('tags-file')) {
+    let tagsText = await readFile(tagsPath);
+    let tagError = checkReleaseTags(tagsText.split('\n'), version);
+    if (tagError != null) {
+      console.error(`Error: ${tagError}`);
+      exit(1);
+    }
+  }
+
+  if (let (true, notesOut) = parsed.getOption('notes-out')) {
+    await writeFile(notesOut, validNotes);
+  }
+
+  let tag = `v${versionText}`;
+  let prerelease = if (version.isPrerelease) 'true' else 'false';
+  if (let (true, ghOut) = parsed.getOption('github-output')) {
+    let existing = if (await exists(ghOut)) await readFile(ghOut) else '';
+    let appended = `${existing}version=${versionText}\ntag=${tag}\nprerelease=${prerelease}\n`;
+    await writeFile(ghOut, appended);
+  }
+
+  console.log(
+    `Verified release version ${versionText} (tag ${tag}, prerelease=${prerelease})`,
+  );
+}

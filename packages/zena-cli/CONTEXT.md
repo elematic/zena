@@ -40,6 +40,10 @@ the `zena` command. The design is in
      `user-agent`. `npm run versions` (`dev/versions.zena`) writes it from
      their `zena-package.json`, and `tests/versions_test.zena` fails while
      it is out of date: change a version in its manifest, never there.
+     `dev/check-release-version.zena` (`dev/release-version.zena`) checks
+     `zena-package.json`, `versions.zena`, `CHANGELOG.md` and the version
+     increment against existing `v*` tags before `.github/workflows/release.yml`
+     builds release archives.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler/compile-file`), zebra, zenadoc, the language service and
      the formatter linked
@@ -75,7 +79,9 @@ the `zena` command. The design is in
      the crate matches. See `packages/workspace-hack/CONTEXT.md`.
    - Preopens the repository root as `.` (first, so relative paths mean the
      repository: the compiler reads the workspace's `zena-package.json` and
-     `packages/stdlib/zena` relative to it) and `/` as `/`.
+     `packages/stdlib/zena` relative to it) and `/` as `/` on Unix; on
+     Windows, mounted drive roots are preopened as `/a`..`/z` and `C:\...`
+     paths are mapped to `/c/...` (`normalizeHostPath` in `zena/env.zena`).
    - Grants spawning, so zebra can run build commands and the module can run
      other modules with `zena:wasm`, and loading components, so the test
      runner can pass that on to tests. The programs `zena run` starts get
@@ -100,7 +106,9 @@ the `zena` command. The design is in
      library and the CLI module (`packages/zena-cli/out/zena.wasm`) come
      from the workspace when it is a checkout of Zena, as a worktree is,
      and otherwise from the checkout the binary was built in
-     (`source_root`), short of `ZENA_STDLIB_DIR` and `ZENA_CLI_MODULE`.
+     (`source_root`, disabled under `--features bundled` so standalone
+     binaries extract their embedded `BUNDLED_CLI_VERSION` copy outside a
+     Zena workspace), short of `ZENA_STDLIB_DIR` and `ZENA_CLI_MODULE`.
 
 3. **Compiling**
    - In-process by default: the compiler is part of the module. With

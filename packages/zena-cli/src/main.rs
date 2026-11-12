@@ -60,14 +60,79 @@ fn user_cache_dir() -> Result<PathBuf> {
     );
 }
 
+/// Strips the `\\?\` extended-length prefix Windows `canonicalize` adds to
+/// drive paths (`\\?\C:\foo` -> `C:\foo`).
+fn strip_windows_verbatim(raw: &str) -> &str {
+    if let Some(rest) = raw.strip_prefix(r"\\?\")
+        && rest.as_bytes().get(1) == Some(&b':')
+        && rest.as_bytes()[0].is_ascii_alphabetic()
+    {
+        return rest;
+    }
+    raw
+}
+
+fn clean_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    let canonical = std::fs::canonicalize(path)?;
+    #[cfg(windows)]
+    if let Some(raw) = canonical.to_str() {
+        let stripped = strip_windows_verbatim(raw);
+        if stripped.len() != raw.len() {
+            return Ok(PathBuf::from(stripped));
+        }
+    }
+    Ok(canonical)
+}
+
+/// Converts a Windows drive path (`C:\foo\bar` or `\\?\D:\`) into the
+/// POSIX-style WASI guest path (`"/c/foo/bar"` or `"/d"`), matching the
+/// `/<drive>` preopens registered on Windows.
+fn windows_drive_to_guest_path(raw: &str) -> Option<String> {
+    let stripped = strip_windows_verbatim(raw);
+    let bytes = stripped.as_bytes();
+    if bytes.len() < 2 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
+        return None;
+    }
+    if bytes.len() > 2 && bytes[2] != b'\\' && bytes[2] != b'/' {
+        return None;
+    }
+    let drive = (bytes[0] as char).to_ascii_lowercase();
+    let rest = stripped[2..].replace('\\', "/");
+    let trimmed = rest.trim_matches('/');
+    if trimmed.is_empty() {
+        Some(format!("/{drive}"))
+    } else {
+        Some(format!("/{drive}/{trimmed}"))
+    }
+}
+
+/// Formats a host path as a POSIX-style guest path inside WASI.
+fn host_to_guest_path(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    #[cfg(windows)]
+    if let Some(guest) = windows_drive_to_guest_path(&raw) {
+        return guest;
+    }
+    #[cfg(not(windows))]
+    let _ = windows_drive_to_guest_path;
+    raw.into_owned()
+}
+
 /// The checkout this binary was built in, if it is still there: where a
 /// binary without the bundle finds the standard library and the CLI
-/// module, wherever it runs.
+/// module, wherever it runs. Bundled release binaries never reach back into
+/// their build machine's checkout.
+#[cfg(feature = "bundled")]
+fn build_checkout() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(feature = "bundled"))]
 fn build_checkout() -> Option<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
-        .and_then(|p| std::fs::canonicalize(p).ok())?;
+        .and_then(|p| clean_canonicalize(p).ok())?;
     if root.join("packages/stdlib/zena").is_dir() && root.join("packages/zena-cli").is_dir() {
         Some(root)
     } else {
@@ -87,7 +152,7 @@ const MANIFEST: &str = "zena-package.json";
 /// environment decides it, so a variable a shell sets cannot move a
 /// command into another workspace.
 fn workspace_root_for(cwd: &Path) -> PathBuf {
-    let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let cwd = clean_canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let Some(package) = cwd.ancestors().find(|dir| dir.join(MANIFEST).is_file()) else {
         return cwd;
     };
@@ -145,7 +210,7 @@ fn resolve_stdlib_dir(sources: Option<&Path>) -> Result<PathBuf> {
         if !dir.is_empty() {
             let path = PathBuf::from(&dir);
             if path.is_dir() {
-                return std::fs::canonicalize(&path)
+                return clean_canonicalize(&path)
                     .with_context(|| format!("Failed to canonicalize ZENA_STDLIB_DIR: {dir}"));
             }
         }
@@ -153,7 +218,7 @@ fn resolve_stdlib_dir(sources: Option<&Path>) -> Result<PathBuf> {
     if let Some(root) = sources {
         let stdlib = root.join("packages/stdlib/zena");
         if stdlib.is_dir() {
-            return std::fs::canonicalize(&stdlib).with_context(|| {
+            return clean_canonicalize(&stdlib).with_context(|| {
                 format!("Failed to canonicalize stdlib dir: {}", stdlib.display())
             });
         }
@@ -166,7 +231,11 @@ fn resolve_stdlib_dir(sources: Option<&Path>) -> Result<PathBuf> {
              Run inside a Zena repository or build a release binary."
         );
     }
-    let version = env!("CARGO_PKG_VERSION");
+    let version = if BUNDLED_CLI_VERSION.is_empty() {
+        env!("CARGO_PKG_VERSION")
+    } else {
+        BUNDLED_CLI_VERSION
+    };
     let cache_dir = user_cache_dir()?.join("stdlib").join(version);
     let ready_file = cache_dir.join(".ready");
     let is_ready = ready_file.is_file()
@@ -188,7 +257,7 @@ fn resolve_stdlib_dir(sources: Option<&Path>) -> Result<PathBuf> {
         }
         std::fs::write(&ready_file, STDLIB_HASH)?;
     }
-    std::fs::canonicalize(&cache_dir).with_context(|| {
+    clean_canonicalize(&cache_dir).with_context(|| {
         format!(
             "Failed to canonicalize stdlib cache dir: {}",
             cache_dir.display()
@@ -201,20 +270,24 @@ fn resolve_stdlib_dir(sources: Option<&Path>) -> Result<PathBuf> {
 fn cli_module(sources: Option<&Path>) -> Result<PathBuf> {
     if let Ok(path) = std::env::var("ZENA_CLI_MODULE") {
         if !path.is_empty() {
-            return std::fs::canonicalize(&path)
+            return clean_canonicalize(Path::new(&path))
                 .with_context(|| format!("ZENA_CLI_MODULE does not exist: {path}"));
         }
     }
     if let Some(root) = sources {
         let path = root.join("packages/zena-cli/out/zena.wasm");
         if path.is_file() {
-            return std::fs::canonicalize(&path).with_context(|| {
+            return clean_canonicalize(&path).with_context(|| {
                 format!("Failed to canonicalize CLI module path: {}", path.display())
             });
         }
     }
     if let (Some(bytes), Some(hash)) = (BUNDLED_CLI_MODULE, BUNDLED_CLI_HASH) {
-        let version = env!("CARGO_PKG_VERSION");
+        let version = if BUNDLED_CLI_VERSION.is_empty() {
+            env!("CARGO_PKG_VERSION")
+        } else {
+            BUNDLED_CLI_VERSION
+        };
         let cache_dir = user_cache_dir()?;
         let cached_wasm = cache_dir.join(format!("zena-{version}.wasm"));
         let ready_file = cache_dir.join(format!("zena-{version}.ready"));
@@ -229,7 +302,7 @@ fn cli_module(sources: Option<&Path>) -> Result<PathBuf> {
             std::fs::write(&cached_wasm, bytes)?;
             std::fs::write(&ready_file, hash)?;
         }
-        return Ok(std::fs::canonicalize(&cached_wasm)?);
+        return Ok(clean_canonicalize(&cached_wasm)?);
     }
     anyhow::bail!(
         "The zena command's module is not built or bundled. \
@@ -240,7 +313,8 @@ fn cli_module(sources: Option<&Path>) -> Result<PathBuf> {
 fn main() -> Result<()> {
     zena_runtime::init_logging();
     zena_runtime::init_signals();
-    let cwd = std::env::current_dir()?;
+    let raw_cwd = std::env::current_dir()?;
+    let cwd = clean_canonicalize(&raw_cwd).unwrap_or(raw_cwd);
     let checkout = build_checkout();
     let workspace = workspace_root_for(&cwd);
     let sources = source_root(&workspace, checkout.as_deref());
@@ -261,11 +335,12 @@ fn main() -> Result<()> {
     let mut args = vec!["zena".to_string()];
     args.extend(std::env::args().skip(1));
 
+    #[allow(unused_mut)]
     let mut host_env = vec![
-        ("ZENA_CWD".to_string(), cwd.to_string_lossy().into_owned()),
+        ("ZENA_CWD".to_string(), host_to_guest_path(&cwd)),
         (
             "ZENA_CLI_MODULE".to_string(),
-            module_path.to_string_lossy().into_owned(),
+            host_to_guest_path(&module_path),
         ),
         ("ZENA_AVAILABLE_PARALLELISM".to_string(), cpus.to_string()),
         // The platform `zena` names itself on to registries (`clientAgent` in zena/publish.zena).
@@ -276,9 +351,17 @@ fn main() -> Result<()> {
         ("ZENA_STDLIB_DIR".to_string(), "/stdlib".to_string()),
         (
             "ZENA_WORKSPACE_ROOT".to_string(),
-            workspace.to_string_lossy().into_owned(),
+            host_to_guest_path(&workspace),
         ),
     ];
+    #[cfg(windows)]
+    if let Ok(cache_dir) = user_cache_dir() {
+        let clean_cache = clean_canonicalize(&cache_dir).unwrap_or(cache_dir);
+        host_env.push((
+            "ZENA_CACHE_DIR".to_string(),
+            host_to_guest_path(&clean_cache),
+        ));
+    }
 
     let mut wasi = WasiCtxBuilder::new();
     wasi.inherit_stdio()
@@ -286,15 +369,29 @@ fn main() -> Result<()> {
         .args(&args);
 
     wasi.preopened_dir(&workspace, ".", FsPerms::ReadWrite)?;
+    wasi.preopened_dir(&stdlib_dir, "/stdlib", FsPerms::ReadOnly)?;
 
-    wasi.preopened_dir(&stdlib_dir, "/stdlib", FsPerms::ReadOnly)?
-        .preopened_dir("/", "/", FsPerms::ReadWrite)?;
-
-    let grant_path_map = vec![
+    let mut grant_path_map = vec![
         (".".to_string(), workspace.clone()),
         ("/stdlib".to_string(), stdlib_dir.clone()),
-        ("/".to_string(), PathBuf::from("/")),
     ];
+
+    #[cfg(not(windows))]
+    {
+        wasi.preopened_dir("/", "/", FsPerms::ReadWrite)?;
+        grant_path_map.push(("/".to_string(), PathBuf::from("/")));
+    }
+    #[cfg(windows)]
+    {
+        for letter in b'a'..=b'z' {
+            let host_drive = PathBuf::from(format!("{}:\\", (letter as char).to_ascii_uppercase()));
+            if host_drive.is_dir() {
+                let guest_drive = format!("/{}", letter as char);
+                wasi.preopened_dir(&host_drive, &guest_drive, FsPerms::ReadWrite)?;
+                grant_path_map.push((guest_drive, host_drive));
+            }
+        }
+    }
 
     // The CLI module holds every grant, and passes on to the programs it
     // runs what their flags ask for.
@@ -406,5 +503,21 @@ mod tests {
         assert_eq!(source_root(&project, None), None);
         let _ = std::fs::remove_dir_all(&checkout);
         let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn windows_drive_paths_map_to_wasi_guest_paths() {
+        assert_eq!(
+            windows_drive_to_guest_path(r"C:\Users\runneradmin\AppData\Local\zena"),
+            Some("/c/Users/runneradmin/AppData/Local/zena".to_string())
+        );
+        assert_eq!(
+            windows_drive_to_guest_path(r"\\?\D:\a\zena\zena"),
+            Some("/d/a/zena/zena".to_string())
+        );
+        assert_eq!(windows_drive_to_guest_path(r"C:\"), Some("/c".to_string()));
+        assert_eq!(windows_drive_to_guest_path("d:"), Some("/d".to_string()));
+        assert_eq!(windows_drive_to_guest_path("C:relative"), None);
+        assert_eq!(windows_drive_to_guest_path("/home/dev/work"), None);
     }
 }

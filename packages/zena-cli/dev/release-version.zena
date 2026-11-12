@@ -1,0 +1,238 @@
+/**
+ * Release version and changelog rules for `zena` releases
+ * (`.github/workflows/release.yml`).
+ *
+ * `packages/zena-cli/zena-package.json` is the source of truth for the CLI
+ * version. Every release version is either `M.m.p` or `M.m.p-preview.<N>`
+ * with a non-negative integer `<N>` (no leading zeros), has not been
+ * released before, advances the previous `v*` release by incrementing
+ * major, minor, or patch by 1 (resetting lower parts to 0), advancing the
+ * `preview.<N>` integer, or graduating `M.m.p-preview.<N>` to `M.m.p`, and
+ * has a non-empty `## [<version>]` section in
+ * `packages/zena-cli/CHANGELOG.md`.
+ */
+
+import {StringBuilder} from 'zena:core';
+import {parsePackageVersion} from 'package-manager/records';
+import {Version, VersionError, parseVersionNumber} from 'zena-lang:semver/version';
+
+/**
+ * Parses `text` as a CLI release version: `M.m.p` or `M.m.p-preview.<N>`
+ * where `<N>` is a non-negative integer without leading zeros and with no
+ * build metadata. Throws `VersionError` otherwise.
+ */
+export function parseReleaseVersion(text: String): Version {
+  let version = parsePackageVersion(text);
+  let pre = version.prerelease;
+  if (pre.length == 0) {
+    return version;
+  }
+  if (pre.length != 2 || pre[0] != 'preview') {
+    throw new VersionError(
+      `'${text}' must have no pre-release tag or use '-preview.<int>'`,
+    );
+  }
+  parseVersionNumber(pre[1], text);
+  return version;
+}
+
+/** The `<N>` in `M.m.p-preview.<N>`, or -1 when `version` is not a preview. */
+function previewNumber(version: Version): i64 {
+  let pre = version.prerelease;
+  if (pre.length != 2 || pre[0] != 'preview') {
+    return -1;
+  }
+  try {
+    return parseVersionNumber(pre[1], version.toString());
+  } catch (e) {
+    return -1;
+  }
+}
+
+/**
+ * Checks that `next` is a valid release transition after `previous` (the
+ * highest prior `v*` release, or `null` for the first release). Returns
+ * `null` when valid, or an error message explaining why the version is
+ * rejected.
+ */
+export function checkVersionIncrement(
+  previous: Version | null,
+  next: Version,
+): String | null {
+  try {
+    parseReleaseVersion(next.toString());
+  } catch (e) {
+    return e.message;
+  }
+  if (previous == null) {
+    return null;
+  }
+  let order = next.compareTo(previous);
+  if (order == 0) {
+    return `version ${next.toString()} matches the latest release ${previous.toString()}; update packages/zena-cli/zena-package.json before releasing`;
+  }
+  if (order < 0) {
+    return `version ${next.toString()} is older than the latest release ${previous.toString()}`;
+  }
+
+  // Same M.m.p: either advance preview.<N> or graduate M.m.p-preview.<N> to M.m.p.
+  if (next.hasSameCore(previous)) {
+    if (!previous.isPrerelease) {
+      return `version ${next.toString()} has the same major.minor.patch as ${previous.toString()}`;
+    }
+    if (!next.isPrerelease) {
+      return null;
+    }
+    let prevN = previewNumber(previous);
+    let nextN = previewNumber(next);
+    if (prevN >= 0 && nextN > prevN) {
+      return null;
+    }
+    if (prevN < 0 && nextN >= 0) {
+      return null;
+    }
+    return `preview version ${next.toString()} must increase the preview integer above ${previous.toString()}`;
+  }
+
+  // Patch + 1 on the same major.minor.
+  if (
+    next.major == previous.major &&
+    next.minor == previous.minor &&
+    next.patch == previous.patch + 1
+  ) {
+    return null;
+  }
+
+  // Minor + 1 on the same major, resetting patch to 0.
+  if (
+    next.major == previous.major &&
+    next.minor == previous.minor + 1 &&
+    next.patch == 0
+  ) {
+    return null;
+  }
+
+  // Major + 1, resetting minor and patch to 0.
+  if (next.major == previous.major + 1 && next.minor == 0 && next.patch == 0) {
+    return null;
+  }
+
+  return (
+    `version ${next.toString()} does not follow ${previous.toString()}: ` +
+    'increment major, minor, or patch by 1 (setting subsequent parts to 0), ' +
+    'increase the preview integer, or graduate the current preview to a release'
+  );
+}
+
+/**
+ * Checks `next` against existing Git tags and GitHub Release tag names:
+ * refuses duplicate releases and checks the increment from the highest
+ * existing `v<semver>` tag. Non-version tags (such as `pre-rebase-158`) are
+ * ignored.
+ */
+export function checkReleaseTags(
+  existingTags: Array<String>,
+  next: Version,
+): String | null {
+  let targetText = next.toString();
+  let targetTag = `v${targetText}`;
+  var highest: Version | null = null;
+
+  for (let raw in existingTags) {
+    let tag = raw.trim();
+    if (tag == '') {
+      continue;
+    }
+    if (tag == targetTag || tag == targetText) {
+      return `version ${targetText} (tag ${targetTag}) has already been released`;
+    }
+    if (!tag.startsWith('v')) {
+      continue;
+    }
+    let candidateText = tag.sliceBytes(1, tag.length);
+    var parsed: Version | null = null;
+    try {
+      parsed = parsePackageVersion(candidateText);
+    } catch (e) {
+      parsed = null;
+    }
+    if (parsed != null) {
+      if (parsed.compareTo(next) == 0) {
+        return `version ${targetText} (tag ${tag}) has already been released`;
+      }
+      if (highest == null || parsed.compareTo(highest) > 0) {
+        highest = parsed;
+      }
+    }
+  }
+
+  return checkVersionIncrement(highest, next);
+}
+
+/**
+ * Extracts the release notes under `## [<version>]` from Keep a Changelog
+ * Markdown text, stopping before the next `## ` section or link reference
+ * footer. Returns `null` when the section is missing or empty.
+ */
+export function extractChangelogNotes(
+  changelog: String,
+  version: String,
+): String | null {
+  let headerPrefix = `## [${version}]`;
+  let lines = changelog.split('\n');
+  var startLine = -1;
+
+  for (var i = 0; i < lines.length; i += 1) {
+    let trimmed = lines[i].trim();
+    if (
+      trimmed == headerPrefix ||
+      trimmed.startsWith(`${headerPrefix} `) ||
+      trimmed.startsWith(`${headerPrefix}-`)
+    ) {
+      startLine = i + 1;
+      break;
+    }
+  }
+  if (startLine < 0) {
+    return null;
+  }
+
+  let bodyLines = new GrowableArray<String>();
+  for (var i = startLine; i < lines.length; i += 1) {
+    let rawLine = lines[i];
+    let trimmed = rawLine.trim();
+    if (trimmed.startsWith('## ')) {
+      break;
+    }
+    // Keep a Changelog link definitions at the end of the file: `[0.1.0]: https://...`
+    if (trimmed.startsWith('[') && trimmed.contains(']: ')) {
+      break;
+    }
+    bodyLines.push(rawLine);
+  }
+
+  var firstNonBlank = 0;
+  while (
+    firstNonBlank < bodyLines.length &&
+    bodyLines[firstNonBlank].trim() == ''
+  ) {
+    firstNonBlank += 1;
+  }
+  var lastNonBlank = bodyLines.length - 1;
+  while (lastNonBlank >= firstNonBlank && bodyLines[lastNonBlank].trim() == '') {
+    lastNonBlank -= 1;
+  }
+  if (firstNonBlank > lastNonBlank) {
+    return null;
+  }
+
+  let sb = new StringBuilder();
+  for (var i = firstNonBlank; i <= lastNonBlank; i += 1) {
+    if (i > firstNonBlank) {
+      sb.append('\n');
+    }
+    sb.append(bodyLines[i]);
+  }
+  sb.append('\n');
+  return sb.toString();
+}
