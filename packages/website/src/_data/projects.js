@@ -12,9 +12,9 @@ export default [
     status: 'In progress',
     statusType: 'warning',
     tagline:
-      'Build and run tool inspired by Wireit, extensible with Wasm rules',
+      'Build and run tool inspired by Wireit, with planned Wasm build rules',
     summary:
-      'Native task graph, content-addressed cache, and dev service runner iterating on Wireit with faster startup, Wasm build-rule components, incremental and resident steps, and Blaze-style graph queries.',
+      'Native task graph, content-addressed cache, and dev service runner iterating on Wireit with faster startup, plus planned Wasm build-rule components, incremental and resident steps, and Blaze-style graph queries.',
     stack: ['Zena', 'WASI', 'Wasmtime'],
   },
   {

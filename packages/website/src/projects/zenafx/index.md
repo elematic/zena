@@ -41,6 +41,63 @@ ZenaFX also supports low-level graphics components that import draft
 `wasi:webgpu` and `wasi-gfx:surface` interfaces directly for custom 2D/3D
 shaders alongside retained UI subtrees.
 
+## Authoring components
+
+In ZenaFX's current guest library (`examples/zenafx`), a widget class declares
+its interior structure once as a `Template` and fills dynamic holes on each
+render. A `Card` widget, for example, shares one template across every card on
+screen while supplying its own title, accent style, and slotted child widgets:
+
+```zena
+import {Color, Align} from 'zenafx:ui/style';
+import {
+  Binding, BindingTarget, BindingValueContent, BindingValueTextStyle,
+} from 'zenafx:host/scene';
+import {Rendering, Widget} from './framework.zena';
+import {box, slot, text, template} from './widget.zena';
+
+let cardTemplate = template(
+  box({style: cardStyle, align: Align.Stretch, gap: 10.0, padding: cardPadding}, [
+    text('', titleStyle(surface)),
+    box({style: wellStyle, align: Align.Stretch, padding: wellPadding}, [slot()]),
+  ]),
+  [
+    new Binding(1 as u32, BindingTarget.Content),
+    new Binding(1 as u32, BindingTarget.Style),
+  ],
+);
+
+export class Card extends Widget {
+  #title: String;
+  #accent: Color;
+  #content: Array<Widget>;
+
+  new(title: String, accent: Color, content: Array<Widget>)
+      : #title = title, #accent = accent, #content = content, super();
+
+  build(): Rendering {
+    return new Rendering(
+      cardTemplate,
+      [
+        new BindingValueContent(this.#title),
+        new BindingValueTextStyle(titleStyle(this.#accent)),
+      ],
+      [this.#content],
+    );
+  }
+}
+```
+
+`Card` places `#content` into its `slot()` without seeing any scene node IDs
+inside its children—the host projects child subtrees into the slot and sizes the
+card around them in a single layout pass.
+
+Today templates are built with helper calls (`box`, `text`, `slot`) and manual
+breadth-first node indices (`1 as u32`) in the binding list. We may add JSX or a
+declarative builder syntax to Zena so components can write trees with inline
+bindings while the compiler extracts static templates and hole indices
+automatically.
+
 ## Architecture: Rust host and Zena engine
 
 ZenaFX splits responsibilities between a thin native host in Rust and a
@@ -94,6 +151,8 @@ Planned milestones include:
 
 - Implementing the retained scene graph, layout solver, and styling engine in
   Zena and hosting it as a privileged engine component inside `zfx`.
+- Exploring JSX or builder syntax in Zena for ergonomic template and binding
+  authoring.
 - Multi-component slot delegation so a host component can mount untrusted child
   components into subtrees with fine-grained capabilities.
 - Hardware-accelerated GPU compositing on desktop and mobile, plus a browser
@@ -102,4 +161,6 @@ Planned milestones include:
   accessibility APIs.
 
 → Source: [`packages/zenafx`](https://github.com/elematic/zena/tree/main/packages/zenafx) ·
-Design: [`docs/design/zenafx-ui.md`](https://github.com/elematic/zena/blob/main/docs/design/zenafx-ui.md)
+[`examples/zenafx`](https://github.com/elematic/zena/tree/main/examples/zenafx) ·
+Design: [`docs/design/zenafx-ui.md`](https://github.com/elematic/zena/blob/main/docs/design/zenafx-ui.md) ·
+[`docs/design/zenafx-widget-authoring.md`](https://github.com/elematic/zena/blob/main/docs/design/zenafx-widget-authoring.md)

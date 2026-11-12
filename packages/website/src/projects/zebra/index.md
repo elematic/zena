@@ -1,6 +1,6 @@
 ---
 title: 'Zebra'
-description: 'The Zena Build and Run tool: a Wireit-inspired task graph, content-addressed build cache, dev service supervisor, and WebAssembly build-rule engine.'
+description: 'The Zena Build and Run tool: a Wireit-inspired task graph, content-addressed build cache, and dev service supervisor, with planned WebAssembly build rules.'
 status: 'In progress'
 statusType: 'warning'
 lead: "Zebra is the Zena Build and Run tool—an incremental task runner, build cache, and dev service supervisor inspired by Google's Wireit and written in Zena."
@@ -9,9 +9,9 @@ lead: "Zebra is the Zena Build and Run tool—an incremental task runner, build 
 Zebra (`packages/zebra`, invoked via `zena build` or `zebra`) is inspired by
 [Google's Wireit](https://github.com/google/wireit). Its goal is to give Zena a
 native task graph and incremental build runner without depending on Node.js,
-while iterating on Wireit's design with faster startup, custom build rules
-written as WebAssembly components, incremental file-delta steps, in-memory
-resident workers, Blaze-style graph queries, and build dashboards.
+iterating on Wireit's design with faster startup today and planned extensions
+for custom build rules as WebAssembly components, incremental file-delta steps,
+in-memory resident workers, Blaze-style graph queries, and build dashboards.
 
 Although Zebra is written in Zena and ships with the Zena toolchain, its task
 graph and caching model do not assume Zena source code. A target can compile
@@ -71,47 +71,51 @@ warm no-op checks down to `stat` calls and cached plan snapshots:
 
 ## Custom build rules as WebAssembly components
 
+Custom build rules are planned and not implemented yet. Today Zebra executes
+shell commands, scripts, and supervised services declared in package manifests.
+
 In Wireit, every package repeats the same command flags, input globs, output
 directories, and cross-package dependencies by hand—even when another tool
 config in the directory already declares them. Meanwhile, shelling out to
 custom scripts is slow to start, OS-dependent, and unsandboxed.
 
-Zebra's plugin model uses WebAssembly components (built on the
+Zebra's planned plugin model will use WebAssembly components (built on the
 [`zena:host` extension interfaces](/projects/runtime/#sandboxed-wasm-extensions))
 to package custom build rules, asset transforms, and target runners:
 
-- **Config-aware rule expansion** — A TypeScript build-rule component can read
-  `tsconfig.json` directly (`include`, `outDir`, and project `references`) and
-  emit the corresponding task inputs, outputs, and upstream dependencies,
-  eliminating duplicated configuration across `tsconfig.json` and the build
-  manifest.
-- **Capability-scoped execution** — Rule and transform components receive read
-  access only to declared input directories and write access only to declared
-  output directories, with no ambient filesystem or network access unless
-  explicitly granted.
+- **Config-aware rule expansion** — A TypeScript build-rule component will be
+  able to read `tsconfig.json` directly (`include`, `outDir`, and project
+  `references`) and emit the corresponding task inputs, outputs, and upstream
+  dependencies, avoiding duplicated configuration across `tsconfig.json` and the
+  build manifest.
+- **Capability-scoped execution** — Rule and transform components will receive
+  read access only to declared input directories and write access only to
+  declared output directories, with no ambient filesystem or network access
+  unless explicitly granted.
 - **Language-agnostic distribution** — Any language that compiles to a WASI
-  component (Zena, Rust, Go, C, or others) can author a Zebra rule, and the
-  compiled `.wasm` binary runs identically on Linux, macOS, and Windows.
+  component (Zena, Rust, Go, C, or others) will be able to author a Zebra rule,
+  and the compiled `.wasm` binary will run identically on Linux, macOS, and
+  Windows.
 
 ## Incremental steps, resident workers, and graph queries
 
-Beyond custom rules, Zebra is designed to push further than shell-per-package
-task runners in four areas:
+Incremental steps, resident workers, graph queries, and dashboards are also
+planned designs and not implemented yet:
 
 - **Incremental steps** — Standard task runners re-invoke a step from scratch
   whenever any input changes. For steps that opt into incremental execution,
-  Zebra passes the exact set of added, modified, and deleted input files since
-  the step's previous run so compilers, bundlers, and site generators can update
-  only affected outputs.
-- **In-memory and resident steps** — Steps implemented as Wasm components or
-  persistent worker processes can stay resident in memory across multiple targets
-  in a build and across `--watch` cycles, keeping parsed ASTs, type caches, and
-  compiled state warm instead of paying cold process startup per package.
-- **Blaze-style graph queries** — Because Zebra resolves an explicit target and
-  fileset graph, workspace queries (modeled on Bazel / Blaze `query`) can
+  Zebra will pass the exact set of added, modified, and deleted input files
+  since the step's previous run so compilers, bundlers, and site generators can
+  update only affected outputs.
+- **In-memory and resident workers** — Steps implemented as Wasm components or
+  persistent worker processes will be able to stay resident in memory across
+  multiple targets in a build and across `--watch` cycles, keeping parsed ASTs,
+  type caches, and compiled state warm without cold process startup per package.
+- **Blaze-style graph queries** — Over Zebra's explicit target and fileset
+  graph, planned workspace queries (modeled on Bazel / Blaze `query`) will
   answer what depends on a package, trace the dependency chain between two
   targets, or list the minimal set of test targets affected by a git diff.
-- **Dashboards** — Structured execution events feed terminal and local web
+- **Dashboards** — Structured execution events will feed terminal and local web
   dashboards showing critical-path timelines, cache hit rates, per-step logs,
   and live status for background dev services.
 
@@ -123,7 +127,9 @@ with `zena-package.json`, `zebra.json`, and `package.json` (`wireit`) support,
 cutoff, watch mode, supervised services, and Clack-style terminal progress
 output.
 
-Upcoming work covers:
+Planned work is tracked in
+[open Zebra issues on GitHub](https://github.com/elematic/zena/issues?q=is%3Aissue+state%3Aopen+in%3Atitle+zebra)
+and covers:
 
 - The Wasm component API for custom build rules (such as `tsconfig.json`-driven
   TypeScript rules) and sandboxed transforms.
@@ -135,4 +141,5 @@ Upcoming work covers:
 
 → Source: [`packages/zebra`](https://github.com/elematic/zena/tree/main/packages/zebra) ·
 [`packages/workflow`](https://github.com/elematic/zena/tree/main/packages/workflow) ·
-Design: [`docs/design/workflow.md`](https://github.com/elematic/zena/blob/main/docs/design/workflow.md)
+Design: [`docs/design/workflow.md`](https://github.com/elematic/zena/blob/main/docs/design/workflow.md) ·
+[Open issues](https://github.com/elematic/zena/issues?q=is%3Aissue+state%3Aopen+in%3Atitle+zebra)

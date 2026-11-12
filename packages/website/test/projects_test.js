@@ -82,6 +82,30 @@ describe('projects section navigation, sidebars, and content', () => {
     }
   });
 
+  it('embeds and deep-links the Wasm Web UI playground example', async () => {
+    const mdSource = await readFile(
+      join(SRC_DIR, 'projects', 'wasm-web-ui', 'index.md'),
+      'utf8',
+    );
+    assert.match(mdSource, /\/playground\/#example-web-components/);
+    assert.match(
+      mdSource,
+      /<zena-playground\s+vertical\s+preview\s+allow-unused-variables>/,
+    );
+    assert.match(
+      mdSource,
+      /\{%\s*include "wasm-web-ui-example-files\.njk"\s*%\}/,
+    );
+
+    const sampleFiles = await readFile(
+      join(SRC_DIR, '_includes', 'wasm-web-ui-example-files.njk'),
+      'utf8',
+    );
+    assert.match(sampleFiles, /filename="elements\.zena"/);
+    assert.match(sampleFiles, /filename="demo\.js"/);
+    assert.match(sampleFiles, /filename="index\.html"/);
+  });
+
   it('indexes /projects/ and micro-site pages without status badge text in titles', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'zena-search-test-'));
     try {

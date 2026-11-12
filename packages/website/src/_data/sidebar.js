@@ -1297,6 +1297,7 @@ const zenafx = projectMicrosite('ZenaFX', 'zenafx', [
     link: '/projects/zenafx/',
     outline: [
       'Isolation and the shared scene graph',
+      'Authoring components',
       'Architecture: Rust host and Zena engine',
       'Target platforms and use cases',
       'Current status and roadmap',
@@ -1324,6 +1325,7 @@ const wasmWebUi = projectMicrosite('Wasm Web UI', 'wasm-web-ui', [
     outline: [
       'Capability isolation and zero DOM access',
       'Declarative templates across the boundary',
+      'Interactive example',
       'Multi-language components and server-side rendering',
       'Current status and roadmap',
     ],

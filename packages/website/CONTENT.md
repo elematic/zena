@@ -730,6 +730,7 @@ To add a page: add it to the sidebar with an `outline`, then run
 - **ZenaFX**
   - ✅ [Overview](src/projects/zenafx/index.md) — `/projects/zenafx/`
     - Isolation and the shared scene graph
+    - Authoring components
     - Architecture: Rust host and Zena engine
     - Target platforms and use cases
     - Current status and roadmap
@@ -749,6 +750,7 @@ To add a page: add it to the sidebar with an `outline`, then run
   - ✅ [Overview](src/projects/wasm-web-ui/index.md) — `/projects/wasm-web-ui/`
     - Capability isolation and zero DOM access
     - Declarative templates across the boundary
+    - Interactive example
     - Multi-language components and server-side rendering
     - Current status and roadmap
 

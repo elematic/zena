@@ -43,12 +43,21 @@ The Wasm module never receives references to DOM nodes, `window`, or `document`:
 
 ## Declarative templates across the boundary
 
-Chatty imperative DOM bindings (`createElement`, `setAttribute`, `appendChild`
-per node) pay boundary-crossing overhead on every mutation and require the host
-to expose mutable node handles.
+Exposing imperative DOM APIs (`createElement`, `setAttribute`, `appendChild`,
+`parentNode`) directly to WebAssembly modules has four drawbacks:
 
-Wasm Web UI crosses the boundary at the template level instead, modeled on
-[`lit-html`](https://lit.dev/docs/libraries/standalone-templates/):
+- **Large API surface area** — Binding the DOM's methods and properties inflates
+  both the JavaScript host glue and the imports compiled into each Wasm module.
+- **Boundary-crossing cost** — Fine-grained mutations cross the JS/Wasm boundary
+  and touch handle tables on every node operation.
+- **Harder security isolation** — Imperative node handles and traversal methods
+  make it harder to stop a component from reading DOM state written by other
+  code on the page.
+- **Server-side rendering difficulty** — Imperative DOM code assumes a live,
+  mutable tree and is very difficult to server-render without emulating a
+  browser DOM.
+
+Wasm Web UI crosses the boundary at the template level instead:
 
 1. **Static template registration** — A tagged template literal registers its
    fixed HTML string array once with the host and receives an integer template
@@ -58,28 +67,42 @@ Wasm Web UI crosses the boundary at the template level instead, modeled on
 2. **Hole values per render** — On `render()`, the component sends the template
    ID together with an array of dynamic hole values: primitives, strings, nested
    template results, arrays of templates, or event handler IDs.
-3. **Host diffing** — The JavaScript host (`@zena-lang/wasm-web-ui`, backed by
-   `lit-html` on the client) updates only the DOM parts whose values changed.
+3. **Host template application** — The JavaScript host (`@zena-lang/wasm-web-ui`)
+   diffs and updates only the DOM parts whose values changed. Client-side
+   template application is currently backed by
+   [`lit-html`](https://lit.dev/docs/libraries/standalone-templates/), and would
+   ideally move to a standard browser DOM templating API in the future.
 
-In Zena, reactive custom elements use `@property` and `@state` decorators that
-batch updates and emit `webui_*` lifecycle exports (`instantiate`, `connect`,
-`disconnect`, `attributeChanged`, `render`, `handleEvent`):
+In Zena, reactive custom elements subclass `ZenaElement`, declare `@property`
+and `@state` fields, attach scoped `css` stylesheets, and export element
+definitions via `defineElement` or `declareElement`:
 
 ```zena
-import {html} from 'zena:web-templates';
-import {Element, property, state} from 'zena:web-elements';
+import {ZenaElement, property, defineElement, html} from 'zena:web-elements';
 
-export class CounterElement extends Element {
-  @property label: String = 'Count';
-  @state count: i32 = 0;
+class Counter extends ZenaElement {
+  @property var count: i32 = 0;
+  @property var step: i32 = 1;
 
   render() {
-    return html`<button @click=${() => { this.count += 1; }}>
-      ${this.label}: ${this.count}
-    </button>`;
+    return html`
+      <button @click=${(e) => { this.count += this.step; }}>
+        Count: ${this.count}
+      </button>`;
   }
 }
+
+export let counterElement = defineElement('x-counter', () => new Counter());
 ```
+
+## Interactive example
+
+Try editing `elements.zena`, `demo.js`, and `index.html` below—or open the
+[Web Components example in the full-screen Playground](/playground/#example-web-components):
+
+<zena-playground vertical preview allow-unused-variables>
+{% include "wasm-web-ui-example-files.njk" %}
+</zena-playground>
 
 ## Multi-language components and server-side rendering
 
@@ -95,31 +118,43 @@ memory models:
   adapter. The repository includes a working Rust counter component alongside
   Zena components on the same page.
 
-Because components produce pure template descriptions and never call browser
-APIs during `render()`, the exact same `.wasm` binary can be **server-side
-rendered** in any server runtime that executes WebAssembly—Node.js, Deno,
-Cloudflare Workers, or a native Wasmtime / Zena HTTP server. An SSR host
-evaluates the component's initial properties, serializes its shadow root as
-Declarative Shadow DOM (`<template shadowrootmode="open">`) with hydration
-markers, and streams HTML that paints before client Wasm downloads.
+Because components produce declarative template descriptions and never call
+browser APIs during `render()`, the same component definitions can be
+**server-side rendered** in any server runtime that executes WebAssembly—Node.js,
+Deno, Cloudflare Workers, or a native Wasmtime HTTP server.
+
+`zena:web-elements` already supports SSR via `renderElement()`, serializing an
+element's initial render as Declarative Shadow DOM
+(`<template shadowrootmode="open">`) with hydration markers, while
+`@zena-lang/wasm-web-ui` hydrates existing shadow roots on the client via
+`@lit-labs/ssr-client` without re-rendering from scratch. The repository
+includes a working SSR demo server written in Zena
+([`packages/wasm-web-ui/demo/server.zena`](https://github.com/elematic/zena/blob/main/packages/wasm-web-ui/demo/server.zena)),
+and building a Rust SSR demo server is on the roadmap.
 
 ## Current status and roadmap
 
 Wasm Web UI is a working prototype in `packages/wasm-web-ui`, paired with
 `zena:web-templates` and `zena:web-elements` in the Zena standard library.
-Client-side template rendering, reactive properties, event dispatch, nested
-templates, Wasm GC modules, and Rust linear-memory modules (`examples/rust`) all
-run today with end-to-end Playwright tests.
+Client-side `lit-html` template rendering, reactive `@property` and `@state`
+fields, `css` constructable stylesheets (`adoptedStyleSheets`), sanitized event
+dispatch, Wasm GC modules, Rust linear-memory modules (`examples/rust`), and a
+Zena SSR + client hydration demo (`demo/server.zena`) all run today with unit
+and Playwright tests.
 
 Planned work includes:
 
-- Server-side rendering and client hydration using Declarative Shadow DOM.
-- Constructable stylesheet (`adoptedStyleSheets`) registration across the
-  protocol boundary.
+- Building a Rust SSR demo server alongside the existing Zena server demo.
+- Designing capability-safe host bridges for browser observation and layout
+  APIs—such as `MutationObserver`, `ResizeObserver`, and computed styles
+  (`getComputedStyle`)—without exposing raw DOM nodes.
+- Moving client-side template application from `lit-html` to a standard browser
+  DOM templating API as browser standards mature.
 - Formalizing the wire ABI and WIT/core-Wasm specification so third-party
   language SDKs can target Wasm Web UI without depending on Zena packages.
 - Stricter host policy hooks for URL sanitization and capability attenuation on
   rich attributes and slots.
 
 → Source: [`packages/wasm-web-ui`](https://github.com/elematic/zena/tree/main/packages/wasm-web-ui) ·
+[Playground example](/playground/#example-web-components) ·
 Design: [`docs/design/wasm-web-ui.md`](https://github.com/elematic/zena/blob/main/docs/design/wasm-web-ui.md)
