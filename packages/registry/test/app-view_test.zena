@@ -32,7 +32,7 @@ import {Range, Version} from 'zena-lang:semver';
 import {MINIMUM_CLIENT_VERSION, RECOMMENDED_CLIENT_VERSION} from 'registry/clients';
 import {MemoryHandleRecords} from 'registry/handles';
 import {
-  CallLog, ClaimedName, ClaimedScope, AppViewAccount, AppViewConfig, AppViewError, AppViewStore, MemoryAppViewStore, PENDING_MICROS, AppView,
+  CallLog, ClaimedName, ClaimedScope, AppViewAccount, Publication, AppViewConfig, AppViewError, AppViewStore, MemoryAppViewStore, PENDING_MICROS, AppView,
   Count, Limit, Limits, PackageSummary, PendingChange, PendingRelease, ScopeCreation, ScopeCreator, limitName, limitNamed
 } from 'registry/app-view';
 import {MAX_README_BYTES, ReleaseContents, ReleaseFile} from 'registry/release-contents';
@@ -350,6 +350,10 @@ final class StaleAppViewStore implements AppViewStore {
   async heldRelease(pkg: String, version: String): Future<PendingRelease | null> { return null; }
   async heldReleases(pkg: String): Future<Array<PendingRelease>> { return await this.#inner.heldReleases(pkg); }
   async dropRelease(pkg: String, version: String): Future<void> { await this.#inner.dropRelease(pkg, version); }
+  async putPublication(pkg: String, publication: Publication): Future<void> {
+    await this.#inner.putPublication(pkg, publication);
+  }
+  async publications(pkg: String): Future<Array<Publication>> { return await this.#inner.publications(pkg); }
   async holdChange(account: String, change: PendingChange): Future<void> {
     await this.#inner.holdChange(account, change);
   }
@@ -823,7 +827,7 @@ export let tests = suite('registry/app-view', () => {
     equal((await appView.pendingReleases(ALICE, pkgDid, later)).length, 0);
     var missing = '';
     try {
-      await appView.completeRelease(ALICE, pkgDid, '1.0.0', later);
+      await appView.completeRelease(ALICE, pkgDid, '1.0.0', null, later);
     } catch (e) {
       missing = if (e is AppViewError) e.error else e.message;
     }
@@ -1955,6 +1959,51 @@ export let tests = suite('registry/app-view', () => {
     equal((await fixture.get(`/people/${ALICE}/avatar?s=forged`)).statusCode, 404, 'forged');
     let signature = ((fixture.appView as AppView).sessions as WebSessions).urlSignature(ALICE);
     equal((await fixture.get(`/people/${ALICE}/avatar?s=${signature}`)).statusCode, 404, 'no avatar');
+  });
+
+  test('keeps which clients published and completed each release, and shows them to admins', async (ctx) => {
+    let fixture = new Fixture();
+    let appView = fixture.appView as AppView;
+    let org = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, org, 'router'))['did'] as String;
+    let blob = await upload(fixture, router, archiveOf(router, '1.0.0'));
+    let publishing = 'zena/0.1.0 (linux-x86_64) zena-compiler/0.1.0 package-manager/0.1.0';
+    let approving = 'zena/0.2.0 (macos-aarch64) zena-compiler/0.2.0 package-manager/0.2.0';
+    fixture.userAgent = publishing;
+    let held = ok(await fixture.call(ALICE, 'publish', `{"package": "${router}", "release": ${releaseJson('1.0.0', blob)}}`));
+    fixture.attest(ALICE, held['uri'] as String, held['cid'] as String);
+    fixture.userAgent = approving;
+    equal((await complete(fixture, ALICE, router, '1.0.0'))['state'] as String, 'published');
+    // Asking again, once it is published, changes nothing.
+    fixture.userAgent = null;
+    equal((await complete(fixture, ALICE, router, '1.0.0'))['state'] as String, 'published');
+
+    var refused = '';
+    try {
+      await appView.publications(ALICE, router);
+    } catch (e) {
+      refused = if (e is AppViewError) e.error else e.message;
+    }
+    equal(refused, 'Forbidden');
+    appView.config.admins.add(BOB);
+    let kept = await appView.publications(BOB, router);
+    equal(kept.length, 1);
+    let publication = kept[0];
+    equal(publication.version, '1.0.0');
+    equal(publication.cid.toString(), held['cid'] as String);
+    equal(publication.publisher, ALICE);
+    equal(publication.publisherClient as String, publishing);
+    equal(publication.completer, ALICE);
+    equal(publication.completerClient as String, approving);
+    isTrue(publication.completedAt >= publication.heldAt, 'completed after it was held');
+
+    // Admins see them on the package page; maintainers and visitors do not.
+    let asAdmin = pageOf(await fixture.get('/packages/router.acme.pkg.test', await webCookie(fixture, BOB)));
+    isTrue(asAdmin.contains('<th>Published with</th>') && asAdmin.contains(publishing) && asAdmin.contains(approving),
+        asAdmin);
+    let asAlice = pageOf(await fixture.get('/packages/router.acme.pkg.test', await webCookie(fixture, ALICE)));
+    isTrue(!asAlice.contains('Published with') && !asAlice.contains('zena/0.1.0'), asAlice);
+    isTrue(!pageOf(await fixture.get('/packages/router.acme.pkg.test')).contains('zena/0.1.0'), 'signed out');
   });
 
   test('shows who approved each release, from the attestations in their repositories', async (ctx) => {

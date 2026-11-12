@@ -328,6 +328,10 @@ export interface AppViewStore {
   heldReleases(pkg: String): Future<Array<PendingRelease>>;
   /** Stops holding the release of `pkg` at `version`. */
   dropRelease(pkg: String, version: String): Future<void>;
+  /** Keeps `publication`, the App View's own record of how a release of `pkg` came to be published. */
+  putPublication(pkg: String, publication: Publication): Future<void>;
+  /** The publications kept for `pkg`'s releases, in no order. */
+  publications(pkg: String): Future<Array<Publication>>;
   /**
    * Holds `change` to one of `account`'s records until it is approved, in
    * place of any change to that record held before.
@@ -447,8 +451,35 @@ export final class PendingRelease {
   publisher: String;
   /** When the App View took it, in microseconds since the epoch. */
   heldAt: i64;
+  /** The `user-agent` the publisher called with, such as `zena/0.1.0 (linux-x86_64) …`, or null for none. */
+  var client: String | null = null;
 
   new(this.version, this.record, this.cid, this.publisher, this.heldAt);
+}
+
+/**
+ * The App View's own record of how a release came to be published, which
+ * no repository holds: who published it, with which client, when it was
+ * held, and who completed it once its maintainers had attested it, with
+ * which client, and when (`completeRelease`). Admins see it on the
+ * package's page, to tell which `zena` a release came from. A client is
+ * its `user-agent`, or null when the call named none.
+ */
+export final class Publication {
+  version: String;
+  /** The release record's CID. */
+  cid: Cid;
+  publisher: String;
+  publisherClient: String | null;
+  /** When the App View held it, in microseconds since the epoch. */
+  heldAt: i64;
+  completer: String;
+  completerClient: String | null;
+  /** When the App View wrote it, in microseconds since the epoch. */
+  completedAt: i64;
+
+  new(this.version, this.cid, this.publisher, this.publisherClient, this.heldAt, this.completer,
+      this.completerClient, this.completedAt);
 }
 
 /**
@@ -600,6 +631,26 @@ export final class MemoryAppViewStore implements AppViewStore {
 
   async dropRelease(pkg: String, version: String): Future<void> {
     this.#held.delete(`${pkg} ${version}`);
+  }
+
+  /** Publications by package, then version. */
+  #publications = new HashMap<String, HashMap<String, Publication>>();
+
+  async putPublication(pkg: String, publication: Publication): Future<void> {
+    if (!this.#publications.has(pkg)) {
+      this.#publications[pkg] = new HashMap<String, Publication>();
+    }
+    this.#publications[pkg][publication.version] = publication;
+  }
+
+  async publications(pkg: String): Future<Array<Publication>> {
+    let all = new GrowableArray<Publication>();
+    if (let (true, kept) = this.#publications.get(pkg)) {
+      kept.forEach((version, publication) => {
+        all.push(publication);
+      });
+    }
+    return all;
   }
 
   /** Held changes by `<account> <collection> <rkey>`. */
@@ -1383,12 +1434,14 @@ export final class AppView {
   /**
    * `publish`: checks a release of `pkg` as every fetch will, and holds it
    * until its maintainers have attested it (`completeRelease`), which
-   * reserves its version. Every blob it references must have been
+   * reserves its version. `client` is the caller's `user-agent`, which
+   * the App View keeps with the release (`Publication`). Every blob it references must have been
    * uploaded. Answers with the AT-URI and CID its record will have, which
    * the attestations name. Publishing a release already held, with the
    * same record, answers the same.
    */
-  async publish(caller: String, pkg: String, releaseValue: Value, nowMicros: i64): Future<Created> {
+  async publish(caller: String, pkg: String, releaseValue: Value, client: String | null, nowMicros: i64)
+      : Future<Created> {
     let account = await this.#maintainedPackage(caller, pkg);
     await this.#countAction(caller, account, nowMicros);
     let release = readRecord(() => Release.fromValue(releaseValue));
@@ -1443,7 +1496,9 @@ export final class AppView {
     let cid = Cid.forDagCbor(record);
     let created = new Created(account.did, account.handle, `at://${account.did}/${RELEASE_TYPE}/${version}`, cid);
     var held = await this.#held(pkg, version, nowMicros);
-    if (held == null && await this.#store.holdRelease(pkg, new PendingRelease(version, record, cid, caller, nowMicros))) {
+    let holding = new PendingRelease(version, record, cid, caller, nowMicros);
+    holding.client = client;
+    if (held == null && await this.#store.holdRelease(pkg, holding)) {
       await this.#keepContents(account.did, version, source?.blob, archive?.bytes);
       await this.#attestForAutomation(caller, created, nowMicros);
       return created;
@@ -1481,10 +1536,13 @@ export final class AppView {
   /**
    * `completeRelease`: writes the release of `pkg` held at `version` once
    * its maintainers' attestations meet the maintainers record (`#tally`),
-   * and stops holding it. The caller must be a maintainer. Until then it
+   * keeps how it was published (`Publication`), with `client`, the
+   * caller's `user-agent`, and stops holding it. The caller must be a
+   * maintainer. Until then it
    * answers how far the attestations are from enough.
    */
-  async completeRelease(caller: String, pkg: String, version: String, nowMicros: i64): Future<Completion> {
+  async completeRelease(caller: String, pkg: String, version: String, client: String | null, nowMicros: i64)
+      : Future<Completion> {
     let account = await this.#maintainedPackage(caller, pkg);
     let uri = `at://${account.did}/${RELEASE_TYPE}/${version}`;
     let written = await this.#current(account.did, RELEASE_TYPE, version);
@@ -1503,6 +1561,8 @@ export final class AppView {
     }
     if (written == null) {
       await this.#write(account, RELEASE_TYPE, version, asMap(decodeCbor(release.record)));
+      await this.#store.putPublication(pkg, new Publication(version, release.cid, release.publisher, release.client,
+          release.heldAt, caller, client, nowMicros));
     }
     await this.#store.dropRelease(pkg, version);
     return new Completion(uri, release.cid, true, tally);
@@ -2055,6 +2115,23 @@ export final class AppView {
       all.push(creator);
     }
     all.sort((a, b) => if (a.addedAt < b.addedAt) -1 else if (a.addedAt > b.addedAt) 1 else 0);
+    return all;
+  }
+
+  /**
+   * How each of `pkg`'s releases came to be published, newest first: who
+   * published and completed it, with which clients. Admins only.
+   * Releases published before the App View kept these have none.
+   */
+  async publications(caller: String, pkg: String): Future<Array<Publication>> {
+    if (!this.isAppViewAdmin(caller)) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of this App View`);
+    }
+    let all = new GrowableArray<Publication>();
+    for (let publication in await this.#store.publications(pkg)) {
+      all.push(publication);
+    }
+    all.sort((a, b) => if (a.completedAt > b.completedAt) -1 else if (a.completedAt < b.completedAt) 1 else 0);
     return all;
   }
 

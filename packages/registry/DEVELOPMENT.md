@@ -454,7 +454,11 @@ command's with each release, then run `npm run versions`, which copies
 them into `packages/zena-cli/zena/versions.zena`; a test fails while that
 file is out of date. The App View logs each call to its methods as a JSON line, with
 the method, the caller, that client and the answer's status, which Cloud
-Logging keeps.
+Logging keeps. It also keeps, for each release it completes, who
+published and completed it, with which clients and when
+(`publications/` in Firestore), and its admins see those clients in a
+"Published with" column on the package's page. Releases completed before
+it kept them show a dash.
 
 Which versions the App View takes is in code, in `registry/clients`, and
 changes in the pull request that changes how `zena` and the App View

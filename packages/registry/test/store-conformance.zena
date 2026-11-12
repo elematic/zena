@@ -15,7 +15,8 @@ import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto/plc';
 import {MemberEntry, OWNER} from 'package-manager/records';
 import {AccountKind} from 'pds/storage';
 import {
-  ALL_TIME, AppViewAccount, AppViewStore, Count, Limit, PackageSummary, PendingChange, PendingRelease, ScopeCreator
+  ALL_TIME, AppViewAccount, AppViewStore, Count, Limit, PackageSummary, PendingChange, PendingRelease, Publication,
+  ScopeCreator
 } from 'registry/app-view';
 import {PlcLog} from 'registry/plc-directory';
 
@@ -256,7 +257,9 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     let record = new FixedArray<u8>(3, 7 as u8);
     let cid = Cid.forDagCbor(record);
     isNull(await store.heldRelease(ALICE, '1.0.0'));
-    isTrue(await store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, BOB, 42 as i64)), 'held');
+    let published = new PendingRelease('1.0.0', record, cid, BOB, 42 as i64);
+    published.client = 'zena/0.1.0 (linux-x86_64)';
+    isTrue(await store.holdRelease(ALICE, published), 'held');
     isTrue(!await store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, ALICE, 43 as i64)), 'taken');
     isTrue(await store.holdRelease(ALICE, new PendingRelease('1.1.0', record, cid, BOB, 44 as i64)), 'another version');
     isTrue(await store.holdRelease(BOB, new PendingRelease('1.0.0', record, cid, BOB, 45 as i64)), 'another package');
@@ -269,6 +272,8 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     isTrue(held.cid.equals(cid), 'cid');
     equal(held.publisher, BOB);
     equal(held.heldAt, 42 as i64);
+    equal(held.client as String, 'zena/0.1.0 (linux-x86_64)');
+    isNull((await store.heldRelease(ALICE, '1.1.0') as PendingRelease).client);
     equal((await store.heldReleases(ALICE)).length, 2);
     await store.dropRelease(ALICE, '1.0.0');
     isNull(await store.heldRelease(ALICE, '1.0.0'));
@@ -276,6 +281,31 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     equal(rest.length, 1);
     equal(rest[0].version, '1.1.0');
     isTrue(await store.holdRelease(ALICE, new PendingRelease('1.0.0', record, cid, ALICE, 46 as i64)), 'held again');
+  });
+
+  test('keeps who published and completed each release, with which clients and when', async (ctx) => {
+    let store = make();
+    let cid = Cid.forDagCbor(new FixedArray<u8>(3, 7 as u8));
+    equal((await store.publications(ALICE)).length, 0);
+    await store.putPublication(ALICE, new Publication('1.0.0', cid, BOB, 'zena/0.1.0 (linux-x86_64)', 42 as i64,
+        ALICE, null, 50 as i64));
+    await store.putPublication(ALICE, new Publication('1.1.0', cid, BOB, null, 60 as i64, BOB, 'zena/0.2.0', 61 as i64));
+    await store.putPublication(BOB, new Publication('1.0.0', cid, BOB, null, 70 as i64, BOB, null, 71 as i64));
+    let kept = await store.publications(ALICE);
+    equal(kept.length, 2);
+    let first = if (kept[0].version == '1.0.0') kept[0] else kept[1];
+    let second = if (kept[0].version == '1.0.0') kept[1] else kept[0];
+    isTrue(first.cid.equals(cid), 'cid');
+    equal(first.publisher, BOB);
+    equal(first.publisherClient as String, 'zena/0.1.0 (linux-x86_64)');
+    equal(first.heldAt, 42 as i64);
+    equal(first.completer, ALICE);
+    isNull(first.completerClient);
+    equal(first.completedAt, 50 as i64);
+    equal(second.version, '1.1.0');
+    isNull(second.publisherClient);
+    equal(second.completerClient as String, 'zena/0.2.0');
+    equal((await store.publications(BOB)).length, 1);
   });
 
   test('holds one change to each record, the latest, until it is dropped', async (ctx) => {

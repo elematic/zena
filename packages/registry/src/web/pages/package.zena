@@ -18,7 +18,7 @@ import {isValidUtf8} from 'zena:encoding';
 import {HTMLPartial, Response, Router, TemplateValue, html, unsafeHTML} from 'zena:http';
 import {percentDecode} from 'zena:url';
 import {Dependency, Maintainer, Maintainers, RELEASE_TYPE, Release} from 'package-manager/records';
-import {PackageDetail, AppView} from '../../app-view.zena';
+import {PackageDetail, AppView, Publication} from '../../app-view.zena';
 import {MAX_README_BYTES, ReleaseContents, ReleaseFile, fileUrl, rawUrl, renderMarkdown} from '../../release-contents.zena';
 import {Approvals} from '../approvals.zena';
 import {page} from '../layout.zena';
@@ -150,6 +150,16 @@ async function packageView(context: PageContext, res: Response, appView: AppView
     }
     checked += 1;
   }
+  // The App View's admins see which clients published each release.
+  var publications: HashMap<String, Publication> | null = null;
+  let admin = context.who;
+  if (admin != null && context.isAdmin) {
+    let byVersion = new HashMap<String, Publication>();
+    for (let publication in await appView.publications(admin.did, found.did)) {
+      byVersion[publication.version] = publication;
+    }
+    publications = byVersion;
+  }
   let shown = await shownWith(context, await visibleEntries(context, found.did, null), named);
   if (record != null) {
     for (let maintainer in record.maintainers) {
@@ -212,18 +222,20 @@ async function packageView(context: PageContext, res: Response, appView: AppView
   let fullTitle = if (shownPath != null) `${shownPath} · ${title}` else title;
   res.type = 'text/html; charset=utf-8';
   res.body = page(`${fullTitle} · Zena packages`, context,
-      packageBody(found, release, version != null, contents, opened, handles, shown, approvedBy, waiting));
+      packageBody(found, release, version != null, contents, opened, handles, shown, approvedBy, waiting, publications));
 }
 
 /**
  * The page of `detail` showing `release`, or no release when it has none
  * that is not retracted; `pinned` when the page is the release's own, whose
  * command adds that version. With `opened`, a file or a directory, the
- * Files tab is open and shows it in place of the package's root.
+ * Files tab is open and shows it in place of the package's root. With
+ * `publications`, for an admin, the versions show which clients published
+ * them.
  */
 function packageBody(detail: PackageDetail, release: Release | null, pinned: boolean, contents: ReleaseContents | null,
     opened: HTMLPartial | null, handles: HashMap<String, String>, shown: Shown, approvedBy: HashMap<String, Array<String>>,
-    waiting: HTMLPartial | null): HTMLPartial {
+    waiting: HTMLPartial | null, publications: HashMap<String, Publication> | null): HTMLPartial {
   let profile = detail.profile;
   let name = profile?.name ?? detail.handle;
   let version = if (release != null) release.version.toString() else null;
@@ -275,7 +287,7 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
           </rad-tab-panel>
           <rad-tab-panel name="versions">
             ${if (detail.releases.length == 0) html`<p class="muted">Nothing is published yet.</p>`
-                else versions(detail, handles, shown, approvedBy)}
+                else versions(detail, handles, shown, approvedBy, publications)}
           </rad-tab-panel>
         </rad-tab-group>
       </div>
@@ -472,11 +484,28 @@ function approvers(version: String, shown: Shown, approvedBy: HashMap<String, Ar
   return html`<span class="muted">—</span>`;
 }
 
+/**
+ * Which clients published and completed release `version`, for the App
+ * View's admins: the publisher's, and the completer's when it differs; a
+ * dash for a release published before the App View kept them.
+ */
+function clients(version: String, publications: HashMap<String, Publication>): TemplateValue {
+  if (let (true, publication) = publications.get(version)) {
+    let published = publication.publisherClient ?? 'no client named';
+    let completed = publication.completerClient ?? 'no client named';
+    return html`<div class="mono muted">${published}</div>${when(completed != published,
+        () => html`<div class="mono muted">completed with ${completed}</div>`)}`;
+  }
+  return html`<span class="muted">—</span>`;
+}
+
+/** The versions table; with `publications`, for an admin, which clients published each. */
 function versions(detail: PackageDetail, handles: HashMap<String, String>, shown: Shown,
-    approvedBy: HashMap<String, Array<String>>): HTMLPartial {
+    approvedBy: HashMap<String, Array<String>>, publications: HashMap<String, Publication> | null): HTMLPartial {
   return html`
     <table>
-      <thead><tr><th>Version</th><th>Published</th><th>Dependencies</th><th>Approved by</th></tr></thead>
+      <thead><tr><th>Version</th><th>Published</th><th>Dependencies</th><th>Approved by</th>${
+          when(publications != null, () => html`<th>Published with</th>`)}</tr></thead>
       <tbody>${each(detail.releases, (release) => {
         let version = release.version.toString();
         var retracted = false;
@@ -495,6 +524,7 @@ function versions(detail: PackageDetail, handles: HashMap<String, String>, shown
           <td class="muted">${release.createdAt.sliceBytes(0, 10)}</td>
           <td>${dependencies(release, handles)}</td>
           <td>${approvers(version, shown, approvedBy)}</td>
+          ${when(publications != null, () => html`<td>${clients(version, publications as HashMap<String, Publication>)}</td>`)}
         </tr>`;
       })}
       </tbody>
