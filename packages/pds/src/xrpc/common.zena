@@ -12,6 +12,7 @@ import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {div} from 'zena:math';
 import {now} from 'wasi:clocks/system-clock';
 import {Cid} from 'atproto/cid';
+import {isValidDid, isValidHandle, isValidNsid, isValidRecordKey} from 'atproto/syntax';
 import {Pds} from '../pds.zena';
 import {RepositoryError} from '../repository.zena';
 import {SessionError} from '../sessions.zena';
@@ -67,13 +68,37 @@ export function parseCid(text: String): Cid | null {
   }
 }
 
-/** The account `identifier` names; null, after answering `RepoNotFound`, when there is none. */
+/**
+ * The account `identifier` names; null, after answering, when it is not a
+ * DID or a handle (`InvalidRequest`) or names no account (`RepoNotFound`).
+ */
 export async function accountFor(pds: Pds, identifier: String, res: Response): Future<Account | null> {
+  if (!isValidDid(identifier) && !isValidHandle(identifier)) {
+    fail(res, 400, 'InvalidRequest', `'${identifier}' is not a DID or a handle`);
+    return null;
+  }
   let account = await pds.findAccount(identifier);
   if (account == null) {
     fail(res, 404, 'RepoNotFound', `Could not find repo: ${identifier}`);
   }
   return account;
+}
+
+/**
+ * Whether `collection` is an NSID, and `rkey`, when given, a record key;
+ * when not, after answering `InvalidRequest`. Storage reads from where
+ * they name, so one that is neither would name somewhere else.
+ */
+export function validRecordPath(res: Response, collection: String, rkey: String | null): boolean {
+  if (!isValidNsid(collection)) {
+    fail(res, 400, 'InvalidRequest', `'${collection}' is not an NSID`);
+    return false;
+  }
+  if (rkey != null && !isValidRecordKey(rkey)) {
+    fail(res, 400, 'InvalidRequest', `'${rkey}' is not a record key`);
+    return false;
+  }
+  return true;
 }
 
 /** The time, in microseconds since the Unix epoch. */

@@ -23,7 +23,7 @@ import {Pds} from '../pds.zena';
 import {CreateRecord, DeleteRecord, UpdateRecord, Write} from '../repository.zena';
 import {SessionError, Sessions} from '../sessions.zena';
 import {Account, Head, StoredBlob} from '../storage.zena';
-import {accountFor, fail, json, jsonBody, nowMicros, nowSeconds, parseCid, required, sessionCall} from './common.zena';
+import {accountFor, fail, json, jsonBody, nowMicros, nowSeconds, parseCid, required, sessionCall, validRecordPath} from './common.zena';
 
 /** `com.atproto.repo.listRecords`'s page size, when the request gives none, and its largest. */
 let DEFAULT_LIMIT = 50;
@@ -66,7 +66,7 @@ export function repoRoutes(router: Router, pds: Pds, sessions: Sessions | null):
 
   router.get(xrpcPath(REPO_GET_RECORD), async (req, res, next, params) => {
     let given = required(req, res, ['repo', 'collection', 'rkey']);
-    if (given == null) {
+    if (given == null || !validRecordPath(res, given[1], given[2])) {
       return;
     }
     let account = await accountFor(pds, given[0], res);
@@ -75,22 +75,21 @@ export function repoRoutes(router: Router, pds: Pds, sessions: Sessions | null):
     }
     let store = pds.storage.store(account.did);
     let cid = await store.getRecord(given[1], given[2]);
-    if (cid == null) {
+    let bytes = if (cid != null) await store.getBlock(cid) else null;
+    if (cid == null || bytes == null) {
       fail(res, 404, 'RecordNotFound', 'Record not found');
       return;
     }
-    let found = cid;
-    let bytes = await store.getBlock(found);
     let body = new JsonObject();
     body['uri'] = `at://${account.did}/${given[1]}/${given[2]}`;
-    body['cid'] = found.toString();
-    body['value'] = toJson(decodeCbor(bytes as FixedArray<u8>));
+    body['cid'] = cid.toString();
+    body['value'] = toJson(decodeCbor(bytes));
     json(res, body);
   });
 
   router.get(xrpcPath(REPO_LIST_RECORDS), async (req, res, next, params) => {
     let given = required(req, res, ['repo', 'collection']);
-    if (given == null) {
+    if (given == null || !validRecordPath(res, given[1], null)) {
       return;
     }
     let account = await accountFor(pds, given[0], res);
@@ -108,10 +107,16 @@ export function repoRoutes(router: Router, pds: Pds, sessions: Sessions | null):
     let page = await store.listRecords(given[1], query.get('cursor'), limit, descending);
     let records = new JsonArray();
     for (let entry in page) {
+      // A record whose block is gone is left out, rather than the cast
+      // that would trap and end every request on this server.
+      let bytes = await store.getBlock(entry.cid);
+      if (bytes == null) {
+        continue;
+      }
       let record = new JsonObject();
       record['uri'] = `at://${account.did}/${entry.collection}/${entry.rkey}`;
       record['cid'] = entry.cid.toString();
-      record['value'] = toJson(decodeCbor((await store.getBlock(entry.cid)) as FixedArray<u8>));
+      record['value'] = toJson(decodeCbor(bytes));
       records.push(record);
     }
     let body = new JsonObject();
