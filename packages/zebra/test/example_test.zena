@@ -13,17 +13,17 @@ import {
 import {monotonic} from 'zena:time';
 import {RunResult, StepSource, Succeeded} from 'workflow/engine';
 import {StepKey} from 'workflow/step';
-import {ensureDir, withRoot} from '../fs-util.zena';
-import {PlanLoadStats} from '../plan-cache.zena';
-import {buildTarget} from '../runner.zena';
-import {ScriptRef} from '../wireit-config.zena';
-import {migrateWorkspaceToZebra} from '../zebra-config.zena';
+import {ensureDir, withRoot} from 'zebra/fs-util';
+import {PlanLoadStats} from 'zebra/plan-cache';
+import {buildTarget} from 'zebra/runner';
+import {ScriptRef} from 'zebra/wireit-config';
+import {migrateWorkspaceToZebra} from 'zebra/zebra-config';
 
 /**
- * Builds the checked-in example workspace (packages/zebra/example) after
- * copying it to /tmp. The hello-wasm package is excluded here: its
+ * Builds the checked-in example workspace (packages/zebra/test/fixtures/example)
+ * after copying it to /tmp. The hello-wasm package is excluded here: its
  * command references the zena-cli binary by a path that only holds
- * inside the repo checkout, and the README covers building it in
+ * inside the repo checkout, and DEVELOPMENT.md covers building it in
  * place.
  */
 
@@ -57,7 +57,7 @@ function sourceOf(result: RunResult, key: String): StepSource {
 export let tests = suite('zebra example workspace', () => {
   test('the site builds, stays fresh, and rebuilds incrementally', async () => {
     let root = '/tmp/zebra-example-' + i64ToString(monotonic() as i64);
-    await copyDir('packages/zebra/example', root);
+    await copyDir('packages/zebra/test/fixtures/example', root);
     let entry = new ScriptRef('site', 'build');
 
     let first = await buildTarget(root, entry);
@@ -86,7 +86,7 @@ export let tests = suite('zebra example workspace', () => {
 
   test('migrating the example workspace to zebra.json builds cleanly without package.json', async () => {
     let root = '/tmp/zebra-example-migrated-' + i64ToString(monotonic() as i64);
-    await copyDir('packages/zebra/example', root);
+    await copyDir('packages/zebra/test/fixtures/example', root);
 
     let migration = await migrateWorkspaceToZebra(root);
     equal(migration.written.length, 4);
