@@ -74,7 +74,8 @@ function release(artifacts: String = `[${SOURCE_ARTIFACT}]`, dependencies: Strin
     "$type": "dev.zena-lang.package.release",
     "version": "${version}",
     "createdAt": "${createdAt}",
-    "artifacts": ${artifacts}${dependencyField}
+    "artifacts": ${artifacts}${dependencyField},
+    "zena": "0.1.0"
   }`;
 }
 
@@ -163,6 +164,41 @@ export let tests = suite('package-manager/records', () => {
     jsonEqual(toJson(record.toValue()), parseJson(json));
   });
 
+  test('reads the language version a release was published with, and writes it back', (ctx) => {
+    let withVersion = (version: String) => `{
+      "$type": "dev.zena-lang.package.release",
+      "version": "1.4.2",
+      "createdAt": "2026-10-21T00:00:00.000Z",
+      "artifacts": [${SOURCE_ARTIFACT}],
+      "zena": "${version}"
+    }`;
+    let record = Release.fromValue(value(withVersion('0.3.1')), '1.4.2');
+    equal(record.publishedWith.toString(), '0.3.1');
+    jsonEqual(toJson(record.toValue()), parseJson(withVersion('0.3.1')));
+    // A pre-release, as Zena's own versions are before 1.0, and a version
+    // above any compiler there is yet.
+    equal(Release.fromValue(value(withVersion('0.0.1-preview.1')), '1.4.2').publishedWith.toString(), '0.0.1-preview.1');
+    equal(Release.fromValue(value(withVersion('9.0.0')), '1.4.2').publishedWith.toString(), '9.0.0');
+
+    // Every release says.
+    rejectsRelease(`{
+      "$type": "dev.zena-lang.package.release",
+      "version": "1.4.2",
+      "createdAt": "2026-10-21T00:00:00.000Z",
+      "artifacts": [${SOURCE_ARTIFACT}]
+    }`);
+    rejectsRelease(withVersion('soon'));
+    // A range is not a version: the record says what published it.
+    rejectsRelease(withVersion('^0.3.1'));
+    rejectsRelease(`{
+      "$type": "dev.zena-lang.package.release",
+      "version": "1.4.2",
+      "createdAt": "2026-10-21T00:00:00.000Z",
+      "artifacts": [${SOURCE_ARTIFACT}],
+      "zena": 3
+    }`);
+  });
+
   test('reads an artifact uploaded in parts', (ctx) => {
     let parts = `{
       "kind": "core-module",
@@ -193,6 +229,7 @@ export let tests = suite('package-manager/records', () => {
       "version": "1.4.2",
       "createdAt": "2026-10-21T00:00:00.000Z",
       "artifacts": [${SOURCE_ARTIFACT}, ${future}],
+      "zena": "0.1.0",
       "signedBy": "someone"
     }`;
     let record = Release.fromValue(value(json), '1.4.2');

@@ -438,11 +438,21 @@ export final class Release {
   createdAt: String;
   artifacts: FixedArray<Artifact>;
   dependencies: FixedArray<Dependency>;
+  /**
+   * The language version the release was published with, the record's
+   * `zena`: the version of the compiler that published it, such as
+   * `0.3.1` (docs/design/language-versions.md). A fact about how it was
+   * published, which readers use for hints and known breaks, and never as
+   * a claim about which versions it works with. It may be above any
+   * compiler a reader knows of, since its publisher may have built a newer
+   * `zena`.
+   */
+  publishedWith: Version;
 
   new(version: Version, createdAt: String, artifacts: FixedArray<Artifact>,
-      dependencies: FixedArray<Dependency>)
+      dependencies: FixedArray<Dependency>, publishedWith: Version)
       : version = version, createdAt = createdAt, artifacts = artifacts,
-        dependencies = dependencies;
+        dependencies = dependencies, publishedWith = publishedWith;
 
   /**
    * Reads a release record. Given the record key `key`, also checks that
@@ -488,7 +498,13 @@ export final class Release {
       }
       checkDependencies(dependencies);
     }
-    return new Release(version, createdAt, artifacts, dependencies);
+    let languageText = requiredString(map, 'zena', 'release');
+    let publishedWith = try {
+      Version.parse(languageText)
+    } catch (e) {
+      throw new RecordError(`release: zena: ${e.message}`);
+    };
+    return new Release(version, createdAt, artifacts, dependencies, publishedWith);
   }
 
   /** The first artifact of kind `kind`, or null when the release has none. */
@@ -528,6 +544,7 @@ export final class Release {
       }
       map.entries['dependencies'] = new ListValue(dependencies);
     }
+    map.entries['zena'] = new StringValue(this.publishedWith.toString());
     return map;
   }
 }
