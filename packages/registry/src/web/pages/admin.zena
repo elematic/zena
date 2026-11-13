@@ -2,11 +2,11 @@
  * The App View's admin pages, for the DIDs in `APP_VIEW_ADMIN_DIDS`:
  * `/admin` lists every account the App View made, by scope, and who may
  * create scopes; `/admin/log` lists every operation on scopes, teams,
- * packages, automation accounts and admin settings, along with `403`
- * refusals. An admin signs in as anyone does; the scope and package pages
- * then name every private member for them too (`AppView.getEntries`). The
- * pages change nothing: the list of who may create scopes changes through
- * `putScopeCreator`, from `zena pkg admin`.
+ * packages, automation accounts and admin settings. An admin signs in as
+ * anyone does; the scope and package pages then name every private member
+ * for them too (`AppView.getEntries`). The pages change nothing: the list
+ * of who may create scopes changes through `putScopeCreator`, from
+ * `zena pkg admin`.
  */
 
 import {HashMap, HashSet} from 'zena:collections';
@@ -22,8 +22,7 @@ import {
 import {AccountKind} from 'pds/storage';
 import {
   ACTIVITY_ADMIN, ACTIVITY_AUTOMATION, ACTIVITY_PACKAGE, ACTIVITY_SCOPE, ACTIVITY_TEAM, ActivityEvent, ActivityQuery,
-  AppViewAccount, AppView, OUTCOME_HELD, OUTCOME_REFUSED, OUTCOME_WITHDRAWN, OUTCOME_WRITTEN, ScopeCreation,
-  ScopeCreator
+  AppViewAccount, AppView, OUTCOME_HELD, OUTCOME_WITHDRAWN, OUTCOME_WRITTEN, ScopeCreation, ScopeCreator
 } from '../../app-view.zena';
 import {personLink} from '../partials/person.zena';
 import {page} from '../layout.zena';
@@ -134,8 +133,8 @@ export function adminPage(router: Router, appView: AppView, people: People): voi
         <h1>Operations log</h1>
         ${adminNav('log')}
         <p class="muted">
-          Every change to a scope, team, package, automation account or admin setting, newest first, along with
-          calls refused with <code>403</code>.
+          Every change to a scope, team, package, automation account or admin setting, newest first. Refused calls are
+          logged to Cloud Logging.
         </p>
       </div>
       ${filterForm(filters)}
@@ -189,8 +188,7 @@ function readFilters(search: URLSearchParams): LogFilters {
     filters.kind = kind;
   }
   let outcome = (search.get('outcome') ?? '').trim();
-  if (outcome == OUTCOME_WRITTEN || outcome == OUTCOME_HELD || outcome == OUTCOME_WITHDRAWN ||
-      outcome == OUTCOME_REFUSED) {
+  if (outcome == OUTCOME_WRITTEN || outcome == OUTCOME_HELD || outcome == OUTCOME_WITHDRAWN) {
     filters.outcome = outcome;
   }
   filters.scope = (search.get('scope') ?? '').trim();
@@ -224,7 +222,6 @@ function filterForm(filters: LogFilters): HTMLPartial {
           ${option(OUTCOME_WRITTEN, 'Written', filters.outcome == OUTCOME_WRITTEN)}
           ${option(OUTCOME_HELD, 'Held', filters.outcome == OUTCOME_HELD)}
           ${option(OUTCOME_WITHDRAWN, 'Withdrawn', filters.outcome == OUTCOME_WITHDRAWN)}
-          ${option(OUTCOME_REFUSED, 'Refused (403)', filters.outcome == OUTCOME_REFUSED)}
         </select>
       </label>
       <label>
@@ -308,9 +305,6 @@ function outcomeChip(outcome: String): HTMLPartial {
   }
   if (outcome == OUTCOME_HELD) {
     return chip('held', 'primary');
-  }
-  if (outcome == OUTCOME_REFUSED) {
-    return chip('refused', 'danger');
   }
   return chip(outcome);
 }
