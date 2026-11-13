@@ -103,7 +103,9 @@ the `zena` command. The design is in
      walk finds the root's manifest, which lists its packages; a scratch
      directory a test or a script runs `zena` in needs a manifest of its
      own, or `zena pkg add` there changes the repository's. The standard
-     library and the CLI module (`packages/zena-cli/out/zena.wasm`) come
+     library and the CLI module (`packages/zena-cli/out/zena.wasm`, or
+     `packages/zena-cli/bootstrap/zena.wasm` before `out/zena.wasm` is
+     built) come
      from the workspace when it is a checkout of Zena, as a worktree is,
      and otherwise from the checkout the binary was built in
      (`source_root`, disabled under `--features bundled` so standalone
@@ -120,8 +122,8 @@ the `zena` command. The design is in
      module plus a `.deps` file listing every file the compile read, with
      modification time and size. `build` always compiles.
    - `build:module` deletes `out/zena.wasm` before it runs (wireit's
-     default `clean`), so a build that fails leaves no CLI module, and
-     `zena-cli` cannot run until one succeeds.
+     default `clean`); while `out/zena.wasm` is absent, `cli_module`
+     falls back to `bootstrap/zena.wasm`.
    - `ZENA_CLI_MODULE=<path>` makes the binary run another CLI module
      (`cli_module` in `src/main.rs`). To measure a change to the module,
      keep both builds and alternate runs between them, since machine load
@@ -188,12 +190,12 @@ the `zena` command. The design is in
      better-sqlite3 it locks does not build on Node.js 26.
 
 5. **The bootstrap and the build order**
-   - `zena-run` runs the checked-in bootstrap to build the compiler
-     (`zena-compiler:build:cli`), and then that compiler to build the CLI
-     module. Neither step needs `zena-cli`, which needs the module. The
-     language service's `lsp.wasm`, which the playground and the VS Code
-     extension load, is built the same way, so neither waits for the
-     `zena` command.
+   - `zena-cli` (`build:binary`) runs the checked-in CLI module bootstrap
+     (`ZENA_CLI_MODULE=packages/zena-cli/bootstrap/zena.wasm`) to build
+     Stage A (`zena-compiler:build:cli`), and `zena-run` runs Stage A to
+     build `out/zena.wasm` (`build:module`). The language service's
+     `lsp.wasm`, which the playground and the VS Code extension load, is
+     built from Stage A the same way, so neither waits for `out/zena.wasm`.
    - `build:bundle-assets` keeps that true for the standalone binary:
      `zena-run` compiles `dev/bundle.zena` with the compiler and runs the
      result, so the bundle the binary embeds is produced without a binary.

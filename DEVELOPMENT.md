@@ -31,16 +31,20 @@ cache hits.
 
 ## How the build bootstraps
 
-The Zena compiler is written in Zena, so a fresh checkout builds it
-from **the bootstrap**: `packages/zena-compiler/bootstrap/cli.wasm`, a
-prebuilt, checked-in build of the self-hosted compiler and the only
-prebuilt artifact in the repository.
+The Zena compiler and CLI are written in Zena, so a fresh checkout
+builds from **the bootstrap**: `packages/zena-cli/bootstrap/zena.wasm`,
+a prebuilt, checked-in build of the CLI module and the only prebuilt
+artifact in the repository.
 
 ```
-cargo build          → zena-cli, zena-run  (Rust/wasmtime hosts, from source)
-zena-run + bootstrap → zena/out/cli.wasm   (the working compiler)
-zena/out/cli.wasm    → everything else     (stdlib tests, LSP, formatter, …)
+cargo build          → zena-cli, zena-run       (Rust/wasmtime hosts, from source)
+zena-cli + bootstrap → zena/out/cli.wasm        (Stage A: the working compiler)
+zena/out/cli.wasm    → out/zena.wasm, and rest  (CLI module, stdlib tests, LSP, …)
 ```
+
+Before `packages/zena-cli/out/zena.wasm` is built, `zena-cli` falls back
+to `bootstrap/zena.wasm`, so `zena build`, `zena fmt` and `zena lint`
+work immediately after `cargo build --release -p zena-cli`.
 
 The invariant, enforced by `npm test` and CI on every change: **the
 bootstrap must build a HEAD that passes the test suite**, including
@@ -51,8 +55,8 @@ itself cannot land.
 Re-baselining the bootstrap (rare, on demand):
 
 ```bash
-npm run reseed -w @zena-lang/zena-compiler   # gated on the full suite + fixpoint
-npm test                                     # rebuild + retest from the new bootstrap
+npm run reseed   # gated on the full suite + fixpoint + byte-for-byte self-audit
+npm test         # rebuild + retest from the new bootstrap
 ```
 
 Full design: [docs/design/bootstrapping.md](./docs/design/bootstrapping.md).

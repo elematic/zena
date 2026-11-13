@@ -69,11 +69,11 @@
       "dependencies": ["../runtime:build"]
     },
     "build:cli": {
-      "#command": "The bootstrap compiles the compiler, run on zena-run with the preopens `zc` expects: the repository as `.` and the standard library as `/stdlib`. It cannot go through zena-cli, whose module this compiler builds. ZENA_OPT_LEVEL=2 (the env form, which a bootstrap that predates the -O flag ignores rather than misreads) makes the working compiler an -O2 build: it compiles the zena module in 20s where the -O1 build takes 27s, and every build and test step downstream of this one runs it (docs/design/compiler-memory.md).",
-      "command": "mkdir -p zena/out && cd ../.. && ZENA_GC_RESERVE_MB=1536 ZENA_OPT_LEVEL=2 ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/bootstrap/cli.wasm packages/zena-compiler/zena/cli/main.zena -o packages/zena-compiler/zena/out/cli.wasm",
-      "files": ["zena/cli/**/*.zena", "bootstrap/cli.wasm"],
+      "#command": "The checked-in CLI module bootstrap compiles the compiler, run through zena-cli's binary with ZENA_CLI_MODULE pointing at packages/zena-cli/bootstrap/zena.wasm so this step waits only on cargo and never on packages/zena-cli/out/zena.wasm, which this compiler builds. ZENA_OPT_LEVEL=2 (the env form, which a bootstrap that predates the -O flag ignores rather than misreads) makes the working compiler an -O2 build: it compiles the zena module in 20s where the -O1 build takes 27s, and every build and test step downstream of this one runs it (docs/design/compiler-memory.md).",
+      "command": "mkdir -p zena/out && ZENA_GC_RESERVE_MB=1536 ZENA_OPT_LEVEL=2 ZENA_CLI_MODULE=../zena-cli/bootstrap/zena.wasm ../../target/release/zena-cli build zena/cli/main.zena -o zena/out/cli.wasm",
+      "files": ["zena/cli/**/*.zena", "../zena-cli/bootstrap/zena.wasm"],
       "output": ["zena/out/cli.wasm"],
-      "dependencies": ["source", "../stdlib:lib", "../zena-run:build"]
+      "dependencies": ["source", "../stdlib:lib", "../zena-cli:build:binary"]
     },
     "build:tests": {
       "#dependencies": "precompile:cli, not build:self-hosted: this program is built by stage A (see build-wasi-tests.ts), and precompiling it is what keeps running it off Cranelift. Depending on stage B put the four suites behind its 64s.",
@@ -256,12 +256,6 @@
         },
         "../zena-cli:build"
       ]
-    },
-    "reseed": {
-      "command": "cp zena/out/cli-self.wasm bootstrap/cli.wasm",
-      "files": ["zena/out/cli-self.wasm"],
-      "output": ["bootstrap/cli.wasm"],
-      "dependencies": ["test"]
     },
     "test:component": {
       "command": "node scripts/component-e2e.js",
