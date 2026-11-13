@@ -16,9 +16,21 @@ import './zena-example-playground.js';
 import './zena-layout.js';
 import './zena-local-outline.js';
 import './zena-outline.js';
+import './zena-releases.js';
 import './zena-search.js';
 import './zena-sidebar.js';
 
+export {
+  extractBodyChecksums,
+  extractChangelogBody,
+  formatByteSize,
+  parseGitHubReleases,
+  PLATFORM_TARGETS,
+  type GitHubReleaseAsset,
+  type GitHubReleaseRaw,
+  type ParsedRelease,
+  type PlatformDownload,
+} from './release-data.js';
 export {ZenaAppearance} from './zena-appearance.js';
 export {ZenaCodeCarousel} from './zena-code-carousel.js';
 export {ZenaCodeCopy} from './zena-code-copy.js';
@@ -28,5 +40,6 @@ export {ZenaLayout} from './zena-layout.js';
 export {ZenaLocalOutline} from './zena-local-outline.js';
 export {ZenaOutline} from './zena-outline.js';
 export {ZenaPlayground} from '@zena-lang/playground';
+export {ZenaReleases} from './zena-releases.js';
 export {ZenaSearch, type SearchEntry} from './zena-search.js';
 export {ZenaSidebar} from './zena-sidebar.js';
