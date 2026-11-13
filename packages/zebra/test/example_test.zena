@@ -1,5 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, equalText, fail, isTrue} from 'zena:assert';
+import {getEnv} from 'zena:cli';
 import {
   FileType,
   isFile,
@@ -11,11 +12,14 @@ import {
   writeFileBytes,
 } from 'zena:fs';
 import {monotonic} from 'zena:time';
+import {StepCache} from 'workflow/cache';
 import {RunResult, StepSource, Succeeded} from 'workflow/engine';
 import {StepKey} from 'workflow/step';
+import {REMOTE_CACHE_ENV_VARS} from 'zebra/builder';
 import {ensureDir, withRoot} from 'zebra/fs-util';
+import {FileHasher} from 'zebra/fs-walk';
 import {PlanLoadStats} from 'zebra/plan-cache';
-import {buildTarget} from 'zebra/runner';
+import {BuildOptions, BuildOutcome, buildTarget as runBuildTarget} from 'zebra/runner';
 import {ScriptRef} from 'zebra/wireit-config';
 import {migrateWorkspaceToZebra} from 'zebra/zebra-config';
 
@@ -26,6 +30,46 @@ import {migrateWorkspaceToZebra} from 'zebra/zebra-config';
  * inside the repo checkout, and DEVELOPMENT.md covers building it in
  * place.
  */
+
+function localEnv(name: String): String? {
+  for (let excluded in REMOTE_CACHE_ENV_VARS) {
+    if (name == excluded) {
+      return null;
+    }
+  }
+  return getEnv(name);
+}
+
+async function buildTarget(
+  root: String,
+  entry: ScriptRef,
+  options: BuildOptions = {},
+): Future<BuildOutcome> {
+  let {parallelism = 0, force = false, useCache = true} = options;
+  var remoteCache: StepCache? = null;
+  if (let {remoteCache: r} = options) { remoteCache = r; }
+  var lookupEnv: ((name: String) => String?)? = localEnv;
+  if (let {lookupEnv: l} = options) { lookupEnv = l ?? localEnv; }
+  var onCacheWarning: ((message: String) => void)? = null;
+  if (let {onCacheWarning: w} = options) { onCacheWarning = w; }
+  var hasherOut: FileHasher? = null;
+  if (let {hasherOut: h} = options) { hasherOut = h; }
+  var planStatsOut: PlanLoadStats? = null;
+  if (let {planStatsOut: s} = options) { planStatsOut = s; }
+  var extraArgs: Array<String>? = null;
+  if (let {extraArgs: a} = options) { extraArgs = a; }
+  return await runBuildTarget(root, entry, {
+    parallelism,
+    force,
+    useCache,
+    remoteCache,
+    lookupEnv,
+    onCacheWarning,
+    hasherOut,
+    planStatsOut,
+    extraArgs,
+  });
+}
 
 async function copyDir(from: String, to: String): Future<void> {
   await ensureDir(to);
