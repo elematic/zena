@@ -15,8 +15,9 @@ import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto/plc';
 import {MemberEntry, OWNER} from 'package-manager/records';
 import {AccountKind} from 'pds/storage';
 import {
-  ALL_TIME, AppViewAccount, AppViewStore, Count, Limit, PackageSummary, PendingChange, PendingRelease, Publication,
-  ScopeCreator
+  ACTIVITY_ADMIN, ACTIVITY_PACKAGE, ACTIVITY_SCOPE, ACTIVITY_TEAM, ALL_TIME, ActivityEvent, ActivityQuery,
+  AppViewAccount, AppViewStore, Count, Limit, OUTCOME_HELD, OUTCOME_REFUSED, OUTCOME_WRITTEN, PackageSummary,
+  PendingChange, PendingRelease, Publication, ScopeCreator, activityEventId
 } from 'registry/app-view';
 import {PlcLog} from 'registry/plc-directory';
 
@@ -350,6 +351,128 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     isNull(await store.heldChange(ALICE, members, 'self'));
     equal((await store.heldChanges(ALICE)).length, 1);
     equal((await store.heldChanges(BOB)).length, 1);
+  });
+
+  test('appends activity events and queries them newest first, with filters and cursors', async (ctx) => {
+    let store = make();
+    equal((await store.activity(new ActivityQuery())).length, 0);
+    let cidA = Cid.forDagCbor(new FixedArray<u8>(1, 11 as u8));
+    let cidB = Cid.forDagCbor(new FixedArray<u8>(1, 12 as u8));
+    let orgDid = 'did:plc:orgorgorgorgorgorgorgorgo';
+    let pkgDid = 'did:plc:pkgpkgpkgpkgpkgpkgpkgpkgp';
+
+    let e1 = new ActivityEvent(activityEventId(1000 as i64, 0, 'aabbccdd'), 1000 as i64, ALICE, 'createOrganization',
+        ACTIVITY_SCOPE, OUTCOME_WRITTEN);
+    e1.scope = 'acme';
+    e1.account = orgDid;
+    e1.accountKind = 'organization';
+    e1.handle = 'acme.pkg.test';
+    e1.collection = 'dev.zena-lang.package.members';
+    e1.rkey = 'self';
+    e1.after = cidA;
+
+    // Same microsecond as e2, higher sequence number on e3 so e3 sorts before e2.
+    let e2 = new ActivityEvent(activityEventId(2000 as i64, 1, 'aabbccdd'), 2000 as i64, ALICE, 'putTeam',
+        ACTIVITY_TEAM, OUTCOME_HELD);
+    e2.scope = 'acme';
+    e2.account = orgDid;
+    e2.accountKind = 'organization';
+    e2.handle = 'acme.pkg.test';
+    e2.collection = 'dev.zena-lang.package.team';
+    e2.rkey = 'core';
+    e2.before = cidA;
+    e2.after = cidB;
+
+    let e3 = new ActivityEvent(activityEventId(2000 as i64, 2, 'aabbccdd'), 2000 as i64, BOB, 'publish',
+        ACTIVITY_PACKAGE, OUTCOME_REFUSED);
+    e3.scope = 'acme';
+    e3.account = pkgDid;
+    e3.accountKind = 'package';
+    e3.handle = 'router.acme.pkg.test';
+    e3.collection = 'dev.zena-lang.package.release';
+
+    let e4 = new ActivityEvent(activityEventId(3000 as i64, 3, 'aabbccdd'), 3000 as i64, 'operator', 'setLimit',
+        ACTIVITY_ADMIN, OUTCOME_WRITTEN);
+    e4.account = BOB;
+    e4.detail = 'scopes=10';
+
+    await store.appendActivity(e1);
+    await store.appendActivity(e2);
+    await store.appendActivity(e3);
+    await store.appendActivity(e4);
+
+    let all = await store.activity(new ActivityQuery());
+    equal(all.length, 4);
+    equal(all[0].id, e4.id);
+    equal(all[1].id, e3.id);
+    equal(all[2].id, e2.id);
+    equal(all[3].id, e1.id);
+
+    // Every field round-trips, both populated and null.
+    equal(all[0].actor, 'operator');
+    equal(all[0].detail as String, 'scopes=10');
+    isNull(all[0].scope);
+    isNull(all[0].before);
+    isNull(all[0].after);
+    equal(all[2].scope as String, 'acme');
+    equal(all[2].account as String, orgDid);
+    equal(all[2].accountKind as String, 'organization');
+    equal(all[2].handle as String, 'acme.pkg.test');
+    equal(all[2].collection as String, 'dev.zena-lang.package.team');
+    equal(all[2].rkey as String, 'core');
+    isTrue((all[2].before as Cid).equals(cidA), 'before cid');
+    isTrue((all[2].after as Cid).equals(cidB), 'after cid');
+
+    // Single filters.
+    let byScope = new ActivityQuery();
+    byScope.scope = 'acme';
+    equal((await store.activity(byScope)).length, 3);
+
+    let byActor = new ActivityQuery();
+    byActor.actor = BOB;
+    let bobEvents = await store.activity(byActor);
+    equal(bobEvents.length, 1);
+    equal(bobEvents[0].id, e3.id);
+
+    let byAccount = new ActivityQuery();
+    byAccount.account = orgDid;
+    equal((await store.activity(byAccount)).length, 2);
+
+    let byKind = new ActivityQuery();
+    byKind.kind = ACTIVITY_ADMIN;
+    equal((await store.activity(byKind)).length, 1);
+
+    let byOutcome = new ActivityQuery();
+    byOutcome.outcome = OUTCOME_REFUSED;
+    equal((await store.activity(byOutcome)).length, 1);
+
+    // Combined filters + cursor pagination.
+    let combined = new ActivityQuery();
+    combined.scope = 'acme';
+    combined.actor = ALICE;
+    combined.limit = 1;
+    let page1 = await store.activity(combined);
+    equal(page1.length, 1);
+    equal(page1[0].id, e2.id);
+    combined.after = page1[0].id;
+    let page2 = await store.activity(combined);
+    equal(page2.length, 1);
+    equal(page2[0].id, e1.id);
+    combined.after = page2[0].id;
+    equal((await store.activity(combined)).length, 0);
+
+    // Unfiltered cursor pagination and zero limit.
+    let paged = new ActivityQuery();
+    paged.limit = 2;
+    let firstTwo = await store.activity(paged);
+    equal(firstTwo.length, 2);
+    paged.after = firstTwo[1].id;
+    let nextTwo = await store.activity(paged);
+    equal(nextTwo.length, 2);
+    equal(nextTwo[0].id, e2.id);
+    equal(nextTwo[1].id, e1.id);
+    paged.limit = 0;
+    equal((await store.activity(paged)).length, 0);
   });
 }
 

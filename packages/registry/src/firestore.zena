@@ -24,12 +24,16 @@
  *   many actions or creations a count has had, and for a day's count
  *   `expiresAt`, two days on, which the database's TTL policy deletes it
  *   at; `scopeCreators/{did}`: `addedBy` and `addedAt`, each account
- *   the admins listed as one that may create scopes; and
+ *   the admins listed as one that may create scopes;
  *   `publications/{pkg}/releases/{version}`: `cid`, `publisher`,
  *   `publisherClient`, `heldAt`, `completer`, `completerClient` and
  *   `completedAt`, how each release was published, with the clients'
- *   user-agents absent for none. A held release's `client` is its
- *   publisher's.
+ *   user-agents absent for none (a held release's `client` is its
+ *   publisher's); and `activity/{id}`: `at`, `actor`, `method`, `kind`
+ *   and `outcome`, with optional `scope`, `account`, `accountKind`,
+ *   `handle`, `collection`, `rkey`, `before`, `after` and `detail`,
+ *   under a reverse-timestamp ID (`activityEventId`) so `__name__`
+ *   orders newest first with single-field indexes alone.
  */
 
 import {Future} from 'zena:async';
@@ -37,7 +41,8 @@ import {Option, Some, some} from 'zena:core';
 import {div} from 'zena:math';
 import {parseJson, stringify} from 'zena:json';
 import {
-  CollectionReference, Fields, Firestore, Operator, DocumentReference, DocumentSnapshot, bytesValue, stringValue
+  CollectionReference, Fields, Firestore, Operator, DocumentReference, DocumentSnapshot, bytesValue, referenceValue,
+  stringValue
 } from 'google-cloud/firestore';
 import {decodeCbor, encodeCbor} from 'atproto/cbor';
 import {Cid} from 'atproto/cid';
@@ -48,8 +53,8 @@ import {
   BATCH_WRITES, bytesAt, cidAt, claim, kindName, kindNamed, recordId, release, stringAt, tenantRoot
 } from 'pds/firestore';
 import {
-  ALL_TIME, ClaimedName, ClaimedScope, AppViewAccount, AppViewStore, Count, LIMITS, Limit, Limits, PackageSummary,
-  PendingChange, PendingRelease, Publication, ScopeCreator, limitName
+  ALL_TIME, ActivityEvent, ActivityQuery, ClaimedName, ClaimedScope, AppViewAccount, AppViewStore, Count, LIMITS, Limit,
+  Limits, PackageSummary, PendingChange, PendingRelease, Publication, ScopeCreator, limitName, matchesActivityQuery
 } from './app-view.zena';
 import {PlcLog} from './plc-directory.zena';
 
@@ -427,6 +432,146 @@ export final class FirestoreAppViewStore implements AppViewStore {
     }
     return all;
   }
+
+  async appendActivity(event: ActivityEvent): Future<void> {
+    let fields = new Fields()
+      .integer('at', event.at)
+      .string('actor', event.actor)
+      .string('method', event.method)
+      .string('kind', event.kind)
+      .string('outcome', event.outcome);
+    if (event.scope != null) {
+      fields.string('scope', event.scope as String);
+    }
+    if (event.account != null) {
+      fields.string('account', event.account as String);
+    }
+    if (event.accountKind != null) {
+      fields.string('accountKind', event.accountKind as String);
+    }
+    if (event.handle != null) {
+      fields.string('handle', event.handle as String);
+    }
+    if (event.collection != null) {
+      fields.string('collection', event.collection as String);
+    }
+    if (event.rkey != null) {
+      fields.string('rkey', event.rkey as String);
+    }
+    if (event.before != null) {
+      fields.string('before', (event.before as Cid).toString());
+    }
+    if (event.after != null) {
+      fields.string('after', (event.after as Cid).toString());
+    }
+    if (event.detail != null) {
+      fields.string('detail', event.detail as String);
+    }
+    await this.#root.collection('activity').doc(event.id).set(fields);
+  }
+
+  async activity(query: ActivityQuery): Future<Array<ActivityEvent>> {
+    let out = new GrowableArray<ActivityEvent>();
+    if (query.limit <= 0) {
+      return out;
+    }
+    let collection = this.#root.collection('activity');
+    var primaryField: String | null = null;
+    var primaryValue: String | null = null;
+    var filterCount = 0;
+    let consider = (field: String, value: String | null) => {
+      if (value != null) {
+        if (filterCount == 0) {
+          primaryField = field;
+          primaryValue = value;
+        }
+        filterCount += 1;
+      }
+    };
+    consider('account', query.account);
+    consider('actor', query.actor);
+    consider('scope', query.scope);
+    consider('outcome', query.outcome);
+    consider('kind', query.kind);
+    let base = if (primaryField != null && primaryValue != null)
+        collection.where(primaryField, Operator.Equal, stringValue(primaryValue))
+            .orderBy('__name__')
+        else collection.orderBy('__name__');
+    var cursor = query.after;
+    if (cursor != null && (cursor.length == 0 || cursor.contains('/'))) {
+      cursor = null;
+    }
+    if (filterCount <= 1) {
+      var single = base;
+      if (cursor != null) {
+        single = single.startAfter([referenceValue(collection.doc(cursor))]);
+      }
+      for (let snapshot in await single.limit(query.limit).get()) {
+        let event = activityFrom(snapshot);
+        if (event != null) {
+          out.push(event);
+        }
+      }
+      return out;
+    }
+    let batchSize = if (query.limit > 50) query.limit else 50;
+    while (out.length < query.limit) {
+      var page = base;
+      if (cursor != null) {
+        page = page.startAfter([referenceValue(collection.doc(cursor))]);
+      }
+      let snapshots = await page.limit(batchSize).get();
+      if (snapshots.length == 0) {
+        break;
+      }
+      for (let snapshot in snapshots) {
+        cursor = snapshot.id;
+        let event = activityFrom(snapshot);
+        if (event != null && matchesActivityQuery(event, query)) {
+          out.push(event);
+          if (out.length >= query.limit) {
+            break;
+          }
+        }
+      }
+      if (snapshots.length < batchSize) {
+        break;
+      }
+    }
+    return out;
+  }
+}
+
+/** The activity event `snapshot` holds, or null when it holds none. */
+function activityFrom(snapshot: DocumentSnapshot): ActivityEvent | null {
+  let actor = stringAt(snapshot, 'actor');
+  let method = stringAt(snapshot, 'method');
+  let kind = stringAt(snapshot, 'kind');
+  let outcome = stringAt(snapshot, 'outcome');
+  if (actor == null || method == null || kind == null || outcome == null) {
+    return null;
+  }
+  var at = 0 as i64;
+  if (let (true, micros) = snapshot.getInteger('at')) {
+    at = micros;
+  }
+  let event = new ActivityEvent(snapshot.id, at, actor, method, kind, outcome);
+  event.scope = stringAt(snapshot, 'scope');
+  event.account = stringAt(snapshot, 'account');
+  event.accountKind = stringAt(snapshot, 'accountKind');
+  event.handle = stringAt(snapshot, 'handle');
+  event.collection = stringAt(snapshot, 'collection');
+  event.rkey = stringAt(snapshot, 'rkey');
+  let before = stringAt(snapshot, 'before');
+  if (before != null) {
+    event.before = Cid.parse(before);
+  }
+  let after = stringAt(snapshot, 'after');
+  if (after != null) {
+    event.after = Cid.parse(after);
+  }
+  event.detail = stringAt(snapshot, 'detail');
+  return event;
 }
 
 /** The limits a `limits/{did}` document sets, each a field named for its limit. */

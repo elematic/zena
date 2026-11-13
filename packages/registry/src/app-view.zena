@@ -79,7 +79,7 @@ import {
 import {isPublicHttps} from './egress.zena';
 import {HandleRecords} from './handles.zena';
 import {DerivedObjects, ReleaseContents, deriveContents} from './release-contents.zena';
-import {MemoryBlobs} from 'pds/firestore';
+import {MemoryBlobs, kindName} from 'pds/firestore';
 import {HeldRecord, PdsClient} from 'pds/pds-client';
 import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from 'pds/repository';
 import {WebSessions} from './web-sessions.zena';
@@ -373,6 +373,104 @@ export interface AppViewStore {
   scopeCreator(did: String): Future<ScopeCreator | null>;
   /** Every account listed, in no order. */
   scopeCreators(): Future<Array<ScopeCreator>>;
+  /** Appends `event` to the App View's activity log, keyed by `event.id`. */
+  appendActivity(event: ActivityEvent): Future<void>;
+  /** Events in the App View's activity log matching `query`, ordered by `id` ascending (newest first). */
+  activity(query: ActivityQuery): Future<Array<ActivityEvent>>;
+}
+
+/** What an `ActivityEvent` is about (`ActivityEvent.kind`). */
+export let ACTIVITY_SCOPE = 'scope';
+export let ACTIVITY_TEAM = 'team';
+export let ACTIVITY_PACKAGE = 'package';
+export let ACTIVITY_AUTOMATION = 'automation';
+export let ACTIVITY_ADMIN = 'admin';
+
+/** What came of an `ActivityEvent` (`ActivityEvent.outcome`). */
+export let OUTCOME_WRITTEN = 'written';
+export let OUTCOME_HELD = 'held';
+export let OUTCOME_WITHDRAWN = 'withdrawn';
+export let OUTCOME_REFUSED = 'refused';
+
+/**
+ * A sortable document ID for an activity event at `at` microseconds since
+ * the epoch and sequence `seq`, with `suffix` to keep servers apart:
+ * ascending lexicographical order puts newer events first, and later
+ * sequence numbers within the same microsecond first.
+ */
+export function activityEventId(at: i64, seq: i32, suffix: String): String {
+  let maxMicros = 9999999999999999 as i64;
+  let clampedAt = if (at < (0 as i64)) 0 as i64 else if (at > maxMicros) maxMicros else at;
+  let maxSeq = 99999999;
+  let clampedSeq = if (seq < 0) 0 else if (seq > maxSeq) maxSeq else seq;
+  return `${padDigits(maxMicros - clampedAt, 16)}-${padDigits((maxSeq - clampedSeq) as i64, 8)}-${suffix}`;
+}
+
+function padDigits(value: i64, width: i32): String {
+  var text = `${value}`;
+  while (text.length < width) {
+    text = `0${text}`;
+  }
+  return text;
+}
+
+/**
+ * One operation or refused `403` attempt on the App View: who acted, when,
+ * which method or operator command ran, what kind of subject it touched,
+ * and the record and CIDs before and after when there were any.
+ */
+export final class ActivityEvent {
+  id: String;
+  /** When the event happened, in microseconds since the epoch. */
+  at: i64;
+  /** The caller's DID, or `'operator'` for an operator command. */
+  actor: String;
+  /** The method or command name, such as `'createPackage'`, `'publish'` or `'setLimit'`. */
+  method: String;
+  /** `ACTIVITY_SCOPE`, `ACTIVITY_TEAM`, `ACTIVITY_PACKAGE`, `ACTIVITY_AUTOMATION` or `ACTIVITY_ADMIN`. */
+  kind: String;
+  /** `OUTCOME_WRITTEN`, `OUTCOME_HELD`, `OUTCOME_WITHDRAWN` or `OUTCOME_REFUSED`. */
+  outcome: String;
+  var scope: String | null = null;
+  var account: String | null = null;
+  var accountKind: String | null = null;
+  var handle: String | null = null;
+  var collection: String | null = null;
+  var rkey: String | null = null;
+  var before: Cid | null = null;
+  var after: Cid | null = null;
+  var detail: String | null = null;
+
+  new(this.id, this.at, this.actor, this.method, this.kind, this.outcome);
+}
+
+/** Filters and paging for `AppViewStore.activity` and `AppView.listActivity`. */
+export final class ActivityQuery {
+  var scope: String | null = null;
+  var account: String | null = null;
+  var actor: String | null = null;
+  var kind: String | null = null;
+  var outcome: String | null = null;
+  /** The `id` of the last event on the previous page, or null for the newest. */
+  var after: String | null = null;
+  var limit: i32 = 100;
+}
+
+/** Whether `event` matches every filter set on `query`. */
+export function matchesActivityQuery(event: ActivityEvent, query: ActivityQuery): boolean {
+  if (query.scope != null && event.scope != query.scope) {
+    return false;
+  }
+  if (query.account != null && event.account != query.account) {
+    return false;
+  }
+  if (query.actor != null && event.actor != query.actor) {
+    return false;
+  }
+  if (query.kind != null && event.kind != query.kind) {
+    return false;
+  }
+  return query.outcome == null || event.outcome == query.outcome;
 }
 
 /**
@@ -539,6 +637,7 @@ export final class MemoryAppViewStore implements AppViewStore {
   /** Each count by its key (`Count.key`). */
   #counts = new HashMap<String, i64>();
   #scopeCreators = new HashMap<String, ScopeCreator>();
+  #activity = new GrowableArray<ActivityEvent>();
 
   async putAccount(account: AppViewAccount): Future<void> {
     this.#accounts[account.did] = account;
@@ -838,6 +937,39 @@ export final class MemoryAppViewStore implements AppViewStore {
     });
     return all;
   }
+
+  async appendActivity(event: ActivityEvent): Future<void> {
+    for (var i = 0; i < this.#activity.length; i += 1) {
+      if (this.#activity[i].id == event.id) {
+        this.#activity[i] = event;
+        return;
+      }
+    }
+    this.#activity.push(event);
+  }
+
+  async activity(query: ActivityQuery): Future<Array<ActivityEvent>> {
+    let out = new GrowableArray<ActivityEvent>();
+    if (query.limit <= 0) {
+      return out;
+    }
+    let after = query.after;
+    let hasAfter = after != null && after.length > 0 && !after.contains('/');
+    let matching = new GrowableArray<ActivityEvent>();
+    for (let event in this.#activity) {
+      if (hasAfter && compareKeys(event.id, after as String) <= 0) {
+        continue;
+      }
+      if (matchesActivityQuery(event, query)) {
+        matching.push(event);
+      }
+    }
+    matching.sort((a, b) => compareKeys(a.id, b.id));
+    for (var i = 0; i < matching.length && out.length < query.limit; i += 1) {
+      out.push(matching[i]);
+    }
+    return out;
+  }
 }
 
 /** An account `#prepareAccount` made ready, with the DID it will have. */
@@ -996,6 +1128,8 @@ export final class AppView {
   #replays = new ReplayGuard();
   /** Releases' contents, by DID and version (`releaseContents`). */
   #contents = new HashMap<String, ReleaseContents>();
+  var #activityPrefix: String | null = null;
+  var #activitySeq = 0;
 
   /**
    * An App View keeping its accounts on `pds`, and its own record of them and
@@ -1007,6 +1141,32 @@ export final class AppView {
       submit: PlcSubmitter, random: RandomBytes, resolver: IdentityResolver)
       : #pds = pds, config = config, #store = store, #records = records, #keys = keys, #submit = submit,
         #random = random, #resolver = resolver;
+
+  #nextActivityId(at: i64): String {
+    var prefix = this.#activityPrefix;
+    if (prefix == null) {
+      let encoded = hex.encode(this.#random(4));
+      prefix = if (encoded.length > 8) encoded.sliceBytes(0, 8) else encoded;
+      this.#activityPrefix = prefix;
+    }
+    let seq = this.#activitySeq;
+    this.#activitySeq = seq + 1;
+    return activityEventId(at, seq, prefix);
+  }
+
+  #eventOnAccount(at: i64, actor: String, method: String, kind: String, outcome: String,
+      account: AppViewAccount): ActivityEvent {
+    let event = new ActivityEvent(this.#nextActivityId(at), at, actor, method, kind, outcome);
+    event.scope = account.scope;
+    event.account = account.did;
+    event.accountKind = kindName(account.kind);
+    event.handle = account.handle;
+    return event;
+  }
+
+  async #recordActivity(event: ActivityEvent): Future<void> {
+    await this.#store.appendActivity(event);
+  }
 
   /**
    * Writes `writes` to `account`'s repository in one commit, answering
@@ -1201,13 +1361,21 @@ export final class AppView {
   async createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
       : Future<Created> {
     if (!(await this.mayCreateScopes(caller))) {
+      let refused = new ActivityEvent(this.#nextActivityId(nowMicros), nowMicros, caller, 'createOrganization',
+          ACTIVITY_SCOPE, OUTCOME_REFUSED);
+      if (isValidScopeName(name)) {
+        refused.scope = name;
+      }
+      refused.detail = 'NotAllowed';
+      await this.#recordActivity(refused);
       throw new AppViewError(403, 'NotAllowed',
           `only the accounts this registry's admins have listed may create scopes on it, and ${caller} is not one`);
     }
     if (this.config.reservedScopes.has(name)) {
       throw new AppViewError(400, 'NameTaken', `'${name}' cannot be a scope`);
     }
-    return await this.#createOrganization(caller, name, recoveryKeys, nowMicros, true);
+    return await this.#createOrganization(caller, caller, 'createOrganization', null, name, recoveryKeys, nowMicros,
+        true);
   }
 
   /**
@@ -1219,12 +1387,13 @@ export final class AppView {
    */
   async createScopeAsOperator(owner: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
       : Future<Created> {
-    return await this.#createOrganization(owner, name, recoveryKeys, nowMicros, false);
+    return await this.#createOrganization(owner, 'operator', 'createScope', owner, name, recoveryKeys, nowMicros,
+        false);
   }
 
   /** The scope `name`, owned by `caller`, which with `counted` counts as `caller`'s action and creation. */
-  async #createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64,
-      counted: boolean): Future<Created> {
+  async #createOrganization(caller: String, actor: String, method: String, detail: String | null, name: String,
+      recoveryKeys: Array<String>, nowMicros: i64, counted: boolean): Future<Created> {
     if (!isValidScopeName(name)) {
       throw new AppViewError(400, 'NameTaken', `'${name}' cannot be a scope`);
     }
@@ -1249,6 +1418,12 @@ export final class AppView {
     let members = new Members(new FixedArray<Cid>(1, owner.commitment()));
     let cid = await this.#write(account, MEMBERS_TYPE, 'self', members.toValue());
     await this.#records.set(handle, account.did);
+    let event = this.#eventOnAccount(nowMicros, actor, method, ACTIVITY_SCOPE, OUTCOME_WRITTEN, account);
+    event.collection = MEMBERS_TYPE;
+    event.rkey = 'self';
+    event.after = cid;
+    event.detail = detail;
+    await this.#recordActivity(event);
     return new Created(account.did, handle, `at://${account.did}/${MEMBERS_TYPE}/self`, cid);
   }
 
@@ -1267,6 +1442,12 @@ export final class AppView {
   async createAutomationAccount(caller: String, org: String, name: String, nowMicros: i64): Future<Automation> {
     let organization = await this.#account(org, AccountKind.Organization, 'an organization');
     if (!isAdmin(await this.#orgRole(org, caller))) {
+      let refused = this.#eventOnAccount(nowMicros, caller, 'createAutomationAccount', ACTIVITY_AUTOMATION,
+          OUTCOME_REFUSED, organization);
+      if (isValidPackageName(name)) {
+        refused.detail = name;
+      }
+      await this.#recordActivity(refused);
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
     }
     if (!isValidPackageName(name)) {
@@ -1288,6 +1469,9 @@ export final class AppView {
         async (): Future<void> => { await store.releaseName(scope, name, did); });
     let token = await this.#issueToken(account.did);
     await this.#records.set(handle, account.did);
+    await this.#recordActivity(
+        this.#eventOnAccount(nowMicros, caller, 'createAutomationAccount', ACTIVITY_AUTOMATION, OUTCOME_WRITTEN,
+            account));
     return new Automation(account.did, handle, token);
   }
 
@@ -1304,10 +1488,15 @@ export final class AppView {
     }
     let org = await this.#store.scopeOwner(held.scope);
     if (org == null || !isAdmin(await this.#orgRole(org, caller))) {
+      await this.#recordActivity(this.#eventOnAccount(nowMicros, caller, 'issueAutomationToken', ACTIVITY_AUTOMATION,
+          OUTCOME_REFUSED, held));
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${held.scope}`);
     }
     await this.#countAction(caller, held, nowMicros);
-    return await this.#issueToken(account);
+    let token = await this.#issueToken(account);
+    await this.#recordActivity(this.#eventOnAccount(nowMicros, caller, 'issueAutomationToken', ACTIVITY_AUTOMATION,
+        OUTCOME_WRITTEN, held));
+    return token;
   }
 
   /** A new token for the automation account `did`, kept as its only one. */
@@ -1330,6 +1519,8 @@ export final class AppView {
     }
     let policy = await this.#policy(org);
     if (!isAdmin(await this.#orgRole(org, caller)) && !(await this.#isCreator(org, policy, caller))) {
+      await this.#recordActivity(
+          this.#eventOnAccount(nowMicros, caller, 'createPackage', ACTIVITY_PACKAGE, OUTCOME_REFUSED, organization));
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}, or on a team its policy lets create packages`);
     }
     let profile = readRecord(() => Profile.fromValue(profileValue, true));
@@ -1374,6 +1565,11 @@ export final class AppView {
     ]);
     let cid = cidForValue(maintainersRecord);
     await this.#records.set(handle, account.did);
+    let event = this.#eventOnAccount(nowMicros, caller, 'createPackage', ACTIVITY_PACKAGE, OUTCOME_WRITTEN, account);
+    event.collection = MAINTAINERS_TYPE;
+    event.rkey = 'self';
+    event.after = cid;
+    await this.#recordActivity(event);
     return new Created(account.did, handle, `at://${account.did}/${MAINTAINERS_TYPE}/self`, cid);
   }
 
@@ -1406,7 +1602,7 @@ export final class AppView {
    */
   async uploadArtifact(caller: String, pkg: String, contentType: String, bytes: FixedArray<u8>,
       nowMicros: i64): Future<BlobRef> {
-    let account = await this.#maintainedPackage(caller, pkg);
+    let account = await this.#maintainedPackage(caller, pkg, 'uploadArtifact', nowMicros);
     await this.#countAction(caller, account, nowMicros);
     // Only what an artifact can be: a blob the App View serves as a page or a
     // script would run on its origin.
@@ -1442,7 +1638,7 @@ export final class AppView {
    */
   async publish(caller: String, pkg: String, releaseValue: Value, client: String | null, nowMicros: i64)
       : Future<Created> {
-    let account = await this.#maintainedPackage(caller, pkg);
+    let account = await this.#maintainedPackage(caller, pkg, 'publish', nowMicros, RELEASE_TYPE);
     await this.#countAction(caller, account, nowMicros);
     let release = readRecord(() => Release.fromValue(releaseValue));
     for (let artifact in release.artifacts) {
@@ -1501,6 +1697,12 @@ export final class AppView {
     if (held == null && await this.#store.holdRelease(pkg, holding)) {
       await this.#keepContents(account.did, version, source?.blob, archive?.bytes);
       await this.#attestForAutomation(caller, created, nowMicros);
+      let event = this.#eventOnAccount(nowMicros, caller, 'publish', ACTIVITY_PACKAGE, OUTCOME_HELD, account);
+      event.collection = RELEASE_TYPE;
+      event.rkey = version;
+      event.after = cid;
+      event.detail = client;
+      await this.#recordActivity(event);
       return created;
     }
     // Another publish of the version holds it.
@@ -1543,7 +1745,7 @@ export final class AppView {
    */
   async completeRelease(caller: String, pkg: String, version: String, client: String | null, nowMicros: i64)
       : Future<Completion> {
-    let account = await this.#maintainedPackage(caller, pkg);
+    let account = await this.#maintainedPackage(caller, pkg, 'completeRelease', nowMicros, RELEASE_TYPE, version);
     let uri = `at://${account.did}/${RELEASE_TYPE}/${version}`;
     let written = await this.#current(account.did, RELEASE_TYPE, version);
     let held = await this.#held(pkg, version, nowMicros);
@@ -1563,6 +1765,13 @@ export final class AppView {
       await this.#write(account, RELEASE_TYPE, version, asMap(decodeCbor(release.record)));
       await this.#store.putPublication(pkg, new Publication(version, release.cid, release.publisher, release.client,
           release.heldAt, caller, client, nowMicros));
+      let event = this.#eventOnAccount(nowMicros, caller, 'completeRelease', ACTIVITY_PACKAGE, OUTCOME_WRITTEN,
+          account);
+      event.collection = RELEASE_TYPE;
+      event.rkey = version;
+      event.after = release.cid;
+      event.detail = client;
+      await this.#recordActivity(event);
     }
     await this.#store.dropRelease(pkg, version);
     return new Completion(uri, release.cid, true, tally);
@@ -1590,15 +1799,27 @@ export final class AppView {
    * which frees its version. Its publisher or an owner of `pkg` may.
    */
   async withdrawRelease(caller: String, pkg: String, version: String, nowMicros: i64): Future<void> {
-    await this.#maintainedPackage(caller, pkg);
+    let account = await this.#maintainedPackage(caller, pkg, 'withdrawRelease', nowMicros, RELEASE_TYPE, version);
     let held = await this.#held(pkg, version, nowMicros);
     if (held == null) {
       throw new AppViewError(400, 'ReleaseNotFound', `${pkg} has no release ${version} waiting for approval`);
     }
     if (held.publisher != caller && (await this.#packageRole(pkg, caller)) != OWNER) {
+      let refused = this.#eventOnAccount(nowMicros, caller, 'withdrawRelease', ACTIVITY_PACKAGE, OUTCOME_REFUSED,
+          account);
+      refused.collection = RELEASE_TYPE;
+      refused.rkey = version;
+      refused.after = held.cid;
+      await this.#recordActivity(refused);
       throw new AppViewError(403, 'Forbidden', `${caller} neither published ${version} of ${pkg} nor owns it`);
     }
     await this.#store.dropRelease(pkg, version);
+    let event = this.#eventOnAccount(nowMicros, caller, 'withdrawRelease', ACTIVITY_PACKAGE, OUTCOME_WITHDRAWN,
+        account);
+    event.collection = RELEASE_TYPE;
+    event.rkey = version;
+    event.after = held.cid;
+    await this.#recordActivity(event);
   }
 
   /** Whether the App View may read `url` for someone (`isPublicHttps`, `AppViewConfig.privateReads`). */
@@ -1751,7 +1972,7 @@ export final class AppView {
    * the operator raising a limit for one package, for a scope and its
    * packages, or for one caller, as `limitSetOn` says.
    */
-  async setLimit(did: String, limit: Limit, value: Option<i64>): Future<void> {
+  async setLimit(did: String, limit: Limit, value: Option<i64>, nowMicros: i64 = 0 as i64): Future<void> {
     let account = await this.#store.account(did);
     let subject = limitSetOn(limit);
     let fits = match (subject) {
@@ -1774,6 +1995,18 @@ export final class AppView {
       }
     }
     await this.#store.setLimit(did, limit, value);
+    let setting = if (let Some {value: set} = value) `${limitName(limit)}=${set}` else `${limitName(limit)}=default`;
+    if (account != null) {
+      let event = this.#eventOnAccount(nowMicros, 'operator', 'setLimit', ACTIVITY_ADMIN, OUTCOME_WRITTEN, account);
+      event.detail = setting;
+      await this.#recordActivity(event);
+    } else {
+      let event = new ActivityEvent(this.#nextActivityId(nowMicros), nowMicros, 'operator', 'setLimit',
+          ACTIVITY_ADMIN, OUTCOME_WRITTEN);
+      event.account = did;
+      event.detail = setting;
+      await this.#recordActivity(event);
+    }
   }
 
   /**
@@ -2088,6 +2321,13 @@ export final class AppView {
    */
   async putScopeCreator(caller: String, did: String, allowed: boolean, nowMicros: i64): Future<void> {
     if (!this.isAppViewAdmin(caller)) {
+      let refused = new ActivityEvent(this.#nextActivityId(nowMicros), nowMicros, caller, 'putScopeCreator',
+          ACTIVITY_ADMIN, OUTCOME_REFUSED);
+      if (isValidDid(did)) {
+        refused.account = did;
+      }
+      refused.detail = if (allowed) 'allowed' else 'denied';
+      await this.#recordActivity(refused);
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of this App View`);
     }
     if (!isValidDid(did)) {
@@ -2098,6 +2338,23 @@ export final class AppView {
     } else {
       await this.#store.deleteScopeCreator(did);
     }
+    let event = new ActivityEvent(this.#nextActivityId(nowMicros), nowMicros, caller, 'putScopeCreator',
+        ACTIVITY_ADMIN, OUTCOME_WRITTEN);
+    event.account = did;
+    event.detail = if (allowed) 'allowed' else 'denied';
+    await this.#recordActivity(event);
+  }
+
+  /**
+   * Recent operations on the App View matching `query`, newest first:
+   * changes written, held or withdrawn, and calls refused with `403`.
+   * Admins only.
+   */
+  async listActivity(caller: String, query: ActivityQuery): Future<Array<ActivityEvent>> {
+    if (!this.isAppViewAdmin(caller)) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of this App View`);
+    }
+    return await this.#store.activity(query);
   }
 
   /** `listScopeCreators`: the accounts listed as ones that may create scopes, earliest first. Admins only. */
@@ -2405,14 +2662,15 @@ export final class AppView {
    */
   async retract(caller: String, pkg: String, version: String, reason: String | null, nowMicros: i64)
       : Future<Created> {
-    let account = await this.#maintainedPackage(caller, pkg);
+    let account = await this.#maintainedPackage(caller, pkg, 'retract', nowMicros, RETRACTION_TYPE, version);
     await this.#countAction(caller, account, nowMicros);
     if ((await this.#current(pkg, RELEASE_TYPE, version)) == null) {
       throw new AppViewError(400, 'ReleaseNotFound', `${pkg} has no release ${version}`);
     }
     // A release's record key is its version, so `version` parses.
     let retraction = new Retraction(Version.parse(version), reason);
-    return await this.#put(account, RETRACTION_TYPE, version, retraction.toValue(), null);
+    return await this.#put(caller, 'retract', ACTIVITY_PACKAGE, reason, nowMicros, account, RETRACTION_TYPE, version,
+        retraction.toValue(), null);
   }
 
   /**
@@ -2477,11 +2735,19 @@ export final class AppView {
 
   /**
    * The package `pkg`, when `caller` maintains it, in any role. Throws
-   * `AppViewError` otherwise.
+   * `AppViewError` otherwise, recording a refused activity event when
+   * `method` is given.
    */
-  async #maintainedPackage(caller: String, pkg: String): Future<AppViewAccount> {
+  async #maintainedPackage(caller: String, pkg: String, method: String | null = null, nowMicros: i64 = 0 as i64,
+      collection: String | null = null, rkey: String | null = null): Future<AppViewAccount> {
     let account = await this.#account(pkg, AccountKind.Package, 'a package');
     if ((await this.#packageRole(pkg, caller)) == null) {
+      if (method != null) {
+        let refused = this.#eventOnAccount(nowMicros, caller, method, ACTIVITY_PACKAGE, OUTCOME_REFUSED, account);
+        refused.collection = collection;
+        refused.rkey = rkey;
+        await this.#recordActivity(refused);
+      }
       throw new AppViewError(403, 'Forbidden', `${caller} does not maintain ${pkg}`);
     }
     return account;
@@ -2497,6 +2763,10 @@ export final class AppView {
       swapRecord: String | null, nowMicros: i64): Future<Created> {
     let account = await this.#account(org, AccountKind.Organization, 'an organization');
     if ((await this.#orgRole(org, caller)) != OWNER) {
+      let refused = this.#eventOnAccount(nowMicros, caller, 'putMembers', ACTIVITY_SCOPE, OUTCOME_REFUSED, account);
+      refused.collection = MEMBERS_TYPE;
+      refused.rkey = 'self';
+      await this.#recordActivity(refused);
       throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${org}`);
     }
     await this.#countAction(caller, account, nowMicros);
@@ -2520,7 +2790,8 @@ export final class AppView {
           `${owners} owners and ${admins} admins or owners cannot meet the thresholds of ${members.ownerThreshold} and ${members.adminThreshold}`);
     }
     await this.#store.addEntries(org, entries.fresh);
-    return await this.#propose(caller, account, MEMBERS_TYPE, 'self', asMap(membersValue), swapRecord, nowMicros);
+    return await this.#propose(caller, 'putMembers', account, MEMBERS_TYPE, 'self', asMap(membersValue), swapRecord,
+        nowMicros);
   }
 
   /**
@@ -2537,6 +2808,10 @@ export final class AppView {
     let existing = await this.#current(org, TEAM_TYPE, name);
     if (!isAdmin(await this.#orgRole(org, caller)) &&
         (existing == null || (await this.#teamRole(org, name, caller)) != MAINTAINER)) {
+      let refused = this.#eventOnAccount(nowMicros, caller, 'putTeam', ACTIVITY_TEAM, OUTCOME_REFUSED, account);
+      refused.collection = TEAM_TYPE;
+      refused.rkey = name;
+      await this.#recordActivity(refused);
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org} or a maintainer of its team ${name}`);
     }
     await this.#countAction(caller, account, nowMicros);
@@ -2555,7 +2830,7 @@ export final class AppView {
       }
     }
     await this.#store.addEntries(org, entries.fresh);
-    return await this.#propose(caller, account, TEAM_TYPE, name, asMap(teamValue), swapRecord, nowMicros);
+    return await this.#propose(caller, 'putTeam', account, TEAM_TYPE, name, asMap(teamValue), swapRecord, nowMicros);
   }
 
   /**
@@ -2568,6 +2843,10 @@ export final class AppView {
       : Future<Created> {
     let account = await this.#account(org, AccountKind.Organization, 'an organization');
     if ((await this.#orgRole(org, caller)) != OWNER) {
+      let refused = this.#eventOnAccount(nowMicros, caller, 'putPolicy', ACTIVITY_SCOPE, OUTCOME_REFUSED, account);
+      refused.collection = POLICY_TYPE;
+      refused.rkey = 'self';
+      await this.#recordActivity(refused);
       throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${org}`);
     }
     await this.#countAction(caller, account, nowMicros);
@@ -2587,7 +2866,8 @@ export final class AppView {
     if (policy.defaultThreshold < policy.minimumThreshold || policy.defaultHumans < policy.minimumHumans) {
       throw new AppViewError(400, 'InvalidRequest', 'the policy\'s defaults ask less than its minimums');
     }
-    return await this.#propose(caller, account, POLICY_TYPE, 'self', asMap(policyValue), swapRecord, nowMicros);
+    return await this.#propose(caller, 'putPolicy', account, POLICY_TYPE, 'self', asMap(policyValue), swapRecord,
+        nowMicros);
   }
 
   /**
@@ -2599,11 +2879,17 @@ export final class AppView {
       nowMicros: i64): Future<Created> {
     let account = await this.#account(org, AccountKind.Organization, 'an organization');
     if (!isAdmin(await this.#orgRole(org, caller))) {
+      let refused = this.#eventOnAccount(nowMicros, caller, 'putScopeProfile', ACTIVITY_SCOPE, OUTCOME_REFUSED,
+          account);
+      refused.collection = SCOPE_PROFILE_TYPE;
+      refused.rkey = 'self';
+      await this.#recordActivity(refused);
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
     }
     await this.#countAction(caller, account, nowMicros);
     readRecord(() => ScopeProfile.fromValue(profileValue));
-    return await this.#put(account, SCOPE_PROFILE_TYPE, 'self', asMap(profileValue), swapRecord);
+    return await this.#put(caller, 'putScopeProfile', ACTIVITY_SCOPE, null, nowMicros, account, SCOPE_PROFILE_TYPE,
+        'self', asMap(profileValue), swapRecord);
   }
 
   /** `org`'s policy for the packages in its scope, as it is now, or the one that asks nothing more. */
@@ -2636,13 +2922,23 @@ export final class AppView {
       : Future<void> {
     let account = await this.#account(org, AccountKind.Organization, 'an organization');
     if (!isAdmin(await this.#orgRole(org, caller))) {
+      let refused = this.#eventOnAccount(nowMicros, caller, 'deleteTeam', ACTIVITY_TEAM, OUTCOME_REFUSED, account);
+      refused.collection = TEAM_TYPE;
+      refused.rkey = name;
+      await this.#recordActivity(refused);
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
     }
     await this.#countAction(caller, account, nowMicros);
-    if ((await this.#current(org, TEAM_TYPE, name)) == null) {
+    let existing = await this.#current(org, TEAM_TYPE, name);
+    if (existing == null) {
       throw new AppViewError(400, 'TeamNotFound', `${org} has no team ${name}`);
     }
     await this.#commit(account, [new DeleteRecord(TEAM_TYPE, name, swapCid(swapRecord)) as Write]);
+    let event = this.#eventOnAccount(nowMicros, caller, 'deleteTeam', ACTIVITY_TEAM, OUTCOME_WRITTEN, account);
+    event.collection = TEAM_TYPE;
+    event.rkey = name;
+    event.before = existing.cid;
+    await this.#recordActivity(event);
   }
 
   /**
@@ -2656,6 +2952,11 @@ export final class AppView {
       swapRecord: String | null, nowMicros: i64): Future<Created> {
     let account = await this.#account(pkg, AccountKind.Package, 'a package');
     if ((await this.#packageRole(pkg, caller)) != OWNER) {
+      let refused = this.#eventOnAccount(nowMicros, caller, 'putMaintainers', ACTIVITY_PACKAGE, OUTCOME_REFUSED,
+          account);
+      refused.collection = MAINTAINERS_TYPE;
+      refused.rkey = 'self';
+      await this.#recordActivity(refused);
       throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${pkg}`);
     }
     await this.#countAction(caller, account, nowMicros);
@@ -2728,8 +3029,8 @@ export final class AppView {
       meetsPolicy(maintainers, await this.#policy(org), org);
     }
     await this.#store.addEntries(pkg, entries.fresh);
-    return await this.#propose(caller, account, MAINTAINERS_TYPE, 'self', asMap(maintainersValue), swapRecord,
-        nowMicros);
+    return await this.#propose(caller, 'putMaintainers', account, MAINTAINERS_TYPE, 'self', asMap(maintainersValue),
+        swapRecord, nowMicros);
   }
 
   /**
@@ -2739,8 +3040,8 @@ export final class AppView {
    * CID now. Answers with the AT-URI and CID the new record will have,
    * which the attestations name.
    */
-  async #propose(caller: String, account: AppViewAccount, collection: String, rkey: String, record: MapValue,
-      swapRecord: String | null, nowMicros: i64): Future<Created> {
+  async #propose(caller: String, method: String, account: AppViewAccount, collection: String, rkey: String,
+      record: MapValue, swapRecord: String | null, nowMicros: i64): Future<Created> {
     let swap = swapCid(swapRecord);
     let current = (await this.#current(account.did, collection, rkey))?.cid;
     if (swap != null && (current == null || !current.equals(swap))) {
@@ -2750,6 +3051,12 @@ export final class AppView {
     let cid = Cid.forDagCbor(bytes);
     await this.#store.holdChange(account.did, new PendingChange(collection, rkey, bytes, cid, current, caller,
         nowMicros));
+    let event = this.#eventOnAccount(nowMicros, caller, method, changeActivityKind(collection), OUTCOME_HELD, account);
+    event.collection = collection;
+    event.rkey = rkey;
+    event.before = current;
+    event.after = cid;
+    await this.#recordActivity(event);
     return new Created(account.did, account.handle, `at://${account.did}/${collection}/${rkey}`, cid);
   }
 
@@ -2765,7 +3072,7 @@ export final class AppView {
    */
   async completeChange(caller: String, uri: String, cid: Cid | null, nowMicros: i64): Future<ChangeCompletion> {
     let target = await this.#changeTarget(uri);
-    await this.#requireRole(caller, target);
+    await this.#requireRole(caller, target, 'completeChange', nowMicros);
     let did = target.account.did;
     let current = (await this.#current(did, target.collection, target.rkey))?.cid;
     let held = await this.#heldChange(target, nowMicros);
@@ -2790,6 +3097,13 @@ export final class AppView {
         if (current != null) new UpdateRecord(target.collection, target.rkey, record, current) as Write
         else new CreateRecord(target.collection, target.rkey, record) as Write]);
     await this.#store.dropChange(did, target.collection, target.rkey, change.cid);
+    let event = this.#eventOnAccount(nowMicros, caller, 'completeChange', changeActivityKind(target.collection),
+        OUTCOME_WRITTEN, target.account);
+    event.collection = target.collection;
+    event.rkey = target.rkey;
+    event.before = current;
+    event.after = change.cid;
+    await this.#recordActivity(event);
     return new ChangeCompletion(uri, change.cid, true, tally);
   }
 
@@ -2843,7 +3157,7 @@ export final class AppView {
    */
   async withdrawChange(caller: String, uri: String, nowMicros: i64): Future<void> {
     let target = await this.#changeTarget(uri);
-    await this.#requireRole(caller, target);
+    await this.#requireRole(caller, target, 'withdrawChange', nowMicros);
     let held = await this.#heldChange(target, nowMicros);
     if (held == null) {
       throw new AppViewError(400, 'ChangeNotFound', `no change to ${uri} is waiting for approval`);
@@ -2851,9 +3165,23 @@ export final class AppView {
     let change = held;
     if (change.proposer != caller && !(await this.#seesAll(caller, target.account,
         if (target.collection == TEAM_TYPE) target.rkey else null))) {
+      let refused = this.#eventOnAccount(nowMicros, caller, 'withdrawChange', changeActivityKind(target.collection),
+          OUTCOME_REFUSED, target.account);
+      refused.collection = target.collection;
+      refused.rkey = target.rkey;
+      refused.before = change.base;
+      refused.after = change.cid;
+      await this.#recordActivity(refused);
       throw new AppViewError(403, 'Forbidden', `${caller} neither asked for the change to ${uri} nor can approve it`);
     }
     await this.#store.dropChange(target.account.did, target.collection, target.rkey, change.cid);
+    let event = this.#eventOnAccount(nowMicros, caller, 'withdrawChange', changeActivityKind(target.collection),
+        OUTCOME_WITHDRAWN, target.account);
+    event.collection = target.collection;
+    event.rkey = target.rkey;
+    event.before = change.base;
+    event.after = change.cid;
+    await this.#recordActivity(event);
   }
 
   /** The record of members, a team or maintainers `uri` names, on this App View. */
@@ -2875,11 +3203,25 @@ export final class AppView {
   }
 
   /** Throws unless `caller` has a role in the account `target` is a record of. */
-  async #requireRole(caller: String, target: ChangeTarget): Future<void> {
+  async #requireRole(caller: String, target: ChangeTarget, method: String | null = null,
+      nowMicros: i64 = 0 as i64): Future<void> {
     let did = target.account.did;
     let role = if (target.account.kind == AccountKind.Organization) await this.#orgRole(did, caller)
         else await this.#packageRole(did, caller);
     if (role == null) {
+      if (method != null) {
+        let kind = if (target.collection.length > 0) changeActivityKind(target.collection)
+            else if (target.account.kind == AccountKind.Package) ACTIVITY_PACKAGE
+            else ACTIVITY_SCOPE;
+        let refused = this.#eventOnAccount(nowMicros, caller, method, kind, OUTCOME_REFUSED, target.account);
+        if (target.collection.length > 0) {
+          refused.collection = target.collection;
+        }
+        if (target.rkey.length > 0) {
+          refused.rkey = target.rkey;
+        }
+        await this.#recordActivity(refused);
+      }
       throw new AppViewError(403, 'Forbidden', `${caller} has no role in ${did}`);
     }
   }
@@ -3209,19 +3551,39 @@ export final class AppView {
 
   /**
    * Writes `record` at `collection/rkey`: creates it, or replaces it while
-   * its CID is `swapRecord`, when one is given.
+   * its CID is `swapRecord`, when one is given, and records the activity.
    */
-  async #put(account: AppViewAccount, collection: String, rkey: String, record: MapValue, swapRecord: String | null)
+  async #put(caller: String, method: String, kind: String, detail: String | null, nowMicros: i64,
+      account: AppViewAccount, collection: String, rkey: String, record: MapValue, swapRecord: String | null)
       : Future<Created> {
     let swap = swapCid(swapRecord);
-    let exists = (await this.#current(account.did, collection, rkey)) != null;
-    if (!exists && swap != null) {
+    let current = (await this.#current(account.did, collection, rkey))?.cid;
+    if (current == null && swap != null) {
       throw new AppViewError(400, 'InvalidSwap', `${collection}/${rkey} does not exist`);
     }
     await this.#commit(account, [
-        if (exists) new UpdateRecord(collection, rkey, record, swap) as Write else new CreateRecord(collection, rkey, record) as Write]);
-    return new Created(account.did, account.handle, `at://${account.did}/${collection}/${rkey}`, cidForValue(record));
+        if (current != null) new UpdateRecord(collection, rkey, record, swap) as Write
+        else new CreateRecord(collection, rkey, record) as Write]);
+    let cid = cidForValue(record);
+    let event = this.#eventOnAccount(nowMicros, caller, method, kind, OUTCOME_WRITTEN, account);
+    event.collection = collection;
+    event.rkey = rkey;
+    event.before = current;
+    event.after = cid;
+    event.detail = detail;
+    await this.#recordActivity(event);
+    return new Created(account.did, account.handle, `at://${account.did}/${collection}/${rkey}`, cid);
   }
+}
+
+function changeActivityKind(collection: String): String {
+  if (collection == TEAM_TYPE) {
+    return ACTIVITY_TEAM;
+  }
+  if (collection == MAINTAINERS_TYPE) {
+    return ACTIVITY_PACKAGE;
+  }
+  return ACTIVITY_SCOPE;
 }
 
 /**
