@@ -1,0 +1,872 @@
+import {suite, test} from 'zena:test';
+import {equal, fail, isFalse, isNull, isTrue, rejects} from 'zena:assert';
+import {Future} from 'zena:async';
+import {Borrow, StringBuilder} from 'zena:core';
+import {sha256HexOfString} from 'zena:crypto';
+import {isFile, readFile, readFileBytes, writeFile} from 'zena:fs';
+import {App, Server} from 'zena:http';
+import {JsonBuilder, JsonObject, parseJson} from 'zena:json';
+import {runWith} from 'zena:process';
+import {milliseconds, monotonic, sleep} from 'zena:time';
+import {RunResult, StepSource, Succeeded} from 'workflow/engine';
+import {CacheKey, Fingerprint} from 'workflow/fingerprint';
+import {OutputEntry, OutputManifest} from 'workflow/manifest';
+import {StepKey} from 'workflow/step';
+import {Colors} from 'zebra/colors';
+import {DiskCache} from 'zebra/disk-cache';
+import {ensureDir, ensureParentDir, removeTreeIfExists, withRoot} from 'zebra/fs-util';
+import {
+  CacheMode,
+  GitHubActionsCache,
+  GitHubCacheConfig,
+  resolveCacheMode,
+  resolveGitHubCacheConfig,
+} from 'zebra/github-cache';
+import {buildTarget, formatBuildReport} from 'zebra/runner';
+import {manifestToJson} from 'zebra/state-json';
+import {ScriptRef} from 'zebra/wireit-config';
+
+/**
+ * Unit and end-to-end tests for Zebra's GitHub Actions cache backend
+ * (`zebra/github-cache`) against an in-process mock Twirp `CacheService`,
+ * Azure BlockBlob SAS server, and token custodian.
+ */
+
+let SAS_SIG = 'sv=2021-08-06&sig=Ab%2Bc%3D';
+
+class UploadSlot {
+  key: String;
+  version: String;
+  blocks = new HashMap<String, FixedArray<u8>>();
+  var committed: FixedArray<u8>? = null;
+
+  new(this.key, this.version);
+}
+
+function parseUncommittedIds(xml: String) {
+  let out = new GrowableArray<String>();
+  let prefix = '  <Uncommitted>';
+  let suffix = '</Uncommitted>';
+  for (let line in xml.split('\n')) {
+    if (line.startsWith(prefix) && line.endsWith(suffix)) {
+      out.push(line.sliceBytes(prefix.length, line.length - suffix.length));
+    }
+  }
+  return out;
+}
+
+function concatBlocks(chunks: GrowableArray<FixedArray<u8>>) {
+  var total = 0;
+  for (let c in chunks) {
+    total += c.length;
+  }
+  let combined = new FixedArray<u8>(total, 0 as u8);
+  var offset = 0;
+  for (let c in chunks) {
+    for (var i = 0; i < c.length; i += 1) {
+      combined[offset + i] = c[i];
+    }
+    offset += c.length;
+  }
+  return combined;
+}
+
+class MockCacheState {
+  expectedToken: String;
+  entries = new HashMap<String, FixedArray<u8>>();
+  uploads = new HashMap<String, UploadSlot>();
+  var nextUploadId = 1;
+  var blockPutCount = 0;
+  var blockListPutCount = 0;
+  var finalizeCount = 0;
+  var getUrlCount = 0;
+  var createCount = 0;
+  injectCreateStatus = 0;
+  var injectGetStatus = 0;
+
+  new(this.expectedToken = 'ghs_mock_runtime_token');
+
+  entryId(key: String, version: String): String {
+    return `${key}::${version}`;
+  }
+}
+
+function startMockCacheServer(state: MockCacheState) {
+  let app = new App();
+  app.use(async (req, res, next): Future<void> => {
+    let method = req.method;
+    let path = req.path;
+    let query = req.query;
+    let auth = req.getHeader('authorization');
+    let origin = req.origin;
+
+    if (path.startsWith('/twirp/github.actions.results.api.v1.CacheService/')) {
+      if (method != 'POST') {
+        res.statusCode = 405;
+        res.body = 'expected POST';
+        return;
+      }
+      if (auth != 'Bearer ' + state.expectedToken) {
+        res.statusCode = 401;
+        res.body = 'invalid bearer token';
+        return;
+      }
+      let rpc = path.sliceBytes(
+        '/twirp/github.actions.results.api.v1.CacheService/'.length,
+        path.length,
+      );
+      let rawBody = await req.text();
+      let parsed = parseJson(rawBody);
+      if (!(parsed is JsonObject)) {
+        res.statusCode = 400;
+        res.body = 'expected json object';
+        return;
+      }
+      var key = '';
+      var version = '';
+      if (let (true, k) = parsed.stringAt('key')) {
+        key = k;
+      }
+      if (let (true, v) = parsed.stringAt('version')) {
+        version = v;
+      }
+      let composite = state.entryId(key, version);
+
+      if (rpc == 'GetCacheEntryDownloadURL') {
+        state.getUrlCount += 1;
+        if (state.injectGetStatus != 0) {
+          res.statusCode = state.injectGetStatus;
+          res.body = 'injected error';
+          return;
+        }
+        res.statusCode = 200;
+        res.type = 'application/json';
+        if (!state.entries.has(composite)) {
+          res.body = '{"ok":false,"signed_download_url":""}';
+          return;
+        }
+        let encodedKey = sha256HexOfString(composite);
+        let b = new JsonBuilder();
+        b.beginObject();
+        b.key('ok');
+        b.bool(true);
+        b.key('signed_download_url');
+        b.string(`${origin}/sas/redirect/${encodedKey}?${SAS_SIG}`);
+        b.endObject();
+        res.body = b.toString();
+        return;
+      }
+
+      if (rpc == 'CreateCacheEntry') {
+        state.createCount += 1;
+        if (state.injectCreateStatus != 0) {
+          res.statusCode = state.injectCreateStatus;
+          res.body = 'injected create status';
+          return;
+        }
+        if (state.entries.has(composite)) {
+          res.statusCode = 409;
+          res.type = 'application/json';
+          res.body = '{"code":"already_exists","msg":"entry already exists"}';
+          return;
+        }
+        let id = i32ToString(state.nextUploadId);
+        state.nextUploadId += 1;
+        state.uploads[id] = new UploadSlot(key, version);
+        let b = new JsonBuilder();
+        b.beginObject();
+        b.key('ok');
+        b.bool(true);
+        b.key('signed_upload_url');
+        b.string(`${origin}/sas/upload/${id}?${SAS_SIG}`);
+        b.endObject();
+        res.statusCode = 200;
+        res.type = 'application/json';
+        res.body = b.toString();
+        return;
+      }
+
+      if (rpc == 'FinalizeCacheEntryUpload') {
+        state.finalizeCount += 1;
+        var matchedSlot: UploadSlot? = null;
+        state.uploads.forEach((id, slot) => {
+          if (slot.key == key && slot.version == version && slot.committed != null) {
+            matchedSlot = slot;
+          }
+        });
+        if (matchedSlot == null) {
+          res.statusCode = 400;
+          res.body = 'no committed upload found';
+          return;
+        }
+        let data = matchedSlot.committed as FixedArray<u8>;
+        if (let (true, declaredSize) = parsed.intAt('sizeBytes')) {
+          if (declaredSize != data.length) {
+            res.statusCode = 400;
+            res.body = 'sizeBytes mismatch';
+            return;
+          }
+        }
+        state.entries[composite] = data;
+        let encodedKey = sha256HexOfString(composite);
+        state.entries['download:' + encodedKey] = data;
+        res.statusCode = 200;
+        res.type = 'application/json';
+        res.body = '{"ok":true,"entry_id":"1"}';
+        return;
+      }
+
+      res.statusCode = 404;
+      res.body = 'unknown rpc';
+      return;
+    }
+
+    // Azure SAS endpoints reject requests carrying GitHub's Authorization header
+    // or altered SAS signature query bytes.
+    if (path.startsWith('/sas/')) {
+      if (auth != null) {
+        res.statusCode = 403;
+        res.body = 'SAS endpoint must not receive Authorization header';
+        return;
+      }
+      if (!query.contains(SAS_SIG)) {
+        res.statusCode = 403;
+        res.body = 'SAS signature query parameter was altered: ' + query;
+        return;
+      }
+
+      if (path.startsWith('/sas/upload/') && method == 'PUT') {
+        if (req.getHeader('transfer-encoding') != null) {
+          res.statusCode = 400;
+          res.body =
+            '<Error><Code>UnsupportedHeader</Code><HeaderName>Transfer-Encoding</HeaderName></Error>';
+          return;
+        }
+        let declaredLength = req.getHeader('content-length');
+        if (declaredLength == null) {
+          res.statusCode = 411;
+          res.body = 'missing Content-Length header';
+          return;
+        }
+        let uploadId = path.sliceBytes('/sas/upload/'.length, path.length);
+        if (let (true, slot) = state.uploads.get(uploadId)) {
+          let params = req.url.searchParams();
+          let comp = params.get('comp') ?? '';
+          if (comp == 'block') {
+            if (req.getHeader('x-ms-blob-type') != 'BlockBlob') {
+              res.statusCode = 400;
+              res.body = 'missing x-ms-blob-type: BlockBlob';
+              return;
+            }
+            let blockId = params.get('blockid') ?? '';
+            if (blockId == '') {
+              res.statusCode = 400;
+              res.body = 'missing blockid';
+              return;
+            }
+            let chunkBytes = await req.bytes();
+            if (declaredLength != i32ToString(chunkBytes.length)) {
+              res.statusCode = 400;
+              res.body = 'Content-Length mismatch on block PUT';
+              return;
+            }
+            slot.blocks[blockId] = chunkBytes;
+            state.blockPutCount += 1;
+            res.statusCode = 201;
+            res.body = '';
+            return;
+          }
+          if (comp == 'blocklist') {
+            let xml = await req.text();
+            if (declaredLength != i32ToString(xml.length)) {
+              res.statusCode = 400;
+              res.body = 'Content-Length mismatch on blocklist PUT';
+              return;
+            }
+            let ids = parseUncommittedIds(xml);
+            let ordered = new GrowableArray<FixedArray<u8>>();
+            for (let id in ids) {
+              if (let (true, chunk) = slot.blocks.get(id)) {
+                ordered.push(chunk);
+              } else {
+                res.statusCode = 400;
+                res.body = 'unknown block id: ' + id;
+                return;
+              }
+            }
+            slot.committed = concatBlocks(ordered);
+            state.blockListPutCount += 1;
+            res.statusCode = 201;
+            res.body = '';
+            return;
+          }
+        }
+        res.statusCode = 404;
+        res.body = 'unknown upload slot';
+        return;
+      }
+
+      if (path.startsWith('/sas/redirect/') && method == 'GET') {
+        let encodedKey = path.sliceBytes('/sas/redirect/'.length, path.length);
+        res.statusCode = 302;
+        res.setHeader('location', `/sas/download/${encodedKey}?${SAS_SIG}`);
+        res.body = '';
+        return;
+      }
+
+      if (path.startsWith('/sas/download/') && method == 'GET') {
+        let encodedKey = path.sliceBytes('/sas/download/'.length, path.length);
+        if (let (true, bytes) = state.entries.get('download:' + encodedKey)) {
+          res.statusCode = 200;
+          res.type = 'application/octet-stream';
+          res.body = bytes;
+          return;
+        }
+        res.statusCode = 404;
+        res.body = 'missing blob';
+        return;
+      }
+    }
+
+    res.statusCode = 404;
+    res.body = 'not found';
+  });
+  let server = new Server(app, 0 as u16);
+  server.start();
+  return server;
+}
+
+function originOf(server: Borrow<Server>) {
+  return `http://127.0.0.1:${server.port as i32}`;
+}
+
+async function write(root: String, path: String, content: String) {
+  let full = withRoot(root, path);
+  await ensureParentDir(full);
+  await writeFile(full, content);
+}
+
+function sourceOf(result: RunResult, key: String): StepSource {
+  let outcome = result.outcomeOf(new StepKey(key));
+  if (outcome is Succeeded) {
+    return outcome.source;
+  }
+  fail('step did not succeed: ' + key);
+}
+
+var rootSeq = 0;
+
+function freshRoot(label: String) {
+  let id = rootSeq;
+  rootSeq = id + 1;
+  return `/tmp/zebra-gh-cache-${label}-${i64ToString(monotonic() as i64)}-${i32ToString(id)}`;
+}
+
+export let tests = suite('zebra github actions cache', () => {
+  test('resolveCacheMode and resolveGitHubCacheConfig support custodian and env modes', async () => {
+    // Explicit `: String?` return annotations work around #1154.
+    isTrue(resolveCacheMode((_): String? => null) == CacheMode.Local);
+    isTrue(resolveCacheMode((name): String? => if (name == 'ZEBRA_CACHE') 'local' else null) == CacheMode.Local);
+    isTrue(resolveCacheMode((name): String? => if (name == 'ZEBRA_CACHE') 'github' else null) == CacheMode.GitHub);
+    isTrue(resolveCacheMode((name): String? => if (name == 'ZEBRA_CACHE') 'none' else null) == CacheMode.None);
+
+    var badMode = false;
+    try {
+      resolveCacheMode((name): String? => if (name == 'ZEBRA_CACHE') 's3' else null);
+    } catch (e) {
+      badMode = true;
+    }
+    isTrue(badMode);
+
+    // Mock custodian serving both Zebra's secret path and Wireit's root format.
+    let app = new App();
+    app.use(async (req, res, next): Future<void> => {
+      if (req.path == '/v1/secret-123') {
+        res.statusCode = 200;
+        res.type = 'application/json';
+        res.body = '{"ACTIONS_RESULTS_URL":"http://127.0.0.1:9999","ACTIONS_RUNTIME_TOKEN":"tok_zebra"}';
+        return;
+      }
+      if (req.path == '/') {
+        res.statusCode = 200;
+        res.type = 'application/json';
+        res.body = '{"caching":{"github":{"ACTIONS_RESULTS_URL":"http://127.0.0.1:8888/","ACTIONS_RUNTIME_TOKEN":"tok_wireit"}}}';
+        return;
+      }
+      res.statusCode = 404;
+      res.body = 'forbidden';
+    });
+    let custodian = new Server(app, 0 as u16);
+    custodian.start();
+    let portStr = i32ToString(custodian.port as i32);
+    let custodianOrigin = originOf(custodian);
+    try {
+      let zebraCfg = await resolveGitHubCacheConfig((name): String? => {
+        if (name == 'ZEBRA_GITHUB_CUSTODIAN_URL') {
+          return `${custodianOrigin}/v1/secret-123`;
+        }
+        if (name == 'ZEBRA_CACHE_READ_ONLY') {
+          return '1';
+        }
+        if (name == 'RUNNER_OS') {
+          return 'Linux';
+        }
+        if (name == 'RUNNER_ARCH') {
+          return 'X64';
+        }
+        if (name == 'ImageOS') {
+          return 'ubuntu24';
+        }
+        return null;
+      });
+      equal(zebraCfg.baseUrl, 'http://127.0.0.1:9999/');
+      equal(zebraCfg.authToken, 'tok_zebra');
+      isTrue(zebraCfg.readOnly);
+      equal(zebraCfg.runnerOs, 'Linux');
+      equal(zebraCfg.runnerArch, 'X64');
+      equal(zebraCfg.imageOs, 'ubuntu24');
+
+      let wireitCfg = await resolveGitHubCacheConfig((name): String? => {
+        if (name == 'WIREIT_CACHE_GITHUB_CUSTODIAN_PORT') {
+          return portStr;
+        }
+        return null;
+      });
+      equal(wireitCfg.baseUrl, 'http://127.0.0.1:8888/');
+      equal(wireitCfg.authToken, 'tok_wireit');
+      isFalse(wireitCfg.readOnly);
+
+      let directCfg = await resolveGitHubCacheConfig((name): String? => {
+        if (name == 'ACTIONS_RESULTS_URL') {
+          return 'https://results-receiver.actions.githubusercontent.com';
+        }
+        if (name == 'ACTIONS_RUNTIME_TOKEN') {
+          return 'tok_direct';
+        }
+        return null;
+      });
+      equal(
+        directCfg.baseUrl,
+        'https://results-receiver.actions.githubusercontent.com/',
+      );
+      equal(directCfg.authToken, 'tok_direct');
+
+      await rejects(async () => {
+        await resolveGitHubCacheConfig((_): String? => null);
+      });
+    } finally {
+      custodian.close();
+    }
+  });
+
+  test('zero-output steps store raw JSON without tar and restore cleanly', async () => {
+    let state = new MockCacheState();
+    let server = startMockCacheServer(state);
+    let origin = originOf(server);
+    let rootA = freshRoot('zero-a');
+    let rootB = freshRoot('zero-b');
+    try {
+      await ensureDir(rootA);
+      await ensureDir(rootB);
+      let cfg = new GitHubCacheConfig(origin, state.expectedToken);
+      let localA = new DiskCache(rootA);
+      let ghA = new GitHubActionsCache(rootA, localA, cfg);
+
+      let step = new StepKey('packages/pkg:test');
+      let key = new CacheKey('ck-empty-1');
+      let empty = new OutputManifest([]);
+      await localA.put(step, key, empty);
+      await ghA.put(step, key, empty);
+
+      equal(state.finalizeCount, 1);
+      let composite = state.entryId(ghA.computeKey(step), ghA.computeVersion(key));
+      let stored = state.entries[composite];
+      // Raw JSON array ('[' == 0x5b), never gzipped tar (0x1f 0x8b).
+      equal(stored[0], 0x5b as u8);
+      equal(String.fromBytes(stored), '[]');
+
+      var restoredFired = false;
+      let localB = new DiskCache(rootB, () => {
+        restoredFired = true;
+      });
+      let ghB = new GitHubActionsCache(rootB, localB, cfg);
+      let hit = await ghB.get(step, key);
+      isTrue(hit != null);
+      equal((hit as OutputManifest).outputs.length, 0);
+      isTrue(restoredFired);
+      isTrue(await isFile(withRoot(rootB, 'packages/pkg/.zebra/cache/ck-empty-1.json')));
+    } finally {
+      server.close();
+      await removeTreeIfExists(rootA);
+      await removeTreeIfExists(rootB);
+    }
+  });
+
+  test('multi-file chunked upload, redirect download, and OS version isolation', async () => {
+    let state = new MockCacheState();
+    let server = startMockCacheServer(state);
+    let origin = originOf(server);
+    let rootA = freshRoot('chunk-a');
+    let rootB = freshRoot('chunk-b');
+    try {
+      let sb = new StringBuilder();
+      for (var i = 0; i < 40; i += 1) {
+        sb.append(`line-${i32ToString(i)}-payload-bytes\n`);
+      }
+      let contentOne = sb.toString();
+      let contentTwo = 'second-output-artifact\n';
+
+      await write(rootA, 'packages/app/out/one.txt', contentOne);
+      await write(rootA, 'packages/app/out/sub/two.txt', contentTwo);
+
+      let fpOne = new Fingerprint('sha256:' + sha256HexOfString(contentOne));
+      let fpTwo = new Fingerprint('sha256:' + sha256HexOfString(contentTwo));
+      let manifest = new OutputManifest([
+        new OutputEntry('packages/app/out/one.txt', fpOne),
+        new OutputEntry('packages/app/out/sub/two.txt', fpTwo),
+      ]);
+
+      // Small 64-byte chunk size forces multiple Azure BlockBlob PUTs.
+      let linuxCfg = new GitHubCacheConfig(
+        origin,
+        state.expectedToken,
+        false,
+        'Linux',
+        'X64',
+        'ubuntu24',
+        64,
+      );
+      let localA = new DiskCache(rootA);
+      let ghA = new GitHubActionsCache(rootA, localA, linuxCfg);
+
+      let step = new StepKey('packages/app:build');
+      let key = new CacheKey('ck-files-1');
+      await localA.put(step, key, manifest);
+      await ghA.put(step, key, manifest);
+
+      isTrue(state.blockPutCount >= 3);
+      equal(state.blockListPutCount, 1);
+      equal(state.finalizeCount, 1);
+
+      // Different runner OS produces a different version digest and misses.
+      let macCfg = new GitHubCacheConfig(
+        origin,
+        state.expectedToken,
+        false,
+        'macOS',
+        'ARM64',
+        'macos15',
+        64,
+      );
+      let localB = new DiskCache(rootB);
+      let ghMac = new GitHubActionsCache(rootB, localB, macCfg);
+      isNull(await ghMac.get(step, key));
+
+      // Matching runner OS hits across distinct checkout paths (rootB != rootA).
+      let ghLinuxB = new GitHubActionsCache(rootB, localB, linuxCfg);
+      let hit = await ghLinuxB.get(step, key);
+      isTrue(hit != null);
+      equal(await readFile(withRoot(rootB, 'packages/app/out/one.txt')), contentOne);
+      equal(await readFile(withRoot(rootB, 'packages/app/out/sub/two.txt')), contentTwo);
+    } finally {
+      server.close();
+      await removeTreeIfExists(rootA);
+      await removeTreeIfExists(rootB);
+    }
+  });
+
+  test('rejects remote archive when extracted blob sha256 does not match manifest', async () => {
+    let state = new MockCacheState();
+    let server = startMockCacheServer(state);
+    let origin = originOf(server);
+    let stageRoot = freshRoot('tamper-stage');
+    let rootB = freshRoot('tamper-b');
+    try {
+      let step = new StepKey('packages/lib:build');
+      let key = new CacheKey('ck-tamper');
+      let expectedFp = new Fingerprint('sha256:' + sha256HexOfString('authentic-bytes'));
+      let manifest = new OutputManifest([
+        new OutputEntry('packages/lib/out/lib.txt', expectedFp),
+      ]);
+
+      // Build a tar.gz whose blob file contains tampered bytes under the expected blob name.
+      await write(stageRoot, 'cache/ck-tamper.json', manifestToJson(manifest));
+      await write(
+        stageRoot,
+        'blobs/sha256-' + sha256HexOfString('authentic-bytes'),
+        'tampered-bytes',
+      );
+      await write(
+        stageRoot,
+        'files.txt',
+        `cache/ck-tamper.json\nblobs/sha256-${sha256HexOfString('authentic-bytes')}\n`,
+      );
+      let tarRes = await runWith(
+        ['tar', '-czf', 'bad.tgz', '-T', 'files.txt'],
+        {cwd: stageRoot},
+      );
+      isTrue(tarRes.succeeded());
+
+      let cfg = new GitHubCacheConfig(origin, state.expectedToken);
+      let localB = new DiskCache(rootB);
+      let warnings = new GrowableArray<String>();
+      let ghB = new GitHubActionsCache(rootB, localB, cfg, (msg) => {
+        warnings.push(msg);
+      });
+
+      // Seed the corrupt archive directly into the mock server.
+      let composite = state.entryId(ghB.computeKey(step), ghB.computeVersion(key));
+      let encodedKey = sha256HexOfString(composite);
+      let badBytes = await readFileBytes(withRoot(stageRoot, 'bad.tgz'));
+      state.entries[composite] = badBytes;
+      state.entries['download:' + encodedKey] = badBytes;
+
+      let hit = await ghB.get(step, key);
+      isNull(hit);
+      equal(warnings.length, 1);
+      isTrue(warnings[0].contains('corrupt GitHub cache blob'));
+      isFalse(await isFile(withRoot(rootB, 'packages/lib/out/lib.txt')));
+      isFalse(
+        await isFile(
+          withRoot(
+            rootB,
+            'packages/lib/.zebra/blobs/sha256-' + sha256HexOfString('authentic-bytes'),
+          ),
+        ),
+      );
+    } finally {
+      server.close();
+      await removeTreeIfExists(stageRoot);
+      await removeTreeIfExists(rootB);
+    }
+  });
+
+  test('409 conflict is benign while 429/503 trips the circuit breaker once', async () => {
+    let state = new MockCacheState();
+    let server = startMockCacheServer(state);
+    let origin = originOf(server);
+    let root = freshRoot('breaker');
+    try {
+      await ensureDir(root);
+      let warnings = new GrowableArray<String>();
+      let cfg = new GitHubCacheConfig(origin, state.expectedToken);
+      let local = new DiskCache(root);
+      let gh = new GitHubActionsCache(root, local, cfg, (msg) => {
+        warnings.push(msg);
+      });
+
+      let step = new StepKey(':test');
+      let key = new CacheKey('ck-race');
+      let empty = new OutputManifest([]);
+
+      // First upload succeeds; second upload of the same (key, version) gets 409
+      // from CreateCacheEntry without warning or disabling the service.
+      await gh.put(step, key, empty);
+      await gh.put(step, key, empty);
+      equal(state.createCount, 2);
+      equal(state.finalizeCount, 1);
+      isFalse(gh.isServiceDown);
+      equal(warnings.length, 0);
+
+      // Inject 429 rate-limit on GetCacheEntryDownloadURL: trips circuit breaker once.
+      state.injectGetStatus = 429;
+      isNull(await gh.get(step, new CacheKey('ck-other-1')));
+      isTrue(gh.isServiceDown);
+      equal(warnings.length, 1);
+      isTrue(warnings[0].contains('429'));
+      let countAfterTrip = state.getUrlCount;
+
+      // Subsequent get/put calls short-circuit without contacting the server.
+      isNull(await gh.get(step, new CacheKey('ck-other-2')));
+      await gh.put(step, new CacheKey('ck-other-2'), empty);
+      equal(state.getUrlCount, countAfterTrip);
+      equal(warnings.length, 1);
+
+      // A stalled cache server times out after `requestTimeoutMs` and trips the breaker.
+      let stallApp = new App();
+      stallApp.use(async (req, res, next): Future<void> => {
+        await sleep(milliseconds(2000));
+        res.statusCode = 200;
+        res.body = '{}';
+      });
+      let stallServer = new Server(stallApp, 0 as u16);
+      stallServer.start();
+      try {
+        let stallWarnings = new GrowableArray<String>();
+        let stallCfg = new GitHubCacheConfig(
+          originOf(stallServer),
+          'tok',
+          false,
+          '',
+          '',
+          '',
+          1024,
+          80 as i64,
+        );
+        let ghStall = new GitHubActionsCache(root, local, stallCfg, (msg) => {
+          stallWarnings.push(msg);
+        });
+        let startNs = monotonic() as i64;
+        isNull(await ghStall.get(step, new CacheKey('ck-stall')));
+        let elapsedNs = (monotonic() as i64) - startNs;
+        isTrue(ghStall.isServiceDown);
+        isTrue(elapsedNs < (1500000000 as i64));
+        equal(stallWarnings.length, 1);
+      } finally {
+        stallServer.close();
+      }
+    } finally {
+      server.close();
+      await removeTreeIfExists(root);
+    }
+  });
+
+  test('buildTarget with ZEBRA_CACHE=github restores file and zero-output steps across checkouts', async () => {
+    let state = new MockCacheState();
+    let server = startMockCacheServer(state);
+    let cacheOrigin = originOf(server);
+
+    // Custodian server returning the mock CacheService credentials.
+    let custodianApp = new App();
+    custodianApp.use(async (req, res, next): Future<void> => {
+      if (req.path == '/v1/tok') {
+        let b = new JsonBuilder();
+        b.beginObject();
+        b.key('ACTIONS_RESULTS_URL');
+        b.string(cacheOrigin);
+        b.key('ACTIONS_RUNTIME_TOKEN');
+        b.string(state.expectedToken);
+        b.endObject();
+        res.statusCode = 200;
+        res.type = 'application/json';
+        res.body = b.toString();
+        return;
+      }
+      res.statusCode = 404;
+      res.body = 'not found';
+    });
+    let custodian = new Server(custodianApp, 0 as u16);
+    custodian.start();
+    let custodianUrl = `${originOf(custodian)}/v1/tok`;
+
+    let rootA = freshRoot('e2e-a');
+    let rootB = freshRoot('e2e-b');
+    let rootC = freshRoot('e2e-readonly');
+    try {
+      for (let r in [rootA, rootB, rootC]) {
+        await write(
+          r,
+          'zebra.json',
+          `{
+            "workspace": {"packages": ["packages/*"]},
+            "scripts": {
+              "test": {"dependencies": ["./packages/lib:test"]}
+            }
+          }`,
+        );
+        await write(
+          r,
+          'packages/lib/zebra.json',
+          `{
+            "scripts": {
+              "build": {
+                "command": "mkdir -p out && cat src/in.txt > out/lib.txt",
+                "files": ["src/**"],
+                "output": ["out/**"]
+              },
+              "test": {
+                "command": "grep -q '^lib-v1$' out/lib.txt",
+                "files": ["src/**"],
+                "dependencies": ["build"]
+              }
+            }
+          }`,
+        );
+        await write(r, 'packages/lib/src/in.txt', 'lib-v1\n');
+      }
+
+      let ghEnv = (name: String): String? => {
+        if (name == 'ZEBRA_CACHE') {
+          return 'github';
+        }
+        if (name == 'ZEBRA_GITHUB_CUSTODIAN_URL') {
+          return custodianUrl;
+        }
+        if (name == 'RUNNER_OS') {
+          return 'Linux';
+        }
+        if (name == 'RUNNER_ARCH') {
+          return 'X64';
+        }
+        return null;
+      };
+
+      let entry = new ScriptRef('', 'test');
+
+      // Checkout A builds cold and uploads `packages/lib:build`, `packages/lib:test`, and `:test`.
+      let first = await buildTarget(rootA, entry, {lookupEnv: ghEnv});
+      isTrue(first.result.allSucceeded);
+      isTrue(sourceOf(first.result, 'packages/lib:build') == StepSource.Ran);
+      isTrue(sourceOf(first.result, 'packages/lib:test') == StepSource.Ran);
+      isTrue(state.finalizeCount >= 2);
+
+      // Brand-new checkout B (with no .zebra/ or out/) restores every step from GitHub cache.
+      let second = await buildTarget(rootB, entry, {lookupEnv: ghEnv});
+      isTrue(second.result.allSucceeded);
+      isTrue(sourceOf(second.result, 'packages/lib:build') == StepSource.Cache);
+      isTrue(sourceOf(second.result, 'packages/lib:test') == StepSource.Cache);
+      equal(
+        await readFile(withRoot(rootB, 'packages/lib/out/lib.txt')),
+        'lib-v1\n',
+      );
+      let reportB = formatBuildReport(second, false, new Colors(false));
+      isTrue(reportB.contains('restored'));
+
+      // Subsequent build in checkout B is fresh without hitting the network.
+      let getCountBefore = state.getUrlCount;
+      let third = await buildTarget(rootB, entry, {lookupEnv: ghEnv});
+      isTrue(third.result.allSucceeded);
+      isTrue(sourceOf(third.result, 'packages/lib:build') == StepSource.Fresh);
+      isTrue(sourceOf(third.result, 'packages/lib:test') == StepSource.Fresh);
+      equal(state.getUrlCount, getCountBefore);
+
+      // Read-only mode restores hits on matching inputs and never uploads on misses.
+      await write(rootC, 'packages/lib/src/in.txt', 'lib-v2-unseen\n');
+      await write(
+        rootC,
+        'packages/lib/zebra.json',
+        `{
+          "scripts": {
+            "build": {
+              "command": "mkdir -p out && cat src/in.txt > out/lib.txt",
+              "files": ["src/**"],
+              "output": ["out/**"]
+            },
+            "test": {
+              "command": "grep -q '^lib-v2-unseen$' out/lib.txt",
+              "files": ["src/**"],
+              "dependencies": ["build"]
+            }
+          }
+        }`,
+      );
+      let finalizeBefore = state.finalizeCount;
+      let readOnlyEnv = (name: String): String? => {
+        if (name == 'ZEBRA_CACHE_READ_ONLY') {
+          return '1';
+        }
+        return ghEnv(name);
+      };
+      let fourth = await buildTarget(rootC, entry, {lookupEnv: readOnlyEnv});
+      isTrue(fourth.result.allSucceeded);
+      isTrue(sourceOf(fourth.result, 'packages/lib:build') == StepSource.Ran);
+      equal(state.finalizeCount, finalizeBefore);
+    } finally {
+      custodian.close();
+      server.close();
+      await removeTreeIfExists(rootA);
+      await removeTreeIfExists(rootB);
+      await removeTreeIfExists(rootC);
+    }
+  });
+});

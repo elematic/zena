@@ -166,6 +166,9 @@ jobs:
       - name: Setup Wireit GitHub Actions Caching
         uses: google/wireit@setup-github-actions-caching/v2
 
+      - name: Setup Zebra GitHub Actions Caching
+        uses: ./.github/actions/setup-zebra-cache
+
       - name: Install npm dependencies
         run: nix develop --command npm ci
 
@@ -204,6 +207,39 @@ jobs:
           sampler=$!
           trap 'kill "$sampler" 2>/dev/null || true' EXIT
           nix develop --command npm test
+
+      - name: Verify Zebra GitHub Actions cache round-trip
+        if: env.ZEBRA_CACHE == 'github'
+        run: |
+          REPO_ROOT="$PWD"
+          SMOKE_DIR="${RUNNER_TEMP}/zebra-ci-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "${SMOKE_DIR}/src"
+          printf 'run-%s-%s\n' "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" > "${SMOKE_DIR}/src/in.txt"
+          cat > "${SMOKE_DIR}/zebra.json" <<'EOF'
+          {
+            "scripts": {
+              "build": {
+                "command": "mkdir -p out && cat src/in.txt > out/artifact.txt",
+                "files": ["src/**"],
+                "output": ["out/**"]
+              },
+              "test": {
+                "command": "grep -q '^run-' out/artifact.txt",
+                "files": ["src/**"],
+                "dependencies": ["build"]
+              }
+            }
+          }
+          EOF
+          cd "${SMOKE_DIR}"
+          first_out="$("${REPO_ROOT}/target/release/zena-cli" build test)"
+          printf '%s\n' "${first_out}"
+          printf '%s\n' "${first_out}" | grep -q '2 ran'
+          rm -rf .zebra out
+          second_out="$("${REPO_ROOT}/target/release/zena-cli" build test)"
+          printf '%s\n' "${second_out}"
+          printf '%s\n' "${second_out}" | grep -q '2 restored'
+          test "$(cat out/artifact.txt)" = "run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
       - name: Record the Rust sources this build compiled
         if: github.ref == 'refs/heads/main' && steps.workspace-crates.outputs.cache-hit != 'true'

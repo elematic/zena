@@ -1,0 +1,915 @@
+import {Future} from 'zena:async';
+import {getEnv} from 'zena:cli';
+import {HashSet} from 'zena:collections';
+import {StringBuilder} from 'zena:core';
+import {sha256Hex, sha256HexOfString} from 'zena:crypto';
+import {base64} from 'zena:encoding';
+import {fetch} from 'zena:fetch';
+import {
+  exists,
+  isFile,
+  readFile,
+  readFileBytes,
+  rename,
+  writeFile,
+  writeFileBytes,
+} from 'zena:fs';
+import {JsonBuilder, JsonObject, parseJson} from 'zena:json';
+import {runWith} from 'zena:process';
+import {timeout} from 'zena:task';
+import {milliseconds} from 'zena:time';
+import {EncodeSet, URL, percentEncode} from 'zena:url';
+import {StepCache} from 'workflow/cache';
+import {CacheKey, Fingerprint} from 'workflow/fingerprint';
+import {OutputManifest} from 'workflow/manifest';
+import {StepKey} from 'workflow/step';
+import {
+  DiskCache,
+  blobName,
+  hasVolatileEntry,
+  isFileEntry,
+  stateDirOf,
+} from './disk-cache.zena';
+import {ensureDir, removeTreeIfExists, withRoot} from './fs-util.zena';
+import {manifestFromJson, manifestToJson} from './state-json.zena';
+import {ConfigError} from './wireit-config.zena';
+
+/**
+ * Remote step cache backed by the GitHub Actions v2 `CacheService` Twirp
+ * JSON API and pre-signed Azure Blob Storage URLs.
+ *
+ * Steps with zero file outputs (such as test suites) store their JSON
+ * `OutputManifest` directly as the blob payload (`[` leading byte) with no
+ * `tar` subprocess. Steps that emit files package `cache/<key>.json` and
+ * `blobs/sha256-<hex>` relative to `<pkg>/.zebra/` in a gzipped tar archive
+ * (`0x1f 0x8b` leading bytes), keeping cached entries independent of the
+ * runner's checkout directory. On download, each extracted blob's `sha256`
+ * is checked against its manifest entry before moving into `.zebra/`.
+ */
+
+let HEX_DIGITS = '0123456789abcdef';
+let DEFAULT_CHUNK_SIZE = 32 * 1024 * 1024;
+let DEFAULT_TIMEOUT_MS = 30000 as i64;
+let MAX_REDIRECTS = 5;
+
+/** Cache backend selected by `ZEBRA_CACHE`. */
+export enum CacheMode {
+  Local,
+  GitHub,
+  None,
+}
+
+/** Parses `ZEBRA_CACHE` (`local` default, `github`, or `none`). */
+export function resolveCacheMode(
+  lookupEnv: (name: String) => String? = getEnv,
+): CacheMode {
+  let raw = lookupEnv('ZEBRA_CACHE');
+  if (raw == null || raw == '' || raw == 'local') {
+    return CacheMode.Local;
+  }
+  if (raw == 'github') {
+    return CacheMode.GitHub;
+  }
+  if (raw == 'none') {
+    return CacheMode.None;
+  }
+  throw new ConfigError(
+    `unknown ZEBRA_CACHE mode "${raw}" (expected "local", "github", or "none")`,
+  );
+}
+
+/** Connection and platform settings for `GitHubActionsCache`. */
+export class GitHubCacheConfig {
+  baseUrl: String;
+  authToken: String;
+  readOnly: boolean;
+  runnerOs: String;
+  runnerArch: String;
+  imageOs: String;
+  chunkSize: i32;
+  requestTimeoutMs: i64;
+
+  new(
+    baseUrl: String,
+    this.authToken,
+    this.readOnly = false,
+    this.runnerOs = '',
+    this.runnerArch = '',
+    this.imageOs = '',
+    chunkSize: i32 = DEFAULT_CHUNK_SIZE,
+    requestTimeoutMs: i64 = DEFAULT_TIMEOUT_MS,
+  ) : baseUrl = if (baseUrl.endsWith('/')) baseUrl else baseUrl + '/',
+      chunkSize = if (chunkSize > 0) chunkSize else DEFAULT_CHUNK_SIZE,
+      requestTimeoutMs = if (requestTimeoutMs > (0 as i64))
+        requestTimeoutMs
+      else
+        DEFAULT_TIMEOUT_MS;
+}
+
+function isReadOnlyEnv(lookupEnv: (name: String) => String?) {
+  let raw = lookupEnv('ZEBRA_CACHE_READ_ONLY');
+  return raw == '1' || raw == 'true';
+}
+
+async function fetchCustodianJson(url: String): Future<JsonObject> {
+  var body = '';
+  try {
+    body = await timeout<String>(
+      milliseconds(5000 as i64),
+      async (): Future<String> => {
+        let resp = await fetch(url, {
+          headers: [('accept', 'application/json')],
+        });
+        let status = resp.status;
+        let text = await resp.text(65536 as i64);
+        if (status < 200 || status >= 300) {
+          throw new ConfigError(
+            `cache token custodian returned HTTP ${i32ToString(status)}`,
+          );
+        }
+        return text;
+      },
+    )();
+  } catch (e) {
+    if (e is ConfigError) {
+      throw e;
+    }
+    throw new ConfigError(
+      `failed to contact cache token custodian: ${e.message}`,
+    );
+  }
+  let parsed = parseJson(body);
+  if (!(parsed is JsonObject)) {
+    throw new ConfigError('cache token custodian did not return a JSON object');
+  }
+  return parsed;
+}
+
+/**
+ * Resolves `GitHubCacheConfig` from:
+ * 1. `ZEBRA_GITHUB_CUSTODIAN_URL` (set by `.github/actions/setup-zebra-cache`),
+ * 2. `WIREIT_CACHE_GITHUB_CUSTODIAN_PORT` (set by `google/wireit@setup-github-actions-caching/v2`), or
+ * 3. `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME_TOKEN` directly in the environment.
+ */
+export async function resolveGitHubCacheConfig(
+  lookupEnv: (name: String) => String? = getEnv,
+): Future<GitHubCacheConfig> {
+  let readOnly = isReadOnlyEnv(lookupEnv);
+  let runnerOs = lookupEnv('RUNNER_OS') ?? '';
+  let runnerArch = lookupEnv('RUNNER_ARCH') ?? '';
+  let imageOs = lookupEnv('ImageOS') ?? '';
+
+  let custodianUrl = lookupEnv('ZEBRA_GITHUB_CUSTODIAN_URL');
+  if (custodianUrl != null && custodianUrl != '') {
+    let obj = await fetchCustodianJson(custodianUrl);
+    var baseUrl = '';
+    var token = '';
+    if (let (true, u) = obj.stringAt('ACTIONS_RESULTS_URL')) {
+      baseUrl = u;
+    }
+    if (let (true, t) = obj.stringAt('ACTIONS_RUNTIME_TOKEN')) {
+      token = t;
+    }
+    if (baseUrl == '' || token == '') {
+      throw new ConfigError(
+        'ZEBRA_GITHUB_CUSTODIAN_URL did not return ACTIONS_RESULTS_URL and ACTIONS_RUNTIME_TOKEN',
+      );
+    }
+    return new GitHubCacheConfig(
+      baseUrl,
+      token,
+      readOnly,
+      runnerOs,
+      runnerArch,
+      imageOs,
+    );
+  }
+
+  let wireitPort = lookupEnv('WIREIT_CACHE_GITHUB_CUSTODIAN_PORT');
+  if (wireitPort != null && wireitPort != '') {
+    let obj = await fetchCustodianJson(`http://127.0.0.1:${wireitPort}`);
+    var baseUrl = '';
+    var token = '';
+    if (let (true, u) = obj.stringAt('caching.github.ACTIONS_RESULTS_URL')) {
+      baseUrl = u;
+    }
+    if (let (true, t) = obj.stringAt('caching.github.ACTIONS_RUNTIME_TOKEN')) {
+      token = t;
+    }
+    if (baseUrl == '' || token == '') {
+      throw new ConfigError(
+        'WIREIT_CACHE_GITHUB_CUSTODIAN_PORT did not return caching.github credentials',
+      );
+    }
+    return new GitHubCacheConfig(
+      baseUrl,
+      token,
+      readOnly,
+      runnerOs,
+      runnerArch,
+      imageOs,
+    );
+  }
+
+  let envUrl = lookupEnv('ACTIONS_RESULTS_URL') ?? '';
+  let envToken = lookupEnv('ACTIONS_RUNTIME_TOKEN') ?? '';
+  if (envUrl != '' && envToken != '') {
+    return new GitHubCacheConfig(
+      envUrl,
+      envToken,
+      readOnly,
+      runnerOs,
+      runnerArch,
+      imageOs,
+    );
+  }
+
+  throw new ConfigError(
+    'ZEBRA_CACHE=github requires ZEBRA_GITHUB_CUSTODIAN_URL or ACTIONS_RESULTS_URL and ACTIONS_RUNTIME_TOKEN (run .github/actions/setup-zebra-cache first)',
+  );
+}
+
+function appendSegment(sb: StringBuilder, s: String) {
+  sb.appendI32(s.length);
+  sb.appendByte(58);
+  sb.append(s);
+}
+
+function blockIdFor(index: i32) {
+  let sb = new StringBuilder(6);
+  for (var shift = 20; shift >= 0; shift -= 4) {
+    let nibble = (index >> shift) & 0xf;
+    sb.appendByte(HEX_DIGITS.getByteAt(nibble));
+  }
+  return base64.encode(sb.toString().toBytes());
+}
+
+/**
+ * Appends `extraQuery` to `rawUrl` without re-parsing existing query
+ * parameters so pre-signed Azure Blob SAS signatures stay intact.
+ */
+function appendQueryParams(rawUrl: String, extraQuery: String) {
+  var hashAt = -1;
+  var qmarkAt = -1;
+  for (var i = 0; i < rawUrl.length; i += 1) {
+    let b = rawUrl.getByteAt(i);
+    if (b == 35) {
+      hashAt = i;
+      break;
+    }
+    if (b == 63 && qmarkAt < 0) {
+      qmarkAt = i;
+    }
+  }
+  let endBeforeHash = if (hashAt < 0) rawUrl.length else hashAt;
+  let sep = if (qmarkAt < 0)
+    '?'
+  else if (qmarkAt + 1 == endBeforeHash)
+    ''
+  else
+    '&';
+  if (hashAt < 0) {
+    return `${rawUrl}${sep}${extraQuery}`;
+  }
+  let before = rawUrl.sliceBytes(0, hashAt);
+  let after = rawUrl.sliceBytes(hashAt, rawUrl.length);
+  return `${before}${sep}${extraQuery}${after}`;
+}
+
+function buildBlockListXml(blockIds: GrowableArray<String>) {
+  let sb = new StringBuilder();
+  sb.append('<?xml version="1.0" encoding="utf-8"?>\n<BlockList>\n');
+  for (let id in blockIds) {
+    sb.append('  <Uncommitted>');
+    sb.append(id);
+    sb.append('</Uncommitted>\n');
+  }
+  sb.append('</BlockList>\n');
+  return sb.toString();
+}
+
+function keyVersionJson(key: String, version: String) {
+  let b = new JsonBuilder();
+  b.beginObject();
+  b.key('key');
+  b.string(key);
+  b.key('version');
+  b.string(version);
+  b.endObject();
+  return b.toString();
+}
+
+function finalizeJson(key: String, version: String, sizeBytes: i64) {
+  let b = new JsonBuilder();
+  b.beginObject();
+  b.key('key');
+  b.string(key);
+  b.key('version');
+  b.string(version);
+  b.key('sizeBytes');
+  b.i64(sizeBytes);
+  b.endObject();
+  return b.toString();
+}
+
+function describeHttpFailure(status: i32, detail: String) {
+  let head = if (status == 429)
+    'GitHub Actions cache rate limit reached (HTTP 429)'
+  else if (status == 503)
+    'GitHub Actions cache service unavailable (HTTP 503)'
+  else
+    `GitHub Actions cache HTTP ${i32ToString(status)} error`;
+  if (detail == '') {
+    return head;
+  }
+  return `${head}: ${detail}`;
+}
+
+sealed class TwirpOutcome {
+  case Ok(body: String)
+  case Conflict
+  case Miss
+  case Down(reason: String)
+}
+
+sealed class DownloadHop {
+  case Data(bytes: FixedArray<u8>)
+  case RedirectTo(nextUrl: String)
+  case NotFound
+  case Failure(reason: String)
+}
+
+async function fetchSasOnce(url: String, timeoutMs: i64): Future<DownloadHop> {
+  try {
+    return await timeout<DownloadHop>(
+      milliseconds(timeoutMs),
+      async (): Future<DownloadHop> => {
+        let response = await fetch(url);
+        let status = response.status;
+        if (
+          status == 301 ||
+          status == 302 ||
+          status == 303 ||
+          status == 307 ||
+          status == 308
+        ) {
+          let loc = response.header('location');
+          if (loc == null || loc == '') {
+            return new Failure('cache download redirect missing Location header');
+          }
+          let resolved = URL.parse(loc, url);
+          if (resolved == null) {
+            return new Failure('invalid cache download redirect URL: ' + loc);
+          }
+          return new RedirectTo(resolved.href);
+        }
+        if (status == 404) {
+          return new NotFound();
+        }
+        if (status >= 200 && status < 300) {
+          return new Data(await response.bytes());
+        }
+        let detail = await response.text(4096 as i64);
+        return new Failure(describeHttpFailure(status, detail));
+      },
+    )();
+  } catch (e) {
+    return new Failure(
+      `network error downloading from GitHub Actions cache storage: ${e.message}`,
+    );
+  }
+}
+
+function firstStringField(
+  obj: JsonObject,
+  primary: String,
+  secondary: String,
+) {
+  if (let (true, s) = obj.stringAt(primary)) {
+    if (s != '') {
+      return s;
+    }
+  }
+  if (let (true, s) = obj.stringAt(secondary)) {
+    return s;
+  }
+  return '';
+}
+
+/**
+ * Per-step remote cache speaking GitHub Actions `CacheService` Twirp JSON
+ * and delegating local `.zebra/` materialization to `DiskCache`.
+ */
+export class GitHubActionsCache implements StepCache {
+  #root: String;
+  #local: DiskCache;
+  #config: GitHubCacheConfig;
+  #onWarning: ((message: String) => void)?;
+  var #serviceIsDown = false;
+  var #nextTempId = 0;
+
+  new(
+    root: String,
+    local: DiskCache,
+    config: GitHubCacheConfig,
+    onWarning: ((message: String) => void)? = null,
+  ) : #root = root,
+      #local = local,
+      #config = config,
+      #onWarning = onWarning;
+
+  /** True once a service or rate-limit error has tripped the circuit breaker. */
+  isServiceDown: boolean {
+    get {
+      return this.#serviceIsDown;
+    }
+  }
+
+  /** Cache key sent to `CacheService`: `'zebra-' + sha256(step.value)`. */
+  computeKey(step: StepKey): String {
+    return 'zebra-' + sha256HexOfString(step.value);
+  }
+
+  /**
+   * 64-character hex version digest combining the step's `CacheKey`,
+   * archive format version, and runner OS/architecture identifiers.
+   */
+  computeVersion(key: CacheKey): String {
+    let sb = new StringBuilder();
+    appendSegment(sb, key.value);
+    appendSegment(sb, 'zebra-gh-v1');
+    appendSegment(sb, this.#config.runnerOs);
+    appendSegment(sb, this.#config.runnerArch);
+    appendSegment(sb, this.#config.imageOs);
+    return sha256HexOfString(sb.toString());
+  }
+
+  #nextTempToken(): String {
+    let id = this.#nextTempId;
+    this.#nextTempId = id + 1;
+    return i32ToString(id);
+  }
+
+  #warn(message: String) {
+    let cb = this.#onWarning;
+    if (cb != null) {
+      cb(message);
+    }
+  }
+
+  #markServiceDown(reason: String) {
+    if (this.#serviceIsDown) {
+      return;
+    }
+    this.#serviceIsDown = true;
+    this.#warn(`${reason}; disabling GitHub Actions cache for the rest of this build`);
+  }
+
+  async #postTwirp(
+    rpcName: String,
+    bodyJson: String,
+    missOnNotFound: boolean = false,
+  ): Future<TwirpOutcome> {
+    let url =
+      `${this.#config.baseUrl}twirp/github.actions.results.api.v1.CacheService/${rpcName}`;
+    let token = this.#config.authToken;
+    let budget = milliseconds(this.#config.requestTimeoutMs);
+    try {
+      return await timeout<TwirpOutcome>(
+        budget,
+        async (): Future<TwirpOutcome> => {
+          let response = await fetch(url, {
+            method: 'POST',
+            headers: [
+              ('accept', 'application/json'),
+              ('content-type', 'application/json'),
+              ('authorization', 'Bearer ' + token),
+              ('user-agent', 'actions/cache'),
+            ],
+            body: bodyJson,
+          });
+          let status = response.status;
+          if (status == 409) {
+            return new Conflict();
+          }
+          if (missOnNotFound && (status == 204 || status == 404)) {
+            return new Miss();
+          }
+          if (status >= 200 && status < 300) {
+            return new Ok(await response.text());
+          }
+          let detail = await response.text(4096 as i64);
+          return new Down(describeHttpFailure(status, detail));
+        },
+      )();
+    } catch (e) {
+      return new Down(
+        `network error talking to GitHub Actions cache service: ${e.message}`,
+      );
+    }
+  }
+
+  async #getDownloadUrl(key: String, version: String): Future<String?> {
+    let outcome = await this.#postTwirp(
+      'GetCacheEntryDownloadURL',
+      keyVersionJson(key, version),
+      true,
+    );
+    if (outcome is Conflict || outcome is Miss) {
+      return null;
+    }
+    if (outcome is Down) {
+      this.#markServiceDown(outcome.reason);
+      return null;
+    }
+    let body = (outcome as Ok).body;
+    if (body == '') {
+      return null;
+    }
+    try {
+      let parsed = parseJson(body);
+      if (!(parsed is JsonObject)) {
+        return null;
+      }
+      if (let (true, okFlag) = parsed.boolAt('ok')) {
+        if (!okFlag) {
+          return null;
+        }
+      }
+      let signed = firstStringField(
+        parsed,
+        'signed_download_url',
+        'signedDownloadUrl',
+      );
+      return if (signed == '') null else signed;
+    } catch (e) {
+      this.#markServiceDown(`invalid JSON from GetCacheEntryDownloadURL: ${e.message}`);
+      return null;
+    }
+  }
+
+  async #createEntry(key: String, version: String): Future<String?> {
+    let outcome = await this.#postTwirp(
+      'CreateCacheEntry',
+      keyVersionJson(key, version),
+    );
+    if (outcome is Conflict || outcome is Miss) {
+      return null;
+    }
+    if (outcome is Down) {
+      this.#markServiceDown(outcome.reason);
+      return null;
+    }
+    let body = (outcome as Ok).body;
+    try {
+      let parsed = parseJson(body);
+      if (!(parsed is JsonObject)) {
+        return null;
+      }
+      if (let (true, okFlag) = parsed.boolAt('ok')) {
+        if (!okFlag) {
+          return null;
+        }
+      }
+      let signed = firstStringField(
+        parsed,
+        'signed_upload_url',
+        'signedUploadUrl',
+      );
+      return if (signed == '') null else signed;
+    } catch (e) {
+      this.#markServiceDown(`invalid JSON from CreateCacheEntry: ${e.message}`);
+      return null;
+    }
+  }
+
+  async #finalizeEntry(
+    key: String,
+    version: String,
+    sizeBytes: i64,
+  ): Future<boolean> {
+    let outcome = await this.#postTwirp(
+      'FinalizeCacheEntryUpload',
+      finalizeJson(key, version, sizeBytes),
+    );
+    if (outcome is Ok || outcome is Conflict) {
+      return true;
+    }
+    if (outcome is Down) {
+      this.#markServiceDown(outcome.reason);
+    }
+    return false;
+  }
+
+  async #putSas(
+    url: String,
+    headers: Array<(String, String)>,
+    body: String | FixedArray<u8>,
+  ): Future<boolean> {
+    let budget = milliseconds(this.#config.requestTimeoutMs);
+    try {
+      let errDetail = await timeout<String?>(
+        budget,
+        async (): Future<String?> => {
+          let response = await fetch(url, {
+            method: 'PUT',
+            headers,
+            body,
+          });
+          let status = response.status;
+          if (status >= 200 && status < 300) {
+            return null;
+          }
+          let detail = await response.text(4096 as i64);
+          return describeHttpFailure(status, detail);
+        },
+      )();
+      if (errDetail != null) {
+        this.#markServiceDown(errDetail);
+        return false;
+      }
+      return true;
+    } catch (e) {
+      this.#markServiceDown(
+        `network error uploading to GitHub Actions cache storage: ${e.message}`,
+      );
+      return false;
+    }
+  }
+
+  async #uploadPayload(
+    signedUploadUrl: String,
+    payload: FixedArray<u8>,
+  ): Future<boolean> {
+    let chunkSize = this.#config.chunkSize;
+    let blockIds = new GrowableArray<String>();
+    var offset = 0;
+    var blockIndex = 0;
+    while (offset < payload.length || blockIndex == 0) {
+      let remaining = payload.length - offset;
+      let len = if (remaining <= chunkSize) remaining else chunkSize;
+      let chunk = if (offset == 0 && len == payload.length)
+        payload
+      else {
+        let slice = new FixedArray<u8>(len, 0 as u8);
+        for (var i = 0; i < len; i += 1) {
+          slice[i] = payload[offset + i];
+        }
+        slice
+      };
+      let blockId = blockIdFor(blockIndex);
+      blockIds.push(blockId);
+      let encodedId = percentEncode(blockId, EncodeSet.Component);
+      let putBlockUrl = appendQueryParams(
+        signedUploadUrl,
+        `comp=block&blockid=${encodedId}`,
+      );
+      let ok = await this.#putSas(
+        putBlockUrl,
+        [
+          ('content-type', 'application/octet-stream'),
+          ('x-ms-blob-type', 'BlockBlob'),
+        ],
+        chunk,
+      );
+      if (!ok) {
+        return false;
+      }
+      offset += len;
+      blockIndex += 1;
+      if (offset >= payload.length) {
+        break;
+      }
+    }
+    let putBlockListUrl = appendQueryParams(signedUploadUrl, 'comp=blocklist');
+    return await this.#putSas(
+      putBlockListUrl,
+      [('content-type', 'text/plain; charset=UTF-8')],
+      buildBlockListXml(blockIds),
+    );
+  }
+
+  async #downloadSas(signedUrl: String): Future<FixedArray<u8>?> {
+    var currentUrl = signedUrl;
+    for (var hops = 0; hops <= MAX_REDIRECTS; hops += 1) {
+      let hop = await fetchSasOnce(currentUrl, this.#config.requestTimeoutMs);
+      if (hop is Data) {
+        return hop.bytes;
+      }
+      if (hop is NotFound) {
+        return null;
+      }
+      if (hop is Failure) {
+        this.#markServiceDown(hop.reason);
+        return null;
+      }
+      currentUrl = (hop as RedirectTo).nextUrl;
+    }
+    this.#markServiceDown('too many redirects downloading GitHub Actions cache entry');
+    return null;
+  }
+
+  async get(step: StepKey, key: CacheKey): Future<OutputManifest?> {
+    if (this.#serviceIsDown) {
+      return null;
+    }
+    let cacheKey = this.computeKey(step);
+    let version = this.computeVersion(key);
+    let downloadUrl = await this.#getDownloadUrl(cacheKey, version);
+    if (downloadUrl == null) {
+      return null;
+    }
+    let payload = await this.#downloadSas(downloadUrl);
+    if (payload == null || payload.length < 2) {
+      return null;
+    }
+
+    let stateDir = withRoot(this.#root, stateDirOf(step.value));
+
+    // Zero-file manifests are uploaded as raw JSON arrays (`[...]`).
+    if (payload[0] == (0x5b as u8)) {
+      try {
+        let text = String.fromBytes(payload);
+        let manifest = manifestFromJson(text);
+        for (let entry in manifest.outputs) {
+          if (isFileEntry(entry.fingerprint)) {
+            this.#warn(
+              `ignoring GitHub cache entry for "${step.value}": manifest lists file "${entry.name}" without blob archive`,
+            );
+            return null;
+          }
+        }
+        await ensureDir(stateDir + '/cache');
+        let destManifest = `${stateDir}/cache/${key.value}.json`;
+        let tmpManifest = `${destManifest}.gh-${this.#nextTempToken()}`;
+        await writeFile(tmpManifest, text);
+        await rename(tmpManifest, destManifest);
+        return await this.#local.get(step, key);
+      } catch (e) {
+        this.#warn(
+          `ignoring unreadable GitHub cache manifest for "${step.value}": ${e.message}`,
+        );
+        return null;
+      }
+    }
+
+    // File-bearing steps are packaged as gzipped tarballs (`0x1f 0x8b`).
+    if (payload[0] != (0x1f as u8) || payload[1] != (0x8b as u8)) {
+      this.#warn(
+        `ignoring unrecognized GitHub cache payload format for "${step.value}"`,
+      );
+      return null;
+    }
+
+    let tempDirName = `gh-tmp-${this.#nextTempToken()}`;
+    let tempDir = `${stateDir}/${tempDirName}`;
+    let extractedDir = `${tempDir}/extracted`;
+    try {
+      await ensureDir(extractedDir);
+      await writeFileBytes(`${tempDir}/cache.tgz`, payload);
+      let untar = await runWith(['tar', '-xzf', '../cache.tgz'], {
+        cwd: extractedDir,
+      });
+      if (!untar.succeeded()) {
+        this.#warn(
+          `ignoring corrupt GitHub cache archive for "${step.value}": ${untar.stderr}`,
+        );
+        return null;
+      }
+      let extractedManifestPath = `${extractedDir}/cache/${key.value}.json`;
+      if (!(await isFile(extractedManifestPath))) {
+        this.#warn(
+          `ignoring GitHub cache archive for "${step.value}": missing cache/${key.value}.json`,
+        );
+        return null;
+      }
+      let manifest = manifestFromJson(await readFile(extractedManifestPath));
+      let verifiedBlobs = new HashSet<String>();
+      let uniqueBlobs = new GrowableArray<String>();
+      for (let entry in manifest.outputs) {
+        if (!isFileEntry(entry.fingerprint)) {
+          continue;
+        }
+        let bName = blobName(entry.fingerprint);
+        if (!verifiedBlobs.add(bName)) {
+          continue;
+        }
+        let extractedBlob = `${extractedDir}/blobs/${bName}`;
+        if (!(await isFile(extractedBlob))) {
+          this.#warn(
+            `ignoring GitHub cache archive for "${step.value}": missing blob ${bName}`,
+          );
+          return null;
+        }
+        let actual = 'sha256:' + sha256Hex(await readFileBytes(extractedBlob));
+        if (actual != entry.fingerprint.value) {
+          this.#warn(
+            `ignoring corrupt GitHub cache blob for "${step.value}": expected ${entry.fingerprint.value}, got ${actual}`,
+          );
+          return null;
+        }
+        uniqueBlobs.push(bName);
+      }
+
+      await ensureDir(stateDir + '/blobs');
+      await ensureDir(stateDir + '/cache');
+      for (let bName in uniqueBlobs) {
+        let destBlob = `${stateDir}/blobs/${bName}`;
+        if (!(await exists(destBlob))) {
+          await rename(`${extractedDir}/blobs/${bName}`, destBlob);
+        }
+      }
+      let destManifest = `${stateDir}/cache/${key.value}.json`;
+      await rename(extractedManifestPath, destManifest);
+    } catch (e) {
+      this.#warn(
+        `ignoring unreadable GitHub cache entry for "${step.value}": ${e.message}`,
+      );
+      return null;
+    } finally {
+      await removeTreeIfExists(tempDir);
+    }
+
+    return await this.#local.get(step, key);
+  }
+
+  async put(
+    step: StepKey,
+    key: CacheKey,
+    manifest: OutputManifest,
+  ): Future<void> {
+    if (
+      this.#serviceIsDown ||
+      this.#config.readOnly ||
+      hasVolatileEntry(manifest)
+    ) {
+      return;
+    }
+
+    let seenBlobs = new HashSet<String>();
+    let uniqueBlobs = new GrowableArray<String>();
+    for (let entry in manifest.outputs) {
+      if (!isFileEntry(entry.fingerprint)) {
+        continue;
+      }
+      let bName = blobName(entry.fingerprint);
+      if (seenBlobs.add(bName)) {
+        uniqueBlobs.push(bName);
+      }
+    }
+
+    var payload = new FixedArray<u8>(0, 0 as u8);
+    if (uniqueBlobs.length == 0) {
+      payload = manifestToJson(manifest).toBytes();
+    } else {
+      let stateDir = withRoot(this.#root, stateDirOf(step.value));
+      let manifestRel = `cache/${key.value}.json`;
+      if (!(await isFile(`${stateDir}/${manifestRel}`))) {
+        await this.#local.put(step, key, manifest);
+      }
+      let tempDirName = `gh-tmp-${this.#nextTempToken()}`;
+      let tempDir = `${stateDir}/${tempDirName}`;
+      try {
+        await ensureDir(tempDir);
+        let listSb = new StringBuilder();
+        listSb.append(manifestRel);
+        listSb.appendByte(10);
+        for (let bName in uniqueBlobs) {
+          listSb.append('blobs/');
+          listSb.append(bName);
+          listSb.appendByte(10);
+        }
+        await writeFile(`${tempDir}/files.txt`, listSb.toString());
+        let tarRes = await runWith(
+          ['tar', '-czf', `${tempDirName}/cache.tgz`, '-T', `${tempDirName}/files.txt`],
+          {cwd: stateDir},
+        );
+        if (!tarRes.succeeded()) {
+          this.#warn(
+            `failed to package GitHub cache archive for "${step.value}": ${tarRes.stderr}`,
+          );
+          return;
+        }
+        payload = await readFileBytes(`${tempDir}/cache.tgz`);
+      } catch (e) {
+        this.#warn(
+          `failed to stage GitHub cache archive for "${step.value}": ${e.message}`,
+        );
+        return;
+      } finally {
+        await removeTreeIfExists(tempDir);
+      }
+    }
+
+    let cacheKey = this.computeKey(step);
+    let version = this.computeVersion(key);
+    let uploadUrl = await this.#createEntry(cacheKey, version);
+    if (uploadUrl == null) {
+      return;
+    }
+    if (!(await this.#uploadPayload(uploadUrl, payload))) {
+      return;
+    }
+    await this.#finalizeEntry(cacheKey, version, payload.length as i64);
+  }
+}

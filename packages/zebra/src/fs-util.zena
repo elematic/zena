@@ -1,10 +1,14 @@
 import {
+  FileType,
   FsError,
   FsErrorCode,
   exists,
+  isDirectory,
   isFile,
+  listDir,
   mkdir,
   readFile,
+  rmdir,
   unlink,
 } from 'zena:fs';
 import {dirname, join2} from 'zena:path';
@@ -75,4 +79,44 @@ export async function readFileOrNull(path: String): Future<String?> {
     return null;
   }
   return await readFile(path);
+}
+
+/** Recursively removes a file or directory tree if it exists. */
+export async function removeTreeIfExists(path: String): Future<void> {
+  if (await isDirectory(path)) {
+    try {
+      for (let entry in await listDir(path)) {
+        if (entry.name == '.' || entry.name == '..') {
+          continue;
+        }
+        let child = `${path}/${entry.name}`;
+        if (entry.fileType == FileType.Directory) {
+          await removeTreeIfExists(child);
+        } else {
+          try {
+            await unlink(child);
+          } catch (e) {
+            if (!(e is FsError) || e.code != FsErrorCode.NotFound) {
+              throw e;
+            }
+          }
+        }
+      }
+      await rmdir(path);
+    } catch (e) {
+      if (!(e is FsError) || e.code != FsErrorCode.NotFound) {
+        throw e;
+      }
+    }
+    return;
+  }
+  if (await exists(path)) {
+    try {
+      await unlink(path);
+    } catch (e) {
+      if (!(e is FsError) || e.code != FsErrorCode.NotFound) {
+        throw e;
+      }
+    }
+  }
 }

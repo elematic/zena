@@ -91,6 +91,12 @@ The workspace root's `.zebra/` directory stores:
 
 A dependency contributes the digest of its _outputs_ to dependents' cache keys rather than its input fingerprint, giving early cutoff when a dependency reruns and produces identical outputs.
 
+### GitHub Actions Remote Cache
+
+Setting `ZEBRA_CACHE=github` layers `GitHubActionsCache` behind the local `.zebra/` `DiskCache` (`TieredCache`). On a local cache miss, Zebra queries the GitHub Actions v2 `CacheService` Twirp JSON API, verifies downloaded blob `sha256` digests, populates `<pkg>/.zebra/`, and materializes outputs into the workspace. On a build step execution, Zebra writes `<pkg>/.zebra/` first and uploads the step's entry to GitHub Actions Cache (`ZEBRA_CACHE_READ_ONLY=1` disables uploads; `ZEBRA_CACHE=none` disables both local and remote caching).
+
+In GitHub Actions workflows, run `.github/actions/setup-zebra-cache` before build steps so `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME_TOKEN` are served to `run:` steps over a `127.0.0.1` token custodian (`ZEBRA_GITHUB_CUSTODIAN_URL`).
+
 ## Libraries
 
 - `zebra` (`zebra/main`) — CLI entry point (`main`).
@@ -99,7 +105,7 @@ A dependency contributes the digest of its _outputs_ to dependents' cache keys r
 - `zebra/wireit-config` — `package.json` Wireit parsing (`WireitWorkspace`) and shared script configuration types (`ScriptConfig`, `ScriptRef`, `DependencySpec`, `ServiceConfig`, `EnvBinding`, `ConfigError`, `refKey`, `resolveDependency`).
 - `zebra/plan-cache` — `.zebra/plans/` snapshot serialization and `stat`-verified warm plan loading (`loadOrCollectConfigs`, `PlanLoadStats`, `ConfigProbe`).
 - `zebra/builder` — Translates `ScriptConfig` closures into `workflow` steps and execution callbacks (`planScripts`, `StepExecution`, `lockfileCandidates`).
-- `zebra/disk-cache` and `zebra/state-json` — `.zebra/` blob/manifest storage (`DiskCache`, `stateDirOf`) and JSON serialization for state, manifests, and hash memos.
+- `zebra/disk-cache`, `zebra/github-cache`, and `zebra/state-json` — `.zebra/` blob/manifest storage (`DiskCache`, `TieredCache`, `stateDirOf`), GitHub Actions remote caching (`GitHubActionsCache`, `GitHubCacheConfig`, `CacheMode`, `resolveCacheMode`, `resolveGitHubCacheConfig`), and JSON serialization for state, manifests, and hash memos.
 - `zebra/fs-walk` and `zebra/fs-util` — Input glob discovery (`FileHasher`, `expandGlobs`, `hashFile`, `validateGlobs`, `splitBase`) and workspace path utilities.
 - `zebra/colors`, `zebra/layout`, `zebra/animation`, and `zebra/shell` — Terminal color formatting, Clack-style rail layout (`RailLayout`), interactive spinner animation (`Spinner`), and POSIX shell argument quoting (`shellQuote`, `appendShellArgs`).
 
