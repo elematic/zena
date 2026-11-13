@@ -33,6 +33,7 @@
     "test:smoke": "wireit",
     "test:others": "wireit",
     "check:workspace": "wireit",
+    "reseed": "wireit",
     "emulators:start": "wireit"
   },
   "wireit": {
@@ -98,7 +99,7 @@
     },
     "check:workspace": {
       "#": "Whether the whole workspace loads. Every compile reads all of the workspace's zena-package.json manifests and fails when one cannot be read, but its output depends only on the manifests of the packages it reaches, so each script lists only those. This compiles scripts/workspace-check.zena, which imports nothing, with the zena command, whose compiler is stage A's source and which names the manifest at fault, and then with the checked-in bootstrap, which builds stage A and reads the manifests with its own code.",
-      "command": "mkdir -p .zena/workspace-check && ./target/release/zena-cli build scripts/workspace-check.zena -o .zena/workspace-check/zena.wasm && ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/bootstrap/cli.wasm scripts/workspace-check.zena -o .zena/workspace-check/bootstrap.wasm",
+      "command": "mkdir -p .zena/workspace-check && ./target/release/zena-cli build scripts/workspace-check.zena -o .zena/workspace-check/zena.wasm && ZENA_CLI_MODULE=packages/zena-cli/bootstrap/zena.wasm ./target/release/zena-cli build scripts/workspace-check.zena -o .zena/workspace-check/bootstrap.wasm",
       "files": [
         "scripts/workspace-check.zena",
         "zena-package.json",
@@ -106,16 +107,23 @@
         "packages/*/zena-package.json",
         "packages/*/zena/**/zena-package.json",
         "packages/zenafx/wit/*.wit",
-        "packages/zena-compiler/bootstrap/cli.wasm"
+        "packages/zena-cli/bootstrap/zena.wasm"
       ],
       "output": [
         ".zena/workspace-check/bootstrap.wasm",
         ".zena/workspace-check/zena.wasm"
       ],
       "dependencies": [
-        "./packages/zena-run:build",
         "./packages/zena-cli:build",
         "./packages/stdlib:lib"
+      ]
+    },
+    "reseed": {
+      "#": "Re-baselines packages/zena-cli/bootstrap/zena.wasm after the workspace test suite (fixpoint included) passes, then compiles zena/main.zena again with the candidate bootstrap and checks byte-for-byte parity before replacing the bootstrap.",
+      "command": "mkdir -p packages/zena-cli/bootstrap packages/zena-cli/out && ZENA_GC_RESERVE_MB=1536 ZENA_CLI_MODULE=packages/zena-cli/out/zena.wasm ./target/release/zena-cli -g -O2 build packages/zena-cli/zena/main.zena -o packages/zena-cli/out/zena-seed.wasm && ZENA_GC_RESERVE_MB=1536 ZENA_CLI_MODULE=packages/zena-cli/out/zena-seed.wasm ./target/release/zena-cli -g -O2 build packages/zena-cli/zena/main.zena -o packages/zena-cli/out/zena-audit.wasm && cmp packages/zena-cli/out/zena-seed.wasm packages/zena-cli/out/zena-audit.wasm && mv packages/zena-cli/out/zena-seed.wasm packages/zena-cli/bootstrap/zena.wasm && rm -f packages/zena-cli/out/zena-audit.wasm",
+      "output": [],
+      "dependencies": [
+        "test"
       ]
     },
     "emulators:start": {

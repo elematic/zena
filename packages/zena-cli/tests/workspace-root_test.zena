@@ -236,4 +236,28 @@ printf '%s\\n' '{"scripts":{"build":{"command":"sh check.sh","files":["check.sh"
       await run(['rm', '-rf', outside]);
     }
   });
+
+  test('falls back to packages/zena-cli/bootstrap/zena.wasm in a checkout before out/zena.wasm is built', async (ctx) => {
+    let outside = (await run(['mktemp', '-d'])).stdout.trim();
+    try {
+      let setUp = await run(['/bin/sh', '-c', `mkdir -p "$1/packages/zena-cli/bootstrap" &&
+ln -s "$2/packages/stdlib" "$1/packages/stdlib" &&
+ln -s "$2/packages/zena-cli/bootstrap/zena.wasm" "$1/packages/zena-cli/bootstrap/zena.wasm" &&
+if [ -f "$2/packages/zena-cli/bootstrap/zena.cwasm" ]; then ln -s "$2/packages/zena-cli/bootstrap/zena.cwasm" "$1/packages/zena-cli/bootstrap/zena.cwasm"; fi &&
+printf '%s\\n' '{"workspace":{"packages":["packages/*"]}}' > "$1/zena-package.json" &&
+printf '%s\\n' '${MAIN} { return 0; }' > "$1/prog.zena"`,
+          'sh', outside, repoRoot()]);
+      isTrue(setUp.succeeded(), described(setUp));
+      var unset = '';
+      for (let name in CHOOSERS) {
+        unset = `${unset} -u ${name}`;
+      }
+      let ran = await run(['/bin/sh', '-c',
+          `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" run prog.zena`,
+          'sh', outside, zenaBinary()]);
+      isTrue(ran.succeeded(), described(ran));
+    } finally {
+      await run(['rm', '-rf', outside]);
+    }
+  });
 });

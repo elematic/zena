@@ -196,7 +196,7 @@ if (linted.length > 0) {
   const zena = './target/release/zena-cli';
   if (!existsSync(zena)) {
     notes.push(
-      'zena lint: skipped, zena-cli is not built (npm run build -w @zena-lang/zena-cli)',
+      'zena lint: skipped, zena-cli is not built (cargo build --release -p zena-cli)',
     );
   } else {
     const result = spawnSync(zena, ['lint', ...linted], {encoding: 'utf8'});

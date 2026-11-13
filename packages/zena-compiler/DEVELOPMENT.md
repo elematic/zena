@@ -8,7 +8,6 @@ Notes for working on `zena-compiler`.
 - `zena/cli/` — standalone compiler CLI entry point (`zc`)
 - `zena/test/` — unit and compiler pipeline tests
 - `zena/bench/` — microbenchmarks for the lexer and string interning
-- `bootstrap/` — checked-in bootstrap compiler binary (`cli.wasm`)
 - `src/` and `scripts/` — TypeScript build and test runner harnesses
 
 ## Building and Testing
@@ -18,7 +17,7 @@ Make sure you have the Nix environment active (`direnv allow` or `nix develop`) 
 Run scripts via npm to use the Wireit cache:
 
 ```bash
-# Build the self-hosted compiler CLI (stage A, compiled by bootstrap/cli.wasm)
+# Build the self-hosted compiler CLI (stage A, compiled by packages/zena-cli/bootstrap/zena.wasm)
 npm run build:cli -w @zena-lang/zena-compiler
 
 # Build all TypeScript scripts and Wasm test runners
@@ -42,13 +41,13 @@ To run a single Zena unit test file directly:
 
 ## Reseeding the Bootstrap Binary
 
-When compiler changes need to be available to stage A (`bootstrap/cli.wasm`), reseed the bootstrap binary after all tests and the fixpoint check pass:
+When compiler changes need to be available to stage A (`packages/zena-cli/bootstrap/zena.wasm`), reseed the bootstrap from the repository root after all tests and the fixpoint check pass:
 
 ```bash
-npm run reseed -w @zena-lang/zena-compiler
+npm run reseed
 ```
 
-See `bootstrap/README.md` for details on the bootstrap stages and verification.
+See `packages/zena-cli/bootstrap/README.md` and `docs/design/bootstrapping.md` for details on the bootstrap stages and verification.
 
 ## Benchmarking
 

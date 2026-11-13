@@ -286,40 +286,29 @@ installing `zena` is one file plus the module.
 
 ## Building the CLI module
 
-The CLI module contains the compiler, so something has to compile it
-first. The build order is:
+The checked-in bootstrap is a prebuilt CLI module at
+`packages/zena-cli/bootstrap/zena.wasm`. When `packages/zena-cli/out/zena.wasm`
+does not exist yet, `zena-cli` falls back to `bootstrap/zena.wasm`, so
+`cargo build --release -p zena-cli` gives a working `zena` command
+(`build`, `fmt`, `lint`, `run`, `test`) before any Zena target is built.
+
+Building `out/zena.wasm` from HEAD source still goes through Stage A
+(`packages/zena-compiler/zena/out/cli.wasm`) so that edits to non-compiler
+packages in the CLI module (`zebra`, `zenadoc`, `zena-lint`,
+`zena-formatter`, `package-manager`) compile with HEAD's compiler and
+never require a reseed:
 
 ```
-cargo build                    → zena-run, zena-cli
-zena-run + bootstrap/cli.wasm  → packages/zena-compiler/zena/out/cli.wasm
-zena-run + zena/out/cli.wasm   → packages/zena-cli/out/zena.wasm   (the CLI module)
-zena-cli (+ zena.wasm)         → everything else
+cargo build                         → zena-cli, zena-run
+zena-cli + bootstrap/zena.wasm      → packages/zena-compiler/zena/out/cli.wasm
+zena-run + zena/out/cli.wasm        → packages/zena-cli/out/zena.wasm   (the CLI module)
+zena-cli (+ out/zena.wasm)          → everything else
 ```
 
-The first two compiles are `zena-run` running a compiler with the right
-preopens; no compile logic is needed in Rust. `bootstrap/cli.wasm`
-stays what it is today, the compiler alone, and the rules in
-[bootstrapping.md](./bootstrapping.md) are unchanged: the fixpoint gate
-still checks the compiler compiling itself.
-
-### Alternative considered: the CLI module as the bootstrap
-
-The checked-in bootstrap could be the CLI module itself. Then
-`zena-cli` plus the bootstrap would be a complete toolchain with no
-separate compiler build, and a clean build would compile the compiler's
-source once instead of twice.
-
-It is not done here because:
-
-- Every change to the command line, zebra, zenadoc or the formatter would
-  then be a change to what the bootstrap has to build and reproduce, and
-  the fixpoint gate would cover all of it.
-- The bootstrap would grow with every tool added to the command.
-- The build order above needs no reseed to land.
-
-The extra compile in a clean build has not been measured on its own
-yet. If it matters, this alternative can be taken later with one
-reseed.
+The rules in [bootstrapping.md](./bootstrapping.md) keep `test:fixpoint`
+scoped to the compiler compiling itself (`cli-self.wasm ≡ cli-self2.wasm`),
+while `npm run reseed` builds `bootstrap/zena.wasm` at `-g -O2` and
+checks byte-for-byte self-reproduction before replacing it.
 
 ## What landed
 
@@ -339,6 +328,12 @@ reseed.
 4. **The language server** (#690). The language service became a
    library, with an LSP server beside it, and `zena lsp` runs the server
    over stdin and stdout. `zena:cli` gained `readStdin`.
+
+5. **The CLI module as the bootstrap**. `packages/zena-cli/bootstrap/zena.wasm`
+   replaced `packages/zena-compiler/bootstrap/cli.wasm`, with `zena-cli`
+   falling back to `bootstrap/zena.wasm` until `out/zena.wasm` is built
+   while keeping Stage A (`zena/out/cli.wasm`) so non-compiler packages
+   remain compiled by HEAD's compiler.
 
 ## Open questions
 

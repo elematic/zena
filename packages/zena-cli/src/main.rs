@@ -266,20 +266,31 @@ fn resolve_stdlib_dir(sources: Option<&Path>) -> Result<PathBuf> {
 }
 
 /// The CLI module: ZENA_CLI_MODULE, the one built in the repository,
-/// or the bundled module extracted to user cache.
+/// the checked-in bootstrap in the repository, or the bundled module
+/// extracted to user cache.
 fn cli_module(sources: Option<&Path>) -> Result<PathBuf> {
-    if let Ok(path) = std::env::var("ZENA_CLI_MODULE") {
+    let env_override = std::env::var("ZENA_CLI_MODULE").ok();
+    cli_module_from(env_override.as_deref(), sources)
+}
+
+fn cli_module_from(env_override: Option<&str>, sources: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = env_override {
         if !path.is_empty() {
-            return clean_canonicalize(Path::new(&path))
+            return clean_canonicalize(Path::new(path))
                 .with_context(|| format!("ZENA_CLI_MODULE does not exist: {path}"));
         }
     }
     if let Some(root) = sources {
-        let path = root.join("packages/zena-cli/out/zena.wasm");
-        if path.is_file() {
-            return clean_canonicalize(&path).with_context(|| {
-                format!("Failed to canonicalize CLI module path: {}", path.display())
-            });
+        for rel in [
+            "packages/zena-cli/out/zena.wasm",
+            "packages/zena-cli/bootstrap/zena.wasm",
+        ] {
+            let path = root.join(rel);
+            if path.is_file() {
+                return clean_canonicalize(&path).with_context(|| {
+                    format!("Failed to canonicalize CLI module path: {}", path.display())
+                });
+            }
         }
     }
     if let (Some(bytes), Some(hash)) = (BUNDLED_CLI_MODULE, BUNDLED_CLI_HASH) {
@@ -519,5 +530,41 @@ mod tests {
         assert_eq!(windows_drive_to_guest_path("d:"), Some("/d".to_string()));
         assert_eq!(windows_drive_to_guest_path("C:relative"), None);
         assert_eq!(windows_drive_to_guest_path("/home/dev/work"), None);
+    }
+
+    #[test]
+    fn cli_module_falls_back_to_bootstrap_when_not_built() {
+        let checkout = scratch("cli-module-fallback");
+        let bootstrap_dir = checkout.join("packages/zena-cli/bootstrap");
+        let out_dir = checkout.join("packages/zena-cli/out");
+        std::fs::create_dir_all(&bootstrap_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
+
+        // Neither built nor bootstrap module exists yet.
+        assert!(cli_module_from(None, Some(&checkout)).is_err());
+
+        // Only bootstrap exists: falls back to bootstrap/zena.wasm.
+        let bootstrap = bootstrap_dir.join("zena.wasm");
+        std::fs::write(&bootstrap, b"\0asm").unwrap();
+        assert_eq!(
+            cli_module_from(None, Some(&checkout)).unwrap(),
+            clean_canonicalize(&bootstrap).unwrap()
+        );
+
+        // Once out/zena.wasm is built, it takes precedence over bootstrap/zena.wasm.
+        let built = out_dir.join("zena.wasm");
+        std::fs::write(&built, b"\0asm").unwrap();
+        assert_eq!(
+            cli_module_from(None, Some(&checkout)).unwrap(),
+            clean_canonicalize(&built).unwrap()
+        );
+
+        // Explicit ZENA_CLI_MODULE overrides both.
+        assert_eq!(
+            cli_module_from(Some(bootstrap.to_str().unwrap()), Some(&checkout)).unwrap(),
+            clean_canonicalize(&bootstrap).unwrap()
+        );
+
+        let _ = std::fs::remove_dir_all(&checkout);
     }
 }
