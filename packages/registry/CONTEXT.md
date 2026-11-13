@@ -44,11 +44,11 @@ When a pull request closes an item there, tick its box.
 
 ## Storage
 
-- `registry/app-view` declares `AppViewStore` and keeps it in memory;
-  `registry/firestore` keeps it in Firestore, under the PDS's tenant, or
-  under its own (`APP_VIEW_TENANT`) when the PDS is elsewhere. Both
-  pass `test/store-conformance.zena`; add a test there for anything a
-  store must do.
+- `registry/app-view` declares `AppViewStore`, `registry/memory-store`
+  keeps it in memory, and `registry/firestore` keeps it in Firestore, under
+  the PDS's tenant, or under its own (`APP_VIEW_TENANT`) when the PDS is
+  elsewhere. Both pass `test/store-conformance.zena`; add a test there for
+  anything a store must do.
 - The package listings read `AppViewStore.summaries`, and memberships and
   public roles start from `AppViewStore.mentionsOf`, which the App View
   writes after each commit it makes (`AppView.#index`). A method a page

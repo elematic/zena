@@ -1,0 +1,382 @@
+/**
+ * The App View's store (`AppViewStore`) in memory, for tests and the local
+ * demo. Production and staging use `FirestoreAppViewStore`
+ * (`registry/firestore`).
+ */
+
+import {Future} from 'zena:async';
+import {Option} from 'zena:core';
+import {HashMap, HashSet, OrderedHashMap} from 'zena:collections';
+import {Cid} from 'atproto/cid';
+import {compareKeys} from 'atproto/mst';
+import {MemberEntry} from 'package-manager/records';
+import {
+  ActivityEvent,
+  ActivityQuery,
+  AppViewAccount,
+  AppViewStore,
+  ClaimedName,
+  ClaimedScope,
+  Count,
+  LIMITS,
+  Limit,
+  Limits,
+  PackageSummary,
+  PendingChange,
+  PendingRelease,
+  Publication,
+  ScopeCreator,
+  matchesActivityQuery
+} from './app-view.zena';
+
+/** A package's summary, and the revision of the commit it was made from. */
+final class KeptSummary {
+  summary: PackageSummary;
+  rev: String;
+
+  new(this.summary, this.rev);
+}
+
+/** The App View's store in memory. */
+export final class MemoryAppViewStore implements AppViewStore {
+  #accounts = new HashMap<String, AppViewAccount>();
+  #scopes = new HashMap<String, String>();
+  /** Package summaries by DID. */
+  #summaries = new HashMap<String, KeptSummary>();
+  /** The accounts that mention each subject. */
+  #mentions = new HashMap<String, HashSet<String>>();
+  /** Each automation account's token hash, and whose each hash is. */
+  #tokenHashes = new HashMap<String, String>();
+  #tokenAccounts = new HashMap<String, String>();
+  /** The limits the operator has set, by account. */
+  #limits = new HashMap<String, Limits>();
+  /** Each count by its key (`Count.key`). */
+  #counts = new HashMap<String, i64>();
+  #scopeCreators = new HashMap<String, ScopeCreator>();
+  #activity = new OrderedHashMap<String, ActivityEvent>();
+  /** Held releases by `<pkg> <version>`. */
+  #held = new HashMap<String, PendingRelease>();
+  /** Publications by package, then version. */
+  #publications = new HashMap<String, HashMap<String, Publication>>();
+  /** Held changes by `<account> <collection> <rkey>`. */
+  #changes = new HashMap<String, PendingChange>();
+  /** Claimed names by `<name>.<scope>`. */
+  #names = new HashMap<String, ClaimedName>();
+  #entries = new HashMap<String, GrowableArray<MemberEntry>>();
+
+  async putAccount(account: AppViewAccount): Future<void> {
+    this.#accounts[account.did] = account;
+  }
+
+  async account(did: String): Future<AppViewAccount | null> {
+    if (let (true, account) = this.#accounts.get(did)) {
+      return account;
+    }
+    return null;
+  }
+
+  async accounts(): Future<Array<AppViewAccount>> {
+    let all = new GrowableArray<AppViewAccount>();
+    this.#accounts.forEach((did, account) => {
+      all.push(account);
+    });
+    return all;
+  }
+
+  async addMentions(account: String, subjects: Array<String>): Future<void> {
+    for (let subject in subjects) {
+      if (let (true, accounts) = this.#mentions.get(subject)) {
+        accounts.add(account);
+      } else {
+        let accounts = new HashSet<String>();
+        accounts.add(account);
+        this.#mentions[subject] = accounts;
+      }
+    }
+  }
+
+  async mentionsOf(subject: String): Future<Array<String>> {
+    let out = new GrowableArray<String>();
+    if (let (true, accounts) = this.#mentions.get(subject)) {
+      for (let account in accounts) {
+        out.push(account);
+      }
+    }
+    return out;
+  }
+
+  async putSummary(summary: PackageSummary, rev: String): Future<void> {
+    if (let (true, kept) = this.#summaries.get(summary.did)) {
+      if (compareKeys(kept.rev, rev) >= 0) {
+        return;
+      }
+    }
+    summary.rev = rev;
+    this.#summaries[summary.did] = new KeptSummary(summary, rev);
+  }
+
+  async summaries(scope: String | null): Future<Array<PackageSummary>> {
+    let out = new GrowableArray<PackageSummary>();
+    this.#summaries.forEach((did, kept) => {
+      if (scope == null || kept.summary.scope == scope) {
+        out.push(kept.summary);
+      }
+    });
+    return out;
+  }
+
+  async holdRelease(pkg: String, release: PendingRelease): Future<boolean> {
+    let key = `${pkg} ${release.version}`;
+    if (this.#held.has(key)) {
+      return false;
+    }
+    this.#held[key] = release;
+    return true;
+  }
+
+  async heldRelease(pkg: String, version: String): Future<PendingRelease | null> {
+    if (let (true, release) = this.#held.get(`${pkg} ${version}`)) {
+      return release;
+    }
+    return null;
+  }
+
+  async heldReleases(pkg: String): Future<Array<PendingRelease>> {
+    let held = new GrowableArray<PendingRelease>();
+    for (let entry in this.#held) {
+      if (entry.key.startsWith(`${pkg} `)) {
+        held.push(entry.value);
+      }
+    }
+    return held;
+  }
+
+  async dropRelease(pkg: String, version: String): Future<void> {
+    this.#held.delete(`${pkg} ${version}`);
+  }
+
+  async putPublication(pkg: String, publication: Publication): Future<void> {
+    if (!this.#publications.has(pkg)) {
+      this.#publications[pkg] = new HashMap<String, Publication>();
+    }
+    this.#publications[pkg][publication.version] = publication;
+  }
+
+  async publications(pkg: String): Future<Array<Publication>> {
+    let all = new GrowableArray<Publication>();
+    if (let (true, kept) = this.#publications.get(pkg)) {
+      kept.forEach((version, publication) => {
+        all.push(publication);
+      });
+    }
+    return all;
+  }
+
+  async holdChange(account: String, change: PendingChange): Future<void> {
+    this.#changes[`${account} ${change.collection} ${change.rkey}`] = change;
+  }
+
+  async heldChange(account: String, collection: String, rkey: String): Future<PendingChange | null> {
+    if (let (true, change) = this.#changes.get(`${account} ${collection} ${rkey}`)) {
+      return change;
+    }
+    return null;
+  }
+
+  async heldChanges(account: String): Future<Array<PendingChange>> {
+    let held = new GrowableArray<PendingChange>();
+    for (let entry in this.#changes) {
+      if (entry.key.startsWith(`${account} `)) {
+        held.push(entry.value);
+      }
+    }
+    return held;
+  }
+
+  async dropChange(account: String, collection: String, rkey: String, cid: Cid): Future<void> {
+    let key = `${account} ${collection} ${rkey}`;
+    if (let (true, change) = this.#changes.get(key)) {
+      if (change.cid.equals(cid)) {
+        this.#changes.delete(key);
+      }
+    }
+  }
+
+  async scopeOwner(scope: String): Future<String | null> {
+    if (let (true, org) = this.#scopes.get(scope)) {
+      return org;
+    }
+    return null;
+  }
+
+  async claimScope(scope: String, org: String): Future<boolean> {
+    if (this.#scopes.has(scope)) {
+      return false;
+    }
+    this.#scopes[scope] = org;
+    return true;
+  }
+
+  async releaseScope(scope: String, org: String): Future<void> {
+    if (let (true, owner) = this.#scopes.get(scope)) {
+      if (owner == org) {
+        this.#scopes.delete(scope);
+      }
+    }
+  }
+
+  async nameInScope(scope: String, name: String): Future<String | null> {
+    if (let (true, claimed) = this.#names.get(`${name}.${scope}`)) {
+      return claimed.did;
+    }
+    return null;
+  }
+
+  async claimName(scope: String, name: String, did: String): Future<boolean> {
+    let key = `${name}.${scope}`;
+    if (this.#names.has(key)) {
+      return false;
+    }
+    this.#names[key] = new ClaimedName(scope, name, did);
+    return true;
+  }
+
+  async releaseName(scope: String, name: String, did: String): Future<void> {
+    let key = `${name}.${scope}`;
+    if (let (true, claimed) = this.#names.get(key)) {
+      if (claimed.did == did) {
+        this.#names.delete(key);
+      }
+    }
+  }
+
+  async allScopes(): Future<Array<ClaimedScope>> {
+    let all = new GrowableArray<ClaimedScope>();
+    this.#scopes.forEach((scope, org) => {
+      all.push(new ClaimedScope(scope, org));
+    });
+    return all;
+  }
+
+  async allNames(): Future<Array<ClaimedName>> {
+    let all = new GrowableArray<ClaimedName>();
+    this.#names.forEach((key, claimed) => {
+      all.push(claimed);
+    });
+    return all;
+  }
+
+  async entries(account: String): Future<Array<MemberEntry>> {
+    if (let (true, list) = this.#entries.get(account)) {
+      return list;
+    }
+    return new GrowableArray<MemberEntry>();
+  }
+
+  async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
+    var list = new GrowableArray<MemberEntry>();
+    if (let (true, existing) = this.#entries.get(account)) {
+      list = existing;
+    }
+    for (let entry in entries) {
+      list.push(entry);
+    }
+    this.#entries[account] = list;
+  }
+
+  async setAutomationToken(did: String, hash: String): Future<void> {
+    if (let (true, old) = this.#tokenHashes.get(did)) {
+      this.#tokenAccounts.delete(old);
+    }
+    this.#tokenHashes[did] = hash;
+    this.#tokenAccounts[hash] = did;
+  }
+
+  async automationAccountOf(hash: String): Future<String | null> {
+    if (let (true, did) = this.#tokenAccounts.get(hash)) {
+      return did;
+    }
+    return null;
+  }
+
+  async limits(did: String): Future<Limits> {
+    // A copy, which the caller may change without changing the store.
+    let copy = new Limits();
+    if (let (true, kept) = this.#limits.get(did)) {
+      for (let limit in LIMITS) {
+        copy.set(limit, kept.get(limit));
+      }
+    }
+    return copy;
+  }
+
+  async setLimit(did: String, limit: Limit, value: Option<i64>): Future<void> {
+    if (!this.#limits.has(did)) {
+      this.#limits[did] = new Limits();
+    }
+    this.#limits[did].set(limit, value);
+  }
+
+  async addCounts(counts: Array<Count>, nowMicros: i64): Future<Count | null> {
+    for (let count in counts) {
+      if (this.#counts.getOr(count.key, 0 as i64) >= count.max) {
+        return count;
+      }
+    }
+    for (let count in counts) {
+      this.#counts[count.key] = this.#counts.getOr(count.key, 0 as i64) + 1;
+    }
+    return null;
+  }
+
+  async putScopeCreator(creator: ScopeCreator): Future<void> {
+    this.#scopeCreators[creator.did] = creator;
+  }
+
+  async deleteScopeCreator(did: String): Future<void> {
+    this.#scopeCreators.delete(did);
+  }
+
+  async scopeCreator(did: String): Future<ScopeCreator | null> {
+    if (let (true, creator) = this.#scopeCreators.get(did)) {
+      return creator;
+    }
+    return null;
+  }
+
+  async scopeCreators(): Future<Array<ScopeCreator>> {
+    let all = new GrowableArray<ScopeCreator>();
+    this.#scopeCreators.forEach((did, creator) => {
+      all.push(creator);
+    });
+    return all;
+  }
+
+  async appendActivity(event: ActivityEvent): Future<void> {
+    this.#activity[event.id] = event;
+  }
+
+  async activity(query: ActivityQuery): Future<Array<ActivityEvent>> {
+    let out = new GrowableArray<ActivityEvent>();
+    if (query.limit <= 0) {
+      return out;
+    }
+    let after = query.after;
+    let hasAfter = after != null && after.length > 0 && !after.contains('/');
+    let matching = new GrowableArray<ActivityEvent>();
+    for (let entry in this.#activity) {
+      let event = entry.value;
+      if (hasAfter && compareKeys(event.id, after as String) <= 0) {
+        continue;
+      }
+      if (matchesActivityQuery(event, query)) {
+        matching.push(event);
+      }
+    }
+    matching.sort((a, b) => compareKeys(a.id, b.id));
+    for (var i = 0; i < matching.length && out.length < query.limit; i += 1) {
+      out.push(matching[i]);
+    }
+    return out;
+  }
+}

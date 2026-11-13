@@ -34,9 +34,10 @@ import {MemoryHandleRecords} from 'registry/handles';
 import {
   ACTIVITY_ADMIN, ACTIVITY_AUTOMATION, ACTIVITY_PACKAGE, ACTIVITY_SCOPE, ACTIVITY_TEAM, ActivityEvent, ActivityQuery,
   CallLog, ClaimedName, ClaimedScope, AppViewAccount, Publication, AppViewConfig, AppViewError, AppViewStore,
-  MemoryAppViewStore, OUTCOME_HELD, OUTCOME_REFUSED, OUTCOME_WITHDRAWN, OUTCOME_WRITTEN, PENDING_MICROS, AppView,
+  OUTCOME_HELD, OUTCOME_WITHDRAWN, OUTCOME_WRITTEN, PENDING_MICROS, AppView,
   Count, Limit, Limits, PackageSummary, PendingChange, PendingRelease, ScopeCreation, ScopeCreator, limitName, limitNamed
 } from 'registry/app-view';
+import {MemoryAppViewStore} from 'registry/memory-store';
 import {MAX_README_BYTES, ReleaseContents, ReleaseFile} from 'registry/release-contents';
 import {nowMicros} from 'pds/xrpc/common';
 import {createApp} from 'registry/server';
@@ -2400,11 +2401,15 @@ export let tests = suite('registry/app-view', () => {
     }
   });
 
-  test('records package, scope, team, automation and admin operations and 403 refusals, and shows them on /admin/log',
+  test('records package, scope, team, automation and admin operations on /admin/log while leaving 403 refusals to CallLog',
       async (ctx) => {
     let counting = new CountingStorage();
     let fixture = new Fixture(new MemoryAppViewStore(), counting);
     let appView = fixture.appView as AppView;
+    let callLogs = new GrowableArray<CallLog>();
+    appView.log = (entry) => {
+      callLogs.push(entry);
+    };
     appView.config.admins.add(ALICE);
     appView.config.scopeCreation = ScopeCreation.Listed;
 
@@ -2413,9 +2418,17 @@ export let tests = suite('registry/app-view', () => {
     isTrue(pageOf(await fixture.get('/admin/log')).contains('Sign in as one of'), 'signed out');
     equal((await fixture.get('/admin/log', await webCookie(fixture, BOB))).statusCode, 403, 'non-admin');
 
-    // Refused scope creation under Listed mode, then admin allows Bob.
+    // Refused calls go to CallLog and write nothing to the activity store.
     equal(errorOf(await createOrganization(fixture, BOB, 'bobs')), 'NotAllowed');
     equal(errorOf(await fixture.call(BOB, 'putScopeCreator', `{"did": "${BOB}", "allowed": true}`)), 'Forbidden');
+    equal((await appView.listActivity(ALICE, new ActivityQuery())).length, 0);
+    var refusedCalls = 0;
+    for (let entry in callLogs) {
+      if (entry.status == 403) {
+        refusedCalls += 1;
+      }
+    }
+    equal(refusedCalls, 2);
     ok(await fixture.call(ALICE, 'putScopeCreator', `{"did": "${BOB}", "allowed": true}`));
 
     // Scope, operator scope, team, scope profile, automation, package, release, retraction and limits.
@@ -2462,15 +2475,17 @@ export let tests = suite('registry/app-view', () => {
     fixture.userAgent = null;
 
     let all = await appView.listActivity(ALICE, new ActivityQuery());
-    isTrue(all.length >= 20, `recorded ${all.length} events`);
-    // Most recent first: Alice's retraction is at the top, followed by Bob's refused retraction.
+    isTrue(all.length >= 16, `recorded ${all.length} events`);
+    for (let event in all) {
+      isTrue(event.actor != BOB, `refused call by Bob should not be in activity store: ${event.method}`);
+    }
+    // Most recent first: Alice's retraction is at the top, followed by release withdrawal.
     equal(all[0].method, 'retract');
     equal(all[0].outcome, OUTCOME_WRITTEN);
     equal(all[0].detail as String, 'broken edge');
     isTrue(all[0].after != null && all[0].before == null, 'first retraction creates record');
-    equal(all[1].method, 'retract');
-    equal(all[1].outcome, OUTCOME_REFUSED);
-    equal(all[1].actor, BOB);
+    equal(all[1].method, 'withdrawRelease');
+    equal(all[1].outcome, OUTCOME_WITHDRAWN);
 
     // /admin links to /admin/log, and /admin/log renders and filters cleanly without extra PDS reads.
     let adminCookie = await webCookie(fixture, ALICE);
@@ -2489,7 +2504,6 @@ export let tests = suite('registry/app-view', () => {
       'ci.acme.pkg.test',
       'broken edge',
       'packages=2500',
-      'chip-danger">refused<',
       'chip-success">written<',
       'chip-primary">held<',
       '>withdrawn<'
@@ -2497,14 +2511,14 @@ export let tests = suite('registry/app-view', () => {
       isTrue(logHtml.contains(piece), `missing ${piece} in /admin/log`);
     }
 
-    // Filter by outcome=refused and scope=acme.
-    let refusedHtml = pageOf(await fixture.get('/admin/log?outcome=refused&scope=acme', adminCookie));
-    isTrue(refusedHtml.contains('uploadArtifact') && refusedHtml.contains('deleteTeam') &&
-        !refusedHtml.contains('broken edge') && refusedHtml.contains('href="/admin/log">Clear</a>'), refusedHtml);
+    // Filter by outcome=withdrawn and scope=acme.
+    let withdrawnHtml = pageOf(await fixture.get('/admin/log?outcome=withdrawn&scope=acme', adminCookie));
+    isTrue(withdrawnHtml.contains('Withdraw release 1.1.0') && withdrawnHtml.contains('Withdraw team ops change') &&
+        !withdrawnHtml.contains('broken edge') && withdrawnHtml.contains('href="/admin/log">Clear</a>'), withdrawnHtml);
 
     // Filter by actor=operator.
     let operatorHtml = pageOf(await fixture.get('/admin/log?actor=operator', adminCookie));
     isTrue(operatorHtml.contains('Create scope (operator)') && operatorHtml.contains('packages=2500') &&
-        !operatorHtml.contains('uploadArtifact'), operatorHtml);
+        !operatorHtml.contains('broken edge'), operatorHtml);
   });
 });

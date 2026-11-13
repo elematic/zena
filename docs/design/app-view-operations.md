@@ -152,20 +152,20 @@ session, because the App View holds nothing that can write there
 These are the App View's admins' work, on the pages. Each is described in
 package-manager.md, "Reports and takedowns".
 
-| Operation                                    | Exists                                      |
-| -------------------------------------------- | ------------------------------------------- |
-| See every account                            | `/admin`                                    |
-| See every private entry                      | the scope and package pages, as an admin    |
-| See which `zena` published each release      | the package page, as an admin               |
-| Read and close reports                       | no                                          |
-| Take down a release, package or organization | no                                          |
-| Restore what was taken down                  | no                                          |
-| Delete a release for a legal notice          | no                                          |
-| Refuse a maintainer's requests               | no                                          |
-| Reserve scope names                          | `APP_VIEW_RESERVED_SCOPES`, by the operator |
-| Let only listed accounts create scopes       | `APP_VIEW_SCOPE_CREATORS`, by the operator  |
-| Label what was taken down, and why           | no; needs the labeler                       |
-| See a log of operations and refused calls    | `/admin/log`                                |
+| Operation                                    | Exists                                                  |
+| -------------------------------------------- | ------------------------------------------------------- |
+| See every account                            | `/admin`                                                |
+| See every private entry                      | the scope and package pages, as an admin                |
+| See which `zena` published each release      | the package page, as an admin                           |
+| Read and close reports                       | no                                                      |
+| Take down a release, package or organization | no                                                      |
+| Restore what was taken down                  | no                                                      |
+| Delete a release for a legal notice          | no                                                      |
+| Refuse a maintainer's requests               | no                                                      |
+| Reserve scope names                          | `APP_VIEW_RESERVED_SCOPES`, by the operator             |
+| Let only listed accounts create scopes       | `APP_VIEW_SCOPE_CREATORS`, by the operator              |
+| Label what was taken down, and why           | no; needs the labeler                                   |
+| See a log of operations and refused calls    | `/admin/log` (operations) and `CallLog` (refused calls) |
 
 The three ways to remove a release differ in who does it and what stays:
 
