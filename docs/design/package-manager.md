@@ -431,7 +431,8 @@ One per version, at record key equal to the version:
       "version": "^2.1.0",
       "name": "json"
     }
-  ]
+  ],
+  "zena": "0.3.1"
 }
 ```
 
@@ -442,7 +443,9 @@ where the two differ. The reference PDS refuses `com.atproto.repo.createRecord` 
 already holds a record, so publishing a version twice fails instead of
 overwriting it. Each dependency names a DID, the range of versions the
 release accepts, and the local name it uses for that package in its own
-imports.
+imports. `zena` is the language version the release was published with,
+its publisher's compiler's version; every release has one
+([language-versions.md](language-versions.md)).
 
 ### Retraction
 
@@ -604,8 +607,8 @@ selection installs both when two ranges ask for them, and the lockfile
 reports a move from 0.1.3 to 0.2.0 as one version removed and another
 added, not as one version raised.
 
-Which versions of the language a release works with is a range of the
-same kind, which `zena pkg publish` records in the release record
+The language version a release was published with is recorded too, as
+a version and not a range, and never chooses versions
 ([language-versions.md](language-versions.md)).
 
 Versions and ranges are a library of their own, the package `semver`

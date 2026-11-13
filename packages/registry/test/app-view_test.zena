@@ -33,8 +33,8 @@ import {MINIMUM_CLIENT_VERSION, RECOMMENDED_CLIENT_VERSION} from 'registry/clien
 import {MemoryHandleRecords} from 'registry/handles';
 import {
   ACTIVITY_ADMIN, ACTIVITY_AUTOMATION, ACTIVITY_PACKAGE, ACTIVITY_SCOPE, ACTIVITY_TEAM, ActivityEvent, ActivityQuery,
-  CallLog, ClaimedName, ClaimedScope, AppViewAccount, Publication, AppViewConfig, AppViewError, AppViewStore,
-  OUTCOME_HELD, OUTCOME_WITHDRAWN, OUTCOME_WRITTEN, PENDING_MICROS, AppView,
+  CallLog, ClaimedName, ClaimedScope, AppViewAccount, PackageDetail, Publication, AppViewConfig, AppViewError,
+  AppViewStore, OUTCOME_HELD, OUTCOME_WITHDRAWN, OUTCOME_WRITTEN, PENDING_MICROS, AppView,
   Count, Limit, Limits, PackageSummary, PendingChange, PendingRelease, ScopeCreation, ScopeCreator, limitName, limitNamed
 } from 'registry/app-view';
 import {MemoryAppViewStore} from 'registry/memory-store';
@@ -618,10 +618,11 @@ function approvedBy(answer: JsonObject) {
   return join(dids, ' ');
 }
 
-function releaseJson(version: String, blob: BlobRef): String {
+function releaseJson(version: String, blob: BlobRef, publishedWith: String | null = null): String {
   let release = new Release(Version.parse(version), '2026-10-23T00:00:00.000Z',
       new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
-      new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')));
+      new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')),
+      Version.parse(publishedWith ?? '0.1.0'));
   return stringify(toJson(release.toValue()));
 }
 
@@ -708,7 +709,7 @@ export let tests = suite('registry/app-view', () => {
     equal(ok(await fixture.call(ALICE, 'publish', body))['cid'] as String, cid);
     let other = new Release(Version.parse('1.0.0'), '2026-10-24T00:00:00.000Z',
         new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
-        new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')));
+        new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')), Version.parse('0.1.0'));
     let refused = await fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${stringify(toJson(other.toValue()))}}`);
     equal(errorOf(refused), 'VersionExists');
 
@@ -806,7 +807,7 @@ export let tests = suite('registry/app-view', () => {
     let blob = await upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
     let publish = (caller: String, created: String) => {
       let release = new Release(Version.parse('1.0.0'), created, new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
-          new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')));
+          new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')), Version.parse('0.1.0'));
       return fixture.call(caller, 'publish', `{"package": "${pkgDid}", "release": ${stringify(toJson(release.toValue()))}}`);
     };
     let withdraw = (caller: String) =>
@@ -1444,7 +1445,7 @@ export let tests = suite('registry/app-view', () => {
         `?package=${router}`, 'application/wasm'))['blob'] as JsonObject));
     let withModule = new Release(Version.parse('0.1.0'), '2026-11-09T00:00:00.000Z',
         [Artifact.whole(SOURCE, source), Artifact.whole('core-module', wasm)],
-        new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')));
+        new FixedArray<Dependency>(0, new Dependency('', Range.parse('0.0.0'), '')), Version.parse('0.1.0'));
     let module = await fixture.call(ALICE, 'publish',
         `{"package": "${router}", "release": ${stringify(toJson(withModule.toValue()))}}`);
     equal(errorOf(module), 'InvalidRelease');
@@ -1738,7 +1739,7 @@ export let tests = suite('registry/app-view', () => {
       });
       let blob = await upload(fixture, account.did, archive);
       let record = new Release(Version.parse(version), '2026-11-10T00:00:00.000Z',
-          new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)), []);
+          new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)), [], Version.parse('0.1.0'));
       await fixture.pds.repositoryOf(account).applyWrites([new CreateRecord(RELEASE_TYPE, version,
           record.toValue()) as Write], 0 as i64);
     }
@@ -1824,7 +1825,7 @@ export let tests = suite('registry/app-view', () => {
     let withDependency = new Release(Version.parse('0.3.0'), '2026-10-24T00:00:00.000Z',
         new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
         [new Dependency(router, Range.parse('^1.0.0'), 'router'),
-         new Dependency('did:plc:elsewhereelsewhereelsewh', Range.parse('~0.2.1'), 'other')]);
+         new Dependency('did:plc:elsewhereelsewhereelsewh', Range.parse('~0.2.1'), 'other')], Version.parse('0.1.0'));
     await fixture.pds.repositoryOf(parser).applyWrites([new CreateRecord(RELEASE_TYPE, '0.3.0',
         withDependency.toValue()) as Write], 0 as i64);
     let parserHtml = pageOf(await fixture.get('/packages/parser.acme.pkg.test'));
@@ -1964,6 +1965,29 @@ export let tests = suite('registry/app-view', () => {
     equal((await fixture.get(`/people/${ALICE}/avatar?s=forged`)).statusCode, 404, 'forged');
     let signature = ((fixture.appView as AppView).sessions as WebSessions).urlSignature(ALICE);
     equal((await fixture.get(`/people/${ALICE}/avatar?s=${signature}`)).statusCode, 404, 'no avatar');
+  });
+
+  test('keeps the language version a release was published with, and refuses one that is not a version', async (ctx) => {
+    let fixture = new Fixture();
+    let org = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, org, 'router'))['did'] as String;
+    let blob = await upload(fixture, router, archiveOf(router, '1.0.0'));
+    let good = releaseJson('1.0.0', blob, '0.1.0');
+    let bad = join(good.split('"0.1.0"'), '"soon"');
+    isTrue(bad.contains('"soon"'), bad);
+    let refused = await fixture.call(ALICE, 'publish', `{"package": "${router}", "release": ${bad}}`);
+    // As for any record outside the lexicon.
+    equal(errorOf(refused), 'InvalidRequest', refused.body as String);
+    isTrue((json(refused)['message'] as String).contains('zena'), json(refused)['message'] as String);
+
+    // A version above the App View's own compiler is taken: its publisher
+    // may have built a newer zena than the one deployed.
+    let held = ok(await fixture.call(ALICE, 'publish',
+        `{"package": "${router}", "release": ${releaseJson('1.0.0', blob, '9.0.0')}}`));
+    fixture.attest(ALICE, held['uri'] as String, held['cid'] as String);
+    equal((await complete(fixture, ALICE, router, '1.0.0'))['state'] as String, 'published', 'published');
+    let detail = (await (fixture.appView as AppView).getPackage(router)) as PackageDetail;
+    equal(detail.releases[0].publishedWith.toString(), '9.0.0', 'the version kept');
   });
 
   test('keeps which clients published and completed each release, and shows them to admins', async (ctx) => {
@@ -2387,7 +2411,8 @@ export let tests = suite('registry/app-view', () => {
     let blob = await upload(fixture, pkgDid, dependent);
     let release = new Release(Version.parse('2.4.0'), '2026-10-26T00:00:00.000Z',
         new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
-        new FixedArray<Dependency>(1, new Dependency('did:plc:jsonjsonjsonjsonjsonjson', Range.parse('1.0.0'), 'json')));
+        new FixedArray<Dependency>(1, new Dependency('did:plc:jsonjsonjsonjsonjsonjson', Range.parse('1.0.0'), 'json')),
+        Version.parse('0.1.0'));
     let missing = refusal(await fixture.call(ALICE, 'publish',
         `{"package": "${pkgDid}", "release": ${stringify(toJson(release.toValue()))}}`));
     isTrue(missing.contains('json 1.0.0') && missing.contains('cannot be found'), missing);

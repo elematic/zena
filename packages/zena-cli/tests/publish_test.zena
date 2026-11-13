@@ -14,6 +14,7 @@ import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {
   MAIN, Scratch, ZenaCommand, described, fakePdsOrigin, read, startFakePds, stopFakePds, write
 } from './cli-support.zena';
+import {COMPILER_VERSION} from '../zena/versions.zena';
 
 let ALICE = 'did:plc:alicealicealicealicealic';
 
@@ -197,6 +198,12 @@ export let tests = suite('zena pkg publish', () => {
           `${(addresses['plc'] as String).sliceBytes(0, (addresses['plc'] as String).length - 4)}/xrpc/com.atproto.repo.listRecords?repo=${ALICE}&collection=dev.zena-lang.package.attestation`);
       equal(((parseJson(await listed.text()) as JsonObject)['records'] as JsonArray).length, 5,
           'attestations of two members records and three releases');
+      // A release records the language version it was published with: the
+      // version of the compiler that published it.
+      let released = await fetch(
+          `${addresses['registry'] as String}/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=dev.zena-lang.package.release&rkey=1.0.0`);
+      let record = (parseJson(await released.text()) as JsonObject)['value'] as JsonObject;
+      equal(record['zena'] as String, COMPILER_VERSION);
 
       // Another workspace adds the package by scope:name, under the domain
       // of the registry ZENA_REGISTRY names, pkg.test, and runs it.
