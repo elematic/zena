@@ -353,23 +353,15 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Phase 4: Aggregate platform archives and checksums, tag the commit, and
-  # publish the GitHub Release. Skipped when dry_run=true.
-  publish:
-    name: Publish GitHub Release
+  # Phase 4a: Aggregate platform archives, create unversioned asset copies,
+  # verify SHA256SUMS, and format the release notes (runs on dry_run too).
+  assemble:
+    name: Assemble release bundle
     needs: [build-assets, build-native]
-    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
       - name: Download release notes
         uses: actions/download-artifact@v8
         with:
@@ -383,16 +375,101 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Generate and verify SHA256SUMS
+      - name: Create unversioned copies, SHA256SUMS, and release notes
+        env:
+          TAG: ${{ needs.build-assets.outputs.tag }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           cd dist
+
+          TARGETS=(
+            "aarch64-apple-darwin:tar.gz:macOS (Apple Silicon)"
+            "x86_64-unknown-linux-gnu:tar.gz:Linux (x86_64)"
+            "aarch64-unknown-linux-gnu:tar.gz:Linux (ARM64)"
+            "x86_64-pc-windows-msvc:zip:Windows (x86_64)"
+          )
+
+          for entry in "${TARGETS[@]}"; do
+            IFS=':' read -r target ext _label <<< "$entry"
+            versioned="zena-${TAG}-${target}.${ext}"
+            unversioned="zena-${target}.${ext}"
+            if [ ! -f "$versioned" ] || [ ! -f "${versioned}.sha256" ]; then
+              echo "::error::Missing expected build artifact ${versioned}"
+              exit 1
+            fi
+            cp "$versioned" "$unversioned"
+            hash="$(awk '{print $1}' "${versioned}.sha256")"
+            printf '%s  %s\n' "$hash" "$unversioned" > "${unversioned}.sha256"
+          done
+
           LC_ALL=C sort -- *.sha256 > SHA256SUMS
           cat SHA256SUMS
           COUNT="$(wc -l < SHA256SUMS | tr -d ' ')"
-          if [ "$COUNT" -ne 4 ]; then
-            echo "::error::Expected 4 platform checksums in SHA256SUMS, got ${COUNT}"
+          if [ "$COUNT" -ne 8 ]; then
+            echo "::error::Expected 8 checksums in SHA256SUMS (4 versioned + 4 unversioned), got ${COUNT}"
             exit 1
           fi
+          sha256sum -c SHA256SUMS
+
+          # shellcheck disable=SC2016
+          {
+            cat ../release-meta/release-notes.md
+            printf '\n\n<!-- zena-release-downloads -->\n\n---\n\n'
+            printf '### Install\n\n'
+            printf '**macOS and Linux:**\n\n```sh\ncurl -fsSL https://zena-lang.dev/install.sh | ZENA_VERSION=%s sh\n```\n\n' "$TAG"
+            printf '**Windows (PowerShell):**\n\n```powershell\n$env:ZENA_VERSION = '\''%s'\''; irm https://zena-lang.dev/install.ps1 | iex\n```\n\n' "$TAG"
+            printf 'Omit `ZENA_VERSION` to install the latest release.\n\n'
+            printf '### Downloads\n\n'
+            printf '| Platform | Archive | SHA-256 |\n'
+            printf '| --- | --- | --- |\n'
+            for entry in "${TARGETS[@]}"; do
+              IFS=':' read -r target ext label <<< "$entry"
+              versioned="zena-${TAG}-${target}.${ext}"
+              hash="$(awk '{print $1}' "${versioned}.sha256")"
+              url="${REPO_URL}/releases/download/${TAG}/${versioned}"
+              printf '| %s | [`%s`](%s) | `%s` |\n' "$label" "$versioned" "$url" "$hash"
+            done
+            printf '\nUnversioned `zena-<target>.<ext>` copies are also attached for `/releases/latest/download/` links on stable releases. Full checksum manifest: [`SHA256SUMS`](%s/releases/download/%s/SHA256SUMS) · All releases: [zena-lang.dev/releases](https://zena-lang.dev/releases/)\n' "$REPO_URL" "$TAG"
+          } > RELEASE_NOTES.md
+
+          cat RELEASE_NOTES.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload assembled release bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-bundle
+          path: |
+            dist/zena-*
+            dist/SHA256SUMS
+            dist/RELEASE_NOTES.md
+          if-no-files-found: error
+          retention-days: 7
+
+  # Phase 4b: Tag the commit and publish the GitHub Release. Skipped on dry_run.
+  publish:
+    name: Publish GitHub Release
+    needs: [build-assets, assemble]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download assembled release bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: release-bundle
+          path: dist
+
+      - name: Verify SHA256SUMS before publishing
+        run: |
+          cd dist
           sha256sum -c SHA256SUMS
 
       - name: Tag commit and publish GitHub Release
@@ -422,5 +499,5 @@ jobs:
             dist/zena-* \
             dist/SHA256SUMS \
             --title "Zena ${TAG}" \
-            --notes-file release-meta/release-notes.md \
+            --notes-file dist/RELEASE_NOTES.md \
             "${PRERELEASE_FLAG[@]}"
