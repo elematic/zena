@@ -32,7 +32,8 @@ pub fn config(debug: bool) -> Config {
     config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
     if std::env::var("ZENA_PROFILE").is_ok() {
         config.profiler(wasmtime::ProfilingStrategy::PerfMap);
-    } else {
+    } else if !cfg!(windows) {
+        // Windows requires SEH unwind tables (`native_unwind_info`) for trap handling.
         config.native_unwind_info(false);
     }
     apply_gc_config(&mut config);
@@ -207,4 +208,18 @@ pub fn reserve_gc_heap<T>(engine: &Engine, store: &mut Store<T>) -> Result<()> {
     // A failure here only means less headroom, not incorrectness.
     let _ = balloon.call(&mut *store, len);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_configs_build_engines() -> Result<()> {
+        Engine::new(&config(false))?;
+        Engine::new(&config(true))?;
+        Engine::new(&component_config(false))?;
+        Engine::new(&component_config(true))?;
+        Ok(())
+    }
 }
