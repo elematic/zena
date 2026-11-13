@@ -141,7 +141,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-latest
             target: aarch64-apple-darwin
             archive_ext: tar.gz
             bin_name: zena
@@ -186,6 +186,8 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '14.0'
         with:
           shared-key: release-${{ matrix.target }}
           cache-on-failure: true
@@ -193,6 +195,8 @@ jobs:
 
       - name: Compile standalone zena binary
         shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '14.0'
         run: cargo build --release --locked --target ${{ matrix.target }} -p zena-cli --features bundled
 
       - name: Strip symbols and verify dynamic library links (Unix)
@@ -239,10 +243,11 @@ jobs:
           (
             cd dist
             if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+              HASH="$(sha256sum "${ARCHIVE}" | awk '{print $1}')"
             else
-              shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+              HASH="$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')"
             fi
+            printf '%s  %s\n' "$HASH" "$ARCHIVE" > "${ARCHIVE}.sha256"
           )
           cat "dist/${ARCHIVE}.sha256"
 
