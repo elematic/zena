@@ -499,6 +499,16 @@ script and everything after it, so keep inputs to what the script reads:
   only the ones its sources import. A missing one passes locally, where
   the other package happens to be built, and fails in CI.
 
+### Zebra's scripts beside wireit's
+
+Every wireit script also exists as a zebra script: in the package's
+`zena-package.json` under `scripts`, or in `zebra.json` for a package
+without a Zena manifest. The two run side by side until zebra caches in
+CI. A change to a script's command, dependencies (`cascade` included),
+inputs or outputs in one goes into the other in the same commit. They
+differ only where zebra has its own means, such as a fileset
+(`../stdlib:lib`, `../registry:source`) in place of a list of files.
+
 ### `ERR_MODULE_NOT_FOUND` on a file whose source exists
 
 If something fails to import, say, `packages/runtime/lib/index.js` while
