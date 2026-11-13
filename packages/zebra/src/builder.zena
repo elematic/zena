@@ -99,6 +99,19 @@ function appendEnvSegments(
   }
 }
 
+/**
+ * Remote-cache variables consumed by the outer Zebra process. Child scripts
+ * and services strip these from their inherited environment unless their own
+ * `env` config declares them, so nested builds and test suites do not read or
+ * write the outer run's remote cache.
+ */
+export let REMOTE_CACHE_ENV_VARS = [
+  'ZEBRA_CACHE',
+  'ZEBRA_CACHE_READ_ONLY',
+  'ZEBRA_GITHUB_CUSTODIAN_URL',
+  'WIREIT_CACHE_GITHUB_CUSTODIAN_PORT',
+];
+
 /** Concrete `(name, value)` pairs to pass in `SpawnOptions.env`. */
 function resolveEnvOverrides(
   env: Array<(String, EnvBinding)>,
@@ -120,6 +133,26 @@ function resolveEnvOverrides(
     }
   }
   return overrides;
+}
+
+/** Remote-cache variables to omit from `SpawnOptions.envRemove`. */
+function resolveEnvRemovals(
+  env: Array<(String, EnvBinding)>,
+): Array<String> {
+  let removals = new GrowableArray<String>();
+  for (let candidate in REMOTE_CACHE_ENV_VARS) {
+    var declared = false;
+    for (let (name, _) in env) {
+      if (name == candidate) {
+        declared = true;
+        break;
+      }
+    }
+    if (!declared) {
+      removals.push(candidate);
+    }
+  }
+  return removals;
 }
 
 function configFingerprint(
@@ -254,6 +287,7 @@ export async function runScript(
     let result = await runWith(['sh', '-c', wrapped], {
       cwd: cwd,
       env: resolveEnvOverrides(config.env),
+      envRemove: resolveEnvRemovals(config.env),
       processGroup: true,
     });
     let sigAfter = checkSignal();
@@ -378,6 +412,7 @@ async function startService(
   let proc = spawnWith(['sh', '-c', wrapped], {
     cwd: cwd,
     env: resolveEnvOverrides(config.env),
+    envRemove: resolveEnvRemovals(config.env),
     processGroup: true,
   });
   if (readyRegex != null) {
@@ -455,6 +490,7 @@ async function runForegroundService(
   let proc = spawnWith(['sh', '-c', wrapped], {
     cwd: cwd,
     env: resolveEnvOverrides(config.env),
+    envRemove: resolveEnvRemovals(config.env),
     processGroup: true,
   });
   var matched = readyRegex == null;

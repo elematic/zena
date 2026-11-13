@@ -4,6 +4,7 @@ import {getEnv} from 'zena:cli';
 import {isFile, listDir, readFile, unlink, writeFile} from 'zena:fs';
 import {runWith, spawnWith} from 'zena:process';
 import {milliseconds, monotonic, sleep} from 'zena:time';
+import {StepCache} from 'workflow/cache';
 import {
   Failed,
   RunResult,
@@ -11,16 +12,19 @@ import {
   Succeeded,
 } from 'workflow/engine';
 import {StepKey} from 'workflow/step';
+import {REMOTE_CACHE_ENV_VARS} from 'zebra/builder';
 import {Colors} from 'zebra/colors';
 import {ensureDir, ensureParentDir, withRoot} from 'zebra/fs-util';
 import {FileHasher} from 'zebra/fs-walk';
 import {PlanLoadStats} from 'zebra/plan-cache';
 import {
+  BuildOptions,
   BuildOutcome,
-  buildTarget,
+  WatchOptions,
+  buildTarget as runBuildTarget,
   defaultParallelism,
   formatBuildReport,
-  watchTarget,
+  watchTarget as runWatchTarget,
 } from 'zebra/runner';
 import {ScriptRef} from 'zebra/wireit-config';
 
@@ -28,6 +32,82 @@ import {ScriptRef} from 'zebra/wireit-config';
  * End-to-end build of a two-package fixture workspace created under
  * /tmp (preopened by the test runner). Commands run through `sh`.
  */
+
+function localEnv(name: String): String? {
+  for (let excluded in REMOTE_CACHE_ENV_VARS) {
+    if (name == excluded) {
+      return null;
+    }
+  }
+  return getEnv(name);
+}
+
+async function buildTarget(
+  root: String,
+  entry: ScriptRef,
+  options: BuildOptions = {},
+): Future<BuildOutcome> {
+  let {parallelism = 0, force = false, useCache = true} = options;
+  var remoteCache: StepCache? = null;
+  if (let {remoteCache: r} = options) { remoteCache = r; }
+  var lookupEnv: ((name: String) => String?)? = localEnv;
+  if (let {lookupEnv: l} = options) { lookupEnv = l ?? localEnv; }
+  var onCacheWarning: ((message: String) => void)? = null;
+  if (let {onCacheWarning: w} = options) { onCacheWarning = w; }
+  var hasherOut: FileHasher? = null;
+  if (let {hasherOut: h} = options) { hasherOut = h; }
+  var planStatsOut: PlanLoadStats? = null;
+  if (let {planStatsOut: s} = options) { planStatsOut = s; }
+  var extraArgs: Array<String>? = null;
+  if (let {extraArgs: a} = options) { extraArgs = a; }
+  return await runBuildTarget(root, entry, {
+    parallelism,
+    force,
+    useCache,
+    remoteCache,
+    lookupEnv,
+    onCacheWarning,
+    hasherOut,
+    planStatsOut,
+    extraArgs,
+  });
+}
+
+async function watchTarget(
+  root: String,
+  entry: ScriptRef,
+  options: WatchOptions = {},
+): Future<BuildOutcome> {
+  let {
+    parallelism = 0,
+    force = false,
+    useCache = true,
+    pollIntervalMs = 150 as i64,
+    verbose = false,
+  } = options;
+  var remoteCache: StepCache? = null;
+  if (let {remoteCache: r} = options) { remoteCache = r; }
+  var lookupEnv: ((name: String) => String?)? = localEnv;
+  if (let {lookupEnv: l} = options) { lookupEnv = l ?? localEnv; }
+  var onCacheWarning: ((message: String) => void)? = null;
+  if (let {onCacheWarning: w} = options) { onCacheWarning = w; }
+  var onIteration: ((iteration: i32, outcome: BuildOutcome) => Future<boolean>)? = null;
+  if (let {onIteration: cb} = options) { onIteration = cb; }
+  var extraArgs: Array<String>? = null;
+  if (let {extraArgs: a} = options) { extraArgs = a; }
+  return await runWatchTarget(root, entry, {
+    parallelism,
+    force,
+    useCache,
+    remoteCache,
+    lookupEnv,
+    onCacheWarning,
+    pollIntervalMs,
+    onIteration,
+    verbose,
+    extraArgs,
+  });
+}
 
 async function write(root: String, path: String, content: String) {
   let full = withRoot(root, path);
@@ -883,6 +963,7 @@ export let tests = suite('zebra end to end', () => {
     let zenaBin = (getEnv('ZENA_WORKSPACE_ROOT') ?? '.') + '/target/release/zena-cli';
     let proc = spawnWith([zenaBin, 'build', '--watch', 'app'], {
       cwd: root,
+      envRemove: REMOTE_CACHE_ENV_VARS,
     });
     var sawSucceeded = false;
     while (true) {
@@ -920,6 +1001,7 @@ export let tests = suite('zebra end to end', () => {
     let zenaBin = (getEnv('ZENA_WORKSPACE_ROOT') ?? '.') + '/target/release/zena-cli';
     let proc = spawnWith([zenaBin, 'build', 'serve'], {
       cwd: root,
+      envRemove: REMOTE_CACHE_ENV_VARS,
     });
     let firstLine = await proc.readLine();
     equal(firstLine, 'SERVING');
@@ -954,6 +1036,7 @@ export let tests = suite('zebra end to end', () => {
     let zenaBin = (getEnv('ZENA_WORKSPACE_ROOT') ?? '.') + '/target/release/zena-cli';
     let proc = spawnWith([zenaBin, 'build', 'app'], {
       cwd: root,
+      envRemove: REMOTE_CACHE_ENV_VARS,
     });
     while (!(await isFile(withRoot(root, 'app.running')))) {
       await sleep(milliseconds(20));
@@ -1394,5 +1477,45 @@ export let tests = suite('zebra end to end', () => {
         extraArgs: ['--filter', 'x'],
       });
     });
+  });
+
+  test('child scripts do not inherit remote cache variables unless declared in env', async () => {
+    let root = `/tmp/zebra-cache-env-isolation-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    await write(root, 'zebra.json', `{
+      "scripts": {
+        "all": {
+          "dependencies": ["stripped", "forwarded"]
+        },
+        "stripped": {
+          "command": "printf '%s|%s|%s|%s' \\"$ZEBRA_CACHE\\" \\"$ZEBRA_CACHE_READ_ONLY\\" \\"$ZEBRA_GITHUB_CUSTODIAN_URL\\" \\"$WIREIT_CACHE_GITHUB_CUSTODIAN_PORT\\" > stripped.txt",
+          "files": [],
+          "output": ["stripped.txt"]
+        },
+        "forwarded": {
+          "command": "printf '%s|%s' \\"$ZEBRA_CACHE\\" \\"$ZEBRA_CACHE_READ_ONLY\\" > forwarded.txt",
+          "files": [],
+          "output": ["forwarded.txt"],
+          "env": {
+            "ZEBRA_CACHE": {"external": true},
+            "ZEBRA_CACHE_READ_ONLY": "0"
+          }
+        }
+      }
+    }`);
+
+    let zenaBin = (getEnv('ZENA_WORKSPACE_ROOT') ?? '.') + '/target/release/zena-cli';
+    let ran = await runWith([zenaBin, 'build', '--no-cache', 'all'], {
+      cwd: root,
+      env: [
+        ('ZEBRA_CACHE', 'github'),
+        ('ZEBRA_CACHE_READ_ONLY', '1'),
+        ('ZEBRA_GITHUB_CUSTODIAN_URL', 'http://127.0.0.1:9/custodian'),
+        ('WIREIT_CACHE_GITHUB_CUSTODIAN_PORT', '9'),
+      ],
+    });
+    isTrue(ran.succeeded(), ran.stdout + ran.stderr);
+    equal(await readFile(withRoot(root, 'stripped.txt')), '|||');
+    equal(await readFile(withRoot(root, 'forwarded.txt')), 'github|0');
   });
 });
