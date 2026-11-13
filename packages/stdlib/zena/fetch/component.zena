@@ -167,10 +167,18 @@ function requestFor(target: URL, init: RequestInit): Own<Request> {
   }
   var contents: Option<Stream<u8>> = none;
   if (let {body} = init) {
+    var bodyLength = -1;
     if (body is String) {
+      bodyLength = body.length;
       contents = some(textStream(body));
     } else if (body is FixedArray<u8>) {
+      bodyLength = body.length;
       contents = some(bytesStream(body));
+    }
+    if (bodyLength >= 0 && !fields.has('content-length')) {
+      if (let (false, err) = fields.append('content-length', `${bodyLength}`.toBytes())) {
+        throw new Error('zena:fetch: invalid header: content-length');
+      }
     }
   }
   // The trailers future is the sender's to settle, and the host does

@@ -424,4 +424,72 @@ export let tests = suite('zena:fetch', () => {
       server.close();
     }
   });
+
+  test('sends content-length without transfer-encoding on fixed-size request bodies', async () => {
+    let app = new App();
+    app.use(async (req, res, next): Future<void> => {
+      let cl = req.getHeader('content-length');
+      let te = req.getHeader('transfer-encoding');
+      if (cl != null) {
+        res.setHeader('x-echo-cl', cl);
+      }
+      if (te != null) {
+        res.setHeader('x-echo-te', te);
+      }
+      let body = await req.bytes();
+      res.statusCode = 200;
+      res.body = `${body.length}`;
+    });
+    let server = new Server(app, 0 as u16);
+    server.start();
+    let origin = originOf(server);
+    try {
+      let utf8Body = '{"name":"café"}';
+      let rText = await fetch(`${origin}/text`, {
+        method: 'POST',
+        body: utf8Body,
+      });
+      equal(rText.status, 200);
+      equal(rText.header('x-echo-cl') as String, `${utf8Body.length}`);
+      isNull(rText.header('x-echo-te'));
+      equal(await rText.text(), `${utf8Body.length}`);
+
+      let rEmpty = await fetch(`${origin}/empty`, {
+        method: 'PUT',
+        body: '',
+      });
+      equal(rEmpty.status, 200);
+      equal(rEmpty.header('x-echo-cl') as String, '0');
+      isNull(rEmpty.header('x-echo-te'));
+      equal(await rEmpty.text(), '0');
+
+      let rawBytes = new FixedArray<u8>(5, 0x2a as u8);
+      let rBytes = await fetch(`${origin}/bytes`, {
+        method: 'PUT',
+        body: rawBytes,
+      });
+      equal(rBytes.status, 200);
+      equal(rBytes.header('x-echo-cl') as String, '5');
+      isNull(rBytes.header('x-echo-te'));
+      equal(await rBytes.text(), '5');
+
+      let rExplicit = await fetch(`${origin}/explicit`, {
+        method: 'PUT',
+        headers: [('Content-Length', '4')],
+        body: 'ping',
+      });
+      equal(rExplicit.status, 200);
+      equal(rExplicit.header('x-echo-cl') as String, '4');
+      isNull(rExplicit.header('x-echo-te'));
+      equal(await rExplicit.text(), '4');
+
+      let rGet = await fetch(`${origin}/none`);
+      equal(rGet.status, 200);
+      isNull(rGet.header('x-echo-cl'));
+      isNull(rGet.header('x-echo-te'));
+      equal(await rGet.text(), '0');
+    } finally {
+      server.close();
+    }
+  });
 });
