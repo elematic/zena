@@ -1,23 +1,38 @@
 /**
- * The App View's admin page, for the DIDs in `APP_VIEW_ADMIN_DIDS`: every account
- * the App View made, by scope, and who may create scopes. An admin signs in as
- * anyone does; the scope and package pages then name every private member for
- * them too (`AppView.getEntries`). The page changes nothing: the list of who
- * may create scopes changes through `putScopeCreator`, from `zena pkg admin`.
+ * The App View's admin pages, for the DIDs in `APP_VIEW_ADMIN_DIDS`:
+ * `/admin` lists every account the App View made, by scope, and who may
+ * create scopes; `/admin/log` lists every operation on scopes, teams,
+ * packages, automation accounts and admin settings, along with `403`
+ * refusals. An admin signs in as anyone does; the scope and package pages
+ * then name every private member for them too (`AppView.getEntries`). The
+ * pages change nothing: the list of who may create scopes changes through
+ * `putScopeCreator`, from `zena pkg admin`.
  */
 
-import {HashMap} from 'zena:collections';
+import {HashMap, HashSet} from 'zena:collections';
 import {GrowableArray} from 'zena:core';
-import {HTMLPartial, Router, TemplateValue, html} from 'zena:http';
+import {HTMLPartial, Response, Router, TemplateValue, html} from 'zena:http';
 import {formatTimestamp} from 'zena:time';
+import {URLSearchParams} from 'zena:url';
+import {Cid} from 'atproto/cid';
 import {compareKeys} from 'atproto/mst';
+import {
+  MEMBERS_TYPE, MAINTAINERS_TYPE, POLICY_TYPE, RELEASE_TYPE, RETRACTION_TYPE, SCOPE_PROFILE_TYPE, TEAM_TYPE
+} from 'package-manager/records';
 import {AccountKind} from 'pds/storage';
-import {AppViewAccount, AppView, ScopeCreation, ScopeCreator} from '../../app-view.zena';
+import {
+  ACTIVITY_ADMIN, ACTIVITY_AUTOMATION, ACTIVITY_PACKAGE, ACTIVITY_SCOPE, ACTIVITY_TEAM, ActivityEvent, ActivityQuery,
+  AppViewAccount, AppView, OUTCOME_HELD, OUTCOME_REFUSED, OUTCOME_WITHDRAWN, OUTCOME_WRITTEN, ScopeCreation,
+  ScopeCreator
+} from '../../app-view.zena';
 import {personLink} from '../partials/person.zena';
 import {page} from '../layout.zena';
-import {count, each, when} from '../partials/common.zena';
+import {chip, count, each, when} from '../partials/common.zena';
 import {PageContext, contextOf} from '../session.zena';
 import {People, Person} from '../people.zena';
+
+/** How many events one page of `/admin/log` shows. */
+let LOG_PAGE_SIZE = 50;
 
 /** One scope's accounts: its organization, its packages and its automation accounts. */
 final class ScopeAccounts {
@@ -29,28 +44,30 @@ final class ScopeAccounts {
   new(this.scope);
 }
 
-/** Adds the admin page to `router`. */
+/** The filter inputs on `/admin/log`, as typed in the URL. */
+final class LogFilters {
+  var kind: String | null = null;
+  var outcome: String | null = null;
+  var scope: String = '';
+  var actor: String = '';
+  var account: String = '';
+  var after: String | null = null;
+
+  anyActive(): boolean {
+    return this.kind != null || this.outcome != null || this.scope.length > 0 || this.actor.length > 0 ||
+        this.account.length > 0 || this.after != null;
+  }
+}
+
+/** Adds `/admin` and `/admin/log` to `router`. */
 export function adminPage(router: Router, appView: AppView, people: People): void {
   router.get('/admin', async (req, res, next, params) => {
     let context = await contextOf(req, appView, people);
-    res.type = 'text/html; charset=utf-8';
-    let who = context.who;
-    if (who == null) {
-      res.body = page('Admin · Zena packages', context, html`
-        <h1>Admin</h1>
-        <p>Sign in as one of the App View's admins to see everything it holds.</p>
-      `);
+    let caller = allowAdmin(context, res, 'Admin · Zena packages');
+    if (caller == null) {
       return;
     }
-    if (!context.isAdmin) {
-      res.statusCode = 403;
-      res.body = page('Admin · Zena packages', context, html`
-        <h1>Admin</h1>
-        <p>Only the App View's admins see this page. <a href="/me">See your own packages.</a></p>
-      `);
-      return;
-    }
-    let scopes = byScope(await appView.listAccounts(who.did));
+    let scopes = byScope(await appView.listAccounts(caller));
     let creators = await appView.scopeCreators();
     let dids = new GrowableArray<String>();
     for (let creator in creators) {
@@ -66,6 +83,7 @@ export function adminPage(router: Router, appView: AppView, people: People): voi
     res.body = page('Admin · Zena packages', context, html`
       <div>
         <h1>Admin</h1>
+        ${adminNav('accounts')}
         <p class="muted">
           ${count(scopes.length, 'scope')}, ${count(packages, 'package')} and
           ${count(automation, 'automation account')}. A scope's page names its members and teams, and a
@@ -76,6 +94,459 @@ export function adminPage(router: Router, appView: AppView, people: People): voi
       ${creatorsSection(context, appView.config.scopeCreation, creators, named)}
     `);
   });
+
+  router.get('/admin/log', async (req, res, next, params) => {
+    let context = await contextOf(req, appView, people);
+    let caller = allowAdmin(context, res, 'Operations log · Admin · Zena packages');
+    if (caller == null) {
+      return;
+    }
+    let filters = readFilters(req.url.searchParams());
+    let query = new ActivityQuery();
+    query.kind = filters.kind;
+    query.outcome = filters.outcome;
+    if (filters.scope.length > 0) {
+      query.scope = filters.scope;
+    }
+    if (filters.account.length > 0) {
+      query.account = filters.account;
+    }
+    if (filters.actor.length > 0) {
+      if (filters.actor == 'operator' || filters.actor.startsWith('did:')) {
+        query.actor = filters.actor;
+      } else {
+        let resolved = await appView.resolveHandle(filters.actor);
+        query.actor = resolved ?? filters.actor;
+      }
+    }
+    query.after = filters.after;
+    query.limit = LOG_PAGE_SIZE + 1;
+    let fetched = await appView.listActivity(caller, query);
+    let hasMore = fetched.length > LOG_PAGE_SIZE;
+    let events = new GrowableArray<ActivityEvent>();
+    for (var i = 0; i < fetched.length && i < LOG_PAGE_SIZE; i += 1) {
+      events.push(fetched[i]);
+    }
+    let dids = personDidsIn(events);
+    let named = await people.each(dids);
+    res.body = page('Operations log · Admin · Zena packages', context, html`
+      <div>
+        <h1>Operations log</h1>
+        ${adminNav('log')}
+        <p class="muted">
+          Every change to a scope, team, package, automation account or admin setting, newest first, along with
+          calls refused with <code>403</code>.
+        </p>
+      </div>
+      ${filterForm(filters)}
+      ${if (events.length == 0) html`<p class="muted">No matching operations recorded.</p>`
+          else logTable(context, events, named)}
+      ${pagination(filters, events, hasMore)}
+    `);
+  });
+}
+
+/** Answers `res` when `context` is not an admin's session; returns the admin's DID when it is. */
+function allowAdmin(context: PageContext, res: Response, title: String): String | null {
+  res.type = 'text/html; charset=utf-8';
+  let who = context.who;
+  if (who == null) {
+    res.body = page(title, context, html`
+      <h1>Admin</h1>
+      <p>Sign in as one of the App View's admins to see everything it holds.</p>
+    `);
+    return null;
+  }
+  if (!context.isAdmin) {
+    res.statusCode = 403;
+    res.body = page(title, context, html`
+      <h1>Admin</h1>
+      <p>Only the App View's admins see this page. <a href="/me">See your own packages.</a></p>
+    `);
+    return null;
+  }
+  return who.did;
+}
+
+function adminNav(current: String): HTMLPartial {
+  let accountsCurrent = current == 'accounts';
+  let logCurrent = current == 'log';
+  return html`
+    <nav class="admin-nav" aria-label="Admin sections">
+      ${if (accountsCurrent) html`<a href="/admin" aria-current="page">Accounts</a>`
+          else html`<a href="/admin">Accounts</a>`}
+      ${if (logCurrent) html`<a href="/admin/log" aria-current="page">Operations log</a>`
+          else html`<a href="/admin/log">Operations log</a>`}
+    </nav>
+  `;
+}
+
+function readFilters(search: URLSearchParams): LogFilters {
+  let filters = new LogFilters();
+  let kind = (search.get('kind') ?? '').trim();
+  if (kind == ACTIVITY_SCOPE || kind == ACTIVITY_TEAM || kind == ACTIVITY_PACKAGE || kind == ACTIVITY_AUTOMATION ||
+      kind == ACTIVITY_ADMIN) {
+    filters.kind = kind;
+  }
+  let outcome = (search.get('outcome') ?? '').trim();
+  if (outcome == OUTCOME_WRITTEN || outcome == OUTCOME_HELD || outcome == OUTCOME_WITHDRAWN ||
+      outcome == OUTCOME_REFUSED) {
+    filters.outcome = outcome;
+  }
+  filters.scope = (search.get('scope') ?? '').trim();
+  filters.actor = (search.get('actor') ?? '').trim();
+  filters.account = (search.get('account') ?? '').trim();
+  let after = (search.get('after') ?? '').trim();
+  if (after.length > 0 && !after.contains('/')) {
+    filters.after = after;
+  }
+  return filters;
+}
+
+function filterForm(filters: LogFilters): HTMLPartial {
+  return html`
+    <form class="log-filters" method="get" action="/admin/log">
+      <label>
+        <span>Kind</span>
+        <select name="kind">
+          ${option('', 'All kinds', filters.kind == null)}
+          ${option(ACTIVITY_SCOPE, 'Scope', filters.kind == ACTIVITY_SCOPE)}
+          ${option(ACTIVITY_TEAM, 'Team', filters.kind == ACTIVITY_TEAM)}
+          ${option(ACTIVITY_PACKAGE, 'Package', filters.kind == ACTIVITY_PACKAGE)}
+          ${option(ACTIVITY_AUTOMATION, 'Automation', filters.kind == ACTIVITY_AUTOMATION)}
+          ${option(ACTIVITY_ADMIN, 'Admin', filters.kind == ACTIVITY_ADMIN)}
+        </select>
+      </label>
+      <label>
+        <span>Outcome</span>
+        <select name="outcome">
+          ${option('', 'All outcomes', filters.outcome == null)}
+          ${option(OUTCOME_WRITTEN, 'Written', filters.outcome == OUTCOME_WRITTEN)}
+          ${option(OUTCOME_HELD, 'Held', filters.outcome == OUTCOME_HELD)}
+          ${option(OUTCOME_WITHDRAWN, 'Withdrawn', filters.outcome == OUTCOME_WITHDRAWN)}
+          ${option(OUTCOME_REFUSED, 'Refused (403)', filters.outcome == OUTCOME_REFUSED)}
+        </select>
+      </label>
+      <label>
+        <span>Scope</span>
+        <input type="text" name="scope" value="${filters.scope}" placeholder="acme">
+      </label>
+      <label>
+        <span>Actor</span>
+        <input type="text" name="actor" value="${filters.actor}" placeholder="DID, handle or operator">
+      </label>
+      ${when(filters.account.length > 0, () => html`<input type="hidden" name="account" value="${filters.account}">`)}
+      <div class="log-filter-actions">
+        <button type="submit">Filter</button>
+        ${when(filters.anyActive(), () => html`<a class="quiet-link" href="/admin/log">Clear</a>`)}
+      </div>
+    </form>
+  `;
+}
+
+function option(value: String, label: String, selected: boolean): HTMLPartial {
+  return if (selected) html`<option value="${value}" selected>${label}</option>`
+      else html`<option value="${value}">${label}</option>`;
+}
+
+function personDidsIn(events: Array<ActivityEvent>): Array<String> {
+  let seen = new HashSet<String>();
+  let dids = new GrowableArray<String>();
+  let add = (did: String | null) => {
+    if (did != null && did.startsWith('did:') && !seen.has(did)) {
+      seen.add(did);
+      dids.push(did);
+    }
+  };
+  for (let event in events) {
+    add(event.actor);
+    if (event.accountKind == null) {
+      add(event.account);
+    }
+    if (event.method == 'createScope') {
+      add(event.detail);
+    }
+  }
+  return dids;
+}
+
+function logTable(context: PageContext, events: Array<ActivityEvent>, named: HashMap<String, Person>): HTMLPartial {
+  return html`
+    <div class="table-scroll">
+      <table class="activity-log">
+        <thead>
+          <tr>
+            <th>Time (UTC)</th>
+            <th>Status</th>
+            <th>Operation</th>
+            <th>Target</th>
+            <th>Actor</th>
+            <th>Record / Detail</th>
+          </tr>
+        </thead>
+        <tbody>${each(events, (event) => html`
+          <tr>
+            <td class="mono muted nowrap" title="${isoTime(event.at)}">${displayTime(event.at)}</td>
+            <td class="nowrap">${chip(event.kind)} ${outcomeChip(event.outcome)}</td>
+            <td>
+              <div>${operationSummary(event)}</div>
+              <div class="mono muted small">${operationSubtext(event)}</div>
+            </td>
+            <td>${targetCell(context, event, named)}</td>
+            <td>${actorCell(context, event, named)}</td>
+            <td>${detailCell(context, event, named)}</td>
+          </tr>`)}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function outcomeChip(outcome: String): HTMLPartial {
+  if (outcome == OUTCOME_WRITTEN) {
+    return chip('written', 'success');
+  }
+  if (outcome == OUTCOME_HELD) {
+    return chip('held', 'primary');
+  }
+  if (outcome == OUTCOME_REFUSED) {
+    return chip('refused', 'danger');
+  }
+  return chip(outcome);
+}
+
+function operationSummary(event: ActivityEvent): String {
+  let method = event.method;
+  if (method == 'createOrganization') {
+    return 'Create scope';
+  }
+  if (method == 'createScope') {
+    return 'Create scope (operator)';
+  }
+  if (method == 'createPackage') {
+    return 'Create package';
+  }
+  if (method == 'createAutomationAccount') {
+    return 'Create automation account';
+  }
+  if (method == 'issueAutomationToken') {
+    return 'Issue automation token';
+  }
+  if (method == 'uploadArtifact') {
+    return 'Upload artifact';
+  }
+  if (method == 'publish') {
+    return if (event.rkey != null) `Publish ${event.rkey as String}` else 'Publish release';
+  }
+  if (method == 'completeRelease') {
+    return if (event.rkey != null) `Complete release ${event.rkey as String}` else 'Complete release';
+  }
+  if (method == 'withdrawRelease') {
+    return if (event.rkey != null) `Withdraw release ${event.rkey as String}` else 'Withdraw release';
+  }
+  if (method == 'retract') {
+    return if (event.rkey != null) `Retract ${event.rkey as String}` else 'Retract release';
+  }
+  if (method == 'putMembers') {
+    return 'Propose scope members';
+  }
+  if (method == 'putTeam') {
+    return if (event.rkey != null) `Propose team ${event.rkey as String}` else 'Propose team';
+  }
+  if (method == 'deleteTeam') {
+    return if (event.rkey != null) `Delete team ${event.rkey as String}` else 'Delete team';
+  }
+  if (method == 'putPolicy') {
+    return 'Propose scope policy';
+  }
+  if (method == 'putScopeProfile') {
+    return 'Update scope profile';
+  }
+  if (method == 'putMaintainers') {
+    return 'Propose maintainers';
+  }
+  if (method == 'completeChange') {
+    return `Complete ${collectionNoun(event.collection, event.rkey)} change`;
+  }
+  if (method == 'withdrawChange') {
+    return `Withdraw ${collectionNoun(event.collection, event.rkey)} change`;
+  }
+  if (method == 'putScopeCreator') {
+    return if (event.detail == 'denied') 'Remove scope creator' else 'Allow scope creator';
+  }
+  if (method == 'setLimit') {
+    return 'Set account limit';
+  }
+  return method;
+}
+
+function collectionNoun(collection: String | null, rkey: String | null): String {
+  if (collection == MEMBERS_TYPE) {
+    return 'members';
+  }
+  if (collection == TEAM_TYPE) {
+    return if (rkey != null) `team ${rkey}` else 'team';
+  }
+  if (collection == POLICY_TYPE) {
+    return 'policy';
+  }
+  if (collection == MAINTAINERS_TYPE) {
+    return 'maintainers';
+  }
+  if (collection == SCOPE_PROFILE_TYPE) {
+    return 'scope profile';
+  }
+  if (collection == RELEASE_TYPE) {
+    return 'release';
+  }
+  if (collection == RETRACTION_TYPE) {
+    return 'retraction';
+  }
+  return 'record';
+}
+
+function operationSubtext(event: ActivityEvent): String {
+  if (event.collection != null && event.rkey != null) {
+    return `${event.method} · ${shortCollection(event.collection as String)}/${event.rkey as String}`;
+  }
+  return event.method;
+}
+
+function shortCollection(collection: String): String {
+  let prefix = 'dev.zena-lang.';
+  if (collection.startsWith(prefix)) {
+    return collection.sliceBytes(prefix.length, collection.length);
+  }
+  return collection;
+}
+
+function targetCell(context: PageContext, event: ActivityEvent, named: HashMap<String, Person>): TemplateValue {
+  let accountKind = event.accountKind;
+  let handle = event.handle;
+  let scope = event.scope;
+  let account = event.account;
+  if (accountKind == 'package' && handle != null) {
+    return html`<a href="/packages/${handle}">${handle}</a>${
+        when(account != null, () => html`<div class="mono muted small">${account as String}</div>`)}`;
+  }
+  if (event.kind == ACTIVITY_TEAM && scope != null && event.rkey != null) {
+    return html`<a href="/scopes/${scope}">${scope}</a> / <span class="mono">${event.rkey as String}</span>${
+        when(account != null, () => html`<div class="mono muted small">${account as String}</div>`)}`;
+  }
+  if (accountKind == 'organization' && scope != null) {
+    return html`<a href="/scopes/${scope}">${scope}</a>${
+        when(account != null, () => html`<div class="mono muted small">${account as String}</div>`)}`;
+  }
+  if (accountKind == 'automation' && handle != null) {
+    return html`<span class="mono">${handle}</span> ${chip('automation')}${
+        when(account != null, () => html`<div class="mono muted small">${account as String}</div>`)}`;
+  }
+  if (account != null && named.has(account)) {
+    return html`${personLink(context, named[account])}<div class="mono muted small">${account}</div>`;
+  }
+  if (scope != null) {
+    return html`<span class="mono">${scope}</span>`;
+  }
+  if (account != null) {
+    return html`<span class="mono muted">${account}</span>`;
+  }
+  return html`<span class="muted">—</span>`;
+}
+
+function actorCell(context: PageContext, event: ActivityEvent, named: HashMap<String, Person>): TemplateValue {
+  if (event.actor == 'operator') {
+    return chip('operator');
+  }
+  if (named.has(event.actor)) {
+    return html`${personLink(context, named[event.actor])}<div class="mono muted small">${event.actor}</div>`;
+  }
+  return html`<span class="mono">${event.actor}</span>`;
+}
+
+function detailCell(context: PageContext, event: ActivityEvent, named: HashMap<String, Person>): TemplateValue {
+  let before = event.before;
+  let after = event.after;
+  let detail = event.detail;
+  if (before == null && after == null && detail == null) {
+    return html`<span class="muted">—</span>`;
+  }
+  let cidLine = if (before != null && after != null) {
+    let b = before.toString();
+    let a = after.toString();
+    html`<div class="mono muted small" title="${b} → ${a}">${shortCid(b)} → ${shortCid(a)}</div>`
+  } else if (after != null) {
+    let a = after.toString();
+    html`<div class="mono muted small" title="${a}">${shortCid(a)}</div>`
+  } else if (before != null) {
+    let b = before.toString();
+    html`<div class="mono muted small" title="${b}">${shortCid(b)} → deleted</div>`
+  } else {
+    null
+  };
+  let detailLine = if (detail == null) {
+    null
+  } else if (event.method == 'createScope' && named.has(detail)) {
+    html`<div class="small">owner: ${personLink(context, named[detail])}</div>`
+  } else {
+    html`<div class="muted small">${detail}</div>`
+  };
+  return html`${cidLine}${detailLine}`;
+}
+
+function shortCid(text: String): String {
+  if (text.length <= 16) {
+    return text;
+  }
+  return `${text.sliceBytes(0, 7)}…${text.sliceBytes(text.length - 6, text.length)}`;
+}
+
+function isoTime(atMicros: i64): String {
+  return formatTimestamp(atMicros * (1000 as i64));
+}
+
+function displayTime(atMicros: i64): String {
+  let iso = isoTime(atMicros);
+  if (iso.length >= 19) {
+    return `${iso.sliceBytes(0, 10)} ${iso.sliceBytes(11, 19)}`;
+  }
+  return iso;
+}
+
+function pagination(filters: LogFilters, events: Array<ActivityEvent>, hasMore: boolean): TemplateValue {
+  if (filters.after == null && !hasMore) {
+    return null;
+  }
+  let nextAfter = if (hasMore && events.length > 0) events[events.length - 1].id else null;
+  return html`
+    <nav class="log-pagination" aria-label="Operations log pages">
+      ${when(filters.after != null, () => html`<a href="${logHref(filters, null)}">← Newest</a>`)}
+      ${when(nextAfter != null, () => html`<a href="${logHref(filters, nextAfter)}">Older →</a>`)}
+    </nav>
+  `;
+}
+
+function logHref(filters: LogFilters, after: String | null): String {
+  let params = new URLSearchParams();
+  if (filters.kind != null) {
+    params.set('kind', filters.kind as String);
+  }
+  if (filters.outcome != null) {
+    params.set('outcome', filters.outcome as String);
+  }
+  if (filters.scope.length > 0) {
+    params.set('scope', filters.scope);
+  }
+  if (filters.actor.length > 0) {
+    params.set('actor', filters.actor);
+  }
+  if (filters.account.length > 0) {
+    params.set('account', filters.account);
+  }
+  if (after != null) {
+    params.set('after', after);
+  }
+  let query = params.toString();
+  return if (query.length == 0) '/admin/log' else `/admin/log?${query}`;
 }
 
 /** Who may create scopes: anyone, or the admins and the accounts listed, with who listed each and when. */

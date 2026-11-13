@@ -165,7 +165,7 @@ package-manager.md, "Reports and takedowns".
 | Reserve scope names                          | `APP_VIEW_RESERVED_SCOPES`, by the operator |
 | Let only listed accounts create scopes       | `APP_VIEW_SCOPE_CREATORS`, by the operator  |
 | Label what was taken down, and why           | no; needs the labeler                       |
-| See a log of admin actions                   | no                                          |
+| See a log of operations and refused calls    | `/admin/log`                                |
 
 The three ways to remove a release differ in who does it and what stays:
 

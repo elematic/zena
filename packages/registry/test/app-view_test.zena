@@ -32,7 +32,9 @@ import {Range, Version} from 'zena-lang:semver';
 import {MINIMUM_CLIENT_VERSION, RECOMMENDED_CLIENT_VERSION} from 'registry/clients';
 import {MemoryHandleRecords} from 'registry/handles';
 import {
-  CallLog, ClaimedName, ClaimedScope, AppViewAccount, Publication, AppViewConfig, AppViewError, AppViewStore, MemoryAppViewStore, PENDING_MICROS, AppView,
+  ACTIVITY_ADMIN, ACTIVITY_AUTOMATION, ACTIVITY_PACKAGE, ACTIVITY_SCOPE, ACTIVITY_TEAM, ActivityEvent, ActivityQuery,
+  CallLog, ClaimedName, ClaimedScope, AppViewAccount, Publication, AppViewConfig, AppViewError, AppViewStore,
+  MemoryAppViewStore, OUTCOME_HELD, OUTCOME_REFUSED, OUTCOME_WITHDRAWN, OUTCOME_WRITTEN, PENDING_MICROS, AppView,
   Count, Limit, Limits, PackageSummary, PendingChange, PendingRelease, ScopeCreation, ScopeCreator, limitName, limitNamed
 } from 'registry/app-view';
 import {MAX_README_BYTES, ReleaseContents, ReleaseFile} from 'registry/release-contents';
@@ -375,6 +377,8 @@ final class StaleAppViewStore implements AppViewStore {
   async deleteScopeCreator(did: String): Future<void> { await this.#inner.deleteScopeCreator(did); }
   async scopeCreator(did: String): Future<ScopeCreator | null> { return await this.#inner.scopeCreator(did); }
   async scopeCreators(): Future<Array<ScopeCreator>> { return await this.#inner.scopeCreators(); }
+  async appendActivity(event: ActivityEvent): Future<void> { await this.#inner.appendActivity(event); }
+  async activity(query: ActivityQuery): Future<Array<ActivityEvent>> { return await this.#inner.activity(query); }
 }
 
 /** A day, in microseconds. */
@@ -2394,5 +2398,113 @@ export let tests = suite('registry/app-view', () => {
     for (let version in ['2.1.0', '2.2.0', '2.3.0', '2.4.0']) {
       isTrue((await store.getRecord(RELEASE_TYPE, version)) == null, version);
     }
+  });
+
+  test('records package, scope, team, automation and admin operations and 403 refusals, and shows them on /admin/log',
+      async (ctx) => {
+    let counting = new CountingStorage();
+    let fixture = new Fixture(new MemoryAppViewStore(), counting);
+    let appView = fixture.appView as AppView;
+    appView.config.admins.add(ALICE);
+    appView.config.scopeCreation = ScopeCreation.Listed;
+
+    // Non-admins cannot read the activity log or visit /admin/log.
+    equal(await refusal(() => appView.listActivity(BOB, new ActivityQuery())), 'Forbidden');
+    isTrue(pageOf(await fixture.get('/admin/log')).contains('Sign in as one of'), 'signed out');
+    equal((await fixture.get('/admin/log', await webCookie(fixture, BOB))).statusCode, 403, 'non-admin');
+
+    // Refused scope creation under Listed mode, then admin allows Bob.
+    equal(errorOf(await createOrganization(fixture, BOB, 'bobs')), 'NotAllowed');
+    equal(errorOf(await fixture.call(BOB, 'putScopeCreator', `{"did": "${BOB}", "allowed": true}`)), 'Forbidden');
+    ok(await fixture.call(ALICE, 'putScopeCreator', `{"did": "${BOB}", "allowed": true}`));
+
+    // Scope, operator scope, team, scope profile, automation, package, release, retraction and limits.
+    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    await appView.createScopeAsOperator(ALICE, 'zena', [], 1793000000000000 as i64);
+    await appView.setLimit(orgDid, Limit.Packages, some(2500 as i64), 1793000000000001 as i64);
+
+    ok(await fixture.call(ALICE, 'putScopeProfile',
+        `{"organization": "${orgDid}", "profile": {"$type": "dev.zena-lang.org.profile", "displayName": "Acme"}}`));
+    let bobMember = new MemberEntry(BOB, MEMBER, filled(221));
+    ok(await putMembers(fixture, ALICE, orgDid,
+        [(await entriesSeen(fixture, ALICE, orgDid))[0], bobMember], [bobMember],
+        (org['members'] as JsonObject)['cid'] as String));
+
+    ok(await putTeam(fixture, ALICE, orgDid, 'core', [new MemberEntry(BOB, MAINTAINER, filled(222))], null));
+    let proposedOps = ok(await proposeTeam(fixture, ALICE, orgDid, 'ops',
+        [new MemberEntry(BOB, MAINTAINER, filled(223))], null));
+    ok(await fixture.call(ALICE, 'withdrawChange', `{"uri": "${proposedOps['uri'] as String}"}`));
+    equal(errorOf(await fixture.call(BOB, 'deleteTeam', `{"organization": "${orgDid}", "name": "core"}`)), 'Forbidden');
+    ok(await fixture.call(ALICE, 'deleteTeam', `{"organization": "${orgDid}", "name": "core"}`));
+
+    let bot = ok(await fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`));
+    let botDid = bot['did'] as String;
+    ok(await fixture.call(ALICE, 'issueAutomationToken', `{"account": "${botDid}"}`));
+
+    equal(errorOf(await createPackage(fixture, BOB, orgDid, 'router')), 'Forbidden');
+    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    equal(errorOf(await fixture.call(BOB, 'uploadArtifact', 'x', `?package=${pkgDid}`, 'application/vnd.ipld.car')),
+        'Forbidden');
+
+    fixture.userAgent = 'zena/0.2.0 (linux-x86_64)';
+    let blob1 = await upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
+    await release(fixture, ALICE, pkgDid, '1.0.0', blob1);
+
+    let blob2 = await upload(fixture, pkgDid, archiveOf(pkgDid, '1.1.0'));
+    ok(await fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.1.0', blob2)}}`));
+    ok(await fixture.call(ALICE, 'withdrawRelease', `{"package": "${pkgDid}", "version": "1.1.0"}`));
+
+    equal(errorOf(await fixture.call(BOB, 'retract', `{"package": "${pkgDid}", "version": "1.0.0", "reason": "nope"}`)),
+        'Forbidden');
+    ok(await fixture.call(ALICE, 'retract', `{"package": "${pkgDid}", "version": "1.0.0", "reason": "broken edge"}`));
+    fixture.userAgent = null;
+
+    let all = await appView.listActivity(ALICE, new ActivityQuery());
+    isTrue(all.length >= 20, `recorded ${all.length} events`);
+    // Most recent first: Alice's retraction is at the top, followed by Bob's refused retraction.
+    equal(all[0].method, 'retract');
+    equal(all[0].outcome, OUTCOME_WRITTEN);
+    equal(all[0].detail as String, 'broken edge');
+    isTrue(all[0].after != null && all[0].before == null, 'first retraction creates record');
+    equal(all[1].method, 'retract');
+    equal(all[1].outcome, OUTCOME_REFUSED);
+    equal(all[1].actor, BOB);
+
+    // /admin links to /admin/log, and /admin/log renders and filters cleanly without extra PDS reads.
+    let adminCookie = await webCookie(fixture, ALICE);
+    let adminMain = pageOf(await fixture.get('/admin', adminCookie));
+    isTrue(adminMain.contains('href="/admin/log"'), 'link to operations log');
+
+    let readsBefore = counting.reads;
+    let logRes = await fixture.get('/admin/log', adminCookie);
+    equal(logRes.statusCode, 200);
+    equal(counting.reads, readsBefore, '/admin/log reads no PDS repositories');
+    let logHtml = pageOf(logRes);
+    for (let piece in [
+      'Operations log',
+      'href="/packages/router.acme.pkg.test"',
+      'href="/scopes/acme"',
+      'ci.acme.pkg.test',
+      'broken edge',
+      'packages=2500',
+      'chip-danger">refused<',
+      'chip-success">written<',
+      'chip-primary">held<',
+      '>withdrawn<'
+    ]) {
+      isTrue(logHtml.contains(piece), `missing ${piece} in /admin/log`);
+    }
+
+    // Filter by outcome=refused and scope=acme.
+    let refusedHtml = pageOf(await fixture.get('/admin/log?outcome=refused&scope=acme', adminCookie));
+    isTrue(refusedHtml.contains('uploadArtifact') && refusedHtml.contains('deleteTeam') &&
+        !refusedHtml.contains('broken edge') && refusedHtml.contains('href="/admin/log">Clear</a>'), refusedHtml);
+
+    // Filter by actor=operator.
+    let operatorHtml = pageOf(await fixture.get('/admin/log?actor=operator', adminCookie));
+    isTrue(operatorHtml.contains('Create scope (operator)') && operatorHtml.contains('packages=2500') &&
+        !operatorHtml.contains('uploadArtifact'), operatorHtml);
   });
 });
