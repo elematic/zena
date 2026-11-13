@@ -39,11 +39,11 @@ export function stateDirOf(stepKey: String): String {
  * anything else (e.g. the '$volatile' marker of an untracked script)
  * is virtual and has no bytes to store or restore.
  */
-function isFileEntry(fp: Fingerprint) {
+export function isFileEntry(fp: Fingerprint): boolean {
   return fp.value.startsWith('sha256:');
 }
 
-function hasVolatileEntry(manifest: OutputManifest) {
+export function hasVolatileEntry(manifest: OutputManifest): boolean {
   for (let entry in manifest.outputs) {
     let v = entry.fingerprint.value;
     if (v.startsWith('volatile:') || v.startsWith('ref:volatile:')) {
@@ -53,7 +53,7 @@ function hasVolatileEntry(manifest: OutputManifest) {
   return false;
 }
 
-function blobName(fp: Fingerprint) {
+export function blobName(fp: Fingerprint): String {
   // 'sha256:<hex>' -> 'sha256-<hex>', a safe file name.
   let colonSplit = fp.value.split(':');
   if (colonSplit.length != 2) {
@@ -163,5 +163,44 @@ export class DiskCache implements StepCache {
     let tmpManifest = manifestPath + this.#tempSuffix();
     await writeFile(tmpManifest, manifestToJson(manifest));
     await rename(tmpManifest, manifestPath);
+  }
+}
+
+/**
+ * Two-level step cache (`local` in front of `remote`).
+ *
+ * `get` checks `local` first and queries `remote` only when `local` misses.
+ * `put` writes `local` first so `.zebra/` holds the manifest and blobs before
+ * `remote` uploads them.
+ */
+export class TieredCache implements StepCache {
+  #local: StepCache;
+  #remote: StepCache;
+  #uncachedSteps: HashSet<String>?;
+
+  new(
+    local: StepCache,
+    remote: StepCache,
+    uncachedSteps: HashSet<String>? = null,
+  ) : #local = local,
+      #remote = remote,
+      #uncachedSteps = uncachedSteps;
+
+  async get(step: StepKey, key: CacheKey): Future<OutputManifest?> {
+    let uncached = this.#uncachedSteps;
+    if (uncached != null && uncached.has(step.value)) {
+      return null;
+    }
+    let localHit = await this.#local.get(step, key);
+    return localHit ?? await this.#remote.get(step, key);
+  }
+
+  async put(step: StepKey, key: CacheKey, manifest: OutputManifest): Future<void> {
+    let uncached = this.#uncachedSteps;
+    if ((uncached != null && uncached.has(step.value)) || hasVolatileEntry(manifest)) {
+      return;
+    }
+    await this.#local.put(step, key, manifest);
+    await this.#remote.put(step, key, manifest);
   }
 }

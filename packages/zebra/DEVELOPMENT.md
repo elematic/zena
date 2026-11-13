@@ -17,7 +17,8 @@ packages/zebra/
 │   ├── builder.zena            # Script configs -> workflow steps & process execution
 │   ├── fs-walk.zena            # Glob base-directory walk & (mtime, size) hash memo
 │   ├── fs-util.zena            # Workspace path & directory helpers
-│   ├── disk-cache.zena         # Content-addressed .zebra/cache and .zebra/blobs
+│   ├── disk-cache.zena         # Content-addressed .zebra/cache, .zebra/blobs & TieredCache
+│   ├── github-cache.zena       # GitHub Actions v2 Twirp JSON + Azure SAS remote cache
 │   ├── state-json.zena         # JSON serialization for .zebra/ state & manifests
 │   ├── colors.zena             # Terminal ANSI color & width helpers
 │   ├── layout.zena             # Clack-style rail output formatting

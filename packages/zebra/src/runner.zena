@@ -25,9 +25,15 @@ import {StepKey} from 'workflow/step';
 import {Spinner} from './animation.zena';
 import {StepExecution, lockfileCandidates, planScripts} from './builder.zena';
 import {Colors} from './colors.zena';
-import {DiskCache, stateDirOf} from './disk-cache.zena';
+import {DiskCache, TieredCache, stateDirOf} from './disk-cache.zena';
 import {ensureParentDir, withRoot} from './fs-util.zena';
 import {FileHasher} from './fs-walk.zena';
+import {
+  CacheMode,
+  GitHubActionsCache,
+  resolveCacheMode,
+  resolveGitHubCacheConfig,
+} from './github-cache.zena';
 import {RailLayout, StepKind, formatDuration} from './layout.zena';
 import {PlanLoadStats, loadOrCollectConfigs} from './plan-cache.zena';
 import {sha256HexOfString} from 'zena:crypto';
@@ -350,6 +356,12 @@ export type BuildOptions = {
   force?: boolean,
   /** Read and write outputs through the local `.zebra/` disk cache (`true` if absent). */
   useCache?: boolean,
+  /** Optional second-level cache layered behind the local `.zebra/` disk cache. */
+  remoteCache?: StepCache,
+  /** Optional environment lookup override (`getEnv` if absent). */
+  lookupEnv?: (name: String) => String?,
+  /** Optional sink for non-fatal remote cache warnings (`console.error` if absent). */
+  onCacheWarning?: (message: String) => void,
   /** Optional caller-supplied `FileHasher` for inspecting hash and stat counters. */
   hasherOut?: FileHasher,
   /** Optional sink populated with warm/cold plan snapshot load statistics. */
@@ -366,6 +378,12 @@ export type WatchOptions = {
   force?: boolean,
   /** Read and write outputs through the local `.zebra/` disk cache (`true` if absent). */
   useCache?: boolean,
+  /** Optional second-level cache layered behind the local `.zebra/` disk cache. */
+  remoteCache?: StepCache,
+  /** Optional environment lookup override (`getEnv` if absent). */
+  lookupEnv?: (name: String) => String?,
+  /** Optional sink for non-fatal remote cache warnings (`console.error` if absent). */
+  onCacheWarning?: (message: String) => void,
   /** Polling interval between file-snapshot checks in milliseconds (`150` if absent). */
   pollIntervalMs?: i64,
   /**
@@ -384,6 +402,9 @@ type RunTargetOptions = {
   parallelism: i32,
   force: boolean,
   useCache: boolean,
+  remoteCache: StepCache?,
+  lookupEnv: ((name: String) => String?)?,
+  onCacheWarning: ((message: String) => void)?,
   hasherOut: FileHasher?,
   servicePool: ServicePool?,
   allowForegroundService: boolean,
@@ -402,6 +423,9 @@ async function runTargetOnce(
     parallelism,
     force,
     useCache,
+    remoteCache,
+    lookupEnv,
+    onCacheWarning,
     hasherOut,
     servicePool,
     allowForegroundService,
@@ -412,7 +436,8 @@ async function runTargetOnce(
   } = options;
   listenSignals();
   let startNs = monotonic() as i64;
-  let jobs = if (parallelism > 0) parallelism else defaultParallelism();
+  let envLookup = lookupEnv ?? getEnv;
+  let jobs = if (parallelism > 0) parallelism else defaultParallelism(envLookup);
   let entryKey = refKey(entry);
   let loadedConfigs = await loadOrCollectConfigs(
     root,
@@ -498,17 +523,35 @@ async function runTargetOnce(
   if (hasExtraArgs) {
     uncachedSteps.add(entryKey);
   }
-  let cache: StepCache = if (useCache)
-    new DiskCache(
-      root,
-      () => {
-        hasher.markMutated();
-      },
-      (path, fp) => hasher.recordRestored(path, fp),
-      uncachedSteps,
-    )
-  else
-    new NullCache();
+  var cache: StepCache = new NullCache();
+  if (useCache) {
+    let mode = if (remoteCache != null)
+      CacheMode.Local
+    else
+      resolveCacheMode(envLookup);
+    if (mode != CacheMode.None) {
+      let diskCache = new DiskCache(
+        root,
+        () => {
+          hasher.markMutated();
+        },
+        (path, fp) => hasher.recordRestored(path, fp),
+        uncachedSteps,
+      );
+      if (remoteCache != null) {
+        cache = new TieredCache(diskCache, remoteCache, uncachedSteps);
+      } else if (mode == CacheMode.GitHub) {
+        let ghConfig = await resolveGitHubCacheConfig(envLookup);
+        let warn = onCacheWarning ?? ((msg: String) => {
+          console.error(`zebra: ${msg}`);
+        });
+        let ghCache = new GitHubActionsCache(root, diskCache, ghConfig, warn);
+        cache = new TieredCache(diskCache, ghCache, uncachedSteps);
+      } else {
+        cache = diskCache;
+      }
+    }
+  }
   let engine = new Engine(
     (data: String) => new Fingerprint('sha256:' + sha256HexOfString(data)),
     cache,
@@ -604,6 +647,18 @@ export async function buildTarget(
   options: BuildOptions = {},
 ): Future<BuildOutcome> {
   let {parallelism = 0, force = false, useCache = true} = options;
+  var remoteCache: StepCache? = null;
+  if (let {remoteCache: r} = options) {
+    remoteCache = r;
+  }
+  var lookupEnv: ((name: String) => String?)? = null;
+  if (let {lookupEnv: l} = options) {
+    lookupEnv = l;
+  }
+  var onCacheWarning: ((message: String) => void)? = null;
+  if (let {onCacheWarning: w} = options) {
+    onCacheWarning = w;
+  }
   var hasherOut: FileHasher? = null;
   if (let {hasherOut: h} = options) {
     hasherOut = h;
@@ -620,6 +675,9 @@ export async function buildTarget(
     parallelism,
     force,
     useCache,
+    remoteCache,
+    lookupEnv,
+    onCacheWarning,
     hasherOut,
     servicePool: null,
     allowForegroundService: true,
@@ -775,6 +833,18 @@ export async function watchTarget(
   if (let {onIteration: cb} = options) {
     onIteration = cb;
   }
+  var remoteCache: StepCache? = null;
+  if (let {remoteCache: r} = options) {
+    remoteCache = r;
+  }
+  var lookupEnv: ((name: String) => String?)? = null;
+  if (let {lookupEnv: l} = options) {
+    lookupEnv = l;
+  }
+  var onCacheWarning: ((message: String) => void)? = null;
+  if (let {onCacheWarning: w} = options) {
+    onCacheWarning = w;
+  }
   var extraArgs: Array<String>? = null;
   if (let {extraArgs: a} = options) {
     extraArgs = a;
@@ -791,6 +861,9 @@ export async function watchTarget(
         parallelism,
         force,
         useCache,
+        remoteCache,
+        lookupEnv,
+        onCacheWarning,
         hasherOut: null,
         servicePool,
         allowForegroundService: false,
