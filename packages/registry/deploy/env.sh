@@ -33,10 +33,11 @@
 # out, and otherwise a Secret Manager secret. The App View's signing key,
 # which its tokens to padstone are checked with, is in Cloud KMS in both:
 # replacing it only changes the App View's DID document. The operator's
-# offline rotation key, ranked above the online one, is
-# OFFLINE_ROTATION_KEY: its did:key, from
+# offline rotation keys, ranked above the online one, are
+# OFFLINE_ROTATION_KEYS: their did:keys, each from
 # `zena-cli run packages/registry/src/main.zena -- generate-key`, whose
-# private key is kept offline. Production needs it.
+# private keys are kept offline, apart. Production needs two, so that
+# losing one leaves the other.
 
 PDS_ENV="${PDS_ENV:-staging}"
 case "$PDS_ENV" in
@@ -63,16 +64,19 @@ for name in PROJECT REGION REPO FIRESTORE_LOCATION KMS_LOCATION DOMAIN PDS_DOMAI
     exit 2
   fi
 done
-if [ "$PDS_ENV" = production ] && { [ -z "$OFFLINE_ROTATION_KEY" ] || [ "$ROTATION_KMS" != 1 ] ||
+OFFLINE_ROTATION_KEYS="${OFFLINE_ROTATION_KEYS:-}"
+# shellcheck disable=SC2086 # split into its did:keys
+OFFLINE_COUNT="$(set -- ${OFFLINE_ROTATION_KEYS//,/ } && echo $#)"
+if [ "$PDS_ENV" = production ] && { [ "$OFFLINE_COUNT" != 2 ] || [ "$ROTATION_KMS" != 1 ] ||
     [ "$PLC_MODE" != public ]; }; then
-  echo "$SETTINGS: production needs OFFLINE_ROTATION_KEY, ROTATION_KMS=1 and PLC_MODE=public" >&2
+  echo "$SETTINGS: production needs two OFFLINE_ROTATION_KEYS, ROTATION_KMS=1 and PLC_MODE=public" >&2
   exit 2
 fi
 # The variables these settings were once read from: one still set in the
 # shell is a mistake when it says something else.
 for pair in ZENA_GCP_PROJECT=PROJECT ZENA_GCP_REGION=REGION ZENA_GCP_REPO=REPO \
     ZENA_FIRESTORE_LOCATION=FIRESTORE_LOCATION ZENA_KMS_LOCATION=KMS_LOCATION ZENA_ROTATION_KMS=ROTATION_KMS \
-    ZENA_OFFLINE_ROTATION_KEY=OFFLINE_ROTATION_KEY ZENA_ADMIN_DIDS=ADMIN_DIDS ZENA_SMOKE_SCOPE=SMOKE_SCOPE \
+    ZENA_OFFLINE_ROTATION_KEY=OFFLINE_ROTATION_KEYS ZENA_ADMIN_DIDS=ADMIN_DIDS ZENA_SMOKE_SCOPE=SMOKE_SCOPE \
     ZENA_DNS_PARENT_PROJECT=DNS_PARENT_PROJECT ZENA_DNS_PARENT_ZONE=DNS_PARENT_ZONE; do
   old="${pair%%=*}"
   setting="${pair#*=}"
@@ -106,7 +110,9 @@ SMOKE_SECRET="zena-pkg${SUFFIX}-smoke-token"
 # offers secp256k1 at.
 KMS_KEYRING="zena-pkg${SUFFIX}"
 KMS_KEY=rotation
-KMS_KEY_VERSION="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_KEY}/cryptoKeyVersions/1"
+# The rotation key's version the App View signs with: 1 until it is
+# replaced (DEVELOPMENT.md, "Rotation keys").
+KMS_KEY_VERSION="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_KEY}/cryptoKeyVersions/${ROTATION_KMS_VERSION:-1}"
 # The App View's signing key, in the same key ring, made as the rotation key is.
 SIGNING_KMS_KEY=signing
 SIGNING_KMS_KEY_VERSION="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${SIGNING_KMS_KEY}/cryptoKeyVersions/1"
@@ -173,8 +179,8 @@ else
 fi
 # Spaces, since gcloud's --set-env-vars splits on commas.
 APP_VIEW_VARS+=("APP_VIEW_ADMIN_DIDS=${ADMIN_DIDS//,/ }")
-if [ -n "$OFFLINE_ROTATION_KEY" ]; then
-  APP_VIEW_VARS+=("APP_VIEW_OFFLINE_ROTATION_KEY=${OFFLINE_ROTATION_KEY}")
+if [ -n "$OFFLINE_ROTATION_KEYS" ]; then
+  APP_VIEW_VARS+=("APP_VIEW_OFFLINE_ROTATION_KEYS=${OFFLINE_ROTATION_KEYS//,/ }")
 fi
 
 echo "environment: $PDS_ENV ($DOMAIN, the PDS at $PDS_DOMAIN)"

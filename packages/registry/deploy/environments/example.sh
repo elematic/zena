@@ -33,13 +33,18 @@ PLC_MODE=staging
 # "Resetting staging"), whose deploy:setup makes the KMS key. Production
 # must be 1.
 ROTATION_KMS=1
-# The operator's offline rotation key, as a did:key, ranked above the
-# online one on every account, from
-# `zena-cli run packages/registry/src/main.zena -- generate-key` on a
-# machine the operator trusts. Its private key is kept offline, never on a
-# server or in a repository. Production must have one; a staging, whose
-# accounts are reset, may leave it empty.
-OFFLINE_ROTATION_KEY=
+# With ROTATION_KMS=1, the version of the rotation key the App View signs
+# with: 1, until a new version replaces it (DEVELOPMENT.md, "Rotation
+# keys").
+ROTATION_KMS_VERSION=1
+# The operator's offline rotation keys, as did:keys separated by spaces,
+# highest ranked first, which every account ranks above the online one,
+# each from `zena-cli run packages/registry/src/main.zena -- generate-key`
+# on a machine the operator trusts. Their private keys are kept offline,
+# apart from each other, never on a server or in a repository. Production
+# must have two, so that losing one leaves the other; a staging, whose
+# accounts are reset, may have one or none.
+OFFLINE_ROTATION_KEYS=
 # The App View's admins, separated by spaces: they see everything it holds
 # in the web app.
 ADMIN_DIDS=did:plc:exampleexampleexampleex

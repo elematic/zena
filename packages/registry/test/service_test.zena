@@ -230,8 +230,9 @@ export let tests = suite('registry/service', () => {
         appView.siteUrl as String == 'https://pkg-staging.zena-lang.dev', 'the App View');
   });
 
-  test('reads the online rotation key from Cloud KMS, and the offline key', (ctx) => {
+  test('reads the online rotation key from Cloud KMS, and the offline keys', (ctx) => {
     let offline = formatDidKey(publicKeyFor(KeyType.Secp256k1, new FixedArray<u8>(32, 3 as u8)));
+    let spare = formatDidKey(publicKeyFor(KeyType.Secp256k1, new FixedArray<u8>(32, 4 as u8)));
     let config = configFromEnv(envOf([
       ('PDS_STORAGE', 'firestore'),
       ('APP_VIEW_SESSION_SECRET', KEY),
@@ -239,13 +240,16 @@ export let tests = suite('registry/service', () => {
       ('PDS_BLOB_BUCKET', 'zena-blobs'),
       ('APP_VIEW_DOMAIN', 'pkg.example.dev'),
       ('APP_VIEW_ROTATION_KMS_KEY', 'projects/p/locations/global/keyRings/r/cryptoKeys/rotation/cryptoKeyVersions/1'),
-      ('APP_VIEW_OFFLINE_ROTATION_KEY', offline),
+      ('APP_VIEW_OFFLINE_ROTATION_KEYS', `${spare} ${offline}`),
       ('APP_VIEW_HANDLE_RECORDS', 'memory'),
     ]));
     let appView = config.appView;
     isTrue(appView.rotationKey == null, 'no key of its own');
     equal(appView.rotationKmsKey as String, 'projects/p/locations/global/keyRings/r/cryptoKeys/rotation/cryptoKeyVersions/1');
-    equal(formatDidKey(appView.offlineRotationKey as PublicKey), offline);
+    // Highest ranked first.
+    equal(appView.offlineRotationKeys.length, 2);
+    equal(formatDidKey(appView.offlineRotationKeys[0]), spare);
+    equal(formatDidKey(appView.offlineRotationKeys[1]), offline);
 
     let both = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_ROTATION_KEY', KEY),
         ('APP_VIEW_ROTATION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1')]);
@@ -253,11 +257,15 @@ export let tests = suite('registry/service', () => {
     let notVersion = refusal([('APP_VIEW_DOMAIN', 'pkg.test'),
         ('APP_VIEW_ROTATION_KMS_KEY', 'projects/p/locations/l/keyRings/r/cryptoKeys/k')]);
     isTrue(notVersion.contains('is a key version'), notVersion);
-    let badOffline = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_OFFLINE_ROTATION_KEY', 'zQ3sh')]);
-    isTrue(badOffline.contains('APP_VIEW_OFFLINE_ROTATION_KEY is not a did:key'), badOffline);
+    let badOffline = refusal([('APP_VIEW_DOMAIN', 'pkg.test'), ('APP_VIEW_OFFLINE_ROTATION_KEYS', `${offline},zQ3sh`)]);
+    isTrue(badOffline.contains("APP_VIEW_OFFLINE_ROTATION_KEYS has 'zQ3sh', which is not a did:key"), badOffline);
+    // With the online key and two recovery keys, three fill PLC's five.
+    let three = refusal([('APP_VIEW_DOMAIN', 'pkg.test'),
+        ('APP_VIEW_OFFLINE_ROTATION_KEYS', `${offline} ${spare} ${offline}`)]);
+    isTrue(three.contains('APP_VIEW_OFFLINE_ROTATION_KEYS has 3 keys; an account lists at most 2'), three);
   });
 
-  test('refuses to make accounts in the public PLC directory without the offline key', (ctx) => {
+  test('refuses to make accounts in the public PLC directory without offline keys', (ctx) => {
     let production: Array<(String, String)> = [
       ('PDS_STORAGE', 'firestore'), ('APP_VIEW_SESSION_SECRET', KEY), ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'zena-blobs'), ('APP_VIEW_DOMAIN', 'pkg.example.dev'),
@@ -273,11 +281,11 @@ export let tests = suite('registry/service', () => {
       return pairs;
     };
     let refused = refusal(production);
-    isTrue(refused.contains('needs APP_VIEW_OFFLINE_ROTATION_KEY'), refused);
-    isTrue(refusal(with('APP_VIEW_PLC_DIRECTORY', 'https://plc.directory')).contains('needs APP_VIEW_OFFLINE_ROTATION_KEY'),
+    isTrue(refused.contains('needs APP_VIEW_OFFLINE_ROTATION_KEYS'), refused);
+    isTrue(refusal(with('APP_VIEW_PLC_DIRECTORY', 'https://plc.directory')).contains('needs APP_VIEW_OFFLINE_ROTATION_KEYS'),
         'the public directory named');
     let offline = formatDidKey(publicKeyFor(KeyType.Secp256k1, new FixedArray<u8>(32, 3 as u8)));
-    let withKey = refusal(with('APP_VIEW_OFFLINE_ROTATION_KEY', offline));
+    let withKey = refusal(with('APP_VIEW_OFFLINE_ROTATION_KEYS', offline));
     equal(withKey, '', withKey);
     // On purpose, or where no account outlives the deployment, it starts.
     let allowed = refusal(with('APP_VIEW_ALLOW_NO_OFFLINE_KEY', '1'));
@@ -466,7 +474,7 @@ export let tests = suite('registry/service', () => {
       ('APP_VIEW_SESSION_SECRET', OTHER_KEY),
       ('APP_VIEW_ROTATION_KEY', KEY),
       ('APP_VIEW_SIGNING_KEY', OTHER_KEY),
-      ('APP_VIEW_OFFLINE_ROTATION_KEY', formatDidKey(publicKeyFor(KeyType.Secp256k1, new FixedArray<u8>(32, 3 as u8)))),
+      ('APP_VIEW_OFFLINE_ROTATION_KEYS', formatDidKey(publicKeyFor(KeyType.Secp256k1, new FixedArray<u8>(32, 3 as u8)))),
       ('APP_VIEW_HANDLE_RECORDS', 'memory'),
     ]));
     equal(deployed.port as i32, 8080);

@@ -13,12 +13,12 @@
  * team, from the repositories, and exits: for accounts made before the
  * App View kept them, or a commit whose indexes were not written.
  *
- * Two commands are for the operator's offline rotation key, on the
+ * Two commands are for the operator's offline rotation keys, on the
  * operator's own machine, and read no configuration but
  * `APP_VIEW_PLC_DIRECTORY`:
  *
  * - `generate-key` prints a new secp256k1 private key in hex and its
- *   `did:key`, for `APP_VIEW_OFFLINE_ROTATION_KEY`. Keep the private key
+ *   `did:key`, for `APP_VIEW_OFFLINE_ROTATION_KEYS`. Keep the private key
  *   offline.
  * - `plc-restore <did> <cid> [--yes]` undoes every operation of `<did>`
  *   after the one whose CID is `<cid>`, as after the online key was
@@ -26,6 +26,15 @@
  *   operation it would send, and sends it to the PLC directory with
  *   `--yes`. The directory takes it within 72 hours of the first
  *   operation it undoes.
+ *
+ * `plc-rekey [--yes]` makes the online rotation key the configuration
+ * names every account's lowest-ranked rotation key, in place of the one
+ * each was made with, as after that key was destroyed, disabled or
+ * stolen (`AppView.rekey`). It reads the configuration, as
+ * `deploy/operator.sh` gives it, and one of the offline private keys,
+ * in hex, from stdin, which signs the operations; prints what it would
+ * send; and sends it with `--yes`. Running it again finishes what a run
+ * left.
  *
  * `did-key [--kms <key version>]` prints the `did:key` of the App View's
  * online rotation key, for padstone's `PDS_TRUSTED_APP_VIEWS`, and reads
@@ -58,9 +67,9 @@ import {CloudKms} from 'google-cloud/kms';
 import {KeyType, PublicKey, formatDidKey} from 'atproto/didkey';
 import {PUBLIC_PLC_DIRECTORY} from 'atproto/identity';
 import {PlcError, fetchOperations, submitPlcOperation, undoOperation} from 'atproto/plc';
-import {KmsSigner} from 'pds/signer';
+import {KmsSigner, LocalSigner} from 'pds/signer';
 import {SigningKey} from 'pds/storage';
-import {AppViewError, LIMITS, Limit, limitName, limitNamed} from './app-view.zena';
+import {AppViewError, LIMITS, Limit, RekeyOutcome, limitName, limitNamed} from './app-view.zena';
 import {nowMicros} from 'pds/xrpc/common';
 import {ConfigError} from 'pds/service';
 import {ServiceConfig, buildService, configFromEnv, serve} from './service.zena';
@@ -110,6 +119,10 @@ export async function main(): Future<void> {
   }
   if (hasArgument('set-limit')) {
     await setLimit(config);
+    return;
+  }
+  if (hasArgument('plc-rekey')) {
+    await plcRekey(config);
     return;
   }
   let running = await serve(config);
@@ -256,7 +269,7 @@ async function setLimitOn(config: ServiceConfig, account: String, limit: Limit, 
 function generateKey(): void {
   let key = new SigningKey(KeyType.Secp256k1, randomBytes(32));
   console.log(`private key (keep it offline): ${hex.encode(key.privateKey)}`);
-  console.log(`did:key (APP_VIEW_OFFLINE_ROTATION_KEY): ${formatDidKey(key.publicKey())}`);
+  console.log(`did:key (for APP_VIEW_OFFLINE_ROTATION_KEYS): ${formatDidKey(key.publicKey())}`);
   exit(0);
 }
 
@@ -316,17 +329,11 @@ async function plcRestore(): Future<void> {
   let did = positional[0];
   let cid = positional[1];
   let directory = getEnv('APP_VIEW_PLC_DIRECTORY') ?? PUBLIC_PLC_DIRECTORY;
-  let keyText = (await readStdin()).trim();
-  var key: SigningKey | null = null;
-  try {
-    key = new SigningKey(KeyType.Secp256k1, hex.decode(keyText));
-    key.publicKey();
-  } catch (e) {
-    console.error('plc-restore: stdin does not hold a secp256k1 private key in hex');
+  let offline = await offlineKey('plc-restore');
+  if (offline == null) {
     exit(2);
     return;
   }
-  let offline = key;
   try {
     let log = await fetchOperations(directory, did);
     let undo = undoOperation(log, cid, offline.publicKey()).signedWith((bytes) => offline.sign(bytes));
@@ -347,6 +354,65 @@ async function plcRestore(): Future<void> {
     throw e;
   }
   exit(0);
+}
+
+/**
+ * The secp256k1 private key in hex on stdin, an offline rotation key, or
+ * null, having said that `command` needs one.
+ */
+async function offlineKey(command: String): Future<SigningKey | null> {
+  let keyText = (await readStdin()).trim();
+  try {
+    let key = new SigningKey(KeyType.Secp256k1, hex.decode(keyText));
+    key.publicKey();
+    return key;
+  } catch (e) {
+    console.error(`${command}: stdin does not hold a secp256k1 private key in hex`);
+    return null;
+  }
+}
+
+/**
+ * Makes the configured online rotation key every account's lowest-ranked
+ * one, with operations the offline key on stdin signs, and exits: 1 when
+ * any account could not be re-keyed.
+ */
+async function plcRekey(config: ServiceConfig): Future<void> {
+  let offline = await offlineKey('plc-rekey');
+  if (offline == null) {
+    exit(2);
+    return;
+  }
+  let send = hasArgument('--yes');
+  let service = await buildService(config, '');
+  let appView = service.appView;
+  let onlineKey = appView.config.rotationKey.publicKey();
+  let online = formatDidKey(onlineKey);
+  let rekeys = await appView.rekey(new LocalSigner(offline), onlineKey, service.operations, send);
+  var rekeyed = 0;
+  var current = 0;
+  var unlisted = 0;
+  var failed = 0;
+  for (let rekey in rekeys) {
+    if (rekey.outcome == RekeyOutcome.Rekeyed) {
+      rekeyed += 1;
+      console.log(`${rekey.handle} (${rekey.did}): ${online} in place of ${rekey.replaced ?? ''}`);
+    } else if (rekey.outcome == RekeyOutcome.Current) {
+      current += 1;
+    } else if (rekey.outcome == RekeyOutcome.NotListed) {
+      unlisted += 1;
+      console.log(`${rekey.handle} (${rekey.did}): left as it is, since ${rekey.detail}`);
+    } else {
+      failed += 1;
+      console.error(`${rekey.handle} (${rekey.did}): ${rekey.detail}`);
+    }
+  }
+  let verb = if (send) 'sent' else 'to send';
+  console.log(`${rekeyed} ${verb}, ${current} already ranking ${online} last, ${unlisted} without the offline key, ${failed} failed`);
+  if (!send && rekeyed > 0) {
+    console.log('run again with --yes to send them');
+  }
+  exit(if (failed > 0) 1 else 0);
 }
 
 /** Writes the App View's indexes from the repositories, and exits. */

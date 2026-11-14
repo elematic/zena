@@ -266,7 +266,7 @@ delegated from `zena-lang.dev`'s for its handle records. Each
 environment's settings are checked in to the operator's private deploy
 repository, as `staging.sh` and `production.sh`, shaped as
 `deploy/environments/example.sh` is: the project, the domains, where the
-rotation key is, the offline key's `did:key` and the admins. This
+rotation key is, the offline keys' `did:key`s and the admins. This
 repository names neither the project nor the admins. `ZENA_DEPLOY_SETTINGS`
 is the directory of a checkout of it. Nothing else comes from your shell,
 so changing production is a pull request there; a `ZENA_GCP_PROJECT` or
@@ -561,8 +561,8 @@ This list has not yet been deployed with: try it on staging first.
 ### Rotation keys
 
 Every account the App View creates lists, highest ranked first: any
-recovery keys its owners gave, the operator's offline key, and the App
-View's online key, which signs its operations
+recovery keys its owners gave, at most two, the operator's offline keys,
+and the App View's online key, which signs its operations
 (docs/design/package-manager.md, "Keys").
 
 - **The online key** is in Cloud KMS (`APP_VIEW_ROTATION_KMS_KEY`), in
@@ -574,24 +574,24 @@ View's online key, which signs its operations
   App View unable to sign for the accounts it already has, so change it
   only together with a reset of staging, then run `deploy:setup` to make
   the new key, and `deploy`.
-- **The offline key** is the operator's, made on a machine you trust,
-  and never on the server:
+- **The offline keys** are the operator's: two, each made on a machine
+  you trust, and never on the server:
 
   ```sh
   zena-cli run packages/registry/src/main.zena -- generate-key
   ```
 
-  It prints the private key, to keep offline (on paper, or in a password
-  manager you trust), and its `did:key`, which deploys as
-  `APP_VIEW_OFFLINE_ROTATION_KEY` from the settings'
-  `OFFLINE_ROTATION_KEY`.
-  `deploy` refuses production without it, and so does the App View
-  itself, however it is started: with Firestore and the public PLC
-  directory it stops at start without the key, unless
+  It prints a private key, to keep offline (on paper, or in a password
+  manager you trust), and its `did:key`. Keep the two apart, so that what
+  loses or exposes one does not reach the other. Their `did:key`s, the
+  higher ranked first, deploy as `APP_VIEW_OFFLINE_ROTATION_KEYS` from
+  the settings' `OFFLINE_ROTATION_KEYS`. `deploy` refuses production
+  without two, and the App View itself, however it is started, stops at
+  start with Firestore and the public PLC directory and none, unless
   `APP_VIEW_ALLOW_NO_OFFLINE_KEY=1` says so on purpose. Only accounts
-  created after it is set list it.
+  created after they are set list them.
 
-**If the online key is stolen or misused**, the offline key undoes what
+**If the online key is stolen or misused**, either offline key undoes what
 it signed, within 72 hours of the first operation to undo. Find the last
 good operation's CID in the account's log
 (`https://plc.directory/<did>/log/audit`), then, on the machine with the
@@ -603,12 +603,49 @@ zena-cli run packages/registry/src/main.zena -- plc-restore <did> <cid> --yes < 
 ```
 
 It sends a copy of that operation, signed by the offline key, which the
-directory takes in place of every operation after it. Then disable the
-KMS key version, make a new one, and deploy with it; the accounts' DID
-documents still list the old public key until each is updated with an
-operation the offline key signs. Staging's own PLC directory does not
-take an operation that replaces others, so the procedure cannot be
-rehearsed there.
+directory takes in place of every operation after it. Staging's own PLC
+directory does not take an operation that replaces others, so this
+cannot be rehearsed there. Then replace the online key, which the
+accounts still list.
+
+**To replace the online key**, when it was stolen, destroyed or disabled,
+an operation the offline key signs puts a new one in its place on every
+account:
+
+1. When it was stolen, disable its version, so that it signs nothing
+   more:
+
+   ```sh
+   gcloud kms keys versions disable 1 --key rotation --keyring zena-pkg --location us-central1 --project <project>
+   ```
+
+2. Make a new version, which prints its number:
+
+   ```sh
+   gcloud kms keys versions create --key rotation --keyring zena-pkg --location us-central1 --project <project>
+   ```
+
+3. Set the settings' `ROTATION_KMS_VERSION` to it.
+4. With those settings, on the machine with an offline key:
+
+   ```sh
+   packages/registry/deploy/operator.sh plc-rekey < offline-key.txt         # shows what it would send
+   packages/registry/deploy/operator.sh plc-rekey --yes < offline-key.txt   # sends it
+   ```
+
+   Each account's new operation keeps its rotation keys, in their order,
+   but for the last, the online key, which becomes the new version's.
+   An account that does not list the offline key is left as it is and
+   named; one whose operation failed is named with why.
+
+5. `npm run deploy` at once: until then, the App View still signs with
+   the old version, which the accounts no longer list.
+6. Run `plc-rekey --yes` again, for accounts made before the deploy.
+   Running it again changes only what a run left undone.
+
+On staging, `--keyring zena-pkg-staging`, and the operations go to its
+own directory, which takes them as it takes any other, so the procedure
+can be rehearsed there.
 
 ### Signing keys
 

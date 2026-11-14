@@ -18,7 +18,7 @@ import {readCar} from 'atproto/car';
 import {BlobRef, MapValue, Value, fromJson, toJson} from 'atproto/data';
 import {Cid} from 'atproto/cid';
 import {KeyType, PublicKey, formatDidKey, parseDidKey, verifySignature} from 'atproto/didkey';
-import {PlcOperation, didOfGenesis} from 'atproto/plc';
+import {PlcOperation, checkNextOperation, didOfGenesis} from 'atproto/plc';
 import {IdentityResolver} from 'atproto/identity';
 import {packSource} from 'package-manager/archive';
 import {verifyRecordProof} from 'atproto/repo';
@@ -35,7 +35,8 @@ import {
   ACTIVITY_ADMIN, ACTIVITY_AUTOMATION, ACTIVITY_PACKAGE, ACTIVITY_SCOPE, ACTIVITY_TEAM, ActivityEvent, ActivityQuery,
   CallLog, ClaimedName, ClaimedScope, AppViewAccount, PackageDetail, Publication, AppViewConfig, AppViewError,
   AppViewStore, OUTCOME_HELD, OUTCOME_WITHDRAWN, OUTCOME_WRITTEN, PENDING_MICROS, AppView,
-  Count, Limit, Limits, PackageSummary, PendingChange, PendingRelease, ScopeCreation, ScopeCreator, limitName, limitNamed
+  Count, Limit, Limits, PackageSummary, PendingChange, PendingRelease, Rekey, RekeyOutcome, ScopeCreation, ScopeCreator,
+  limitName, limitNamed
 } from 'registry/app-view';
 import {MemoryAppViewStore} from 'registry/memory-store';
 import {MAX_README_BYTES, ReleaseContents, ReleaseFile} from 'registry/release-contents';
@@ -851,31 +852,118 @@ export let tests = suite('registry/app-view', () => {
     let none = ok(await fixture.call(ALICE, 'createOrganization', '{"name": "acme2", "recoveryKeys": []}'));
     equal(fixture.genesisOf(none['did'] as String).rotationKeys.length, 1);
 
-    // The App View keeps two of PLC's five rotation keys for itself (#597).
-    let four = `"${RECOVERY}", "${RECOVERY}", "${RECOVERY}", "${RECOVERY}"`;
-    equal(errorOf(await fixture.call(ALICE, 'createOrganization', `{"name": "acme3", "recoveryKeys": [${four}]}`)),
+    // The App View keeps three of PLC's five rotation keys for the
+    // operator's two offline keys and its online one (#597).
+    let three = `"${RECOVERY}", "${RECOVERY}", "${RECOVERY}"`;
+    equal(errorOf(await fixture.call(ALICE, 'createOrganization', `{"name": "acme3", "recoveryKeys": [${three}]}`)),
         'InvalidRequest');
     equal(errorOf(await fixture.call(ALICE, 'createOrganization', '{"name": "acme3", "recoveryKeys": "no"}')),
         'InvalidRequest');
   });
 
-  test("ranks recovery keys, then the operator's offline key, then the App View's online key", async (ctx) => {
+  test("ranks recovery keys, then the operator's offline keys, then the App View's online key", async (ctx) => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;
     let offline = new SigningKey(KeyType.Secp256k1, filled(201)).publicKey();
-    appView.config.offlineRotationKey = offline;
+    let spare = new SigningKey(KeyType.Secp256k1, filled(202)).publicKey();
+    appView.config.offlineRotationKeys = [offline, spare];
     let org = ok(await createOrganization(fixture, ALICE, 'acme'));
     let operation = fixture.genesisOf(org['did'] as String);
-    equal(operation.rotationKeys.length, 3);
+    equal(operation.rotationKeys.length, 4);
     equal(operation.rotationKeys[0], RECOVERY);
     equal(operation.rotationKeys[1], formatDidKey(offline));
-    equal(operation.rotationKeys[2], formatDidKey(appView.config.rotationKey.publicKey()));
+    equal(operation.rotationKeys[2], formatDidKey(spare));
+    equal(operation.rotationKeys[3], formatDidKey(appView.config.rotationKey.publicKey()));
     // The online key signs it.
     isTrue(operation.isSignedBy(appView.config.rotationKey.publicKey()), 'signed by the online key');
-    // Four recovery keys and the App View's two would pass PLC's five.
-    let four = `"${RECOVERY}", "${RECOVERY}", "${RECOVERY}", "${RECOVERY}"`;
-    equal(errorOf(await fixture.call(ALICE, 'createOrganization', `{"name": "acme2", "recoveryKeys": [${four}]}`)),
+    // Three recovery keys and the App View's three would pass PLC's five.
+    let three = `"${RECOVERY}", "${RECOVERY}", "${RECOVERY}"`;
+    equal(errorOf(await fixture.call(ALICE, 'createOrganization', `{"name": "acme2", "recoveryKeys": [${three}]}`)),
         'InvalidRequest');
+    ok(await fixture.call(ALICE, 'createOrganization', `{"name": "acme2", "recoveryKeys": ["${RECOVERY}", "${RECOVERY}"]}`));
+  });
+
+  test('replaces every account\'s online key with an operation an offline key signs', async (ctx) => {
+    let fixture = new Fixture();
+    let appView = fixture.appView as AppView;
+    let offline = new SigningKey(KeyType.Secp256k1, filled(201));
+    let spare = new SigningKey(KeyType.Secp256k1, filled(202));
+    appView.config.offlineRotationKeys = [offline.publicKey(), spare.publicKey()];
+    let old = formatDidKey(appView.config.rotationKey.publicKey());
+    let org = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    ok(await createPackage(fixture, ALICE, org, 'widget'));
+    let online = new SigningKey(KeyType.Secp256k1, filled(203)).publicKey();
+    let submitted = fixture.submitted;
+    let operations = async (did: String): Future<Array<PlcOperation>> => submitted[did];
+
+    // Without `send`, it says what it would send, and sends nothing.
+    let planned = await appView.rekey(new LocalSigner(spare), online, operations, false);
+    equal(planned.length, 2);
+    for (let rekey in planned) {
+      isTrue(rekey.outcome == RekeyOutcome.Rekeyed, rekey.detail);
+      equal(rekey.replaced as String, old);
+      equal(submitted[rekey.did].length, 1);
+    }
+
+    let rekeys = await appView.rekey(new LocalSigner(spare), online, operations, true);
+    equal(rekeys.length, 2);
+    for (let rekey in rekeys) {
+      isTrue(rekey.outcome == RekeyOutcome.Rekeyed, rekey.detail);
+      let log = submitted[rekey.did];
+      equal(log.length, 2);
+      let genesis = log[0];
+      let operation = log[1];
+      // The genesis operation's keys in the same order, but for the last,
+      // which is the new online key, and all else as it was, after it.
+      equal(operation.rotationKeys[3], formatDidKey(online));
+      let keys = [genesis.rotationKeys[0], genesis.rotationKeys[1], genesis.rotationKeys[2], formatDidKey(online)];
+      let expected = new PlcOperation(keys, genesis.verificationMethods, genesis.alsoKnownAs, genesis.services,
+          genesis.cid().toString());
+      equal(hex.encode(operation.signingBytes()), hex.encode(expected.signingBytes()));
+      isTrue(operation.isSignedBy(spare.publicKey()), 'signed by the offline key');
+      // A PLC directory takes it after the genesis operation.
+      checkNextOperation(rekey.did, [genesis], operation);
+    }
+
+    // Run again, it finds nothing left to do.
+    for (let rekey in await appView.rekey(new LocalSigner(offline), online, operations, true)) {
+      isTrue(rekey.outcome == RekeyOutcome.Current, rekey.detail);
+      equal(submitted[rekey.did].length, 2);
+    }
+  });
+
+  test('leaves an account the offline key cannot sign for, and says what failed', async (ctx) => {
+    let fixture = new Fixture();
+    let appView = fixture.appView as AppView;
+    let before = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let offline = new SigningKey(KeyType.Secp256k1, filled(201));
+    appView.config.offlineRotationKeys = [offline.publicKey()];
+    let after = ok(await createOrganization(fixture, ALICE, 'acme2'))['did'] as String;
+    let online = new SigningKey(KeyType.Secp256k1, filled(203)).publicKey();
+    let submitted = fixture.submitted;
+    let operations = async (did: String): Future<Array<PlcOperation>> => submitted[did];
+    let outcomes = (rekeys: Array<Rekey>) => {
+      let found = new HashMap<String, Rekey>();
+      for (let rekey in rekeys) {
+        found[rekey.did] = rekey;
+      }
+      return found;
+    };
+
+    fixture.plcDown = true;
+    let down = outcomes(await appView.rekey(new LocalSigner(offline), online, operations, true));
+    // Made before the App View had the offline key, it does not list it.
+    isTrue(down[before].outcome == RekeyOutcome.NotListed, down[before].detail);
+    isTrue(down[after].outcome == RekeyOutcome.Failed, 'failed');
+    equal(down[after].detail, 'the PLC directory is down');
+    equal(submitted[after].length, 1);
+
+    fixture.plcDown = false;
+    let up = outcomes(await appView.rekey(new LocalSigner(offline), online, operations, true));
+    isTrue(up[before].outcome == RekeyOutcome.NotListed, up[before].detail);
+    isTrue(up[after].outcome == RekeyOutcome.Rekeyed, up[after].detail);
+    equal(submitted[before].length, 1);
+    equal(submitted[after].length, 2);
   });
 
   test('lets the operator create a reserved scope, which no caller can', async (ctx): Future<void> => {
