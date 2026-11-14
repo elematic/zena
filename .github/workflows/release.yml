@@ -353,11 +353,115 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Phase 4a: Aggregate platform archives, create unversioned asset copies,
+  # Phase 2b: Bundle, test, and package the standalone VS Code extension VSIX.
+  build-vscode:
+    name: Build vscode-zena (.vsix)
+    needs: build-assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      vsix_version: ${{ steps.package-vsix.outputs.vsix_version }}
+    env:
+      WORKSPACE_CRATES: |
+        target/zena-rust-sources.tsv
+        target/release/zena-run
+        target/release/zena-cli
+        target/release/*.d
+        target/release/.fingerprint/workspace-hack-*
+        target/release/.fingerprint/zena-*
+        target/release/build/workspace-hack-*
+        target/release/build/zena-*
+        target/release/deps/*workspace_hack*
+        target/release/deps/*zena_*
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Put the dev shell's cargo and rustc on PATH
+        run: |
+          # shellcheck disable=SC2016
+          nix develop --command bash -c 'dirname "$(command -v rustc)"; dirname "$(command -v cargo)"' >> "$GITHUB_PATH"
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          save-if: false
+
+      - name: Restore the workspace crates
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.WORKSPACE_CRATES }}
+          key: rust-workspace-${{ runner.os }}-${{ hashFiles('.github/workflows/test.yml', 'scripts/ci-cargo-freshness.py', 'Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/zena-cli/Cargo.toml', 'packages/zena-cli/build.rs', 'packages/zena-cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
+          restore-keys: rust-workspace-${{ runner.os }}-
+
+      - name: Restore the Rust sources' times from the cached build
+        run: python3 scripts/ci-cargo-freshness.py restore
+
+      - name: Setup Wireit GitHub Actions Caching
+        uses: google/wireit@setup-github-actions-caching/v2
+
+      - name: Install npm dependencies
+        run: nix develop --command npm ci
+
+      - name: Build and test vscode-zena
+        env:
+          WIREIT_PARALLEL: 2
+        run: nix develop --command npm test -w vscode-zena
+
+      - name: Package release VSIX and SHA-256 checksum
+        id: package-vsix
+        env:
+          PRERELEASE: ${{ needs.build-assets.outputs.prerelease }}
+        run: |
+          VSIX_VERSION="$(jq -r '.version' packages/vscode-zena/package.json)"
+          if ! [[ "$VSIX_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::packages/vscode-zena/package.json version must be plain X.Y.Z for Marketplace compatibility (got '${VSIX_VERSION}')"
+            exit 1
+          fi
+          echo "vsix_version=${VSIX_VERSION}" >> "$GITHUB_OUTPUT"
+
+          mkdir -p dist
+          VSIX_FILE="vscode-zena-v${VSIX_VERSION}.vsix"
+          PRERELEASE_ARGS=()
+          if [ "$PRERELEASE" = "true" ]; then
+            PRERELEASE_ARGS=(--pre-release)
+          fi
+
+          (
+            cd packages/vscode-zena
+            nix develop --command ../../node_modules/.bin/vsce package \
+              --no-dependencies \
+              "${PRERELEASE_ARGS[@]}" \
+              -o "../../dist/${VSIX_FILE}"
+          )
+
+          (
+            cd dist
+            HASH="$(sha256sum "${VSIX_FILE}" | awk '{print $1}')"
+            printf '%s  %s\n' "$HASH" "${VSIX_FILE}" > "${VSIX_FILE}.sha256"
+          )
+          cat "dist/${VSIX_FILE}.sha256"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-vscode-zena
+          path: |
+            dist/vscode-zena-v${{ steps.package-vsix.outputs.vsix_version }}.vsix
+            dist/vscode-zena-v${{ steps.package-vsix.outputs.vsix_version }}.vsix.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  # Phase 4a: Aggregate platform archives and VSIX, create unversioned asset copies,
   # verify SHA256SUMS, and format the release notes (runs on dry_run too).
   assemble:
     name: Assemble release bundle
-    needs: [build-assets, build-native]
+    needs: [build-assets, build-native, build-vscode]
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -368,7 +472,7 @@ jobs:
           name: cli-bundle-assets
           path: release-meta
 
-      - name: Download platform archives
+      - name: Download platform archives and VSIX
         uses: actions/download-artifact@v8
         with:
           pattern: dist-*
@@ -378,6 +482,7 @@ jobs:
       - name: Create unversioned copies, SHA256SUMS, and release notes
         env:
           TAG: ${{ needs.build-assets.outputs.tag }}
+          VSIX_VERSION: ${{ needs.build-vscode.outputs.vsix_version }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           cd dist
@@ -402,11 +507,21 @@ jobs:
             printf '%s  %s\n' "$hash" "$unversioned" > "${unversioned}.sha256"
           done
 
+          VSIX_VERSIONED="vscode-zena-v${VSIX_VERSION}.vsix"
+          VSIX_UNVERSIONED="vscode-zena.vsix"
+          if [ ! -f "$VSIX_VERSIONED" ] || [ ! -f "${VSIX_VERSIONED}.sha256" ]; then
+            echo "::error::Missing expected VSIX artifact ${VSIX_VERSIONED}"
+            exit 1
+          fi
+          cp "$VSIX_VERSIONED" "$VSIX_UNVERSIONED"
+          VSIX_HASH="$(awk '{print $1}' "${VSIX_VERSIONED}.sha256")"
+          printf '%s  %s\n' "$VSIX_HASH" "$VSIX_UNVERSIONED" > "${VSIX_UNVERSIONED}.sha256"
+
           LC_ALL=C sort -- *.sha256 > SHA256SUMS
           cat SHA256SUMS
           COUNT="$(wc -l < SHA256SUMS | tr -d ' ')"
-          if [ "$COUNT" -ne 8 ]; then
-            echo "::error::Expected 8 checksums in SHA256SUMS (4 versioned + 4 unversioned), got ${COUNT}"
+          if [ "$COUNT" -ne 10 ]; then
+            echo "::error::Expected 10 checksums in SHA256SUMS (4 CLI + 1 VSIX, versioned and unversioned), got ${COUNT}"
             exit 1
           fi
           sha256sum -c SHA256SUMS
@@ -419,6 +534,7 @@ jobs:
             printf '**macOS and Linux:**\n\n```sh\ncurl -fsSL https://zena-lang.dev/install.sh | ZENA_VERSION=%s sh\n```\n\n' "$TAG"
             printf '**Windows (PowerShell):**\n\n```powershell\n$env:ZENA_VERSION = '\''%s'\''; irm https://zena-lang.dev/install.ps1 | iex\n```\n\n' "$TAG"
             printf 'Omit `ZENA_VERSION` to install the latest release.\n\n'
+            printf '**VS Code Extension:**\n\n```sh\ncode --install-extension %s\n```\n\n' "$VSIX_VERSIONED"
             printf '### Downloads\n\n'
             printf '| Platform | Archive | SHA-256 |\n'
             printf '| --- | --- | --- |\n'
@@ -429,7 +545,9 @@ jobs:
               url="${REPO_URL}/releases/download/${TAG}/${versioned}"
               printf '| %s | [`%s`](%s) | `%s` |\n' "$label" "$versioned" "$url" "$hash"
             done
-            printf '\nUnversioned `zena-<target>.<ext>` copies are also attached for `/releases/latest/download/` links on stable releases. Full checksum manifest: [`SHA256SUMS`](%s/releases/download/%s/SHA256SUMS) · All releases: [zena-lang.dev/releases](https://zena-lang.dev/releases/)\n' "$REPO_URL" "$TAG"
+            vsix_url="${REPO_URL}/releases/download/${TAG}/${VSIX_VERSIONED}"
+            printf '| VS Code Extension | [`%s`](%s) | `%s` |\n' "$VSIX_VERSIONED" "$vsix_url" "$VSIX_HASH"
+            printf '\nUnversioned `zena-<target>.<ext>` and `vscode-zena.vsix` copies are also attached for `/releases/latest/download/` links on stable releases. Full checksum manifest: [`SHA256SUMS`](%s/releases/download/%s/SHA256SUMS) · All releases: [zena-lang.dev/releases](https://zena-lang.dev/releases/)\n' "$REPO_URL" "$TAG"
           } > RELEASE_NOTES.md
 
           cat RELEASE_NOTES.md >> "$GITHUB_STEP_SUMMARY"
@@ -440,18 +558,20 @@ jobs:
           name: release-bundle
           path: |
             dist/zena-*
+            dist/vscode-zena*
             dist/SHA256SUMS
             dist/RELEASE_NOTES.md
           if-no-files-found: error
           retention-days: 7
 
-  # Phase 4b: Tag the commit and publish the GitHub Release. Skipped on dry_run.
+  # Phase 4b: Tag the commit, publish the GitHub Release, and optionally publish
+  # the VS Code extension to VS Code Marketplace and Open VSX. Skipped on dry_run.
   publish:
     name: Publish GitHub Release
-    needs: [build-assets, assemble]
+    needs: [build-assets, build-vscode, assemble]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: write
 
@@ -497,7 +617,76 @@ jobs:
 
           gh release create "${TAG}" \
             dist/zena-* \
+            dist/vscode-zena* \
             dist/SHA256SUMS \
             --title "Zena ${TAG}" \
             --notes-file dist/RELEASE_NOTES.md \
             "${PRERELEASE_FLAG[@]}"
+
+      - name: Check extension marketplace credentials
+        id: creds
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          HAS_VSCE="false"
+          HAS_OVSX="false"
+          if [ -n "${VSCE_PAT:-}" ]; then
+            HAS_VSCE="true"
+          else
+            echo "::notice::VSCE_PAT is not configured; skipping VS Code Marketplace publish."
+          fi
+          if [ -n "${OVSX_PAT:-}" ]; then
+            HAS_OVSX="true"
+          else
+            echo "::notice::OVSX_PAT is not configured; skipping Open VSX publish."
+          fi
+          ANY="false"
+          if [ "$HAS_VSCE" = "true" ] || [ "$HAS_OVSX" = "true" ]; then
+            ANY="true"
+          fi
+          {
+            echo "has_vsce=${HAS_VSCE}"
+            echo "has_ovsx=${HAS_OVSX}"
+            echo "any=${ANY}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install Nix for marketplace CLI tools
+        if: steps.creds.outputs.any == 'true'
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Install npm dependencies for marketplace CLI tools
+        if: steps.creds.outputs.any == 'true'
+        run: nix develop --command npm ci
+
+      - name: Publish VSIX to VS Code Marketplace
+        if: steps.creds.outputs.has_vsce == 'true'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          VSIX_VERSION: ${{ needs.build-vscode.outputs.vsix_version }}
+          PRERELEASE: ${{ needs.build-assets.outputs.prerelease }}
+        run: |
+          PRERELEASE_ARGS=()
+          if [ "$PRERELEASE" = "true" ]; then
+            PRERELEASE_ARGS=(--pre-release)
+          fi
+          nix develop --command ./node_modules/.bin/vsce publish \
+            --packagePath "dist/vscode-zena-v${VSIX_VERSION}.vsix" \
+            --skip-duplicate \
+            "${PRERELEASE_ARGS[@]}"
+
+      - name: Publish VSIX to Open VSX Registry
+        if: steps.creds.outputs.has_ovsx == 'true'
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          VSIX_VERSION: ${{ needs.build-vscode.outputs.vsix_version }}
+          PRERELEASE: ${{ needs.build-assets.outputs.prerelease }}
+        run: |
+          PRERELEASE_ARGS=()
+          if [ "$PRERELEASE" = "true" ]; then
+            PRERELEASE_ARGS=(--pre-release)
+          fi
+          nix develop --command ./node_modules/.bin/ovsx publish \
+            --packagePath "dist/vscode-zena-v${VSIX_VERSION}.vsix" \
+            --skip-duplicate \
+            "${PRERELEASE_ARGS[@]}"
