@@ -2,33 +2,50 @@
   "locks": ["zena-lock.json", "package-lock.json"],
   "scripts": {
     "build": {
-      "dependencies": ["build:ts", "build:lsp"]
+      "dependencies": ["build:typecheck", "build:bundle"]
+    },
+    "build:typecheck": {
+      "command": "tsc",
+      "dependencies": ["../runtime:build", "../language-service:build:ts"],
+      "files": ["src/**/*.ts", "tsconfig.json"],
+      "output": ["tsconfig.tsbuildinfo"]
+    },
+    "build:bundle": {
+      "command": "node scripts/bundle.js",
+      "dependencies": [
+        "../runtime:build",
+        "../language-service:build",
+        "../stdlib:build"
+      ],
+      "files": [
+        "scripts/bundle.js",
+        "src/**/*.ts",
+        "../stdlib/zena/**/*.zena",
+        "../language-service/lsp.wasm"
+      ],
+      "output": [
+        "dist/extension.cjs",
+        "dist/extension.cjs.map",
+        "dist/lsp.wasm"
+      ],
+      "clean": "if-file-deleted"
     },
     "test": {
-      "command": "node --test test/lsp_test.js",
-      "files": ["test/**/*.js"],
-      "dependencies": ["build"]
-    },
-    "package": "npm run build && vsce package --no-dependencies",
-    "install-ext": "npm run package && code --install-extension vscode-zena-0.1.0.vsix",
-    "build:ts": {
-      "command": "tsc",
-      "files": ["src/**/*.{ts,cts}", "tsconfig.json"],
-      "output": [
-        "extension.cjs",
-        "extension.cjs.map",
-        "lib/",
-        "test/",
-        "tsconfig.tsbuildinfo"
+      "command": "node --test src/test/*_test.ts",
+      "dependencies": ["build"],
+      "files": [
+        "src/test/**/*.ts",
+        "package.json",
+        ".vscodeignore",
+        "LICENSE",
+        "CHANGELOG.md",
+        "README.md",
+        "language-configuration.json",
+        "syntaxes/**/*.json"
       ],
-      "clean": "if-file-deleted",
-      "dependencies": ["../runtime:build"]
+      "output": []
     },
-    "build:lsp": {
-      "command": "cp ../language-service/lsp.wasm lsp.wasm",
-      "files": [],
-      "output": ["lsp.wasm"],
-      "dependencies": ["../language-service:build"]
-    }
+    "package": "npm run build && vsce package --no-dependencies -o vscode-zena.vsix",
+    "install-ext": "npm run package && code --install-extension \"$PWD/vscode-zena.vsix\""
   }
 }

@@ -33,7 +33,10 @@ import {
  * URL. esbuild leaves the expression alone, so an esbuild-based site has to
  * copy `lsp.wasm` next to its output bundle (or pass an explicit URL).
  */
-export const lspWasmUrl = new URL('./lsp.wasm', import.meta.url).href;
+export const lspWasmUrl =
+  typeof import.meta.url === 'string'
+    ? new URL('./lsp.wasm', import.meta.url).href
+    : './lsp.wasm';
 
 /** A diagnostic reported by the checker. */
 export interface Diagnostic {

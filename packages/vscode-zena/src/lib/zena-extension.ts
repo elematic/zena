@@ -1,23 +1,65 @@
 import * as vscode from 'vscode';
 import {formatError} from '@zena-lang/runtime';
-import {ZenaCompilerService} from './compiler-service.js';
-import type {LintFindingInfo} from './compiler-service.js';
+import {
+  getStdlibContent,
+  STDLIB_SCHEME,
+  uriForCompilerPath,
+  ZenaCompilerService,
+  type DocumentSymbolInfo,
+  type LintFindingInfo,
+} from './compiler-service.js';
 
 export const outputChannel = vscode.window.createOutputChannel('Zena');
 
 /**
- * The UTF-16 offset in `source` of a UTF-8 byte offset into it, which is
- * what the service reports and what `TextDocument.positionAt` wants.
+ * Converts 1-based LSP `SymbolKind` values emitted by `lsp.wasm` to 0-based
+ * `vscode.SymbolKind` values.
  */
-function byteToCharOffset(source: string, byteOffset: number): number {
-  let bytes = 0;
-  let chars = 0;
-  for (const ch of source) {
-    if (bytes >= byteOffset) break;
-    bytes += Buffer.byteLength(ch, 'utf8');
-    chars += ch.length;
+function toVsCodeSymbolKind(lspKind: number): vscode.SymbolKind {
+  switch (lspKind) {
+    case 5:
+      return vscode.SymbolKind.Class;
+    case 6:
+      return vscode.SymbolKind.Method;
+    case 7:
+    case 8:
+      return vscode.SymbolKind.Property;
+    case 9:
+      return vscode.SymbolKind.Constructor;
+    case 10:
+      return vscode.SymbolKind.Enum;
+    case 11:
+      return vscode.SymbolKind.Interface;
+    case 12:
+      return vscode.SymbolKind.Function;
+    case 13:
+      return vscode.SymbolKind.Variable;
+    case 22:
+      return vscode.SymbolKind.EnumMember;
+    default:
+      return Math.max(0, lspKind - 1) as vscode.SymbolKind;
   }
-  return chars;
+}
+
+/**
+ * Converts 1-based LSP `CompletionItemKind` values emitted by `lsp.wasm` to
+ * 0-based `vscode.CompletionItemKind` values.
+ */
+function toVsCodeCompletionKind(lspKind: number): vscode.CompletionItemKind {
+  switch (lspKind) {
+    case 2:
+      return vscode.CompletionItemKind.Method;
+    case 3:
+      return vscode.CompletionItemKind.Function;
+    case 6:
+      return vscode.CompletionItemKind.Variable;
+    case 7:
+      return vscode.CompletionItemKind.Class;
+    case 14:
+      return vscode.CompletionItemKind.Keyword;
+    default:
+      return Math.max(0, lspKind - 1) as vscode.CompletionItemKind;
+  }
 }
 
 /**
@@ -28,7 +70,7 @@ export class ZenaExtension {
   #compiler: ZenaCompilerService;
   #diagnosticCollection: vscode.DiagnosticCollection;
   #statusBarItem: vscode.StatusBarItem;
-  /** The lint findings of each document's last check, by file path. */
+  /** The lint findings of each document's last check, keyed by `uri.path`. */
   #lintFindings = new Map<string, LintFindingInfo[]>();
 
   constructor(context: vscode.ExtensionContext) {
@@ -45,13 +87,20 @@ export class ZenaExtension {
     this.#statusBarItem.tooltip = 'Zena Language Service';
   }
 
-  async activate() {
-    outputChannel.appendLine('Activating Zena language extension (v2-format)');
+  async activate(): Promise<void> {
+    outputChannel.appendLine('Activating Zena language extension');
 
     const {context} = this;
 
     context.subscriptions.push(this.#diagnosticCollection);
     context.subscriptions.push(this.#statusBarItem);
+
+    // Virtual read-only documents for bundled `zena:*` standard library files.
+    context.subscriptions.push(
+      vscode.workspace.registerTextDocumentContentProvider(STDLIB_SCHEME, {
+        provideTextDocumentContent: (uri) => getStdlibContent(uri.path) ?? '',
+      }),
+    );
 
     context.subscriptions.push(
       vscode.commands.registerCommand('zena.showOutput', () => {
@@ -59,7 +108,6 @@ export class ZenaExtension {
       }),
     );
 
-    // Show status bar when a Zena file is active.
     const updateStatusBarVisibility = () => {
       if (vscode.window.activeTextEditor?.document.languageId === 'zena') {
         this.#statusBarItem.show();
@@ -74,9 +122,8 @@ export class ZenaExtension {
       ),
     );
 
-    // Initialize the WASM compiler.
     try {
-      await this.#compiler.initialize(context.extensionPath);
+      await this.#compiler.initialize(context.extensionUri);
     } catch (e) {
       outputChannel.appendLine(`Failed to load compiler:\n${formatError(e)}`);
       vscode.window.showErrorMessage(
@@ -85,33 +132,45 @@ export class ZenaExtension {
       return;
     }
 
-    // Check the active document on activation.
     if (vscode.window.activeTextEditor?.document.languageId === 'zena') {
       void this.#checkDocument(vscode.window.activeTextEditor.document);
     }
 
-    // Re-check on document change.
+    context.subscriptions.push(
+      vscode.workspace.onDidOpenTextDocument((doc) => {
+        if (doc.languageId === 'zena' && doc.uri.scheme !== STDLIB_SCHEME) {
+          void this.#checkDocument(doc);
+        }
+      }),
+    );
+
     context.subscriptions.push(
       vscode.workspace.onDidChangeTextDocument((e) => {
-        if (e.document.languageId === 'zena') {
+        if (
+          e.document.languageId === 'zena' &&
+          e.document.uri.scheme !== STDLIB_SCHEME
+        ) {
           void this.#checkDocument(e.document);
         }
       }),
     );
 
-    // Re-check when switching to a Zena file.
     context.subscriptions.push(
       vscode.window.onDidChangeActiveTextEditor((editor) => {
-        if (editor?.document.languageId === 'zena') {
+        if (
+          editor?.document.languageId === 'zena' &&
+          editor.document.uri.scheme !== STDLIB_SCHEME
+        ) {
           void this.#checkDocument(editor.document);
         }
       }),
     );
 
-    // Clear diagnostics when a document is closed.
     context.subscriptions.push(
       vscode.workspace.onDidCloseTextDocument((doc) => {
         this.#diagnosticCollection.delete(doc.uri);
+        this.#lintFindings.delete(doc.uri.path);
+        this.#compiler.closeDocument(doc.uri.path);
       }),
     );
 
@@ -121,7 +180,7 @@ export class ZenaExtension {
       }),
     );
 
-    // Lint findings as quick fixes, and one action that fixes them all.
+    // Lint findings as quick fixes, plus Fix All.
     context.subscriptions.push(
       vscode.languages.registerCodeActionsProvider(
         'zena',
@@ -129,11 +188,10 @@ export class ZenaExtension {
           provideCodeActions: (document, range) => {
             const findings = this.#findingsFor(document);
             if (findings.length === 0) return [];
-            const source = document.getText();
             const actions: vscode.CodeAction[] = [];
             for (const finding of findings) {
               if (finding.shared) continue;
-              const findingRange = this.#rangeOf(document, source, finding);
+              const findingRange = this.#rangeOf(document, finding);
               if (
                 !findingRange.intersection(range) &&
                 !range.contains(findingRange)
@@ -144,8 +202,7 @@ export class ZenaExtension {
                 `Fix: ${finding.message}`,
                 vscode.CodeActionKind.QuickFix,
               );
-              // A fix takes the supporting edits of its rule (an import) along.
-              action.edit = this.#fixAllEdit(document, source, [
+              action.edit = this.#fixAllEdit(document, [
                 finding,
                 ...findings.filter((f) => f.shared && f.rule === finding.rule),
               ]);
@@ -162,7 +219,7 @@ export class ZenaExtension {
               'Fix all zena-lint findings',
               vscode.CodeActionKind.SourceFixAll.append('zena'),
             );
-            all.edit = this.#fixAllEdit(document, source, findings);
+            all.edit = this.#fixAllEdit(document, findings);
             actions.push(all);
             return actions;
           },
@@ -176,7 +233,6 @@ export class ZenaExtension {
       ),
     );
 
-    // "Zena: Fix lint findings in file" on the active document.
     context.subscriptions.push(
       vscode.commands.registerCommand('zena.fixLint', async () => {
         const editor = vscode.window.activeTextEditor;
@@ -189,11 +245,7 @@ export class ZenaExtension {
           return;
         }
         await vscode.workspace.applyEdit(
-          this.#fixAllEdit(
-            editor.document,
-            editor.document.getText(),
-            findings,
-          ),
+          this.#fixAllEdit(editor.document, findings),
         );
         vscode.window.showInformationMessage(
           `Zena: applied ${count} fix${count === 1 ? '' : 'es'}.`,
@@ -201,31 +253,23 @@ export class ZenaExtension {
       }),
     );
 
-    // Go to Definition.
+    // Go to Definition (workspace files + `zena-stdlib:` virtual files).
     context.subscriptions.push(
       vscode.languages.registerDefinitionProvider('zena', {
-        provideDefinition: (document, position) => {
+        provideDefinition: async (document, position) => {
           if (!this.#compiler.isReady) return null;
           try {
             const source = document.getText();
-            // Use the start of the word under the cursor so we hit
-            // the exact byte offset stored in the ReferenceMap.
             const wordRange = document.getWordRangeAtPosition(position);
             const wordStart = wordRange ? wordRange.start : position;
-            const offset = Buffer.byteLength(
-              source.slice(0, document.offsetAt(wordStart)),
-              'utf8',
-            );
-            outputChannel.appendLine(
-              `Go to definition: offset=${offset} pos=${position.line}:${position.character}`,
-            );
-            const result = this.#compiler.getDefinition(
-              document.uri.fsPath,
+            const offset = document.offsetAt(wordStart);
+            const result = await this.#compiler.getDefinition(
+              document.uri,
               offset,
+              source,
             );
             if (!result) return null;
-            const uri = vscode.Uri.file(result.file);
-            // Convert 1-based line/column to 0-based for VS Code.
+            const targetUri = uriForCompilerPath(result.file, document.uri);
             const pos = new vscode.Position(
               Math.max(0, result.line - 1),
               Math.max(0, result.column - 1),
@@ -235,14 +279,15 @@ export class ZenaExtension {
             return [
               {
                 originSelectionRange: originRange,
-                targetUri: uri,
+                targetUri,
                 targetRange: new vscode.Range(pos, pos),
                 targetSelectionRange: new vscode.Range(pos, pos),
               } satisfies vscode.LocationLink,
             ];
           } catch (e) {
-            const msg = formatError(e);
-            outputChannel.appendLine(`Go to definition failed: ${msg}`);
+            outputChannel.appendLine(
+              `Go to definition failed: ${formatError(e)}`,
+            );
             return null;
           }
         },
@@ -252,43 +297,79 @@ export class ZenaExtension {
     // Hover.
     context.subscriptions.push(
       vscode.languages.registerHoverProvider('zena', {
-        provideHover: (document, position) => {
+        provideHover: async (document, position) => {
           if (!this.#compiler.isReady) return null;
           try {
             const source = document.getText();
             const wordRange = document.getWordRangeAtPosition(position);
             const wordStart = wordRange ? wordRange.start : position;
-            const offset = Buffer.byteLength(
-              source.slice(0, document.offsetAt(wordStart)),
-              'utf8',
+            const offset = document.offsetAt(wordStart);
+            const result = await this.#compiler.getHover(
+              document.uri,
+              offset,
+              source,
             );
-            const result = this.#compiler.getHover(document.uri.fsPath, offset);
             if (!result) return null;
 
             const contents = new vscode.MarkdownString();
-            contents.appendCodeblock(result.label, 'zena');
+            contents.appendCodeblock(result.label || result.type, 'zena');
             if (result.doc) {
               contents.appendMarkdown('\n---\n' + result.doc);
             }
             return new vscode.Hover(contents, wordRange);
           } catch (e) {
-            const msg = formatError(e);
-            outputChannel.appendLine(`Hover failed: ${msg}`);
+            outputChannel.appendLine(`Hover failed: ${formatError(e)}`);
             return null;
           }
         },
       }),
     );
 
+    // Completions.
+    context.subscriptions.push(
+      vscode.languages.registerCompletionItemProvider(
+        'zena',
+        {
+          provideCompletionItems: async (document, position) => {
+            if (!this.#compiler.isReady) return [];
+            try {
+              const source = document.getText();
+              const offset = document.offsetAt(position);
+              const items = await this.#compiler.getCompletions(
+                document.uri,
+                offset,
+                source,
+              );
+              return items.map((info) => {
+                const item = new vscode.CompletionItem(
+                  info.label,
+                  toVsCodeCompletionKind(info.kind),
+                );
+                if (info.detail) {
+                  item.detail = info.detail;
+                }
+                if (info.doc) {
+                  const md = new vscode.MarkdownString();
+                  md.appendMarkdown(info.doc);
+                  item.documentation = md;
+                }
+                return item;
+              });
+            } catch (e) {
+              outputChannel.appendLine(`Completions failed: ${formatError(e)}`);
+              return [];
+            }
+          },
+        },
+        '.',
+      ),
+    );
+
     // Document formatting.
     context.subscriptions.push(
       vscode.languages.registerDocumentFormattingEditProvider('zena', {
         provideDocumentFormattingEdits: (document) => {
-          outputChannel.appendLine(
-            `Format requested for ${document.uri.fsPath}`,
-          );
           if (!this.#compiler.isReady) {
-            outputChannel.appendLine('Format skipped: compiler not ready');
             return [];
           }
           try {
@@ -302,9 +383,6 @@ export class ZenaExtension {
               this.#setStatusBarOk();
               return [];
             }
-            outputChannel.appendLine(
-              `Format: applying changes (${source.length} → ${formatted.length} bytes)`,
-            );
             this.#setStatusBarOk();
             const fullRange = new vscode.Range(
               document.positionAt(0),
@@ -312,8 +390,7 @@ export class ZenaExtension {
             );
             return [vscode.TextEdit.replace(fullRange, formatted)];
           } catch (e) {
-            const msg = formatError(e);
-            outputChannel.appendLine(`Format failed: ${msg}`);
+            outputChannel.appendLine(`Format failed: ${formatError(e)}`);
             this.#setStatusBarError('Format error');
             return [];
           }
@@ -324,15 +401,17 @@ export class ZenaExtension {
     // Document symbols / outline.
     context.subscriptions.push(
       vscode.languages.registerDocumentSymbolProvider('zena', {
-        provideDocumentSymbols: (document) => {
+        provideDocumentSymbols: async (document) => {
           if (!this.#compiler.isReady) return [];
           try {
             const source = document.getText();
-            const path = document.uri.fsPath;
-            const symbols = this.#compiler.getDocumentSymbols(path, source);
+            const symbols = await this.#compiler.getDocumentSymbols(
+              document.uri,
+              source,
+            );
 
             const toDocumentSymbol = (
-              info: import('./compiler-service.js').DocumentSymbolInfo,
+              info: DocumentSymbolInfo,
             ): vscode.DocumentSymbol => {
               const range = new vscode.Range(
                 document.positionAt(info.start),
@@ -345,7 +424,7 @@ export class ZenaExtension {
               const sym = new vscode.DocumentSymbol(
                 info.name,
                 '',
-                info.kind as vscode.SymbolKind,
+                toVsCodeSymbolKind(info.kind),
                 range,
                 selRange,
               );
@@ -355,8 +434,9 @@ export class ZenaExtension {
 
             return symbols.map(toDocumentSymbol);
           } catch (e) {
-            const msg = formatError(e);
-            outputChannel.appendLine(`Document symbols failed: ${msg}`);
+            outputChannel.appendLine(
+              `Document symbols failed: ${formatError(e)}`,
+            );
             return [];
           }
         },
@@ -365,26 +445,23 @@ export class ZenaExtension {
   }
 
   async #checkDocument(document: vscode.TextDocument): Promise<void> {
-    if (!this.#compiler.isReady) return;
+    if (!this.#compiler.isReady || document.uri.scheme === STDLIB_SCHEME) {
+      return;
+    }
 
     try {
       const source = document.getText();
-      const path = document.uri.fsPath;
-      const byFile = await this.#compiler.checkDocument(source, path);
+      const path = document.uri.path;
+      const byFile = await this.#compiler.checkDocument(source, document.uri);
 
-      // Clear previous diagnostics for the entry file (always present).
       this.#diagnosticCollection.set(document.uri, []);
 
-      // Set diagnostics per file.
       for (const [filePath, diagnostics] of byFile) {
-        const uri = vscode.Uri.file(filePath);
+        const uri = uriForCompilerPath(filePath, document.uri);
         this.#diagnosticCollection.set(uri, diagnostics);
       }
 
-      // The lint findings, as warnings beside the checker's diagnostics.
-      // The checker's own "unnecessary cast" warning gives way to the
-      // lint finding for the same cast, which carries the fix.
-      const findings = this.#compiler.lintDocument(path);
+      const findings = await this.#compiler.lintDocument(path);
       this.#lintFindings.set(path, findings);
       if (findings.length > 0) {
         const own = (this.#diagnosticCollection.get(document.uri) ?? []).filter(
@@ -392,17 +469,15 @@ export class ZenaExtension {
             !(
               d.message.startsWith('Unnecessary cast') &&
               findings.some((f) =>
-                document
-                  .positionAt(byteToCharOffset(source, f.start))
-                  .isEqual(d.range.start),
+                document.positionAt(f.start).isEqual(d.range.start),
               )
             ),
         );
         for (const finding of findings) {
           if (finding.shared) continue;
           const range = new vscode.Range(
-            document.positionAt(byteToCharOffset(source, finding.start)),
-            document.positionAt(byteToCharOffset(source, finding.end)),
+            document.positionAt(finding.start),
+            document.positionAt(finding.end),
           );
           const diagnostic = new vscode.Diagnostic(
             range,
@@ -416,56 +491,48 @@ export class ZenaExtension {
         this.#diagnosticCollection.set(document.uri, own);
       }
     } catch (e) {
-      const msg = formatError(e);
       outputChannel.appendLine(
-        `Check failed for ${document.uri.fsPath}: ${msg}`,
+        `Check failed for ${document.uri.toString()}: ${formatError(e)}`,
       );
     }
   }
 
-  /** The lint findings of the document's last check. */
   #findingsFor(document: vscode.TextDocument): LintFindingInfo[] {
-    return this.#lintFindings.get(document.uri.fsPath) ?? [];
+    return this.#lintFindings.get(document.uri.path) ?? [];
   }
 
   #rangeOf(
     document: vscode.TextDocument,
-    source: string,
     finding: LintFindingInfo,
   ): vscode.Range {
     return new vscode.Range(
-      document.positionAt(byteToCharOffset(source, finding.start)),
-      document.positionAt(byteToCharOffset(source, finding.end)),
+      document.positionAt(finding.start),
+      document.positionAt(finding.end),
     );
   }
 
-  /**
-   * One edit applying every finding. The findings do not overlap, so the
-   * edit holds one replacement per finding.
-   */
   #fixAllEdit(
     document: vscode.TextDocument,
-    source: string,
     findings: LintFindingInfo[],
   ): vscode.WorkspaceEdit {
     const edit = new vscode.WorkspaceEdit();
     for (const finding of findings) {
       edit.replace(
         document.uri,
-        this.#rangeOf(document, source, finding),
+        this.#rangeOf(document, finding),
         finding.replacement,
       );
     }
     return edit;
   }
 
-  #setStatusBarOk() {
+  #setStatusBarOk(): void {
     this.#statusBarItem.text = '$(zap) Zena';
     this.#statusBarItem.backgroundColor = undefined;
     this.#statusBarItem.tooltip = 'Zena Language Service';
   }
 
-  #setStatusBarError(tooltip: string) {
+  #setStatusBarError(tooltip: string): void {
     this.#statusBarItem.text = '$(zap) Zena';
     this.#statusBarItem.backgroundColor = new vscode.ThemeColor(
       'statusBarItem.errorBackground',
@@ -473,7 +540,7 @@ export class ZenaExtension {
     this.#statusBarItem.tooltip = `${tooltip} — click to view logs`;
   }
 
-  async deactivate() {
+  async deactivate(): Promise<void> {
     outputChannel.appendLine('Deactivating Zena language extension');
     this.#diagnosticCollection.clear();
   }
