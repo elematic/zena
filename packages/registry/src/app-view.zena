@@ -36,7 +36,7 @@ import {JsonObject} from 'zena:json';
 import {timeout} from 'zena:task';
 import {BlobRef, MapValue, Value} from 'atproto/data';
 import {Cid} from 'atproto/cid';
-import {PublicKey, parseDidKey, verifySignature} from 'atproto/didkey';
+import {PublicKey, formatDidKey, parseDidKey, verifySignature} from 'atproto/didkey';
 import {PlcOperation, PlcService, didOfGenesis, genesisOperation} from 'atproto/plc';
 import {REGISTRY_SERVICE, REGISTRY_TYPE} from 'package-manager/registry-methods';
 import {Identity, IdentityResolver} from 'atproto/identity';
@@ -80,6 +80,7 @@ import {isPublicHttps} from './egress.zena';
 import {HandleRecords} from './handles.zena';
 import {DerivedObjects, ReleaseContents, deriveContents} from './release-contents.zena';
 import {MemoryBlobs, kindName} from 'pds/firestore';
+import {PlcLogLookup} from 'pds/managed';
 import {HeldRecord, PdsClient} from 'pds/pds-client';
 import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from 'pds/repository';
 import {WebSessions} from './web-sessions.zena';
@@ -90,8 +91,14 @@ import {compareKeys} from 'atproto/mst';
 import {SYNC_GET_RECORD, xrpcPath} from 'atproto/methods';
 import {isValidDid} from 'atproto/syntax';
 
+/**
+ * The most offline rotation keys of the operator's an account lists. With
+ * the online key and `MAX_RECOVERY_KEYS`, they fill PLC's five.
+ */
+export let MAX_OFFLINE_ROTATION_KEYS = 2;
+
 /** The most recovery keys an account's genesis operation ranks above the App View's keys. */
-let MAX_RECOVERY_KEYS = 3;
+let MAX_RECOVERY_KEYS = 2;
 
 /**
  * How every automation account's token starts, so that one is told from a
@@ -659,7 +666,7 @@ export final class AppViewConfig {
   /**
    * Its online PLC rotation key, which signs every account's operations,
    * ranked last: below any recovery keys an account's owners give, and the
-   * offline key. Without those, the App View holds the account, as a PDS holds
+   * offline keys. Without those, the App View holds the account, as a PDS holds
    * its users' (package-manager.md, "Keys").
    */
   rotationKey: Signer;
@@ -670,11 +677,13 @@ export final class AppViewConfig {
    */
   var signingKey: Signer | null = null;
   /**
-   * The operator's offline rotation key, ranked above the online one, so
-   * that the operator can undo for 72 hours what a stolen online key
-   * signs. The server knows only its public key.
+   * The operator's offline rotation keys, highest ranked first, and all
+   * above the online one, so that the operator can undo for 72 hours what
+   * a stolen online key signs, and replace it (`rekey`). There are two so
+   * that losing one leaves the other. The server knows only their public
+   * keys.
    */
-  var offlineRotationKey: PublicKey | null = null;
+  var offlineRotationKeys: Array<PublicKey> = [];
   /**
    * The bytes one release's artifacts may take (`Limit.ReleaseBytes`):
    * a source archive, since the App View stores no other kind yet.
@@ -1225,6 +1234,76 @@ export final class AppView {
       }
     }
     return written;
+  }
+
+  /**
+   * Makes `online` the lowest-ranked rotation key of every account the App
+   * View holds, in place of the one each ranks there, the online key it
+   * was made with: for after that key was destroyed, disabled or stolen
+   * (`main.zena`'s `plc-rekey`). Each account's operation is signed by
+   * `offline`, one of the operator's offline keys, which ranks above it.
+   * It reads accounts' operations with `operations`, and sends the new
+   * ones only when `send` is true. An account that already ranks `online`
+   * last, or does not list `offline`, is left as it is, so running it again
+   * finishes what a run left. Returns what it did, or would do, to each.
+   */
+  async rekey(offline: Signer, online: PublicKey, operations: PlcLogLookup, send: boolean): Future<Array<Rekey>> {
+    let offlineKey = formatDidKey(offline.publicKey());
+    let onlineKey = formatDidKey(online);
+    let rekeys = new GrowableArray<Rekey>();
+    for (let account in await this.#store.accounts()) {
+      let rekey = new Rekey(account.did, account.handle);
+      rekeys.push(rekey);
+      try {
+        let log = await operations(account.did);
+        if (log.length == 0) {
+          rekey.outcome = RekeyOutcome.Failed;
+          rekey.detail = 'the PLC directory has no operations for it';
+          continue;
+        }
+        let last = log[log.length - 1];
+        let keys = last.rotationKeys;
+        var listsOffline = false;
+        var listsOnline = false;
+        for (let key in keys) {
+          listsOffline = listsOffline || key == offlineKey;
+          listsOnline = listsOnline || key == onlineKey;
+        }
+        let replaced = keys[keys.length - 1];
+        rekey.replaced = replaced;
+        if (replaced == onlineKey) {
+          rekey.outcome = RekeyOutcome.Current;
+          continue;
+        }
+        if (!listsOffline) {
+          rekey.outcome = RekeyOutcome.NotListed;
+          rekey.detail = `its rotation keys do not list ${offlineKey}`;
+          continue;
+        }
+        if (listsOnline || replaced == offlineKey) {
+          rekey.outcome = RekeyOutcome.Failed;
+          rekey.detail = `it does not rank its online key last: ${join(keys, ', ')}`;
+          continue;
+        }
+        let next = new GrowableArray<String>();
+        for (var i = 0; i < keys.length - 1; i += 1) {
+          next.push(keys[i]);
+        }
+        next.push(onlineKey);
+        let unsigned = new PlcOperation(next, last.verificationMethods, last.alsoKnownAs, last.services,
+            last.cid().toString());
+        let operation = unsigned.withSignature(await offline.sign(unsigned.signingBytes()));
+        rekey.operation = operation;
+        if (send) {
+          await this.#submit(account.did, operation);
+        }
+        rekey.outcome = RekeyOutcome.Rekeyed;
+      } catch (e) {
+        rekey.outcome = RekeyOutcome.Failed;
+        rekey.detail = e.message;
+      }
+    }
+    return rekeys;
   }
 
   /**
@@ -2296,7 +2375,7 @@ export final class AppView {
    * operation of a `did:plc` that names a signing key the PDS reserved,
    * the PDS, and this App View as `zena_registry` (package-manager.md,
    * "Creating a package"). It ranks `recoveryKeys` (`parseRecoveryKeys`)
-   * first, then the operator's offline key, then the online rotation key,
+   * first, then the operator's offline keys, then the online rotation key,
    * which signs it.
    */
   async #prepareAccount(handle: String, recoveryKeys: Array<PublicKey>): Future<PreparedAccount> {
@@ -2304,9 +2383,8 @@ export final class AppView {
     for (let key in recoveryKeys) {
       rotation.push(key);
     }
-    let offline = this.config.offlineRotationKey;
-    if (offline != null) {
-      rotation.push(offline);
+    for (let key in this.config.offlineRotationKeys) {
+      rotation.push(key);
     }
     rotation.push(this.config.rotationKey.publicKey());
     let signingKey = await this.#pds.reserveSigningKey();
@@ -3411,6 +3489,33 @@ export final class PackageDetail {
   new(this.did, this.handle, this.scope);
 }
 
+/** What `AppView.rekey` did, or would do, to an account. */
+export enum RekeyOutcome {
+  /** It ranks the new online key last, in place of `replaced`. */
+  Rekeyed,
+  /** It already ranked the new online key last. */
+  Current,
+  /** It does not list the offline key, so the offline key cannot sign for it. */
+  NotListed,
+  /** Its operations could not be read, or sent, or are not as the App View makes them (`detail`). */
+  Failed
+}
+
+/** An account `AppView.rekey` went through. */
+export final class Rekey {
+  did: String;
+  handle: String;
+  var outcome = RekeyOutcome.Failed;
+  /** The key it ranked last, which the new operation replaces; null when its operations could not be read. */
+  var replaced: String | null = null;
+  /** The operation that replaces it, signed; null unless `outcome` is `Rekeyed`. */
+  var operation: PlcOperation | null = null;
+  /** Why it was not re-keyed, for `NotListed` and `Failed`. */
+  var detail = '';
+
+  new(this.did, this.handle);
+}
+
 /** An automation account `createAutomationAccount` made, with its token. */
 export final class Automation {
   did: String;
@@ -3476,7 +3581,8 @@ function asMap(value: Value): MapValue {
 /**
  * `recoveryKeys`, `did:key`s, as keys, refusing more than
  * `MAX_RECOVERY_KEYS`: a PLC operation lists at most five rotation keys,
- * and the App View keeps two of them for its own.
+ * and the App View keeps three of them for the operator's offline keys and
+ * its online key.
  */
 function parseRecoveryKeys(recoveryKeys: Array<String>): Array<PublicKey> {
   if (recoveryKeys.length > MAX_RECOVERY_KEYS) {
