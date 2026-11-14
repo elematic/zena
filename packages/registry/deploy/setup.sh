@@ -123,6 +123,13 @@ echo "    $SERVICE_ACCOUNT may use it"
 gcloud storage buckets update "gs://$BUCKET" --soft-delete-duration "$SOFT_DELETE" --quiet > /dev/null
 echo "    deleted objects kept for $SOFT_DELETE"
 
+# Cloud KMS never deletes a key, only a key's versions, and destroys a
+# version only after it has waited, scheduled for destruction, for the
+# time its key was made with; until then it can be restored. Every key
+# here waits 120 days, the longest Cloud KMS allows, which is set only
+# when a key is made.
+DESTROY_AFTER=120d
+
 echo "==> Cloud KMS key ring $KMS_KEYRING ($KMS_LOCATION)"
 if gcloud kms keyrings describe "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" > /dev/null 2>&1; then
   echo "    exists"
@@ -139,7 +146,8 @@ else
   # signing keys, and the key never leaves it. Destroying it loses every
   # signing key it encrypted.
   gcloud kms keys create "$SIGNING_KEYS_KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \
-    --project "$PROJECT" --purpose encryption --protection-level software --quiet
+    --project "$PROJECT" --purpose encryption --protection-level software \
+    --destroy-scheduled-duration "$DESTROY_AFTER" --quiet
   echo "    made"
 fi
 gcloud kms keys add-iam-policy-binding "$SIGNING_KEYS_KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \
@@ -156,7 +164,8 @@ if [ "$ROTATION_KMS" = 1 ]; then
     # key, ranked above it, is what undoes its operations if it is lost
     # or misused.
     gcloud kms keys create "$KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" --project "$PROJECT" \
-      --purpose asymmetric-signing --default-algorithm ec-sign-secp256k1-sha256 --protection-level hsm --quiet
+      --purpose asymmetric-signing --default-algorithm ec-sign-secp256k1-sha256 --protection-level hsm \
+      --destroy-scheduled-duration "$DESTROY_AFTER" --quiet
     echo "    made"
   fi
   gcloud kms keys add-iam-policy-binding "$KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \
@@ -174,7 +183,7 @@ else
   # is, which Cloud KMS offers only in an HSM.
   gcloud kms keys create "$SIGNING_KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \
     --project "$PROJECT" --purpose asymmetric-signing --default-algorithm ec-sign-secp256k1-sha256 \
-    --protection-level hsm --quiet
+    --protection-level hsm --destroy-scheduled-duration "$DESTROY_AFTER" --quiet
   echo "    made"
 fi
 gcloud kms keys add-iam-policy-binding "$SIGNING_KMS_KEY" --keyring "$KMS_KEYRING" --location "$KMS_LOCATION" \

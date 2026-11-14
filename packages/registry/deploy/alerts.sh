@@ -3,7 +3,9 @@
 # Watches one environment (env.sh) once both its names answer, after
 # deploy:domain: an uptime check on each name, and alerts, sent by email to
 # ZENA_ALERT_EMAIL, when two of a check's regions fail it or a service
-# answers with server errors. With ZENA_MONTHLY_BUDGET, in US dollars, it
+# answers with server errors; and for the whole project, when its audit
+# log records a key, the database, a backup or a secret being deleted or
+# disabled. With ZENA_MONTHLY_BUDGET, in US dollars, it
 # also sets a monthly budget on the project, which the website shares,
 # that warns at half, nine tenths and all of it. Re-running it adds only
 # what is missing; to change a check or an alert, delete it in the console
@@ -144,6 +146,45 @@ cat > "$POLICY" << EOF
 }
 EOF
 policy "$ERRORS_POLICY"
+
+# One policy for the project, which both environments are in: an entry
+# in its Admin Activity audit log, which is always kept, that destroys or
+# disables a KMS key version, deletes the database, a backup or its
+# schedule, a bucket, a secret or a DNS zone, turns off the database's
+# delete protection or point-in-time recovery, or makes a key for a
+# service account, which then works from anywhere.
+DESTRUCTIVE_FILTER="logName=\\\"projects/$PROJECT/logs/cloudaudit.googleapis.com%2Factivity\\\" AND ("
+for method in DestroyCryptoKeyVersion UpdateCryptoKeyVersion DeleteDatabase DeleteBackup storage.buckets.delete \
+  DeleteSecret DestroySecretVersion DisableSecretVersion dns.managedZones.delete CreateServiceAccountKey; do
+  DESTRUCTIVE_FILTER+="protoPayload.methodName:\\\"$method\\\" OR "
+done
+DESTRUCTIVE_FILTER+="(protoPayload.methodName:\\\"UpdateDatabase\\\" AND"
+DESTRUCTIVE_FILTER+=" (\\\"DELETE_PROTECTION_DISABLED\\\" OR \\\"POINT_IN_TIME_RECOVERY_DISABLED\\\")))"
+DESTRUCTIVE_POLICY="Zena registry: deleted or disabled in $PROJECT"
+cat > "$POLICY" << EOF
+{
+  "displayName": "$DESTRUCTIVE_POLICY",
+  "combiner": "OR",
+  "conditions": [{
+    "displayName": "An audit log entry deletes or disables what the registry keeps",
+    "conditionMatchedLog": {
+      "filter": "$DESTRUCTIVE_FILTER",
+      "labelExtractors": {
+        "who": "EXTRACT(protoPayload.authenticationInfo.principalEmail)",
+        "method": "EXTRACT(protoPayload.methodName)",
+        "resource": "EXTRACT(protoPayload.resourceName)"
+      }
+    }
+  }],
+  "alertStrategy": {"notificationRateLimit": {"period": "300s"}, "autoClose": "1800s"},
+  "notificationChannels": ["$CHANNEL"],
+  "documentation": {
+    "content": "\${log.extracted_label.who} called \${log.extracted_label.method} on \${log.extracted_label.resource}. If no one meant to: a KMS key version scheduled for destruction can be restored until it is destroyed (gcloud kms keys versions restore), the database from its backups, and a bucket's objects for its soft-delete time (packages/registry/DEVELOPMENT.md, \"Backups and alerts\"); delete a service account key with gcloud iam service-accounts keys delete. A staging reset deletes the smoke token's secret, which sends this too.",
+    "mimeType": "text/markdown"
+  }
+}
+EOF
+policy "$DESTRUCTIVE_POLICY"
 
 if [ -n "$BUDGET" ]; then
   echo "==> Monthly budget of \$$BUDGET for $PROJECT"
