@@ -603,10 +603,9 @@ zena-cli run packages/registry/src/main.zena -- plc-restore <did> <cid> --yes < 
 ```
 
 It sends a copy of that operation, signed by the offline key, which the
-directory takes in place of every operation after it. Staging's own PLC
-directory does not take an operation that replaces others, so this
-cannot be rehearsed there. Then replace the online key, which the
-accounts still list.
+directory takes in place of every operation after it, as long as the
+offline key ranks above the key that signed the first of them. Then
+replace the online key, which the accounts still list.
 
 **To replace the online key**, when it was stolen, destroyed or disabled,
 an operation the offline key signs puts a new one in its place on every
@@ -643,9 +642,21 @@ account:
 6. Run `plc-rekey --yes` again, for accounts made before the deploy.
    Running it again changes only what a run left undone.
 
-On staging, `--keyring zena-pkg-staging`, and the operations go to its
-own directory, which takes them as it takes any other, so the procedure
-can be rehearsed there.
+**To rehearse both on staging**, give staging two offline keys of its
+own, never production's, in its settings' `OFFLINE_ROTATION_KEYS`, and
+reset it, so that its accounts list them. Its own directory, at
+`https://pkg-staging.zena-lang.dev/plc`, takes an operation that replaces
+those of the last 72 hours as `plc.directory` does, and serves
+`/plc/<did>/log/audit`. Then, as above but with `--keyring
+zena-pkg-staging`:
+
+1. Replace the online key with `plc-rekey`, signed by the lower-ranked
+   offline key, and deploy.
+2. Undo that on one account with `plc-restore`, signed by the higher one,
+   naming the account's genesis operation, with
+   `APP_VIEW_PLC_DIRECTORY=https://pkg-staging.zena-lang.dev/plc`. Its
+   audit log shows the re-key replaced.
+3. Run `plc-rekey --yes` again, which re-keys that account once more.
 
 ### Signing keys
 

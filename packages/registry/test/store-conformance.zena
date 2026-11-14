@@ -11,7 +11,7 @@ import {equal, isNull, isTrue} from 'zena:assert';
 import {hex} from 'zena:encoding';
 import {Cid} from 'atproto/cid';
 import {KeyType, curveOf, publicKeyFor} from 'atproto/didkey';
-import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto/plc';
+import {PlcLogEntry, PlcOperation, didOfGenesis, genesisOperation} from 'atproto/plc';
 import {MemberEntry, OWNER} from 'package-manager/records';
 import {AccountKind} from 'pds/storage';
 import {
@@ -484,9 +484,9 @@ export function plcLogConformance(make: () => PlcLog): void {
     let first = genesisOperation(publicKeyFor(KeyType.P256, rotation), [publicKeyFor(KeyType.P256, rotation)],
         'a.pkg.test', 'https://pkg.test').signedWith(sign);
     let did = didOfGenesis(first);
-    equal((await log.operations(did)).length, 0);
-    isTrue(await log.append(did, 0, first), 'the genesis operation');
-    isTrue(!await log.append(did, 0, first), 'another at index 0');
+    equal((await log.entries(did)).length, 0);
+    isTrue(await log.append(did, 0, new PlcLogEntry(first, 1000 as i64)), 'the genesis operation');
+    isTrue(!await log.append(did, 0, new PlcLogEntry(first, 1000 as i64)), 'another at index 0');
     var previous = first;
     // More than nine, so the order is not the order of unpadded digits.
     for (var i = 1; i < 12; i += 1) {
@@ -494,15 +494,18 @@ export function plcLogConformance(make: () => PlcLog): void {
       aka.push(`at://a${i}.pkg.test`);
       let next = new PlcOperation(previous.rotationKeys, previous.verificationMethods, aka, previous.services,
           previous.cid().toString()).signedWith(sign);
-      isTrue(await log.append(did, i, next), `operation ${i}`);
+      isTrue(await log.append(did, i, new PlcLogEntry(next, (1000 + i) as i64)), `operation ${i}`);
       previous = next;
     }
-    isTrue(!await log.append(did, 20, first), 'past the end');
-    let all = await log.operations(did);
+    isTrue(!await log.append(did, 20, new PlcLogEntry(first, 1000 as i64)), 'past the end');
+    let all = await log.entries(did);
     equal(all.length, 12);
-    equal(all[0].alsoKnownAs[0], 'at://a.pkg.test');
-    equal(all[11].alsoKnownAs[0], 'at://a11.pkg.test');
-    equal(all[11].prev as String, all[10].cid().toString());
-    equal((await log.operations('did:plc:otherotherotherotherothe')).length, 0);
+    equal(all[0].operation.alsoKnownAs[0], 'at://a.pkg.test');
+    equal(all[11].operation.alsoKnownAs[0], 'at://a11.pkg.test');
+    equal(all[11].operation.prev as String, all[10].operation.cid().toString());
+    // When each was recorded.
+    equal(all[0].createdAt, 1000 as i64);
+    equal(all[11].createdAt, 1011 as i64);
+    equal((await log.entries('did:plc:otherotherotherotherothe')).length, 0);
   });
 }
