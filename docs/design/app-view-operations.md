@@ -116,6 +116,7 @@ session, because the App View holds nothing that can write there
 | Dissolve a scope                                     | owners, App View admins                    | no                                                                                  |
 | Create an automation account                         | admins                                     | `zena pkg ci create`; `createAutomationAccount`                                     |
 | Reset or revoke an automation account's token        | admins                                     | `zena pkg ci token`; `issueAutomationToken`, which replaces it                      |
+| Retire an automation account                         | admins                                     | `zena pkg ci retire`; `retireAutomationAccount`, refused while maintainers name it  |
 
 ## Packages
 

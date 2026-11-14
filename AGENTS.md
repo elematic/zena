@@ -365,7 +365,8 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   - **`pkg ci create <scope>/<name>`** makes an automation account for CI
     to publish as, and prints its token, which `pkg publish` calls the
     registry with from `ZENA_REGISTRY_TOKEN`; **`pkg ci token
-<scope>/<name>`** replaces it.
+<scope>/<name>`** replaces it. **`pkg ci retire <scope>/<name>`**
+    retires the account: its token stops working, and it gets no other.
   - **`pkg scope create <name> [--yes]`**, **`pkg scope info <scope>`**:
     Create a scope on a registry, with you as its owner, or describe one.
     Publishing never creates a scope. **`pkg scope add|remove <scope>

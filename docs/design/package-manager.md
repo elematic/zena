@@ -1435,7 +1435,11 @@ on another PDS, whose owner writes its attestations, counts like any
 maintainer. A package's owners add it with
 `zena pkg owner add <handle> --automation`, as a publisher: the App View
 refuses an automation account that is not marked as one, or that is an
-owner, since an owner chooses the maintainers. Since the App View verifies
+owner, since an owner chooses the maintainers. An organization's admins
+retire one that CI no longer uses, with `zena pkg ci retire`, once no
+package's maintainers or team names it: its token stops working and it
+gets no other, while its repository and name stay, since its attestations
+count toward the releases it published. Since the App View verifies
 the token itself, it could also take a CI system's own identity token in
 its place, as npm and PyPI take GitHub's OIDC tokens; that is an open
 question.

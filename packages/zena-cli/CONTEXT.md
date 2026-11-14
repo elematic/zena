@@ -32,7 +32,7 @@ the `zena` command. The design is in
      through the registry's `put*` methods, `retract.zena`, for
      `zena pkg retract`, `approve.zena`, for `zena pkg approve`, which attests a
      release waiting for its maintainers and asks the registry to complete
-     it, `ci.zena`, for `zena pkg ci create` and `zena pkg ci token`, and
+     it, `ci.zena`, for `zena pkg ci create`, `token` and `retire`, and
      `admin.zena`, for `zena pkg admin`, the registry admins' list of who
      may create scopes. `versions.zena` holds the versions of the command,
      the compiler and the package manager's libraries, which

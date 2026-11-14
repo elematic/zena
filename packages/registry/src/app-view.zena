@@ -361,6 +361,13 @@ export interface AppViewStore {
   setAutomationToken(did: String, hash: String): Future<void>;
   /** The automation account whose token's SHA-256, in hex, is `hash`, or null. */
   automationAccountOf(hash: String): Future<String | null>;
+  /**
+   * Retires the automation account `did`: its token stops working, and
+   * `isRetired` says so from then on.
+   */
+  retireAutomationAccount(did: String): Future<void>;
+  /** Whether the automation account `did` was retired. */
+  isRetired(did: String): Future<boolean>;
   /** The limits the operator has set on the account `did`. */
   limits(did: String): Future<Limits>;
   /** Sets `limit` on the account `did` to `value`, or takes its setting away for none. */
@@ -1127,6 +1134,75 @@ export final class AppView {
    * of its organization.
    */
   async issueAutomationToken(caller: String, account: String, nowMicros: i64): Future<String> {
+    let held = await this.#administeredAutomation(caller, account);
+    if (await this.#store.isRetired(account)) {
+      throw new AppViewError(400, 'InvalidRequest', `${held.handle} is retired, and is given no token`);
+    }
+    await this.#countAction(caller, held, nowMicros);
+    let token = await this.#issueToken(account);
+    await this.#recordActivity(this.#eventOnAccount(nowMicros, caller, 'issueAutomationToken', ACTIVITY_AUTOMATION,
+        OUTCOME_WRITTEN, held));
+    return token;
+  }
+
+  /**
+   * `retireAutomationAccount`: stops the automation account `account`
+   * publishing, for CI an organization no longer runs, or a token that
+   * leaked: its token stops working, and it is given no other. Its
+   * repository and its name stay, since the attestations in it count toward
+   * the releases it published. The caller must be an owner or admin of its
+   * organization. Refused while a package's maintainers name it, by DID,
+   * entry or team, naming the packages, so that their owners take it out
+   * first. Retiring one that was retired changes nothing.
+   */
+  async retireAutomationAccount(caller: String, account: String, nowMicros: i64): Future<void> {
+    let held = await this.#administeredAutomation(caller, account);
+    if (await this.#store.isRetired(account)) {
+      return;
+    }
+    // The packages that may name it, since they or a team of theirs once
+    // mentioned it, and of those, the ones whose maintainers still do.
+    let candidates = new HashSet<String>();
+    for (let mentioning in await this.#store.mentionsOf(account)) {
+      let holder = await this.#store.account(mentioning);
+      if (holder == null) {
+        continue;
+      }
+      if (holder.kind == AccountKind.Package) {
+        candidates.add(holder.did);
+      } else if (holder.kind == AccountKind.Organization) {
+        for (let team in await this.#pds.listRecords(holder.did, TEAM_TYPE)) {
+          for (let pkg in await this.#store.mentionsOf(`${holder.did} ${team.rkey}`)) {
+            candidates.add(pkg);
+          }
+        }
+      }
+    }
+    let naming = new GrowableArray<String>();
+    for (let pkg in candidates) {
+      for (let attester in await this.attesters(pkg)) {
+        if (attester == account) {
+          naming.push((await this.#store.account(pkg))?.handle ?? pkg);
+          break;
+        }
+      }
+    }
+    if (naming.length > 0) {
+      throw new AppViewError(400, 'AccountInUse',
+          `${held.handle} is a maintainer of ${join(naming, ', ')}: take it out of their maintainers first`);
+    }
+    await this.#countAction(caller, held, nowMicros);
+    await this.#store.retireAutomationAccount(account);
+    await this.#recordActivity(this.#eventOnAccount(nowMicros, caller, 'retireAutomationAccount', ACTIVITY_AUTOMATION,
+        OUTCOME_WRITTEN, held));
+  }
+
+  /**
+   * The automation account `account`, which this App View holds, when
+   * `caller` is an owner or admin of its organization. Throws
+   * `AppViewError` otherwise.
+   */
+  async #administeredAutomation(caller: String, account: String): Future<AppViewAccount> {
     let held = await this.#store.account(account);
     if (held == null || held.kind != AccountKind.Automation) {
       throw new AppViewError(400, 'InvalidRequest', `${account} is not an automation account on this App View`);
@@ -1135,11 +1211,7 @@ export final class AppView {
     if (org == null || !isAdmin(await this.#orgRole(org, caller))) {
       throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${held.scope}`);
     }
-    await this.#countAction(caller, held, nowMicros);
-    let token = await this.#issueToken(account);
-    await this.#recordActivity(this.#eventOnAccount(nowMicros, caller, 'issueAutomationToken', ACTIVITY_AUTOMATION,
-        OUTCOME_WRITTEN, held));
-    return token;
+    return held;
   }
 
   /** A new token for the automation account `did`, kept as its only one. */
