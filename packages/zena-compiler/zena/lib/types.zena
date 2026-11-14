@@ -4906,16 +4906,15 @@ export function scopedFieldNames(ct: ClassType): GrowableArray<String> {
 }
 
 /**
- * Whether a specialization over `t` may serve a restricted
- * instantiation, judged from `t`'s representation alone. Codegen keys a
- * specialization by representation, and a handle is its resource class
- * there (eraseTypeParameters), so `Own<R>`, `Borrow<R>` and
- * `Unmanaged<R>` share one body, and `Scoped<F>` shares `F`'s. Which of
- * them the specialization happens to record must not change the answer,
- * so the answer is the representation's: a resource class anywhere in
- * it means restricted, and the shared body behaves as the restricted
- * instantiations need. An `Unmanaged<R>` instantiation is taken from
- * too, and `Scoped<F>` behaves as first-class.
+ * Whether a specialization over `t` serves a restricted instantiation:
+ * whether its takes empty a slot, and `isFirstClass<T>()` is false. A
+ * resource class anywhere in `t` means restricted, which is what an
+ * owner is in codegen, since it erases `Own<R>` to `R`. A `Borrow<R>`
+ * is the resource it wraps, and so restricted. An `Unmanaged<R>` is
+ * unrestricted, as the checker treats it: a type argument keeps the
+ * handle (eraseTypeArgument), so its specialization is its own.
+ * `Scoped<F>` is `F`'s answer, since its restriction is the checker's
+ * to enforce.
  */
 export function representsRestricted(t: Type): boolean {
   if (t is ClassType) {
@@ -4947,10 +4946,12 @@ export function representsRestricted(t: Type): boolean {
     return false;
   }
   if (t is TypeAliasType) {
-    // A handle or `Scoped` is represented by what it wraps. An alias
-    // instance keeps its declaration's unsubstituted target, so a
-    // generic one is judged by its arguments, which over-approximates.
+    // A handle or `Scoped` is judged by what it wraps, an unmanaged
+    // handle aside. An alias instance keeps its declaration's
+    // unsubstituted target, so a generic one is judged by its
+    // arguments, which over-approximates.
     if (isOwnershipWrapper(t)) {
+      if (ownershipHandleOf(t) == OwnershipHandle.Unmanaged) { return false; }
       let inner = ownershipHandleInner(t);
       return inner != null && representsRestricted(inner);
     }

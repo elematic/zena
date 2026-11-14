@@ -191,20 +191,19 @@ with a value it drops or replaces is decided from it
 (`holdsOwner` in types.zena): release at an owner, nothing at a borrow
 or an unmanaged value.
 
-Whether a read takes is decided from the representation instead: a
-body whose type arguments include a resource class serves a restricted
+Whether a read takes is decided from the type arguments too: a body
+whose type arguments include an owner or a borrow serves a restricted
 instantiation, and behaves as one (`representsRestricted` in
-types.zena, which #615's takes already use). One intrinsic carries the
-answer:
+types.zena, which #615's takes already use). An owner reaches it as its
+bare resource class, and an `Unmanaged<R>` is unrestricted, as the
+checker treats it. One intrinsic carries the answer:
 
 - **`isFirstClass<T>(): boolean`**, a constant in each specialization:
-  `true` for `Future<i32>` and `Future<Scoped<F>>`, whose restriction
-  the static rules carry alone, and `false` for `Future<Own<R>>`,
-  `Future<Borrow<R>>` and `Future<Unmanaged<R>>`. The checker treats an
-  `Unmanaged<R>` as first-class, so a program can await a
-  `Future<Unmanaged<R>>` twice, and the second await is refused at run
-  time (§"Runtime state"). Now that it has a specialization of its own,
-  that could change.
+  `true` for `Future<i32>`, `Future<Unmanaged<R>>` and
+  `Future<Scoped<F>>`, whose restriction the static rules carry alone,
+  and `false` for `Future<Own<R>>` and `Future<Borrow<R>>`. So a
+  `Future<Unmanaged<R>>` can be awaited twice, as the checker allows,
+  and gives the same handle each time.
 
 `Future`'s read becomes a take, since a read of a field holding `T` is
 one (§"The class half of `scoped T`"):
