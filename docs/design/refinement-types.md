@@ -134,8 +134,10 @@ predicate at it.
 
 A refinement has its base's representation. No box, no tag, no field.
 Specializations of generic classes are keyed by representation, and an
-alias by its target, so `Array<Positive>` is the same specialization as
-`Array<i32>`. Nothing is duplicated and nothing is boxed.
+alias by its target (the ownership handles and `Scoped<T>` aside,
+owner-futures.md §"Specialization"), so `Array<Positive>` is the same
+specialization as `Array<i32>`. Nothing is duplicated and nothing is
+boxed.
 
 Generic classes are invariant, so an `Array<Positive>` is not an
 `Array<i32>` and the other way around, as today for any two types. An

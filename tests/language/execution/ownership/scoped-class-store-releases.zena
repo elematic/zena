@@ -1,0 +1,82 @@
+// @mode: run
+// @result: 33330
+// A store into a `scoped T` field releases the value it replaces when
+// `T` owns it, as a store into an owner field does. At `Unmanaged<R>`
+// and `Borrow<R>` the old value is not the container's, so the store
+// only overwrites it. Each handle has a specialization of its own
+// (owner-futures.md §"Specialization"), so the order the compiler
+// reaches them in changes nothing: `Unmanaged<Res>` comes first here.
+import {Own, Borrow, Unmanaged, Disposable, WithDefault, defaultValue, disown} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  #id: i32;
+  new(id: i32) : #id = id;
+  [Disposable.dispose](this: Own<this>): void {
+    released += this.#id;
+  }
+}
+
+class Slot<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  put(value: T): void {
+    this.#value = value;
+  }
+}
+
+function unmanaged(): void {
+  let s = new Slot<Unmanaged<Res>>();
+  s.put(disown(new Res(1)));
+  s.put(disown(new Res(2)));
+}
+
+function owned(): i32 {
+  let s = new Slot<Own<Res>>();
+  s.put(new Res(10));
+  s.put(new Res(20));
+  return released;
+}
+
+function borrowed(): i32 {
+  let a = new Res(100);
+  let b = new Res(200);
+  let s = new Slot<Borrow<Res>>();
+  s.put(a);
+  s.put(b);
+  return released;
+}
+
+function tuple(): i32 {
+  let s = new Slot<(Own<Res>, i32)>();
+  s.put((new Res(1000), 1));
+  s.put((new Res(2000), 2));
+  return released;
+}
+
+function nested(): i32 {
+  let first = new Slot<Own<Res>>();
+  first.put(new Res(10000));
+  let second = new Slot<Own<Res>>();
+  second.put(new Res(20000));
+  let s = new Slot<Slot<Own<Res>>>();
+  s.put(first);
+  s.put(second);
+  return released;
+}
+
+export function main(): i32 {
+  unmanaged();
+  if (released != 0) { return 1000000 + released; }
+  // The second store releases the first owner, the drop the second.
+  if (owned() != 10) { return 2000000 + released; }
+  if (released != 30) { return 3000000 + released; }
+  // Neither store releases a borrow; the owners go at scope exit.
+  if (borrowed() != 30) { return 4000000 + released; }
+  if (released != 330) { return 5000000 + released; }
+  if (tuple() != 1330) { return 6000000 + released; }
+  if (released != 3330) { return 7000000 + released; }
+  // Replacing a container of an owner releases what it holds.
+  if (nested() != 13330) { return 8000000 + released; }
+  return released;
+}

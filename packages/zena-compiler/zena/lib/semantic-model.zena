@@ -317,6 +317,9 @@ export final class ModelIndex {
     let ftKeys = model.fieldTakes.map.keys();
     for (let k in ftKeys) { this.#claim(model, k); }
 
+    let sfKeys = model.scopedFieldStores.map.keys();
+    for (let k in sfKeys) { this.#claim(model, k); }
+
     let rsKeys = model.revivingStores.map.keys();
     for (let k in rsKeys) { this.#claim(model, k); }
 
@@ -1003,6 +1006,40 @@ export final class SemanticModel {
   }
 
   fieldTakes: NodeMap<boolean> { get { return this.#fieldTakes; } }
+
+  /**
+   * Plain stores into a field whose declared type holds its class's
+   * `scoped T`, at a receiver that may be a restricted instantiation.
+   * What the store does with the value it replaces is decided per
+   * specialization: an owner is released, a `Scoped<T>` refused, and
+   * anything else overwritten. Keyed by the assignment node.
+   */
+  #scopedFieldStores = new NodeMap<boolean>();
+
+  setScopedFieldStore(node: Node): void {
+    this.#scopedFieldStores[node] = true;
+  }
+
+  isScopedFieldStoreDirect(node: Node): boolean {
+    if (let (true, d) = this.#scopedFieldStores.get(node)) {
+      return d;
+    }
+    return false;
+  }
+
+  isScopedFieldStore(node: Node): boolean {
+    if (this.isScopedFieldStoreDirect(node)) return true;
+    let {index} = this;
+    if (index != null) {
+      let owner = index.ownerOfNode(node.id);
+      if (owner != null && owner != this) {
+        return owner.isScopedFieldStoreDirect(node);
+      }
+    }
+    return false;
+  }
+
+  scopedFieldStores: NodeMap<boolean> { get { return this.#scopedFieldStores; } }
 
   /**
    * Stores into an owner field of `this` that a dispose moved out on

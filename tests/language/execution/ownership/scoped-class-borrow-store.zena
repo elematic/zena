@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 0
+// A `scoped T` container of a borrow has a specialization of its own,
+// apart from one of an owner, and a store into it releases nothing: a
+// borrow is not the container's to release.
+import {Own, Borrow, Disposable, WithDefault, defaultValue} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+class Slot<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  put(value: T): void {
+    this.#value = value;
+  }
+}
+
+export function main(): i32 {
+  let a = new Res();
+  let b = new Res();
+  let s = new Slot<Borrow<Res>>();
+  s.put(a);
+  s.put(b);
+  return released;
+}

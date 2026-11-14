@@ -1,0 +1,27 @@
+// @mode: run
+// @result: 3
+// A container of `Unmanaged<R>` has a specialization of its own, apart
+// from one of `Own<R>` (owner-futures.md §"Specialization"), and a loop
+// over it finds that specialization.
+import {Own, Unmanaged, Disposable, disown, adopt} from 'zena:core';
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  value(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+export function main(): i32 {
+  let all = new GrowableArray<Unmanaged<Res>>();
+  all.push(disown(new Res(1)));
+  all.push(disown(new Res(2)));
+  var sum = 0;
+  for (let r in all) {
+    sum += r.value();
+  }
+  for (let r in all) {
+    let back = adopt(r);
+  }
+  return sum;
+}

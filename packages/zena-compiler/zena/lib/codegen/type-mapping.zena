@@ -7,7 +7,8 @@ import {
   UnionType, InlineTupleType, InlineParamType, InlineRecordType, inlineOf, baseType, BoolLiteralType, NumLiteralType, StringLiteralType, sameNumericLiteralRaw,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
   countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType, mergeRow, mergeTupleRow,
-  copyRecursiveAliasKeys, hasRecursiveAliasKeys, scopedFieldNames, typeContainsTypeParameter } from '../types.zena';
+  copyRecursiveAliasKeys, hasRecursiveAliasKeys, scopedFieldNames, typeContainsTypeParameter,
+  instantiateTypeAliasType } from '../types.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -15,7 +16,7 @@ import {
 import {
   ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, ValTypeRefExtern, ValTypeExternRef, ValTypeNullRef, isNullableAnyRef, valTypeToOpcode, valTypeEquals, WasmType,
 } from './wasm.zena';
-import { compareStrings, presentWordCount, presentWordName, getSignatureKey } from './codegen-utils.zena';
+import { compareStrings, presentWordCount, presentWordName, getSignatureKey, specializesApart } from './codegen-utils.zena';
 import {
   getMemberRootClass, getClassKey, getClassMethodKey, getInterfaceKey, InterfaceKey, CellKey, ClosureKey,
   unwrapAliases,
@@ -1321,7 +1322,7 @@ export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
         let newArgs = new Array<Type>();
         var changed = false;
         for (let arg in args) {
-          let sub = eraseTypeParameters(wasm, arg);
+          let sub = eraseTypeArgument(wasm, arg);
           if (sub !== arg) { changed = true; }
           newArgs.push(sub);
         }
@@ -1400,7 +1401,7 @@ export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
         let newArgs = new Array<Type>();
         var changed = false;
         for (let arg in args) {
-          let sub = eraseTypeParameters(wasm, arg);
+          let sub = eraseTypeArgument(wasm, arg);
           if (sub !== arg) { changed = true; }
           newArgs.push(sub);
         }
@@ -1447,7 +1448,7 @@ export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
         let newArgs = new Array<Type>();
         var changed = false;
         for (let arg in args) {
-          let sub = eraseTypeParameters(wasm, arg);
+          let sub = eraseTypeArgument(wasm, arg);
           if (sub !== arg) { changed = true; }
           newArgs.push(sub);
         }
@@ -1545,6 +1546,132 @@ export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
       newRec
     }
     case _: t
+  };
+}
+
+/**
+ * The erasure of a type argument, which a specialization is keyed by.
+ * It is eraseTypeParameters, except that the aliases a specialization
+ * keeps apart (specializesApart) stay, over erased arguments, in the
+ * argument and in every tuple, union, record, array and function type
+ * it holds. So the erasure keys as the argument does
+ * (getTypeKeyForSpecialization). A value's own type loses them, since a
+ * handle is represented by its resource.
+ */
+export function eraseTypeArgument(wasm: WasmModule, t: Type): Type {
+  return eraseTypeArgumentAt(wasm, t, 0);
+}
+
+function eraseTypeArgumentAt(wasm: WasmModule, t: Type, depth: i32): Type {
+  if (depth > 16 || !holdsApartAlias(t, depth)) {
+    return eraseTypeParameters(wasm, t);
+  }
+  if (let (true, done) = wasm.argumentErasures.get(t.uid)) {
+    return done;
+  }
+  let next = depth + 1;
+  let each = (types: Array<Type>): Array<Type> => {
+    let out = new Array<Type>(types.length);
+    for (let sub in types) {
+      out.push(eraseTypeArgumentAt(wasm, sub, next));
+    }
+    return out;
+  };
+  let erased = match (t) {
+    case TypeAliasType as ta: {
+      let args = ta.typeArguments;
+      if (specializesApart(ta) && args != null) {
+        instantiateTypeAliasType(ta, each(args)) as Type
+      } else {
+        // A transparent alias over one, `type Pair = (Unmanaged<R>, i32)`.
+        let tps = ta.typeParameters;
+        let target = if (tps != null && args != null) {
+          substituteTypeParamsInCodegen(wasm, tps, args, ta.target)
+        } else {
+          ta.target
+        };
+        eraseTypeArgumentAt(wasm, target, next)
+      }
+    }
+    case UnionType {types}: wasm.interner.union(each(types))
+    case TupleType {elementTypes}: new TupleType(each(elementTypes), null, 0) as Type
+    case InlineTupleType {elementTypes}: new InlineTupleType(each(elementTypes)) as Type
+    case ArrayType {elementType, elementsMutable}:
+      new ArrayType(eraseTypeArgumentAt(wasm, elementType, next), elementsMutable) as Type
+    case RecordType as rec: {
+      let props = new Map<String, Type>();
+      for (let key in rec.properties.keys()) {
+        props[key] = eraseTypeArgumentAt(wasm, rec.properties[key], next);
+      }
+      new RecordType(props, rec.optionalProperties, null, rec.isExistential) as Type
+    }
+    case FunctionType as ft: {
+      let fn = internFunctionType(each(ft.parameters),
+          eraseTypeArgumentAt(wasm, ft.returnType, next), ft.info, ft.typeParameters,
+          ft.typeArguments, ft.genericSource, ft.overloads);
+      fn.functionSymbolId = ft.functionSymbolId;
+      fn.functionSymbolName = ft.functionSymbolName;
+      fn as Type
+    }
+    case InlineParamType {param}: eraseTypeArgumentAt(wasm, param, next)
+    case InlineRecordType {record}: {
+      let inner = eraseTypeArgumentAt(wasm, record, next);
+      if (inner is RecordType) new InlineRecordType(inner) as Type else inner
+    }
+    case _: eraseTypeParameters(wasm, t)
+  };
+  wasm.argumentErasures[t.uid] = erased;
+  return erased;
+}
+
+/**
+ * Whether `t` holds an alias a specialization keeps apart, outside any
+ * class or interface: those erase their own arguments with
+ * eraseTypeArgument.
+ */
+function holdsApartAlias(t: Type, depth: i32): boolean {
+  if (depth > 16) { return false; }
+  let next = depth + 1;
+  let any = (types: Array<Type>): boolean => {
+    for (let sub in types) {
+      if (holdsApartAlias(sub, next)) { return true; }
+    }
+    return false;
+  };
+  return match (t) {
+    case TypeAliasType as ta: {
+      if (specializesApart(ta)) {
+        true
+      } else {
+        let args = ta.typeArguments;
+        if (args != null && any(args)) {
+          true
+        } else if (ta.isDistinct || ta.intrinsicName != null || ta.resolving ||
+            ta.typeParameters != null) {
+          false
+        } else {
+          ta.resolving = true;
+          let res = holdsApartAlias(ta.target, next);
+          ta.resolving = false;
+          res
+        }
+      }
+    }
+    case UnionType {types}: any(types)
+    case TupleType {elementTypes}: any(elementTypes)
+    case InlineTupleType {elementTypes}: any(elementTypes)
+    case ArrayType {elementType}: holdsApartAlias(elementType, next)
+    case RecordType as rec: {
+      var found = false;
+      for (let key in rec.properties.keys()) {
+        if (holdsApartAlias(rec.properties[key], next)) { found = true; }
+      }
+      found
+    }
+    case FunctionType as ft: any(ft.parameters) || holdsApartAlias(ft.returnType, next)
+    case InlineParamType {param}: holdsApartAlias(param, next)
+    case InlineRecordType {record}: holdsApartAlias(record, next)
+    case _: false
   };
 }
 

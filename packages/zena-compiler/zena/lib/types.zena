@@ -4654,6 +4654,76 @@ export function typeCarriesOwner(t: Type): boolean {
 }
 
 /**
+ * Whether a value of `t` holds an owner that dropping or replacing it
+ * releases, in the types codegen sees: an owner, a tuple or union
+ * holding one, or a `scoped T` container with a `[release]` whose
+ * argument holds one. Codegen erases `Own<R>` to `R`, so a resource
+ * class with no handle is an owner, while `Borrow<R>` and
+ * `Unmanaged<R>` survive the erasure of a type argument
+ * (eraseTypeArgument) and are not. A specialization is keyed by handle
+ * (owner-futures.md §"Specialization"), so in a generic body this
+ * answers for the instantiation.
+ */
+export function holdsOwner(t: Type): boolean {
+  return holdsOwnerAt(t, 0);
+}
+
+function holdsOwnerAt(t: Type, depth: i32): boolean {
+  if (depth > 16) { return false; }
+  let next = depth + 1;
+  return match (t) {
+    case ClassType as ct: ct.isResource || containerHoldsOwner(ct, next)
+    case TupleType {elementTypes}: anyHoldsOwner(elementTypes, next)
+    case InlineTupleType {elementTypes}: anyHoldsOwner(elementTypes, next)
+    case UnionType {types}: anyHoldsOwner(types, next)
+    case TypeAliasType as ta: {
+      let handle = ownershipHandleOf(ta);
+      let args = ta.typeArguments;
+      if (handle != OwnershipHandle.None) {
+        handle == OwnershipHandle.Own
+      } else if (isWithDefaultType(ta) && args != null && args.length == 1) {
+        holdsOwnerAt(args[0], next)
+      } else if (ta.isDistinct || ta.intrinsicName != null || ta.resolving) {
+        false
+      } else {
+        ta.resolving = true;
+        let res = holdsOwnerAt(ta.target, next);
+        ta.resolving = false;
+        res
+      }
+    }
+    case _: false
+  };
+}
+
+function anyHoldsOwner(types: Array<Type>, depth: i32): boolean {
+  for (let m in types) {
+    if (holdsOwnerAt(m, depth)) { return true; }
+  }
+  return false;
+}
+
+/**
+ * Whether `ct` is a `scoped T` container that a drop releases, with a
+ * `scoped` argument holding an owner (holdsOwner).
+ */
+function containerHoldsOwner(ct: ClassType, depth: i32): boolean {
+  if (releaseMemberOf(ct) != ":release" || !hasReleaseMember(ct)) { return false; }
+  var c: ClassType | null = ct;
+  while (c != null) {
+    let cls = c;
+    let args = cls.typeArguments;
+    if (args != null) {
+      for (var i = 0; i < args.length; i += 1) {
+        if (isScopedClassParam(cls, i) && holdsOwnerAt(args[i], depth)) { return true; }
+      }
+    }
+    c = cls.superType;
+  }
+  return false;
+}
+
+/**
  * Whether `t` is an instance of a class that holds a restricted
  * argument and carries an owner in it: a `scoped T` class bound to an
  * owner, such as a `Future<Own<R>>`, as an affine tuple is

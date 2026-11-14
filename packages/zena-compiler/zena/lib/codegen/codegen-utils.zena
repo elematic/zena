@@ -9,7 +9,9 @@ import {
   MixinType, MixinKey, instantiateClassType, TypeAliasType, EnumType, ErrorType, HoleType, NeverType, ThisType,
   AnyRefType, EqRefType, ExternRefType, StringLiteralType, NumLiteralType, baseType, ErasedType,
   MethodInfo, countTypeKey, countCodegenFunctionType, internFunctionType, mergeRow, mergeTupleRow,
-  recursiveAliasKey, integerLiteralMagnitude, integerLiteralRadix, stripNumericUnderscores } from '../types.zena';
+  recursiveAliasKey, integerLiteralMagnitude, integerLiteralRadix, stripNumericUnderscores,
+  OwnershipHandle, ownershipHandleOf, ownershipHandleInner, representsRestricted, isScopedType,
+  scopedInner } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Symbol, SymbolId, noSymbolId } from '../scope/symbol.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -522,7 +524,7 @@ function getTypeKeyForSpecializationRaw(type: Type): String {
       parts[2 + 2 * ft.parameters.length] = getTypeKeyForSpecialization(ft.returnType);
       String.fromParts(parts)
     }
-    case TypeAliasType as ta: getTypeKeyForSpecialization(instantiatedAliasTarget(ta))
+    case TypeAliasType as ta: aliasKeyForSpecialization(ta)
     case EnumType as et: getTypeKeyForSpecialization(et.backingType)
     case NeverType: "never"
     case HoleType: "hole"
@@ -536,6 +538,47 @@ function getTypeKeyForSpecializationRaw(type: Type): String {
     case ThisType: "this"
     case _: "unknown"
   };
+}
+
+/**
+ * Whether a specialization keeps the alias `ta` apart from what it
+ * wraps, as the key of its type argument (aliasKeyForSpecialization)
+ * and the erasure of one (eraseTypeArgument) both do. A handle is
+ * represented by the resource it wraps, but only an owner's body may
+ * release or replace a value, so a `Borrow<R>` and an `Unmanaged<R>`
+ * stay apart from `Own<R>`, which is `R`. A handle on an unrestricted
+ * type is that type (`Borrow<String>` is `String`). A `Scoped<T>` must
+ * be consumed, so it stays apart from `T`.
+ */
+export function specializesApart(ta: TypeAliasType): boolean {
+  let handle = ownershipHandleOf(ta);
+  if (handle != OwnershipHandle.None) {
+    let inner = ownershipHandleInner(ta);
+    return handle != OwnershipHandle.Own && inner != null && representsRestricted(inner);
+  }
+  return isScopedType(ta) && scopedInner(ta) != null;
+}
+
+/** An alias's key: its target's, or its own kind's (specializesApart). */
+function aliasKeyForSpecialization(ta: TypeAliasType): String {
+  if (!specializesApart(ta)) {
+    return getTypeKeyForSpecialization(instantiatedAliasTarget(ta));
+  }
+  return `${apartKind(ta)}_${getTypeKeyForSpecialization(apartInner(ta))}`;
+}
+
+/** The kind an alias kept apart (specializesApart) is keyed with. */
+function apartKind(ta: TypeAliasType): String {
+  return match (ownershipHandleOf(ta)) {
+    case OwnershipHandle.Borrow: "borrow"
+    case OwnershipHandle.Unmanaged: "unmanaged"
+    case _: "scoped"
+  };
+}
+
+/** What an alias kept apart (specializesApart) wraps. */
+function apartInner(ta: TypeAliasType): Type {
+  return (ownershipHandleInner(ta) ?? scopedInner(ta)) as Type;
 }
 
 /**
@@ -1427,7 +1470,13 @@ function getTypeUniqueKeyRaw(t: Type): String {
     
     String.fromParts(parts)
   }
-  case TypeAliasType as a: `alias_${getTypeUniqueKey(a.target)}`
+  // An alias instance keeps its declaration's unsubstituted target, so
+  // the target alone keys every handle alike (`alias_T`).
+  case TypeAliasType as a: if (specializesApart(a)) {
+    `alias_${apartKind(a)}_${getTypeUniqueKey(apartInner(a))}`
+  } else {
+    `alias_${getTypeUniqueKey(a.target)}`
+  }
   // Keyed as a distinct alias over the backing type is: the key names a
   // representation, which every enum over one backing type shares.
   case EnumType as e: `alias_${getTypeUniqueKey(e.backingType)}`

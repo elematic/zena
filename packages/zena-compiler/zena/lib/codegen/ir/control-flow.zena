@@ -16,7 +16,7 @@ import {
   BindingPattern, BindingProperty, BlockStatement, BooleanLiteral, CatchClause, ClassDeclaration, ClassPattern, Expression, FieldDefinition, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, RecordPattern, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression, RangeExpression,
 } from '../../ast.zena';
 import {
-  ArrayType, BoolLiteralType, ClassType, HoleType, InlineTupleType, sameNumericLiteralRaw, InterfaceType, TupleType, NumLiteralType, NullType, I32Type, RecordType, Type, UnionType, VoidType, baseType, isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType, isOwnershipWrapper, ownershipHandleInner, ownershipHandleOf, soleNonNullMember, UnionType, isScopedType, scopedInner, releaseMemberOf, releasableContainer, representsRestricted, hasReleaseMember, scopedFieldNames, OwnershipHandle
+  ArrayType, BoolLiteralType, ClassType, HoleType, InlineTupleType, sameNumericLiteralRaw, InterfaceType, TupleType, NumLiteralType, NullType, I32Type, RecordType, Type, UnionType, VoidType, baseType, isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType, isOwnershipWrapper, ownershipHandleInner, ownershipHandleOf, soleNonNullMember, UnionType, isScopedType, scopedInner, releaseMemberOf, scopedFieldNames, OwnershipHandle, holdsOwner, typeContainsScoped
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
@@ -210,7 +210,7 @@ export function lowerLetCondition(cx: LoweringContext, lpc: LetPatternCondition)
 /** Whether some member of `layout` holds an owner. */
 function layoutHoldsOwner(layout: InlineLayout): boolean {
   for (var m = 0; m < layout.members.length; m += 1) {
-    if (memberReleases(layout, m, null, false)) {
+    if (memberReleases(layout, m, null)) {
       return true;
     }
   }
@@ -2362,28 +2362,15 @@ export final class DropPlan {
    * them releases nothing.
    */
   var partial: boolean = false;
-  /**
-   * Whether `tuple`'s owners are judged by representation: a resource
-   * class element is an owner whatever handle it was written with. For
-   * `releaseOwned<T>` in a specialization, which is keyed by
-   * representation, so its `T` arrives with the handles erased
-   * (reachability/CONTEXT.md, "A Specialization Is Keyed by
-   * Representation"). Everywhere else the handle decides, and an
-   * `Unmanaged<R>` element is never released.
-   */
-  var byRepresentation: boolean = false;
 
   new(this.owners, this.tuple);
 }
 
 /** The drop plan for a value of type `t` (see `DropPlan`). */
-export function dropPlanOf(cx: LoweringContext, t: Type,
-    byRepresentation: boolean = false): DropPlan {
+export function dropPlanOf(cx: LoweringContext, t: Type): DropPlan {
   let core = soleNonNullMember(t) ?? t;
-  if (tupleHoldsOwner(core, byRepresentation)) {
-    let plan = new DropPlan(null, t);
-    plan.byRepresentation = byRepresentation;
-    return plan;
+  if (tupleHoldsOwner(core)) {
+    return new DropPlan(null, t);
   }
   let containers = releasingUnionMembers(core);
   if (containers != null) {
@@ -2396,8 +2383,7 @@ export function dropPlanOf(cx: LoweringContext, t: Type,
 
 /**
  * The members of a union that are `scoped T` containers of an owner,
- * judged by representation as emitReleaseOwned judges them, when it has
- * any; null for anything else.
+ * when it has any; null for anything else.
  */
 function releasingUnionMembers(t: Type): GrowableArray<ClassType> | null {
   let resolved = unwrapAliases(t);
@@ -2407,8 +2393,7 @@ function releasingUnionMembers(t: Type): GrowableArray<ClassType> | null {
   let found = new Array<ClassType>();
   for (let member in resolved.types) {
     let m = unwrapAliases(member);
-    if (m is ClassType && releaseMemberOf(m) == ":release" && hasReleaseMember(m) &&
-        representsRestricted(m)) {
+    if (m is ClassType && !m.isResource && holdsOwner(m)) {
       found.push(m);
     }
   }
@@ -2418,32 +2403,69 @@ function releasingUnionMembers(t: Type): GrowableArray<ClassType> | null {
 /**
  * Releases what a value of `t` owns, as its implicit drop would: the
  * `release_owned` intrinsic, which a generic body calls for a value
- * only its use site knew to release (`Future`'s `[release]`). It is
- * lowered in every specialization of that body, first-class ones
- * included, and a handle is its resource class there, so ownership is
- * read off the representation: a resource class, a `scoped T`
- * container of one, or a tuple holding an owner. Anything else
- * releases nothing.
+ * only its use site knew to release (`Future`'s `[release]`), and a
+ * store that replaces the value of a `scoped T` field. A
+ * specialization is keyed by handle, so `t`'s handles are its
+ * instantiation's own: an owner, a tuple holding one or a `scoped T`
+ * container of one is released, and a borrow, an unmanaged value or a
+ * first-class value is not (holdsOwner).
  */
 export function emitReleaseOwned(cx: LoweringContext, value: i32, t: Type): void {
-  let core = soleNonNullMember(t) ?? t;
-  if (tupleHoldsOwner(core, true)) {
-    emitDrop(cx, value, dropPlanOf(cx, t, true));
+  if (!holdsOwner(t)) { return; }
+  // A drop guards only a lone `X | null`, so a union of null and
+  // several others, such as the slot of a `Result` that holds an owner,
+  // skips null here.
+  if (let UnionType {types} = t) {
+    let rest = new Array<Type>();
+    for (let m in types) {
+      if (!(m is NullType)) { rest.push(m); }
+    }
+    if (rest.length > 1 && rest.length < types.length) {
+      let isNull = cx.b.emit(IrOp.ref_is_null, new ValTypeI32() as ValType, value, -1);
+      let skip = cx.b.newBlock();
+      let release = cx.b.newBlock();
+      cx.b.brIf(isNull, skip, noValues(), release, noValues());
+      cx.b.switchTo(release);
+      emitDrop(cx, cx.stripNonNull(value), dropPlanOf(cx, cx.wasm.interner.union(rest)));
+      cx.b.br(skip, noValues());
+      cx.b.switchTo(skip);
+      return;
+    }
+  }
+  emitDrop(cx, value, dropPlanOf(cx, t));
+}
+
+/**
+ * What a store into a `scoped T` field does with the value it
+ * replaces, at this specialization (owner-futures.md, "Replacing a
+ * value"). An owner is released, as a store into an owner field
+ * releases one. A `Scoped<T>` must be consumed, so a store over one
+ * calls `$scopedValueDropped`, which throws. Anything else, a borrow
+ * or an unmanaged value included, is not the field's to release. `t`
+ * is the field's type at this specialization; the store follows.
+ */
+export function emitScopedFieldReplace(cx: LoweringContext, t: Type, receiver: i32,
+    fieldRef: i32, fieldVt: ValType): void {
+  if (holdsOwner(t)) {
+    let old = cx.b.emit(IrOp.struct_get, fieldVt, receiver, fieldRef);
+    emitReleaseOwned(cx, old, t);
     return;
   }
-  var target = core;
-  while (isOwnershipWrapper(target)) {
-    let inner = ownershipHandleInner(target);
-    if (inner == null) { break; }
-    target = inner;
+  if (!typeContainsScoped(t)) { return; }
+  let old = cx.b.emit(IrOp.struct_get, fieldVt, receiver, fieldRef);
+  let isNull = cx.b.emit(IrOp.ref_is_null, new ValTypeI32() as ValType, old, -1);
+  let empty = cx.b.newBlock();
+  let full = cx.b.newBlock();
+  cx.b.brIf(isNull, empty, noValues(), full, noValues());
+  cx.b.switchTo(full);
+  // Reachability roots it for every such store (noteScopedFieldStore).
+  let dropped = cx.wasm.getStdlibFunc('core', '$scopedValueDropped');
+  if (dropped == null) {
+    cx.fail('scoped field store: $scopedValueDropped was not reached');
   }
-  let base = unwrapAliases(target);
-  if (!(base is ClassType)) { return; }
-  let ct = base as ClassType;
-  let isContainer = releaseMemberOf(ct) == ":release" && hasReleaseMember(ct) &&
-      representsRestricted(ct);
-  if (!ct.isResource && !isContainer) { return; }
-  emitDrop(cx, value, new DropPlan(growable<ClassType>([ct]), null));
+  cx.b.callFunc(cx.b.addRef(new IrRefFunc(dropped)), noValues(), null);
+  cx.b.unreachable();
+  cx.b.switchTo(empty);
 }
 
 /** Releases `value` by its plan. */
@@ -2458,18 +2480,15 @@ export function emitDrop(cx: LoweringContext, value: i32, plan: DropPlan): void 
     }
     return;
   }
-  emitTupleDrop(cx, value, plan.tuple as Type, plan.byRepresentation);
+  emitTupleDrop(cx, value, plan.tuple as Type);
 }
 
-/**
- * Whether `t` is a tuple, or a union of tuples, with an owner element;
- * by representation, a resource class element counts (`DropPlan`).
- */
-function tupleHoldsOwner(t: Type, byRepresentation: boolean = false): boolean {
+/** Whether `t` is a tuple, or a union of tuples, with an owner element. */
+function tupleHoldsOwner(t: Type): boolean {
   let resolved = unwrapAliases(t);
   if (let UnionType {types} = resolved) {
     for (let member in types) {
-      if (tupleHoldsOwner(member, byRepresentation)) {
+      if (tupleHoldsOwner(member)) {
         return true;
       }
     }
@@ -2484,38 +2503,11 @@ function tupleHoldsOwner(t: Type, byRepresentation: boolean = false): boolean {
     return false;
   }
   for (let el in elements) {
-    if (elementHoldsOwner(el, byRepresentation)) {
+    if (holdsOwner(el)) {
       return true;
     }
   }
   return false;
-}
-
-/**
- * Whether a tuple element is an owner, a tuple holding one, or a
- * `scoped T` container of one. By representation, an element whose
- * class is a resource class is an owner whatever its handle.
- */
-function elementHoldsOwner(t: Type, byRepresentation: boolean = false): boolean {
-  let core = soleNonNullMember(t) ?? t;
-  if (byRepresentation && isResourceRepresentation(core)) {
-    return true;
-  }
-  return ownershipHandleOf(core) == OwnershipHandle.Own ||
-      tupleHoldsOwner(core, byRepresentation) ||
-      releasableContainer(core) != null || releasingUnionMembers(core) != null;
-}
-
-/** Whether `t`, through any handle, is a resource class. */
-function isResourceRepresentation(t: Type): boolean {
-  var target = t;
-  while (isOwnershipWrapper(target)) {
-    let inner = ownershipHandleInner(target);
-    if (inner == null) { break; }
-    target = inner;
-  }
-  let base = unwrapAliases(target);
-  return base is ClassType && base.isResource;
 }
 
 /**
@@ -2524,8 +2516,7 @@ function isResourceRepresentation(t: Type): boolean {
  * tuples branches on the literal at position 0 to the member the value
  * is; a nested tuple releases its own owners the same way.
  */
-function emitTupleDrop(cx: LoweringContext, value: i32, t: Type,
-    byRepresentation: boolean = false): void {
+function emitTupleDrop(cx: LoweringContext, value: i32, t: Type): void {
   // A nullable tuple holds nothing when it is null.
   let core = soleNonNullMember(t);
   if (core != null) {
@@ -2535,7 +2526,7 @@ function emitTupleDrop(cx: LoweringContext, value: i32, t: Type,
     let doB = cx.b.newBlock();
     cx.b.brIf(isNull, skipB, noValues(), doB, noValues());
     cx.b.switchTo(doB);
-    emitTupleDrop(cx, value, core, byRepresentation);
+    emitTupleDrop(cx, value, core);
     cx.b.br(skipB, noValues());
     cx.b.switchTo(skipB);
     return;
@@ -2544,7 +2535,7 @@ function emitTupleDrop(cx: LoweringContext, value: i32, t: Type,
   if (sourceOpt == null) {
     bail(cx, 'drop of a tuple that is not tuples');
   }
-  emitSlotsDropExcept(cx, sourceOpt, null, null, byRepresentation);
+  emitSlotsDropExcept(cx, sourceOpt, null, null);
 }
 
 /**
@@ -2561,8 +2552,7 @@ export function emitSlotsDrop(cx: LoweringContext, source: MultiValues): void {
  * which something else releases: the owners a pattern bound to names.
  */
 export function emitSlotsDropExcept(cx: LoweringContext, source: MultiValues,
-    allowed: GrowableArray<boolean> | null, kept: HashSet<String> | null,
-    byRepresentation: boolean = false): void {
+    allowed: GrowableArray<boolean> | null, kept: HashSet<String> | null): void {
   let layout = source.layout;
   if (layout == null) {
     bail(cx, 'drop of a tuple with no slots');
@@ -2577,13 +2567,13 @@ export function emitSlotsDropExcept(cx: LoweringContext, source: MultiValues,
       continue;
     }
     reaching += 1;
-    if (memberReleases(layout, m, kept, byRepresentation)) {
+    if (memberReleases(layout, m, kept)) {
       releasing.push(m);
     }
   }
   if (reaching == 1) {
     if (releasing.length == 1) {
-      emitTupleMemberDrop(cx, source, releasing[0], kept, byRepresentation);
+      emitTupleMemberDrop(cx, source, releasing[0], kept);
     }
     return;
   }
@@ -2607,7 +2597,7 @@ export function emitSlotsDropExcept(cx: LoweringContext, source: MultiValues,
     let next = cx.b.newBlock();
     cx.b.brIf(cond, hit, noValues(), next, noValues());
     cx.b.switchTo(hit);
-    emitTupleMemberDrop(cx, source, m, kept, byRepresentation);
+    emitTupleMemberDrop(cx, source, m, kept);
     cx.b.br(join, noValues());
     cx.b.switchTo(next);
   }
@@ -2617,10 +2607,10 @@ export function emitSlotsDropExcept(cx: LoweringContext, source: MultiValues,
 
 /** Whether member `m` has an owner outside `kept` to release. */
 function memberReleases(layout: InlineLayout, m: i32,
-    kept: HashSet<String> | null, byRepresentation: boolean): boolean {
+    kept: HashSet<String> | null): boolean {
   let elements = layout.members[m].elementTypes;
   for (var p = 0; p < elements.length; p += 1) {
-    if (elementHoldsOwner(elements[p], byRepresentation) &&
+    if (holdsOwner(elements[p]) &&
         !isKeptPath(kept, layout.memberPaths[m][p])) {
       return true;
     }
@@ -2643,12 +2633,12 @@ function isKeptPath(kept: HashSet<String> | null, path: String): boolean {
 
 /** Releases the owner elements of member `m`, last first, but those in `kept`. */
 function emitTupleMemberDrop(cx: LoweringContext, source: MultiValues, m: i32,
-    kept: HashSet<String> | null, byRepresentation: boolean): void {
+    kept: HashSet<String> | null): void {
   let layout = source.layout as InlineLayout;
   let elements = layout.members[m].elementTypes;
   for (var p = elements.length - 1; p >= 0; p -= 1) {
     let el = elements[p];
-    if (!elementHoldsOwner(el, byRepresentation) ||
+    if (!holdsOwner(el) ||
         isKeptPath(kept, layout.memberPaths[m][p])) {
       continue;
     }
@@ -2656,7 +2646,7 @@ function emitTupleMemberDrop(cx: LoweringContext, source: MultiValues, m: i32,
     if (slot < 0) {
       continue;
     }
-    emitDrop(cx, source.values[slot], dropPlanOf(cx, el, byRepresentation));
+    emitDrop(cx, source.values[slot], dropPlanOf(cx, el));
   }
 }
 
@@ -3152,8 +3142,7 @@ export function lowerSyntheticRelease(cx: LoweringContext): IrBody {
  * The synthesized `[release]` of a `scoped T` class: what each field
  * holding `T` owns is released as `releaseOwned` would release it
  * (emitReleaseOwned), last field first. Only the drop of an instance
- * at an owner calls it, so the body an `Unmanaged<R>` instantiation
- * shares is never asked to release.
+ * at an owner calls it.
  */
 function lowerScopedRelease(cx: LoweringContext, ct: ClassType): IrBody {
   let sig = cx.func.signature;

@@ -6596,9 +6596,15 @@ a `Slot<Own<File>>` moves like the owner it holds and a
 the object, by returning, binding or passing it, is a take: the field
 must be a `var` that can be empty, and the move empties it. At a
 first-class `T` the read is a copy and the field keeps its value. A
-`Slot<Own<File>>` that nothing consumes is released where it is
-dropped, as an owner is: the class's `[release]`, synthesized when it
-declares none, releases what its `T` fields own. A pattern that takes
+store into a `T` field that still holds a value replaces it: in a
+`Slot<Own<File>>` the old owner is released, as a store into an owner
+field releases one, while in a `Slot<Borrow<File>>` or a
+`Slot<Unmanaged<File>>` it is only overwritten, since it was never the
+object's. A scoped value must be consumed, so a store that would
+replace one throws. A `Slot<Own<File>>` that nothing consumes is
+released where it is dropped, as an owner is: the class's `[release]`,
+synthesized when it declares none, releases what its `T` fields own. A
+pattern that takes
 such an instance apart (`let {value} = holder`) moves it, and the
 owners go to the pattern's bindings. The standard library's `Some` is
 such a class, so an `Option<Own<File>>` moves like the owner, the owner
@@ -6610,7 +6616,7 @@ apart is released where it is dropped; at a first-class type,
 class Slot<scoped T> {
   var #value: WithDefault<T> = defaultValue<T>();
   put(value: T): void {
-    this.#value = value;   // consumes value
+    this.#value = value;   // consumes value; at Own<File>, releases the old one
   }
   take(): T {
     return this.#value as T;   // a take: at Own<File>, a second call fails

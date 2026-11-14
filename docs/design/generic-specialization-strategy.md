@@ -82,6 +82,40 @@ let box: Box<Animal> = ...;
 | `SomeInterface`         | `(ref null $Object)`      | Share                                   |
 | `(i32, string)` (tuple) | `(ref $Tuple_i32_string)` | Specialize                              |
 | `{x: i32}` (record)     | `(ref $Record_x_i32)`     | Specialize                              |
+| `Own<File>` (owner)     | `(ref null $File)`        | Share with owners only                  |
+| `Borrow<File>`          | `(ref null $File)`        | Share with borrows only                 |
+| `Unmanaged<File>`       | `(ref null $File)`        | Share with unmanaged values only        |
+| `Scoped<Future<i32>>`   | `(ref null $Future_i32)`  | Share with scoped values only           |
+
+### Ownership Is a Specialization Axis
+
+Sharing has to keep one distinction the representation does not show:
+whether a body owns the `T` values it holds. A body releases an owner
+it drops or replaces, must not release a borrow or an unmanaged value,
+and must refuse to drop a `Scoped<T>`, which has to be consumed
+(owner-futures.md, "Replacing a value"). Full monomorphization keys
+`Borrow<R>`, `Unmanaged<R>` and `Scoped<T>` apart from `Own<R>` and `T`
+for this (`specializesApart` in codegen-utils.zena), though all of them
+have one layout.
+
+Hybrid mode keeps the axis. It shares one body across reference type
+arguments of the same ownership kind, never across kinds:
+
+- **First-class references** (`Box<String>`, `Box<Widget>`) share one
+  body, as described above.
+- **Owners** (`Box<Own<File>>`, `Box<Own<Socket>>`) share another. Its
+  releases cannot name the resource's `:dispose`, so they dispatch on
+  the value: through the class's vtable, or through the tag's
+  `TypeInfo`. Full monomorphization calls each class's `:dispose`
+  directly.
+- **Borrows, unmanaged values and scoped values** each get a body of
+  their own kind.
+
+The tag could carry the ownership kind instead, with each drop and
+store branching on it. That trades a body per kind for a test at every
+release site, though the kind is known at every instantiation, so a
+body per kind is the default. Most programs instantiate a generic at
+one or two kinds.
 
 ### Implementation Considerations
 

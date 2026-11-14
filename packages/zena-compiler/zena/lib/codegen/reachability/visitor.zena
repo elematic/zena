@@ -13,7 +13,7 @@ import { SemanticModel, memberKeyOf, accessKeyOf } from '../../semantic-model.ze
 import {
   Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, HoleType, InlineRecordType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, I32Type, U64Type, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
   isBigIntLiteralRaw, isScopedType, scopedInner, soleNonNullMember, internFunctionType, forInLowersToIndexLoop,
-  isIterableRangeClass } from '../../types.zena';
+  isIterableRangeClass, holdsOwner, typeContainsScoped } from '../../types.zena';
 import {
   Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, NumberLiteral, ThrowExpression, TryExpression, ContractClause, contractFailureMessage, ShieldedStatement, StringLiteral, SuperInitializer, TemplateLiteral, UnaryExpression,
 } from '../../ast.zena';
@@ -1168,6 +1168,26 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     this.queueStdlibFunction('core', '$contractFailed');
   }
 
+  /**
+   * What a store into a `scoped T` field calls at this specialization
+   * (emitScopedFieldReplace): the release of an owner it replaces, or
+   * the function a store over a `Scoped<T>` calls. Both body walks come
+   * here, since the checker's dependency records cannot name `T`'s
+   * classes.
+   */
+  noteScopedFieldStore(assign: AssignmentExpression, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (assign.operator != null || !model.isScopedFieldStore(assign as Node)) { return; }
+    let stored = model.getNodeType(assign.left);
+    if (stored == null) { return; }
+    let t = resolveType(stored);
+    if (holdsOwner(t)) {
+      this.pass.noteReleaseTargets(t, model);
+    } else if (typeContainsScoped(t)) {
+      this.queueStdlibFunction('core', '$scopedValueDropped');
+    }
+  }
+
   registerLiterals(root: Node): void {
     walkEnter(root, (n) => {
       if (n is StringLiteral) {
@@ -1241,6 +1261,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.maybeRegisterBigIntNode(n, model, resolveType);
       if (n is ContractClause) {
         this.noteContractClause(n);
+      }
+      if (n is AssignmentExpression) {
+        this.noteScopedFieldStore(n, model, resolveType);
       }
       // A `for await`'s Pending arm is a node-level fact too: the
       // records say a body iterates, and nothing about what future
@@ -2968,6 +2991,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is ContractClause) {
         this.noteContractClause(n);
+      }
+      if (n is AssignmentExpression) {
+        this.noteScopedFieldStore(n, model, resolveType);
       }
       if (n is BinaryExpression) {
         this.noteEqualityUse(n, model, resolveType);

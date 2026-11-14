@@ -1016,17 +1016,21 @@ What the checker enforces for that half:
   the move leaves it empty, through `as T` too. Codegen
   stores the null only where the specialization's `T` may be
   restricted, so at a first-class `T` the read is a copy. It judges
-  that from the representation the specialization is keyed by, where
-  `Own<R>`, `Borrow<R>` and `Unmanaged<R>` share one body, so an
-  `Unmanaged<R>` instantiation is taken from too.
+  that from `T`'s representation, so an `Unmanaged<R>` instantiation
+  is taken from too.
+- **Stores.** A store into a `T` field that still holds a value
+  releases the old value where `T` owns it, overwrites it at a borrow
+  or an unmanaged value, and throws at a `Scoped<T>`, which must be
+  consumed (owner-futures.md, "Replacing a value"). Each handle has a
+  specialization of its own (owner-futures.md §"Specialization"), so
+  the body knows which it is.
 - **Returns.** A method returning its class's `T` counts `this` as the
   source the value derives from.
 - **`isFirstClass<T>()`** (the `is_first_class` intrinsic) is a constant
   in each specialization: false where a take would empty a slot, true
   elsewhere, so a body branches on what only one kind of instantiation
   needs and the other branch folds away. Both answers come from the same
-  representation test, so they always agree, whichever instantiation of
-  a shared body the compiler recorded. The checker reads the same test
+  representation test, so they always agree. The checker reads the same test
   statically: the consequent of `if (isFirstClass<T>())`, and the
   alternate of `if (!isFirstClass<T>())`, are checked with `T`
   first-class, so a `T` may be copied and kept in any container there.
