@@ -258,8 +258,18 @@ export async function callerClient(caller: Caller, registry: Registry, method: S
   return await registryClient(personOf(caller, 'call the registry'), registry, method);
 }
 
-/** How to upgrade `zena`, which every user builds from a checkout for now. */
-let HOW_TO_UPGRADE = 'Upgrade zena: in a checkout of Zena, git pull and npm run build.';
+/**
+ * How to upgrade `zena`: the installer for the platform it runs on
+ * (`ZENA_HOST_PLATFORM`), which installs the latest release
+ * (https://zena-lang.dev/releases), or a new build for one built from a
+ * checkout of Zena.
+ */
+function howToUpgrade() {
+  let platform = getEnv('ZENA_HOST_PLATFORM') ?? '';
+  let installer = if (platform.startsWith('windows')) 'irm https://zena-lang.dev/install.ps1 | iex'
+      else 'curl -fsSL https://zena-lang.dev/install.sh | sh';
+  return `Upgrade zena with \`${installer}\` (https://zena-lang.dev/releases), or in a checkout of Zena, git pull and npm run build.`;
+}
 
 export async function findRegistry(args: ParsedArgs): Future<Registry> {
   var origin = getEnv('ZENA_REGISTRY') ?? DEFAULT_REGISTRY;
@@ -272,12 +282,12 @@ export async function findRegistry(args: ParsedArgs): Future<Registry> {
   let minimum = described['minimumClientVersion'];
   if (minimum is String && newerThanThis(minimum)) {
     throw new PublishError(
-        `${origin} needs zena ${minimum} or newer, and this is zena ${CLI_VERSION}. ${HOW_TO_UPGRADE}`);
+        `${origin} needs zena ${minimum} or newer, and this is zena ${CLI_VERSION}. ${howToUpgrade()}`);
   }
   let recommended = described['recommendedClientVersion'];
   if (recommended is String && newerThanThis(recommended)) {
     console.error(
-        `Warning: zena ${CLI_VERSION} is deprecated on ${origin}, which will stop taking it. Upgrade to zena ${recommended} or newer. ${HOW_TO_UPGRADE}`);
+        `Warning: zena ${CLI_VERSION} is deprecated on ${origin}, which will stop taking it. Upgrade to zena ${recommended} or newer. ${howToUpgrade()}`);
   }
   let registry = new Registry(origin, did, described['domain'] as String);
   registry.listsScopeCreators = described['scopeCreation'] == 'listed';
