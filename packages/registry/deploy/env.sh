@@ -183,6 +183,29 @@ if [ -n "$OFFLINE_ROTATION_KEYS" ]; then
   APP_VIEW_VARS+=("APP_VIEW_OFFLINE_ROTATION_KEYS=${OFFLINE_ROTATION_KEYS//,/ }")
 fi
 
+# Exports what registry/main needs to run on this machine as the
+# environment's service (operator.sh, restore-drill.sh): each NAME=value of
+# its arguments, the App View's secrets (APP_VIEW_SECRETS) from Secret
+# Manager, and an access token of its service account, which deploy:setup
+# lets the account that ran it act as. Exported, so that no secret is on a
+# command line. The token lasts an hour.
+export_service_environment() {
+  local pair
+  for pair in "$@"; do
+    export "${pair?}"
+  done
+  for pair in "${APP_VIEW_SECRETS[@]}"; do
+    export "${pair%%=*}=$(gcloud secrets versions access latest --secret "${pair#*=}" --project "$PROJECT")"
+  done
+  GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token --impersonate-service-account "$SERVICE_ACCOUNT_EMAIL" \
+    2> /dev/null)" || {
+    echo "gcloud could not act as $SERVICE_ACCOUNT_EMAIL: run npm run deploy:setup -w @zena-lang/registry," >&2
+    echo "which lets the account it runs as do so (roles/iam.serviceAccountTokenCreator)" >&2
+    return 2
+  }
+  export GOOGLE_OAUTH_ACCESS_TOKEN
+}
+
 echo "environment: $PDS_ENV ($DOMAIN, the PDS at $PDS_DOMAIN)"
 echo "project:     $PROJECT, $REGION"
 echo

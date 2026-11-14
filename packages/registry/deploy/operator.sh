@@ -14,6 +14,7 @@
 #   ... operator.sh set-limit router.acme.pkg-staging.zena-lang.dev packageBytes 134217728
 #   ... operator.sh set-limit acme.pkg-staging.zena-lang.dev scopeActions default
 #   ... operator.sh plc-rekey [--yes] < offline-key.txt
+#   ... operator.sh check-store
 #
 # It runs packages/registry/src/main.zena with the repository's zena-cli,
 # so build that first (npm run build -w @zena-lang/zena-cli). The access
@@ -25,28 +26,15 @@ cd "$(dirname "$0")"
 source ./env.sh
 
 case "${1:-}" in
-  create-scope | sync-handles | sync-indexes | set-limit | plc-rekey) ;;
+  create-scope | sync-handles | sync-indexes | set-limit | plc-rekey | check-store) ;;
   *)
     echo "usage: operator.sh create-scope <name> --owner <did> [--recovery-key <did:key>]... | sync-handles | sync-indexes" >&2
-    echo "       | set-limit <DID or handle> <limit> <number>|default | plc-rekey [--yes] < <offline key>" >&2
+    echo "       | set-limit <DID or handle> <limit> <number>|default | plc-rekey [--yes] < <offline key> | check-store" >&2
     exit 2
     ;;
 esac
 
-# Exported, so that no secret is on a command line.
-for pair in "${APP_VIEW_VARS[@]}"; do
-  export "${pair?}"
-done
-for pair in "${APP_VIEW_SECRETS[@]}"; do
-  export "${pair%%=*}=$(gcloud secrets versions access latest --secret "${pair#*=}" --project "$PROJECT")"
-done
-GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token --impersonate-service-account "$SERVICE_ACCOUNT_EMAIL" \
-  2> /dev/null)" || {
-  echo "gcloud could not act as $SERVICE_ACCOUNT_EMAIL: run npm run deploy:setup -w @zena-lang/registry," >&2
-  echo "which lets the account it runs as do so (roles/iam.serviceAccountTokenCreator)" >&2
-  exit 2
-}
-export GOOGLE_OAUTH_ACCESS_TOKEN
+export_service_environment "${APP_VIEW_VARS[@]}"
 
 echo "running $1 against $PDS_ENV as $SERVICE_ACCOUNT_EMAIL"
 cd ../../..

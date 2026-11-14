@@ -499,6 +499,28 @@ To serve from a restored database, set `DATABASE` in `deploy/env.sh` to
 it, then run `deploy:setup`, which gives the service account its role on
 it, and `deploy`.
 
+A backup that was never restored is only a hope. The restore drill
+restores the newest backup into a new database beside the environment's,
+`<database>-drill-<time>`, checks it, and deletes it:
+
+```sh
+PDS_ENV=staging packages/registry/deploy/restore-drill.sh          # or production
+PDS_ENV=staging packages/registry/deploy/restore-drill.sh --keep   # leaves the copy to look at
+```
+
+The check is `registry/main`'s `check-store`, run on this machine with
+the App View and padstone in one process over the copy, as the service
+account, which `deploy:setup` lets read the drill's copies. It writes
+nothing, and reads every account the App View holds: that its name leads
+back to it; that its repository has a commit; a scope's members record;
+a package's profile, maintainers and releases, and every blob they name,
+in the live bucket; and that its signing key decrypts and is the one its
+DID document names. It prints each problem and exits 1 if there is one.
+Run the drill before production's first deploy, and every few months.
+Deleting the copy sends the alert for destructive changes, as it should.
+`operator.sh check-store` runs the same check against the live database,
+through padstone, without the signing keys.
+
 Cloud KMS never deletes a key, only its versions, and a version
 scheduled for destruction waits before it is destroyed, for a time fixed
 when its key was made. `deploy:setup` makes every key with a 120-day wait,

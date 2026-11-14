@@ -968,6 +968,40 @@ export let tests = suite('registry/app-view', () => {
     equal(submitted[after].length, 2);
   });
 
+  test('reads every account it holds, and names what is missing', async (ctx) => {
+    let store = new MemoryAppViewStore();
+    let fixture = new Fixture(store);
+    let appView = fixture.appView as AppView;
+    await seedBrowsable(fixture);
+    let clean = await appView.checkStore();
+    equal(join(clean.problems, '\n'), '');
+    equal(clean.accounts, 5);
+    equal(clean.organizations, 2);
+    equal(clean.packages, 2);
+    equal(clean.automation, 1);
+    equal(clean.releases, 2);
+    equal(clean.blobs, 2);
+
+    // An account the store records, with no repository and a name it never claimed.
+    let ghost = 'did:plc:ghostghostghostghostghos';
+    await store.putAccount(new AppViewAccount(ghost, 'ghost.acme.pkg.test', AccountKind.Package, 'acme', 'ghost'));
+    var seen = 0;
+    let found = await appView.checkStore(async (account: AppViewAccount): Future<void> => {
+      seen += 1;
+      if (account.name == 'parser') {
+        throw new Error('parser fails a check of its own');
+      }
+    });
+    equal(found.accounts, 6);
+    // Each account but the one with no repository, whose check stops there.
+    equal(seen, 5);
+    let problems = join(found.problems, '\n');
+    equal(found.problems.length, 3, problems);
+    isTrue(problems.contains(`ghost.acme.pkg.test (${ghost}): its name leads to no account`), problems);
+    isTrue(problems.contains(`ghost.acme.pkg.test (${ghost}): its repository has no commit`), problems);
+    isTrue(problems.contains('parser fails a check of its own'), problems);
+  });
+
   test('lets the operator create a reserved scope, which no caller can', async (ctx): Future<void> => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;

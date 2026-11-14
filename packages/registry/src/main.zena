@@ -48,6 +48,13 @@
  * exits. Unlike `zena pkg scope create`, it may take a name the App View reserves
  * (package-manager.md, "Scopes").
  *
+ * `check-store` reads what the App View and its PDS keep of every account,
+ * and changes nothing (`AppView.checkStore`); with the PDS in the same
+ * process, also that each account's signing key decrypts and is the one
+ * its DID document names. It prints what it read and every problem, and
+ * exits 1 when there is one: for a restored database
+ * (`deploy/restore-drill.sh`).
+ *
  * `set-limit <account> <limit> <number>|default` sets one of the App
  * View's limits (`limitName`, such as `packageBytes` or `userActions`) on
  * a package, a scope's organization or a caller, by DID or handle
@@ -69,7 +76,7 @@ import {PUBLIC_PLC_DIRECTORY} from 'atproto/identity';
 import {PlcError, fetchOperations, submitPlcOperation, undoOperation} from 'atproto/plc';
 import {KmsSigner, LocalSigner} from 'pds/signer';
 import {SigningKey} from 'pds/storage';
-import {AppViewError, LIMITS, Limit, RekeyOutcome, limitName, limitNamed} from './app-view.zena';
+import {AppViewAccount, AppViewError, LIMITS, Limit, RekeyOutcome, limitName, limitNamed} from './app-view.zena';
 import {nowMicros} from 'pds/xrpc/common';
 import {ConfigError} from 'pds/service';
 import {ServiceConfig, buildService, configFromEnv, serve} from './service.zena';
@@ -123,6 +130,10 @@ export async function main(): Future<void> {
   }
   if (hasArgument('plc-rekey')) {
     await plcRekey(config);
+    return;
+  }
+  if (hasArgument('check-store')) {
+    await checkStore(config);
     return;
   }
   let running = await serve(config);
@@ -413,6 +424,57 @@ async function plcRekey(config: ServiceConfig): Future<void> {
     console.log('run again with --yes to send them');
   }
   exit(if (failed > 0) 1 else 0);
+}
+
+/**
+ * Reads what the App View and its PDS keep of every account, prints what it
+ * read and every problem, and exits: 1 when there is one.
+ */
+async function checkStore(config: ServiceConfig): Future<void> {
+  // An error that escapes main prints no message (#1074), and a drill that
+  // cannot start must say why.
+  let service = try {
+    await buildService(config, '')
+  } catch (e) {
+    console.error(`check-store: the service does not start: ${e.message}`);
+    null
+  };
+  if (service == null) {
+    exit(1);
+    return;
+  }
+  let pds = service.pds;
+  let operations = service.operations;
+  // With the PDS here, each account's signing key, which is kept encrypted,
+  // must decrypt to the key its DID document names.
+  let signingKeys = async (account: AppViewAccount): Future<void> => {
+    if (pds == null) {
+      return;
+    }
+    let held = await pds.storage.getAccount(account.did);
+    if (held == null) {
+      throw new Error('the PDS has no account for it');
+    }
+    let key = formatDidKey((await held.signingKey()).publicKey());
+    let log = await operations(account.did);
+    if (log.length == 0) {
+      throw new Error('the PLC directory has no operations for it');
+    }
+    if (let (true, named) = log[log.length - 1].verificationMethods.get('atproto')) {
+      if (named != key) {
+        throw new Error(`its signing key is ${key}, but its DID document names ${named}`);
+      }
+      return;
+    }
+    throw new Error('its DID document names no signing key');
+  };
+  let check = await service.appView.checkStore(signingKeys);
+  for (let problem in check.problems) {
+    console.error(problem);
+  }
+  let keys = if (pds != null) ', and the signing keys' else '';
+  console.log(`read ${check.accounts} accounts: ${check.organizations} scopes, ${check.packages} packages and ${check.automation} automation accounts, with ${check.releases} releases and ${check.blobs} blobs${keys}; ${check.problems.length} problems`);
+  exit(if (check.problems.length > 0) 1 else 0);
 }
 
 /** Writes the App View's indexes from the repositories, and exits. */
