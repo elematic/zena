@@ -23,9 +23,20 @@
     },
     "build": {
       "#": "The zena command: the host binary and the CLI module it runs.",
+      "files": [
+        "out/zena.wasm"
+      ],
+      "#dependencies": "`cascade: false` on build:module so dependents rerun only when out/zena.wasm's bytes change, and on precompile:module so the untracked .cwasm step stays out of downstream fingerprints.",
       "dependencies": [
         "build:binary",
-        "precompile:module"
+        {
+          "script": "build:module",
+          "cascade": false
+        },
+        {
+          "script": "precompile:module",
+          "cascade": false
+        }
       ]
     },
     "build:binary": {
@@ -221,21 +232,12 @@
       ]
     },
     "precompile:module": {
-      "#": "The CLI module's .cwasm, so the first zena commands do not race to run Cranelift on it. After the binary, because wasmtime's version is what decides whether a .cwasm can be loaded at all.",
+      "#": "The CLI module's .cwasm, so the first zena commands do not race to run Cranelift on it. After the binary, because wasmtime's version is what decides whether a .cwasm can be loaded at all. Untracked so remote caches never save machine code built for one host CPU and restore it onto another; when out/zena.cwasm already loads on this host, `precompile` exits after deserializing it.",
       "command": "../../target/release/zena-cli precompile out/zena.wasm",
-      "files": [
-        "out/zena.wasm"
-      ],
-      "output": [
-        "out/zena.cwasm"
-      ],
-      "#dependencies": "`cascade: false` on build:module: out/zena.wasm is an input, so this reruns when the module changes and not when build:module reruns to produce the same bytes. Everything that depends on `build` inherits that.",
+      "output": [],
       "dependencies": [
         "build:binary",
-        {
-          "script": "build:module",
-          "cascade": false
-        }
+        "build:module"
       ]
     }
   }
