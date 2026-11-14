@@ -1,113 +1,37 @@
 # Zena Language Support for Visual Studio Code
 
-This extension provides syntax highlighting for the Zena programming language.
+Language support for the [Zena](https://zena-lang.dev) programming language in Visual Studio Code Desktop and `vscode.dev`.
 
 ## Features
 
-- **Syntax Highlighting** for all Zena language constructs:
-  - Keywords (`let`, `var`, `class`, `interface`, `mixin`, `enum`, `type`, `if`, `else`, `while`, `for`, `match`, `case`, etc.)
-  - Primitive types (`i32`, `i64`, `u32`, `u64`, `i8`, `i16`, `u8`, `u16`, `f32`, `f64`, `v128`, `boolean`, `void`, `never`, `anyref`, `ByteArray`)
-  - Built-in types (`Array`, `Map`, `Box`, `Error`, `FixedArray`, `GrowableArray`, `ImmutableArray`, `Iterator`)
-  - String literals (single/double quotes)
-  - Template literals with interpolation (backticks with `${}`)
-  - Numeric literals (integers, floats, hexadecimal)
-  - Comments (line `//` and block `/* */`)
-  - Decorators (`@external`, `@intrinsic`, etc.)
-  - Operators and punctuation
-  - Private fields (`#fieldName`)
-  - Constructor (`new`)
-  - Type parameters (`<T>`, `<K, V>`)
-
-## File Extensions
-
-The extension is automatically activated for files with the `.zena` extension.
+- **Diagnostics**: Type checking and syntax diagnostics powered by Zena's self-hosted WebAssembly language service (`lsp.wasm`).
+- **Linting & Quick Fixes**: Inline `zena-lint` warnings with per-finding quick fixes, Fix All, and the `Zena: Fix lint findings in file` command.
+- **Navigation**: Go to Definition across workspace modules and read-only bundled `zena:*` standard library modules, plus document symbol outlines.
+- **Hover & Completions**: Hover type signatures and doc comments, plus member, local, built-in, and keyword completions.
+- **Formatting**: Whole-document formatting via `Format Document`.
+- **Syntax Highlighting**: TextMate grammars for `.zena` source files and fenced `zena` blocks in Markdown.
 
 ## Installation
 
-### From VSIX
+### From a Release VSIX
 
-1. Download the `.vsix` file
-2. Open VS Code
-3. Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`)
-4. Run "Extensions: Install from VSIX..."
-5. Select the downloaded file
+Download `vscode-zena.vsix` from [zena-lang.dev/releases](https://zena-lang.dev/releases/) or the latest [GitHub Release](https://github.com/elematic/zena/releases) and install it:
+
+```sh
+code --install-extension vscode-zena.vsix
+```
+
+Or open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`), run **Extensions: Install from VSIX...**, and select the downloaded `.vsix` file.
 
 ### Development
 
-1. Open the `zena-2` monorepo root in VS Code
-2. Press **F5** (or **Run → Start Debugging**) and select **"Run Zena Extension"**
-3. This will build the extension via Wireit and launch a new VS Code window
-   (Extension Development Host) with the extension loaded
-4. Open any `.zena` file in the new window to activate the extension
-5. Changes to `packages/vscode-zena/src/` are rebuilt automatically by the
-   watch task — reload the Extension Development Host (`Ctrl+R` / `Cmd+R`)
-   to pick them up
-
-### From Source
-
-1. Clone this repository
-2. Copy the `vscode-zena` folder to your VS Code extensions folder:
-   - **Windows**: `%USERPROFILE%\.vscode\extensions`
-   - **macOS**: `~/.vscode/extensions`
-   - **Linux**: `~/.vscode/extensions`
-3. Reload VS Code
-
-## Language Overview
-
-Zena is a statically typed language targeting WebAssembly (WASM-GC). It features TypeScript-like syntax with strict static typing.
-
-### Example
-
-```zena
-// Import from host
-@external("env", "log")
-declare function log(val: string): void;
-
-// Generic class
-class Box<T> {
-  value: T;
-
-  new(value: T) {
-    this.value = value;
-  }
-
-  map<U>(fn: (val: T) => U): Box<U> {
-    return new Box(fn(this.value));
-  }
-}
-
-// Interface
-interface Printable {
-  toString(): string;
-}
-
-// Enum
-enum Color {
-  Red,
-  Green,
-  Blue
-}
-
-// Main function
-export let main = () => {
-  let greeting = `Hello, World!`;
-  let numbers = #[1, 2, 3];
-  let point = { x: 10, y: 20 };
-
-  // Pattern matching
-  let result = match (Color.Red) {
-    case Color.Red: "red"
-    case Color.Green: "green"
-    case _: "other"
-  };
-
-  log(greeting);
-};
-```
-
-## Contributing
-
-Contributions are welcome! Please file issues and pull requests on the project repository.
+1. Open the `zena` repository root in VS Code.
+2. Press **F5** (**Run → Start Debugging**) and choose **Run Zena Extension**.
+3. VS Code runs the Wireit watch build and opens an Extension Development Host window with `vscode-zena` loaded.
+4. To package and install locally from the repository root:
+   ```sh
+   npm run install-ext -w vscode-zena
+   ```
 
 ## License
 
