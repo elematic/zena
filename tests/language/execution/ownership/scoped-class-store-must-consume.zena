@@ -1,0 +1,46 @@
+// @mode: run
+// @result: 111
+// A `Scoped<T>` must be consumed exactly once, so a store into a
+// `scoped T` field that still holds one can neither release the value
+// nor drop it: the store throws. `Scoped<F>` has a specialization of its
+// own (owner-futures.md §"Specialization"), so a slot of a first-class
+// `Future<i32>` overwrites its value as before.
+import {Scoped, WithDefault, defaultValue} from 'zena:core';
+
+class Slot<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  put(value: T): void {
+    this.#value = value;
+  }
+  take(): WithDefault<T> {
+    return this.#value;
+  }
+}
+
+let tick = async (): Future<i32> => 1;
+
+export let main = async (): Future<i32> => {
+  var result = 0;
+  let s = new Slot<Scoped<Future<i32>>>();
+  s.put(tick());
+  let refused = try {
+    s.put(tick());
+    0
+  } catch (e) {
+    if (e.message == 'A store would drop a scoped value, which must be consumed') 10 else 20
+  };
+  result += refused;
+  let held = s.take();
+  if (held != null) {
+    result += await held;
+  }
+
+  let f = new Slot<Future<i32>>();
+  f.put(tick());
+  f.put(tick());
+  let kept = f.take();
+  if (kept != null) {
+    result += 100 * await kept;
+  }
+  return result;
+};

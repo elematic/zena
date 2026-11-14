@@ -122,13 +122,34 @@ A trap when measuring this: `getTypeKeyForSpecialization` maps a bare
 `Array_s777_erased` — which is why `containsErasedType` answers true for
 a bare type parameter too.
 
-## A Specialization Is Keyed by Representation
+## A Specialization Is Keyed by Representation and Ownership
 
 `getTypeKeyForSpecialization` keys a type alias by its target and an
-enum by its backing type. So `C<Own<R>>`, `C<Borrow<R>>` and
-`C<Unmanaged<R>>` are one specialization of `C`, with one body. A
-decision made per specialization has to follow from the representation,
-since the alias a use was reached through is not part of the key.
+enum by its backing type, except for the aliases that decide what a
+body may do with a value (`specializesApart`): `Borrow<R>` and
+`Unmanaged<R>` on a restricted type, which key apart from `Own<R>` (that
+is, `R`), and `Scoped<T>`, which keys apart from `T`. So `C<Own<R>>`,
+`C<Borrow<R>>` and `C<Unmanaged<R>>` are three specializations of `C`
+with one layout, and a body's `T` names its instantiation's own handle.
+See owner-futures.md §"Specialization".
+
+Three things have to agree for that to hold, and a new key or erasure
+has to keep them agreeing:
+
+- **The erasure of a type argument.** `eraseTypeParameters` erases a
+  handle to its resource, which is right for a value's type and wrong
+  for a type argument, since discovery registers specializations from
+  erased types and lowering often looks them up unerased. Class,
+  interface and mixin arguments go through `eraseTypeArgument`
+  (`type-mapping.zena`), which keeps the aliases a key keeps, inside
+  tuples, unions, records, arrays and function types too. So inside a
+  specialization `Own<R>` reads as a bare `R`, and `holdsOwner`
+  (`types.zena`) counts a bare resource class as an owner.
+- **The discovery key.** `getTypeUniqueKey` dedupes discovered types.
+  An alias instance's target is its declaration's `T`, the same for
+  every handle, so it keys a kept-apart alias by its kind and what it
+  wraps.
+- **The specialization key** above.
 
 An alias instance keeps its declaration's unsubstituted target, so
 "its target" means `instantiatedAliasTarget` (`codegen-utils.zena`):
@@ -136,6 +157,10 @@ for `opaque type Own<T> = T` and the other handles, the argument. Read
 as the bare target, every handle was the erasure of `T`, and a generic
 function called at one was minted as an erasure (#789). `isConcrete`
 and `containsErasedType` read it the same way.
+
+The hybrid mode planned in docs/design/generic-specialization-strategy.md,
+which shares one body across reference type arguments, keeps this axis:
+arguments share a body only within one ownership kind.
 
 ## A Synthesized Member Is Replayed by Name
 

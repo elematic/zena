@@ -879,8 +879,11 @@ if (x is Box<Foo>) { ... }
 
 1. Primitives (`i32`, `i64`, `f32`, `f64`, `boolean`): Always full monomorphization
 2. Reference types in hybrid mode: Share WASM struct, add `typeTag` field
-3. `is` checks: Emit `ref.test` when representations differ, `typeTag` check otherwise
-4. Optimization: In full mode, all `is` checks use `ref.test`
+3. Ownership stays specialized: reference type arguments share a body only
+   within one ownership kind (owner, borrow, unmanaged, scoped, first-class),
+   since what a body does with a value it drops or replaces depends on it
+4. `is` checks: Emit `ref.test` when representations differ, `typeTag` check otherwise
+5. Optimization: In full mode, all `is` checks use `ref.test`
 
 See [generic-specialization-strategy.md](generic-specialization-strategy.md) for details.
 

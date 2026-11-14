@@ -91,6 +91,7 @@ import {
   returnMultiThroughFinally,
   collectAffineDropFields, emitMarkDropped, lowerFieldDropRegions,
   lowerSyntheticRelease, disposeOwnerClasses, emitMaybeDispose, emitDrop, dropPlanOf, emitSlotsDrop,
+  emitScopedFieldReplace,
   emitExitDrops, lowerLetCondition, lowerMatch, lowerParamDropRegions,
   lowerStatementRange, lowerTryExpression,
   lowerShieldedRegion, lowerUsingRegion, lowerValueNode, lowerWhile,
@@ -6489,6 +6490,12 @@ export final class FunctionLowerer {
       }
     } else if (expr is TaggedTemplateExpression) {
       throw new TemplateAbandon('tagged template');
+    } else if (expr is AssignmentExpression) {
+      // What the store does with the value it replaces depends on the
+      // type argument (emitScopedFieldReplace).
+      if (model.isScopedFieldStore(expr as Node) && mentions(expr.left)) {
+        throw new TemplateAbandon('scoped field store');
+      }
     } else if (expr is MemberExpression) {
       // Whether a take stores null depends on the type argument
       // (#takesHere).
@@ -8481,6 +8488,14 @@ export final class FunctionLowerer {
         }
       }
     }
+    // A store into a `scoped T` field does with the value it replaces
+    // what its type at this specialization says.
+    if (assign.operator == null && this.func.model.isScopedFieldStore(assign as Node)) {
+      let storedT = this.#substitutedNodeType(member);
+      if (storedT != null) {
+        emitScopedFieldReplace(this.#cx(), storedT, receiver, fieldRef, fieldVt);
+      }
+    }
     let pairIdx = this.b.pushExtra(this.#twoValues(receiver, value));
     this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
     return value;
@@ -9328,10 +9343,10 @@ export final class FunctionLowerer {
   /**
    * Whether a field take moves the value out at this specialization. An
    * owner field's take always does. A `scoped T` field's does only where
-   * `T` may be restricted, judged from the representation the
-   * specialization is keyed by (representsRestricted); at a first-class
-   * `T` the read is a copy and the field keeps its value
-   * (owner-futures.md §"The class half of `scoped T`").
+   * `T` may be restricted, judged from its representation
+   * (representsRestricted); at a first-class `T` the read is a copy and
+   * the field keeps its value (owner-futures.md §"The class half of
+   * `scoped T`").
    */
   #takesHere(member: MemberExpression): boolean {
     let t = this.#substitutedNodeType(member);

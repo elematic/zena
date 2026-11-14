@@ -200,8 +200,10 @@ does a `hash` that has to dispatch through the vtable.
 Template mode abandons a family where lowering dispatches on a type
 argument's class in ways the recorded decisions do not cover: a type
 test involving a type parameter, a cast to anything but a class, a
-`match` on one, a template literal interpolating one, and a call to an
-intrinsic other than `eq` and `hash` whose types mention one. The family
+`match` on one, a template literal interpolating one, a call to an
+intrinsic other than `eq` and `hash` whose types mention one, and the
+take or store of a `scoped T` field, which empties the field or
+releases the value it replaces only at some type arguments. The family
 is then lowered directly (`families without a template` in the stats).
 Calls to other generic functions need no gate: a callee that differs
 between the representatives is not a class method, cannot be learned,

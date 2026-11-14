@@ -1,10 +1,9 @@
 // @mode: run
 // @result: 111
-// Instantiations that share a representation share one specialization:
-// a handle erases to its resource class, and `Scoped<F>` to `F`. The
-// shared body's takes are decided from the representation, so the
-// instantiation the compiler happens to reach first does not change
-// them (owner-futures.md §"Specialization").
+// Each handle, and `Scoped<F>`, has a specialization of its own, but a
+// take is decided from the representation: a handle is its resource
+// class, and `Scoped<F>` is `F`. So the instantiation the compiler
+// reaches first changes nothing (owner-futures.md §"Specialization").
 
 import {Own, Unmanaged, Scoped, Disposable, WithDefault, defaultValue} from 'zena:core';
 
@@ -31,8 +30,8 @@ let tick = async (): Future<i32> => 1;
 export let main = (): i32 => {
   var result = 0;
 
-  // `Unmanaged<Res>` reached first: the shared body still takes, as
-  // the owner needs, so the resource is released once.
+  // `Unmanaged<Res>` reached first: the owner's slot still takes, so
+  // the resource is released once.
   let unmanaged = new Slot<Unmanaged<Res>>();
   let none = unmanaged.take();
   if (true) {
@@ -46,8 +45,8 @@ export let main = (): i32 => {
   }
   result += released;
 
-  // `Scoped<Future<i32>>` reached first: the shared body is
-  // first-class, so a plain future stays readable.
+  // `Scoped<Future<i32>>` reached first: a plain future's slot is
+  // first-class, so the future stays readable.
   let scoped = new Slot<Scoped<Future<i32>>>();
   let empty = scoped.take();
   let f = new Slot<Future<i32>>();

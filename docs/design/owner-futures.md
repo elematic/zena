@@ -176,19 +176,35 @@ specialization of a generic class separately, so the source can branch
 on a question the compiler answers per specialization, and the branch
 folds away.
 
-A specialization is keyed by representation, though, and a handle
-erases to its resource class. `Future<Own<R>>`, `Future<Borrow<R>>` and
-`Future<Unmanaged<R>>` share one body, and `Future<Scoped<F>>` shares
-`Future<F>`'s. So the compiler answers for the body: a body whose type
-arguments include a resource class serves a restricted instantiation,
-and behaves as one (`representsRestricted` in types.zena, which #615's
-takes already use). One intrinsic carries the answer:
+A specialization is keyed by representation and by ownership. A handle
+is represented by its resource class, but whether a body may release
+or replace a value depends on the handle. So `Future<Own<R>>`,
+`Future<Borrow<R>>` and `Future<Unmanaged<R>>` are three
+specializations with the same layout, and `Future<Scoped<F>>` is
+another apart from `Future<F>`, since its value must be consumed
+(`specializesApart` in codegen-utils.zena). `Own<R>` keys as `R`, and
+a handle on an unrestricted type is that type: `Borrow<String>` is
+`String`. Erasing a type argument keeps the handles a key keeps
+(`eraseTypeArgument`), so a type and its erasure key alike. In a body,
+then, `T` names the instantiation's own handle, and what the body does
+with a value it drops or replaces is decided from it
+(`holdsOwner` in types.zena): release at an owner, nothing at a borrow
+or an unmanaged value.
+
+Whether a read takes is decided from the representation instead: a
+body whose type arguments include a resource class serves a restricted
+instantiation, and behaves as one (`representsRestricted` in
+types.zena, which #615's takes already use). One intrinsic carries the
+answer:
 
 - **`isFirstClass<T>(): boolean`**, a constant in each specialization:
   `true` for `Future<i32>` and `Future<Scoped<F>>`, whose restriction
   the static rules carry alone, and `false` for `Future<Own<R>>`,
-  `Future<Borrow<R>>` and, since it shares their body,
-  `Future<Unmanaged<R>>`.
+  `Future<Borrow<R>>` and `Future<Unmanaged<R>>`. The checker treats an
+  `Unmanaged<R>` as first-class, so a program can await a
+  `Future<Unmanaged<R>>` twice, and the second await is refused at run
+  time (§"Runtime state"). Now that it has a specialization of its own,
+  that could change.
 
 `Future`'s read becomes a take, since a read of a field holding `T` is
 one (§"The class half of `scoped T`"):
@@ -284,24 +300,16 @@ drop, because the drop it would serve is already an error.
 
 The body cannot name a `T`'s release, so the compiler supplies it: the
 `release_owned` intrinsic, `releaseOwned<T>(value)`, lowers to the
-implicit drop of a `T` in each specialization. It reads ownership off
-the representation, where `Own<R>`, `Borrow<R>` and `Unmanaged<R>` are
-one body (§"Specialization"). That is right because only an owner's use
-site calls `[release]`, and the intrinsic is private to `future.zena`
-for the same reason.
+implicit drop of a `T` in each specialization. Each handle has a
+specialization of its own (§"Specialization"), so it releases at
+`Own<R>` and does nothing at `Borrow<R>` or `Unmanaged<R>`. The
+intrinsic is private to `future.zena`: a body that owns a `T` releases
+it by dropping it, and only `Future`'s `[release]` holds a value it
+cannot drop.
 
 The producing frame keeps running: a `Future` cannot cancel the work
 behind it, since that work may have started other work or had other
 effects. Cancelling it is what a `FutureClaim` is for (below).
-
-A store into a `T` field that still holds a value would drop the old
-value inside the body. The body cannot release it: an `Unmanaged<R>`
-instantiation shares the body of an owner one, and its old value is not
-the body's to release. So at a restricted specialization the store
-throws, a backstop like the second-waiter check. A body that replaces a
-value takes the old one first and hands it on, as `tryComplete` and a
-refused stream write do. `Future` never stores over a full slot, since
-it settles once.
 
 `DeferredFuture` handles the waiter differently:
 
@@ -312,6 +320,30 @@ it settles once.
   by hand.
 - **Read in flight:** behave as a pending `Future`. The lifted value is
   released when the read completes.
+
+## Replacing a value
+
+A store into a `T` field that still holds a value replaces it, and
+what happens to the old value is decided per specialization, as a
+drop is (`emitScopedFieldReplace` in control-flow.zena):
+
+- **At an owner** (`Own<R>`, a tuple holding one, a container of one)
+  the old value is released, as a store into an owner field of a
+  resource releases one. A field a take emptied holds null, which
+  releases nothing.
+- **At a borrow or an unmanaged value** the old value is overwritten.
+  It was never the object's to release.
+- **At a `Scoped<T>`** the old value must be consumed and can be
+  neither released nor dropped, so the store throws (the standard
+  library's `$scopedValueDropped`). Only a container body can reach
+  this, since a program never stores a scoped value itself.
+- **At a first-class `T`** the old value is overwritten.
+
+A body that wants the old value takes it first and hands it on, as
+`tryComplete` and a refused stream write do. `Future` never stores
+over a full slot, since it settles once. The checker marks the stores
+that need this (`setScopedFieldStore`), and reachability reaches what
+each one releases at each specialization (`noteScopedFieldStore`).
 
 ## Completer
 
@@ -376,10 +408,9 @@ write(value: T): Future<Result<void, T>>   // (true, _): delivered
   discarded result releases an owner through the existing release of a
   discarded owner result, and a must-consume element has to be consumed.
 
-So the stream never releases or drops an element. That keeps the shared
-body safe: `Stream<Own<R>>` and `Stream<Unmanaged<R>>` share one body
-(§"Specialization"), which cannot tell an owner from a handle it does
-not own, while the writer's use site can. It also keeps `stop()`
+So the stream never releases or drops an element: the writer's use
+site decides what a refused element costs, which keeps a refusal
+something the writer can recover from. It also keeps `stop()`
 available at every `T`. Dropping a `Stream<Own<R>>` that nothing
 consumes calls its `[release]`, which is `stop()`: a pending read
 completes with `none`, and a parked write gets its element back.
@@ -533,7 +564,7 @@ not exit while it is outstanding.
 The switch also needed the release fixes it exposed: a written
 `[Disposable.dispose]` beside an owner field releases the field too
 (#388), `releaseOwned` releases the owners of a tuple, or of a union of
-tuples, at a specialization keyed by representation, a `return`,
+tuples, at the specialization it is lowered in, a `return`,
 `break` or `continue` releases the owners still live that it leaves
 behind, and a `let` declared in a `var` owner's release region stays in
 scope after it (ownership.md, "Implicit drop").
@@ -560,8 +591,8 @@ scope after it (ownership.md, "Implicit drop").
    elements and discarded results (fields of that type are still
    rejected). `never` releases its resource. Still to do:
    `DeferredFuture`'s readable-end drop moving into the glue, once its
-   `T` is `scoped`, and the throw on a store into a full `T` field at a
-   restricted specialization, which waits on how lowering fails (#872).
+   `T` is `scoped`. A store into a full `T` field releases the old value
+   at an owner and throws at a `Scoped<T>` (#872, §"Replacing a value").
 4. **`Option`, streams, `Completer.create` and `FutureClaim`** at
    restricted types, with loop-variable release for `for await`.
    - Merged: #782 (a pattern that takes a `scoped T` instance apart
