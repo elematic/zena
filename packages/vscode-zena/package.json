@@ -6,57 +6,91 @@
   "publisher": "zena-lang",
   "type": "module",
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.115.0"
   },
-  "main": "./extension.cjs",
+  "main": "./dist/extension.cjs",
+  "browser": "./dist/extension.cjs",
+  "activationEvents": [
+    "onLanguage:zena"
+  ],
+  "homepage": "https://zena-lang.dev",
+  "bugs": {
+    "url": "https://github.com/elematic/zena/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elematic/zena.git",
+    "directory": "packages/vscode-zena"
+  },
+  "keywords": [
+    "zena",
+    "wasm",
+    "webassembly"
+  ],
+  "license": "MIT",
   "scripts": {
     "build": "wireit",
+    "build:typecheck": "wireit",
+    "build:bundle": "wireit",
     "test": "wireit",
-    "package": "npm run build && vsce package --no-dependencies",
-    "install-ext": "npm run package && code --install-extension vscode-zena-0.1.0.vsix"
+    "package": "npm run build && vsce package --no-dependencies -o vscode-zena.vsix",
+    "install-ext": "npm run package && code --install-extension \"$PWD/vscode-zena.vsix\""
   },
   "wireit": {
     "build": {
       "dependencies": [
-        "build:ts",
-        "build:lsp"
+        "build:typecheck",
+        "build:bundle"
       ]
     },
-    "build:ts": {
+    "build:typecheck": {
       "command": "tsc",
       "dependencies": [
-        "../runtime:build"
+        "../runtime:build",
+        "../language-service:build:ts"
       ],
       "files": [
-        "src/**/*.{ts,cts}",
+        "src/**/*.ts",
         "tsconfig.json"
       ],
       "output": [
-        "extension.cjs",
-        "extension.cjs.map",
-        "lib/",
-        "test/",
         "tsconfig.tsbuildinfo"
+      ]
+    },
+    "build:bundle": {
+      "command": "node scripts/bundle.js",
+      "dependencies": [
+        "../runtime:build",
+        "../language-service:build",
+        "../stdlib:build"
+      ],
+      "files": [
+        "scripts/bundle.js",
+        "src/**/*.ts",
+        "../stdlib/zena/**/*.zena",
+        "../language-service/lsp.wasm"
+      ],
+      "output": [
+        "dist/extension.cjs",
+        "dist/extension.cjs.map",
+        "dist/lsp.wasm"
       ],
       "clean": "if-file-deleted"
     },
-    "build:lsp": {
-      "command": "cp ../language-service/lsp.wasm lsp.wasm",
-      "files": [],
-      "output": [
-        "lsp.wasm"
-      ],
-      "dependencies": [
-        "../language-service:build"
-      ]
-    },
     "test": {
-      "command": "node --test test/lsp_test.js",
+      "command": "node --test src/test/*_test.ts",
       "dependencies": [
         "build"
       ],
       "files": [
-        "test/**/*.js"
+        "src/test/**/*.ts",
+        "package.json",
+        ".vscodeignore",
+        "LICENSE",
+        "CHANGELOG.md",
+        "README.md",
+        "language-configuration.json",
+        "syntaxes/**/*.json"
       ],
       "output": []
     }
@@ -65,6 +99,10 @@
     "@types/node": "^25.9.9",
     "@types/vscode": "^1.115.0",
     "@vscode/vsce": "^4.0.0",
+    "@zena-lang/language-service": "^0.0.1",
+    "@zena-lang/runtime": "^0.0.1",
+    "esbuild": "^0.28.2",
+    "ovsx": "^1.4.0",
     "typescript": "^7.0.2",
     "wireit": "^0.14.4"
   },
@@ -95,6 +133,11 @@
         "command": "zena.fixLint",
         "title": "Fix lint findings in file",
         "category": "Zena"
+      },
+      {
+        "command": "zena.showOutput",
+        "title": "Show Output",
+        "category": "Zena"
       }
     ],
     "grammars": [
@@ -114,13 +157,5 @@
         }
       }
     ]
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/elematic/zena"
-  },
-  "license": "MIT",
-  "dependencies": {
-    "@zena-lang/runtime": "^0.0.1"
   }
 }
