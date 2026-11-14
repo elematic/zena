@@ -347,6 +347,8 @@ final class StaleAppViewStore implements AppViewStore {
   }
   async setAutomationToken(did: String, hash: String): Future<void> { await this.#inner.setAutomationToken(did, hash); }
   async automationAccountOf(hash: String): Future<String | null> { return await this.#inner.automationAccountOf(hash); }
+  async retireAutomationAccount(did: String): Future<void> { await this.#inner.retireAutomationAccount(did); }
+  async isRetired(did: String): Future<boolean> { return await this.#inner.isRetired(did); }
   async holdRelease(pkg: String, release: PendingRelease): Future<boolean> {
     return await this.#inner.holdRelease(pkg, release);
   }
@@ -1276,6 +1278,45 @@ export let tests = suite('registry/app-view', () => {
     isTrue(next != token && next.startsWith('zena_ci_'), next);
     equal(errorOf(await withToken('completeRelease', completion, '', 'application/json', token)), 'InvalidToken');
     equal(ok(await withToken('completeRelease', completion, '', 'application/json', next))['state'] as String, 'published');
+  });
+
+  test('retires an automation account no package names, whose token then stops working', async (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    var swap = (pkg['maintainers'] as JsonObject)['cid'] as String;
+    let bot = ok(await fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`));
+    let botDid = bot['did'] as String;
+    let token = bot['token'] as String;
+    let account = `{"account": "${botDid}"}`;
+    let describe = async (given: String): Future<Response> =>
+        await fixture.call(null, 'issueAutomationToken', account, '', 'application/json', `Bearer ${given}`);
+
+    // The package's maintainers name it, by a private entry.
+    let entry = new MemberEntry(botDid, PUBLISHER, filled(180), true);
+    let withBot = new Maintainers([Maintainer.ofDid(ALICE, OWNER),
+        new Maintainer(null, entry.commitment(), null, null, PUBLISHER, true)]);
+    swap = ok(await putMaintainers(fixture, ALICE, pkgDid, withBot, [entry], swap))['cid'] as String;
+    equal(errorOf(await fixture.call(BOB, 'retireAutomationAccount', account)), 'Forbidden');
+    equal(errorOf(await fixture.call(ALICE, 'retireAutomationAccount', `{"account": "${pkgDid}"}`)), 'InvalidRequest');
+    let named = await fixture.call(ALICE, 'retireAutomationAccount', account);
+    equal(errorOf(named), 'AccountInUse');
+    isTrue((json(named)['message'] as String).contains('router.acme.pkg.test'), json(named)['message'] as String);
+
+    // Once its owners take it out, an admin retires it.
+    swap = ok(await putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER)]), [],
+        swap))['cid'] as String;
+    ok(await fixture.call(ALICE, 'retireAutomationAccount', account));
+    // Its token no longer works, and it is given no other.
+    equal(errorOf(await describe(token)), 'InvalidToken');
+    equal(errorOf(await fixture.call(ALICE, 'issueAutomationToken', account)), 'InvalidRequest');
+    // Retiring it again changes nothing, and its repository and its name stay.
+    ok(await fixture.call(ALICE, 'retireAutomationAccount', account));
+    isTrue((await fixture.pds.storage.getAccount(botDid)) != null, 'its account stays');
+    equal(fixture.records.lookup('ci.acme.pkg.test') as String, botDid);
+    equal(errorOf(await fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`)),
+        'NameTaken');
   });
 
   test('lists the scopes and packages a visitor can browse, with their latest releases', async (ctx) => {

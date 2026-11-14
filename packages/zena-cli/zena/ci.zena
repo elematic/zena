@@ -8,6 +8,10 @@
  *
  * `zena pkg ci token <scope>/<name>` gives the account a new token, for one
  * that leaked or was lost, and the old one stops working.
+ *
+ * `zena pkg ci retire <scope>/<name>` retires it, for CI that no longer
+ * runs: its token stops working, and it is given no other. The registry
+ * refuses while a package's maintainers or a team names it.
  */
 
 import { ParsedArgs } from 'zena:args';
@@ -18,12 +22,13 @@ import { packageResolver } from './fetch.zena';
 import {
   PublishError, Registry, findRegistry, registryClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
 } from './publish.zena';
-import { CREATE_AUTOMATION_ACCOUNT, ISSUE_AUTOMATION_TOKEN } from 'package-manager/registry-methods';
+import { CREATE_AUTOMATION_ACCOUNT, ISSUE_AUTOMATION_TOKEN, RETIRE_AUTOMATION_ACCOUNT } from 'package-manager/registry-methods';
 
 export async function ciCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
-    if (args.rest.length != 2 || (args.rest[0] != 'create' && args.rest[0] != 'token')) {
-      throw new PublishError('usage: zena pkg ci create <scope>/<name>, or zena pkg ci token <scope>/<name>');
+    let command = if (args.rest.length > 0) args.rest[0] else '';
+    if (args.rest.length != 2 || (command != 'create' && command != 'token' && command != 'retire')) {
+      throw new PublishError('usage: zena pkg ci create|token|retire <scope>/<name>');
     }
     let parts = args.rest[1].split('/');
     if (parts.length != 2 || parts[0] == '' || parts[1] == '') {
@@ -43,6 +48,16 @@ export async function ciCommand(args: ParsedArgs, options: Options): Future<i32>
       console.log(`Its new token, which is not shown again: ${issued['token'] as String}`);
       console.log('');
       console.log(`The old token of ${handle} no longer works: replace ZENA_REGISTRY_TOKEN in CI's secrets with this one.`);
+      await saveIfRefreshed(session);
+      return;
+    }
+    if (command == 'retire') {
+      let handle = `${name}.${scope}.${registry.domain}`;
+      let input = new JsonObject();
+      input['account'] = await accountOf(handle, registry);
+      let client = await registryClient(session, registry, RETIRE_AUTOMATION_ACCOUNT);
+      await client.procedure(RETIRE_AUTOMATION_ACCOUNT, input);
+      console.log(`Retired ${handle}: its token no longer works, and the registry gives it no other.`);
       await saveIfRefreshed(session);
       return;
     }

@@ -48,6 +48,7 @@ export final class MemoryAppViewStore implements AppViewStore {
   /** Each automation account's token hash, and whose each hash is. */
   #tokenHashes = new HashMap<String, String>();
   #tokenAccounts = new HashMap<String, String>();
+  #retired = new HashSet<String>();
   /** The limits the operator has set, by account. */
   #limits = new HashMap<String, Limits>();
   /** Each count by its key (`Count.key`). */
@@ -297,6 +298,18 @@ export final class MemoryAppViewStore implements AppViewStore {
       return did;
     }
     return null;
+  }
+
+  async retireAutomationAccount(did: String): Future<void> {
+    if (let (true, old) = this.#tokenHashes.get(did)) {
+      this.#tokenAccounts.delete(old);
+      this.#tokenHashes.delete(did);
+    }
+    this.#retired.add(did);
+  }
+
+  async isRetired(did: String): Future<boolean> {
+    return this.#retired.has(did);
   }
 
   async limits(did: String): Future<Limits> {

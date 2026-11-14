@@ -359,6 +359,19 @@ export final class FirestoreAppViewStore implements AppViewStore {
     return null;
   }
 
+  async retireAutomationAccount(did: String): Future<void> {
+    // In place of the hash, which no token then matches.
+    await this.#root.collection('automationTokens').doc(did).set(new Fields().boolean('retired', true));
+  }
+
+  async isRetired(did: String): Future<boolean> {
+    let snapshot = await this.#root.collection('automationTokens').doc(did).get();
+    if (let (true, retired) = snapshot.getBoolean('retired')) {
+      return retired;
+    }
+    return false;
+  }
+
   async limits(did: String): Future<Limits> {
     return limitsFrom(await this.#root.collection('limits').doc(did).get());
   }

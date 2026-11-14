@@ -1,8 +1,8 @@
 /**
  * The App View methods that make accounts, an organization for a scope, a
- * package, and an automation account for CI, that set how a scope
- * presents itself, and the public lists of the scopes and packages a
- * visitor browses.
+ * package, and an automation account for CI, and retire the last; that
+ * set how a scope presents itself; and the public lists of the scopes and
+ * packages a visitor browses.
  */
 
 import {Future} from 'zena:async';
@@ -12,7 +12,7 @@ import {fromJson} from 'atproto/data';
 import {xrpcPath} from 'atproto/methods';
 import {
   CREATE_AUTOMATION_ACCOUNT, CREATE_ORGANIZATION, CREATE_PACKAGE, ISSUE_AUTOMATION_TOKEN, LIST_PACKAGES, LIST_SCOPES,
-  PUT_SCOPE_PROFILE
+  PUT_SCOPE_PROFILE, RETIRE_AUTOMATION_ACCOUNT
 } from 'package-manager/registry-methods';
 import {Created, AppView} from '../app-view.zena';
 import {fail, json, jsonBody, nowMicros, strings} from 'pds/xrpc/common';
@@ -83,6 +83,19 @@ export function accountRoutes(router: Router, appView: AppView): void {
     let answer = new JsonObject();
     answer['token'] = await appView.issueAutomationToken(caller, input['account'] as String, nowMicros());
     return answer;
+  });
+
+  registryProcedure(router, appView, RETIRE_AUTOMATION_ACCOUNT, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    if (!(input['account'] is String)) {
+      fail(res, 400, 'InvalidRequest', 'account is required');
+      return null;
+    }
+    await appView.retireAutomationAccount(caller, input['account'] as String, nowMicros());
+    return new JsonObject();
   });
 
   registryProcedure(router, appView, PUT_SCOPE_PROFILE, async (req, res, caller): Future<JsonObject | null> => {

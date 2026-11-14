@@ -191,6 +191,13 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     isNull(await store.automationAccountOf('aa'));
     equal((await store.automationAccountOf('cc')) as String, ALICE);
     equal((await store.automationAccountOf('bb')) as String, BOB);
+    // A retired account's token stops working, and the other's does not.
+    isTrue(!await store.isRetired(ALICE), 'not retired yet');
+    await store.retireAutomationAccount(ALICE);
+    isNull(await store.automationAccountOf('cc'));
+    isTrue(await store.isRetired(ALICE), 'retired');
+    isTrue(!await store.isRetired(BOB), 'the other is not');
+    equal((await store.automationAccountOf('bb')) as String, BOB);
   });
 
   test('keeps the limits the operator sets on each account, until they are taken away', async (ctx) => {
