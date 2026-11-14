@@ -44,6 +44,7 @@ export interface ParsedRelease {
   readonly isNewest: boolean;
   readonly changelog: string;
   readonly sha256SumsUrl: string | null;
+  readonly vscodeExtension: PlatformDownload | null;
   readonly platforms: readonly PlatformDownload[];
 }
 
@@ -173,6 +174,31 @@ export const parseGitHubReleases = (
       });
     }
 
+    const vsixAsset =
+      assets.find((a) => /^vscode-zena-v.+\.vsix$/.test(a.name)) ??
+      byName.get('vscode-zena.vsix') ??
+      null;
+    let vscodeExtension: PlatformDownload | null = null;
+    if (vsixAsset) {
+      const vsixSha256Asset = byName.get(`${vsixAsset.name}.sha256`);
+      const vsixUnversionedAsset = byName.get('vscode-zena.vsix');
+      const vsixSha256 =
+        normalizeSha256(vsixAsset.digest) ??
+        bodyChecksums.get(vsixAsset.name) ??
+        null;
+      vscodeExtension = {
+        target: 'vscode-extension',
+        label: 'VS Code Extension',
+        archiveName: vsixAsset.name,
+        archiveUrl: vsixAsset.browser_download_url,
+        sizeBytes: vsixAsset.size,
+        sha256: vsixSha256,
+        sha256FileUrl: vsixSha256Asset?.browser_download_url ?? null,
+        unversionedUrl: vsixUnversionedAsset?.browser_download_url ?? null,
+      };
+      platforms.push(vscodeExtension);
+    }
+
     const sha256SumsUrl =
       byName.get('SHA256SUMS')?.browser_download_url ?? null;
     const publishedIso = rel.published_at ?? rel.created_at ?? null;
@@ -188,6 +214,7 @@ export const parseGitHubReleases = (
       isNewest: index === 0,
       changelog,
       sha256SumsUrl,
+      vscodeExtension,
       platforms,
     };
   });
