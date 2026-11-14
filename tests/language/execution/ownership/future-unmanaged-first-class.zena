@@ -1,0 +1,53 @@
+// @mode: run
+// @result: 111
+// An `Unmanaged<R>` is unrestricted, as the checker treats it, so a
+// `scoped T` container of one is first-class at run time too
+// (owner-futures.md §"Specialization"): a future of one can be awaited
+// more than once, and reading a `T` field copies the handle rather
+// than taking it.
+
+import {Own, Unmanaged, Disposable, WithDefault, defaultValue, disown, adopt} from 'zena:core';
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  value(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+class Slot<scoped T> {
+  var #value: WithDefault<T> = defaultValue<T>();
+  put(value: T): void {
+    this.#value = value;
+  }
+  read(): WithDefault<T> {
+    return this.#value;
+  }
+}
+
+async function make(): Future<Unmanaged<Res>> {
+  return disown(new Res(7));
+}
+
+export async function main(): Future<i32> {
+  var result = 0;
+  let f = make();
+  let first = await f;
+  let second = await f;
+  if (first.value() == 7 && second.value() == 7) {
+    result += 1;
+  }
+
+  let s = new Slot<Unmanaged<Res>>();
+  s.put(first);
+  let a = s.read();
+  let b = s.read();
+  if (a != null) {
+    result += 10;
+  }
+  if (b != null && b.value() == 7) {
+    result += 100;
+  }
+  let owner = adopt(first);
+  return result;
+}

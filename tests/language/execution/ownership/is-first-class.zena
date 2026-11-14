@@ -1,15 +1,16 @@
 // @mode: run
-// @result: 43
+// @result: 1835
 // `isFirstClass<T>()` is a constant in each specialization: true where
 // `T` is first-class, false where it may be restricted, so a `scoped T`
 // body can branch on it and the branch folds away
 // (owner-futures.md §"Specialization"). Each case is one bit of the
 // result.
 //
-// A specialization is keyed by representation, and a handle erases to
-// its resource class, so `Own<R>`, `Borrow<R>` and `Unmanaged<R>` share
-// one body and get one answer: the restricted one. `Scoped<F>` erases
-// to `F` and shares its first-class answer.
+// An owner and a borrow, and a value holding one, are restricted. An
+// `Unmanaged<R>` is unrestricted, as the checker treats it, and so is a
+// value holding one, though all three handles are represented by the
+// resource class. `Scoped<F>` is `F`'s answer: its restriction is the
+// checker's to enforce.
 
 import {Own, Borrow, Unmanaged, Scoped, Disposable, isFirstClass} from 'zena:core';
 
@@ -38,5 +39,7 @@ export let main = (): i32 => {
   bits += firstClass<(i32, Own<Res>)>() * 64;
   bits += firstClass<Borrow<Res>>() * 128;
   bits += firstClass<Unmanaged<Res>>() * 256;
+  bits += new Slot<Unmanaged<Res>>().kind() * 512;
+  bits += firstClass<(i32, Unmanaged<Res>)>() * 1024;
   return bits;
 };

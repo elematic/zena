@@ -1015,9 +1015,8 @@ What the checker enforces for that half:
   must be a `var` that can be empty, nullable or `WithDefault<T>`, and
   the move leaves it empty, through `as T` too. Codegen
   stores the null only where the specialization's `T` may be
-  restricted, so at a first-class `T` the read is a copy. It judges
-  that from `T`'s representation, so an `Unmanaged<R>` instantiation
-  is taken from too.
+  restricted, so at a first-class `T` the read is a copy. An
+  `Unmanaged<R>` is first-class there, as the checker treats it.
 - **Stores.** A store into a `T` field that still holds a value
   releases the old value where `T` owns it, overwrites it at a borrow
   or an unmanaged value, and throws at a `Scoped<T>`, which must be
@@ -1053,8 +1052,9 @@ What the checker enforces for that half:
   style, last field first, recursing into a nested `scoped` instance or
   a tuple. `Future` declares its own, which defers the release to the
   settle (owner-futures.md, "Releasing what nobody took"). Only an
-  owner's drop calls it, so the body an `Unmanaged<R>` instantiation
-  shares never releases. A subclass that adds `T` fields under an
+  owner's drop calls it, and each handle has a specialization of its
+  own, so the `[release]` of an `Unmanaged<R>` instantiation would
+  release nothing anyway. A subclass that adds `T` fields under an
   inherited `[release]` is rejected for now, since that release does
   not know them and an override has no way to release a `T`.
 
