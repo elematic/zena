@@ -28,8 +28,9 @@
  * A DID is made by its genesis operation: `did:plc:` followed by the first
  * 24 characters of the lowercase base32 SHA-256 hash of the signed
  * operation's DAG-CBOR encoding. `submitPlcOperation` sends an operation
- * to a PLC directory. `checkNextOperation` is what a directory checks
- * before it records one, and `didDocument` the document it serves.
+ * to a PLC directory. `checkOperation` is what a directory checks before
+ * it records one, `nullifiedEntries` which of its records a later one
+ * replaced, and `didDocument` the document it serves.
  */
 
 import {Future} from 'zena:async';
@@ -274,19 +275,14 @@ export function undoOperation(log: Array<PlcOperation>, cid: String, key: Public
     throw new PlcError(`${cid} is the last operation; there is nothing after it to undo`);
   }
   let kept = log[at];
-  let next = log[at + 1];
   let wanted = formatDidKey(key);
   var rank = -1;
-  var signerRank = -1;
   for (var i = 0; i < kept.rotationKeys.length; i += 1) {
-    let candidate = kept.rotationKeys[i];
-    if (candidate == wanted) {
+    if (kept.rotationKeys[i] == wanted) {
       rank = i;
     }
-    if (signerRank < 0 && next.isSignedBy(parseDidKey(candidate))) {
-      signerRank = i;
-    }
   }
+  let signerRank = rankOfSigner(kept, log[at + 1]);
   if (rank < 0) {
     throw new PlcError(`${wanted} is not one of ${cid}'s rotation keys`);
   }
@@ -305,6 +301,7 @@ export function undoOperation(log: Array<PlcOperation>, cid: String, key: Public
  * rotation keys. The specification also lets a higher-ranked rotation key
  * replace operations from the last 72 hours; this does not, so it suits a
  * directory whose operations only go forward, such as a test's.
+ * `checkOperation` does.
  */
 export function checkNextOperation(did: String, log: Array<PlcOperation>, operation: PlcOperation): void {
   if (log.length == 0) {
@@ -326,6 +323,116 @@ export function checkNextOperation(did: String, log: Array<PlcOperation>, operat
     }
   }
   throw new PlcError('none of the previous operation\'s rotation keys signed the operation');
+}
+
+/** How long a higher-ranked rotation key may replace an operation after a directory records it: 72 hours, in microseconds. */
+export let NULLIFY_WINDOW_MICROS = 259200000000 as i64;
+
+/** An operation as a directory recorded it, with when, in microseconds since the epoch. */
+export final class PlcLogEntry {
+  operation: PlcOperation;
+  createdAt: i64;
+
+  new(this.operation, this.createdAt);
+}
+
+/**
+ * Which of `entries`, every operation a directory recorded for a DID,
+ * oldest first, a later one replaced: each after the operation a later one
+ * names as `prev`, when that was not the last then. The specification
+ * calls them nullified. The rest, in order, are the DID's operations
+ * (`activeOperations`).
+ */
+export function nullifiedEntries(entries: Array<PlcLogEntry>): FixedArray<boolean> {
+  let nullified = new FixedArray<boolean>(entries.length, false);
+  // The DID's operations after each entry, as indexes into `entries`.
+  let chain = new FixedArray<i32>(entries.length, 0);
+  var length = 0;
+  for (var i = 0; i < entries.length; i += 1) {
+    let prev = entries[i].operation.prev;
+    if (prev != null) {
+      while (length > 0 && entries[chain[length - 1]].operation.cid().toString() != prev) {
+        nullified[chain[length - 1]] = true;
+        length -= 1;
+      }
+    }
+    chain[length] = i;
+    length += 1;
+  }
+  return nullified;
+}
+
+/** The operations of `entries` no later one replaced (`nullifiedEntries`), oldest first. */
+export function activeOperations(entries: Array<PlcLogEntry>): Array<PlcOperation> {
+  let nullified = nullifiedEntries(entries);
+  let operations = new GrowableArray<PlcOperation>();
+  for (var i = 0; i < entries.length; i += 1) {
+    if (!nullified[i]) {
+      operations.push(entries[i].operation);
+    }
+  }
+  return operations;
+}
+
+/**
+ * Checks that a directory may record `operation` for `did` at `now`, in
+ * microseconds, after `entries`, every operation it recorded for `did`,
+ * oldest first, replaced ones included. Throws `PlcError` when it may not.
+ *
+ * It takes what `checkNextOperation` takes: an operation that follows the
+ * last of the DID's operations. It also takes one that follows an earlier
+ * one, replacing those after it, as the specification does: when it is
+ * signed by one of that earlier operation's rotation keys ranked above the
+ * key that signed the first operation it replaces, and the directory
+ * recorded that one no more than 72 hours before `now`.
+ */
+export function checkOperation(did: String, entries: Array<PlcLogEntry>, operation: PlcOperation, now: i64): void {
+  let nullified = nullifiedEntries(entries);
+  let active = new GrowableArray<PlcLogEntry>();
+  let operations = new GrowableArray<PlcOperation>();
+  for (var i = 0; i < entries.length; i += 1) {
+    if (!nullified[i]) {
+      active.push(entries[i]);
+      operations.push(entries[i].operation);
+    }
+  }
+  let prev = operation.prev;
+  if (active.length == 0 || prev == null || prev == active[active.length - 1].operation.cid().toString()) {
+    checkNextOperation(did, operations, operation);
+    return;
+  }
+  var at = -1;
+  for (var i = 0; i < active.length; i += 1) {
+    if (active[i].operation.cid().toString() == prev) {
+      at = i;
+    }
+  }
+  if (at < 0) {
+    throw new PlcError(`the operation follows ${prev}, which is not one of ${did}'s operations`);
+  }
+  let kept = active[at].operation;
+  let first = active[at + 1];
+  let rank = rankOfSigner(kept, operation);
+  if (rank < 0) {
+    throw new PlcError(`none of ${prev}'s rotation keys signed the operation`);
+  }
+  let signerRank = rankOfSigner(kept, first.operation);
+  if (signerRank >= 0 && rank >= signerRank) {
+    throw new PlcError(`the operation is signed by ${prev}'s rotation key ranked ${rank + 1}, not above the one ranked ${signerRank + 1}, which signed the operation it would replace`);
+  }
+  if (now - first.createdAt > NULLIFY_WINDOW_MICROS) {
+    throw new PlcError(`the operations after ${prev} were recorded more than 72 hours ago, too long to replace`);
+  }
+}
+
+/** Where the key that signed `operation` ranks among `previous`'s rotation keys, from 0, or -1 for none of them. */
+function rankOfSigner(previous: PlcOperation, operation: PlcOperation): i32 {
+  for (var i = 0; i < previous.rotationKeys.length; i += 1) {
+    if (operation.isSignedBy(parseDidKey(previous.rotationKeys[i]))) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 /** The DID document `operation` gives `did`, as a PLC directory serves it. */

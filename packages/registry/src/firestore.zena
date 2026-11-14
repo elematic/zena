@@ -5,7 +5,8 @@
  *
  * - A staging PLC directory's (`FirestorePlcLog`): `plc/{did}`: `length`,
  *   the number of operations; and under it `ops/{index}`: `json`, each
- *   operation, with indexes padded to eight digits so they list in order.
+ *   operation, and `createdAt`, when it was recorded, in microseconds, with
+ *   indexes padded to eight digits so they list in order.
  * - The App View's (`FirestoreAppViewStore`): `appViewAccounts/{did}`:
  *   `handle`, `kind`, `scope` and `name`, each account the App View made;
  *   `scopes/{scope}`: `org`;
@@ -47,7 +48,7 @@ import {
 import {decodeCbor, encodeCbor} from 'atproto/cbor';
 import {Cid} from 'atproto/cid';
 import {compareKeys} from 'atproto/mst';
-import {PlcOperation} from 'atproto/plc';
+import {PlcLogEntry, PlcOperation} from 'atproto/plc';
 import {MemberEntry} from 'package-manager/records';
 import {
   BATCH_WRITES, bytesAt, cidAt, claim, kindName, kindNamed, recordId, release, stringAt, tenantRoot
@@ -617,21 +618,26 @@ export final class FirestorePlcLog implements PlcLog {
 
   new(db: Firestore, tenant: String) : #db = db, #root = tenantRoot(db, tenant);
 
-  async operations(did: String): Future<Array<PlcOperation>> {
-    let operations = new GrowableArray<PlcOperation>();
+  async entries(did: String): Future<Array<PlcLogEntry>> {
+    let entries = new GrowableArray<PlcLogEntry>();
     for (let snapshot in await this.#root.collection('plc').doc(did).collection('ops').get()) {
       let text = stringAt(snapshot, 'json');
       if (text != null) {
-        operations.push(PlcOperation.fromJson(parseJson(text)));
+        var createdAt = 0 as i64;
+        if (let (true, at) = snapshot.getInteger('createdAt')) {
+          createdAt = at;
+        }
+        entries.push(new PlcLogEntry(PlcOperation.fromJson(parseJson(text)), createdAt));
       }
     }
-    return operations;
+    return entries;
   }
 
-  async append(did: String, index: i32, operation: PlcOperation): Future<boolean> {
+  async append(did: String, index: i32, recorded: PlcLogEntry): Future<boolean> {
     let head = this.#root.collection('plc').doc(did);
     let entry = head.collection('ops').doc(padIndex(index));
-    let json = stringify(operation.toJson());
+    let json = stringify(recorded.operation.toJson());
+    let createdAt = recorded.createdAt;
     return await this.#db.runTransaction<boolean>(async (tx): Future<boolean> => {
       var length = 0 as i64;
       if (let (true, recorded) = (await tx.get(head)).getInteger('length')) {
@@ -640,7 +646,7 @@ export final class FirestorePlcLog implements PlcLog {
       if (length != index as i64) {
         return false;
       }
-      tx.set(entry, new Fields().string('json', json));
+      tx.set(entry, new Fields().string('json', json).integer('createdAt', createdAt));
       tx.set(head, new Fields().integer('length', (index + 1) as i64));
       return true;
     });

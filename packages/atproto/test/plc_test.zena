@@ -9,8 +9,8 @@ import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {KeyType, PublicKey, formatDidKey, parseDidKey, publicKeyFor} from 'atproto/didkey';
 import {parseDidDocument} from 'atproto/did';
 import {
-  PlcError, PlcOperation, checkNextOperation, didDocument, didOfGenesis, genesisOperation, submitPlcOperation,
-  undoOperation
+  PlcError, PlcLogEntry, PlcOperation, activeOperations, checkNextOperation, checkOperation, didDocument,
+  didOfGenesis, genesisOperation, nullifiedEntries, submitPlcOperation, undoOperation
 } from 'atproto/plc';
 
 let FIXTURES = 'packages/atproto/test/fixtures/plc/operations.json';
@@ -126,6 +126,58 @@ export let tests = suite('atproto/plc', () => {
       .contains('nothing after'));
     isTrue(plcError(() => { undoOperation(log, 'bafyreinope', publicKeyFor(KeyType.P256, offline)); })
       .contains('not in the log'));
+  });
+
+  test('replaces operations from the last 72 hours with one a higher-ranked key signs', async (ctx) => {
+    // Ranked first, an offline key; then the online key, which signs.
+    let offline = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+    let online = hex.decode(((await cases())[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+    let signing = hex.decode('0101010101010101010101010101010101010101010101010101010101010101');
+    let genesis = genesisOperation(publicKeyFor(KeyType.P256, signing),
+        [publicKeyFor(KeyType.P256, offline), publicKeyFor(KeyType.P256, online)],
+        'router.acme.pkg.test', 'https://pkg.test').signedWith((bytes) => p256.sign(online, bytes));
+    let did = didOfGenesis(genesis);
+    let cid = genesis.cid().toString();
+    let hour = 3600000000 as i64;
+    let entries = new GrowableArray<PlcLogEntry>();
+    entries.push(new PlcLogEntry(genesis, 0 as i64));
+    // A stolen online key moves the account elsewhere, at hour 10.
+    let aka = new GrowableArray<String>();
+    aka.push('at://elsewhere.example');
+    let moved = new PlcOperation(genesis.rotationKeys, genesis.verificationMethods, aka, genesis.services, cid)
+        .signedWith((bytes) => p256.sign(online, bytes));
+    equal(plcError(() => { checkOperation(did, entries, moved, 10 * hour); }), '');
+    entries.push(new PlcLogEntry(moved, 10 * hour));
+
+    let unsigned = new PlcOperation(genesis.rotationKeys, genesis.verificationMethods, genesis.alsoKnownAs,
+        genesis.services, cid);
+    let undo = unsigned.signedWith((bytes) => p256.sign(offline, bytes));
+    // The offline key replaces it within 72 hours of when it was recorded,
+    isTrue(plcError(() => { checkOperation(did, entries, undo, 82 * hour); }) == '', 'within 72 hours');
+    // and not after them;
+    isTrue(plcError(() => { checkOperation(did, entries, undo, 83 * hour); }).contains('more than 72 hours'),
+        'after 72 hours');
+    // the online key cannot replace its own operation, nor a stranger's key any.
+    let again = unsigned.signedWith((bytes) => p256.sign(online, bytes));
+    isTrue(plcError(() => { checkOperation(did, entries, again, 11 * hour); }).contains('not above'), 'same rank');
+    let stranger = unsigned.signedWith((bytes) => p256.sign(signing, bytes));
+    isTrue(plcError(() => { checkOperation(did, entries, stranger, 11 * hour); }).contains('rotation keys signed'),
+        'a stranger');
+
+    entries.push(new PlcLogEntry(undo, 11 * hour));
+    let nullified = nullifiedEntries(entries);
+    isTrue(!nullified[0] && nullified[1] && !nullified[2], 'the moved operation is replaced');
+    let active = activeOperations(entries);
+    equal(active.length, 2);
+    equal(active[1].cid().toString(), undo.cid().toString());
+    // What follows the replaced operation is refused; what follows the undo is taken.
+    let afterMoved = new PlcOperation(genesis.rotationKeys, genesis.verificationMethods, aka, genesis.services,
+        moved.cid().toString()).signedWith((bytes) => p256.sign(online, bytes));
+    isTrue(plcError(() => { checkOperation(did, entries, afterMoved, 12 * hour); }).contains('not one of'),
+        'after a replaced operation');
+    let next = new PlcOperation(genesis.rotationKeys, genesis.verificationMethods, aka, genesis.services,
+        undo.cid().toString()).signedWith((bytes) => p256.sign(online, bytes));
+    equal(plcError(() => { checkOperation(did, entries, next, 12 * hour); }), '');
   });
 
   test('gives the DID document an operation describes', async (ctx) => {

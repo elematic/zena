@@ -266,18 +266,23 @@ database, blob prefix, rotation key and handle records.
 
 With `APP_VIEW_PLC=staging` the server is a PLC directory itself, at `/plc` on
 the PDS's name (`registry/plc-directory`). It records the operations of the
-accounts the App View makes, after checking that each follows the last
-(`checkNextOperation` in `atproto/plc`), and serves those DIDs' documents
-and logs. Every other
+accounts the App View makes, after checking each (`checkOperation` in
+`atproto/plc`), and serves those DIDs' documents, logs and audit logs.
+Every other
 DID it reads from the public directory, so maintainers sign in with
 their real accounts, and the App View checks their service-auth tokens with
 their real keys. It refuses operations for DIDs the public directory
 has. `zena` uses staging with `ZENA_REGISTRY` and
 `ZENA_PLC_DIRECTORY` pointed at the staging App View and its `/plc`.
 
-The directory takes operations only in order. The specification also
-lets a higher-ranked rotation key replace operations from the last 72
-hours, which a staging App View does not need.
+As the specification has it, an operation follows the last, or replaces
+those after an earlier one when one of that one's rotation keys signs it,
+ranked above the key that signed the first it replaces, within 72 hours of
+when the directory recorded that first one. The directory keeps every
+operation, in order, with when it recorded it, and works out which a
+later one replaced (`nullifiedEntries`). So undoing what a stolen online
+key signed, with the operator's offline key, can be rehearsed on staging
+(registry's DEVELOPMENT.md, "Rotation keys").
 
 ## Tests
 

@@ -14,12 +14,14 @@ import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {bytesStream} from 'zena:stream';
 import {parseDidDocument} from 'atproto/did';
 import {KeyType, publicKeyFor} from 'atproto/didkey';
-import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto/plc';
+import {PlcLogEntry, PlcOperation, didOfGenesis, genesisOperation} from 'atproto/plc';
 import {curveOf} from 'atproto/didkey';
 import {MemoryPlcLog, PlcDirectory} from 'registry/plc-directory';
 
 let ROTATION = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
 let SIGNING = hex.decode('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60');
+/** A rotation key ranked above `ROTATION`, as an operator's offline key is. */
+let OFFLINE = hex.decode('0101010101010101010101010101010101010101010101010101010101010101');
 let UPSTREAM_DID = 'did:plc:upstreamupstreamupstream';
 
 function sign(bytes: FixedArray<u8>) {
@@ -106,10 +108,11 @@ export let tests = suite('registry/plc-directory', () => {
     equal(((parseJson((await call(app, 'GET', `/plc/${did}/log/last`)).body as String) as JsonObject)['prev'] as String),
         first.cid().toString());
 
-    // The same operation again does not follow the last.
+    // The same operation again does not follow the last, and its key does
+    // not rank above its own to replace it.
     let again = await call(app, 'POST', `/plc/${did}`, stringify(second.toJson()));
     equal(again.statusCode, 400);
-    isTrue((again.body as String).contains('must follow'), again.body as String);
+    isTrue((again.body as String).contains('not above'), again.body as String);
     upstream.close();
   });
 
@@ -137,13 +140,63 @@ export let tests = suite('registry/plc-directory', () => {
     upstream.close();
   });
 
+  test('takes an operation a higher-ranked key signs in place of those of the last 72 hours', async (ctx) => {
+    let upstream = new Upstream();
+    let directory = new PlcDirectory(new MemoryPlcLog(), upstream.start());
+    let hour = 3600000000 as i64;
+    var clock = 0 as i64;
+    directory.now = () => clock;
+    let app = directory.app();
+    // Ranked first, an offline key; then the online key, which signs.
+    let first = genesisOperation(publicKeyFor(KeyType.P256, SIGNING),
+        [publicKeyFor(KeyType.P256, OFFLINE), publicKeyFor(KeyType.P256, ROTATION)], 'router.acme.pkg.test',
+        'https://pkg.test').signedWith(sign);
+    let did = didOfGenesis(first);
+    equal((await call(app, 'POST', `/plc/${did}`, stringify(first.toJson()))).statusCode, 200);
+    // The online key moves the account, at hour 1.
+    clock = hour;
+    let aka = new GrowableArray<String>();
+    aka.push('at://elsewhere.example');
+    let moved = new PlcOperation(first.rotationKeys, first.verificationMethods, aka, first.services,
+        first.cid().toString()).signedWith(sign);
+    equal((await call(app, 'POST', `/plc/${did}`, stringify(moved.toJson()))).statusCode, 200);
+
+    // The offline key undoes it, 73 hours on, too late, and then 72 hours on.
+    let undo = new PlcOperation(first.rotationKeys, first.verificationMethods, first.alsoKnownAs, first.services,
+        first.cid().toString()).signedWith((bytes) => curveOf(KeyType.P256).sign(OFFLINE, bytes));
+    clock = 74 * hour;
+    let late = await call(app, 'POST', `/plc/${did}`, stringify(undo.toJson()));
+    equal(late.statusCode, 400);
+    isTrue((late.body as String).contains('more than 72 hours'), late.body as String);
+    clock = 73 * hour;
+    equal((await call(app, 'POST', `/plc/${did}`, stringify(undo.toJson()))).statusCode, 200);
+
+    // The document and the log are as the genesis operation left them,
+    equal(parseDidDocument(parseJson((await call(app, 'GET', `/plc/${did}`)).body as String), did).handle as String,
+        'router.acme.pkg.test');
+    let log = parseJson((await call(app, 'GET', `/plc/${did}/log`)).body as String) as JsonArray;
+    equal(log.length, 2);
+    equal((log[1] as JsonObject)['sig'] as String, undo.sig as String);
+    equal((await directory.operations(did)).length, 2);
+    // and the audit log has all three, the moved one replaced.
+    let audit = parseJson((await call(app, 'GET', `/plc/${did}/log/audit`)).body as String) as JsonArray;
+    equal(audit.length, 3);
+    let nullified = (i: i32) => ((audit[i] as JsonObject)['nullified'] as Box<boolean>).value;
+    isTrue(!nullified(0), 'the genesis operation stands');
+    isTrue(nullified(1), 'the moved one is replaced');
+    isTrue(!nullified(2), 'the undo stands');
+    equal((audit[1] as JsonObject)['cid'] as String, moved.cid().toString());
+    equal((audit[1] as JsonObject)['createdAt'] as String, '1970-01-01T01:00:00.000Z');
+    upstream.close();
+  });
+
   test('appends to a log only at its end', async (ctx) => {
     let log = new MemoryPlcLog();
     let first = genesis('a.pkg.test');
     let did = didOfGenesis(first);
-    isTrue(await log.append(did, 0, first), 'the first');
-    isTrue(!await log.append(did, 0, first), 'a second at index 0');
-    isTrue(!await log.append(did, 2, first), 'past the end');
-    equal((await log.operations(did)).length, 1);
+    isTrue(await log.append(did, 0, new PlcLogEntry(first, 0 as i64)), 'the first');
+    isTrue(!await log.append(did, 0, new PlcLogEntry(first, 0 as i64)), 'a second at index 0');
+    isTrue(!await log.append(did, 2, new PlcLogEntry(first, 0 as i64)), 'past the end');
+    equal((await log.entries(did)).length, 1);
   });
 });

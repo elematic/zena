@@ -4,12 +4,17 @@
  * the operations it is sent, in a `PlcLog`, and serves the DIDs it has
  * recorded; every other DID is read from the directory upstream, so the
  * accounts people sign in with, which live there, still resolve. It
- * refuses operations for DIDs upstream.
+ * refuses operations for DIDs upstream. As the public directory does, it
+ * takes an operation that replaces those of the last 72 hours when a
+ * higher-ranked rotation key signs it (`checkOperation`), so that undoing
+ * a stolen key's operations can be rehearsed on staging.
  *
  * It answers, under its prefix (`/plc`), the requests `atproto/plc` and
  * `atproto/identity` make, as `https://plc.directory` does: `GET /<did>`,
  * the DID document; `GET /<did>/log`, the operations; `GET
- * /<did>/log/last`; and `POST /<did>`, a new operation.
+ * /<did>/log/last`; `GET /<did>/log/audit`, every operation recorded, with
+ * when and whether a later one replaced it; and `POST /<did>`, a new
+ * operation.
  */
 
 import {Future} from 'zena:async';
@@ -17,45 +22,53 @@ import {HashMap} from 'zena:collections';
 import {Own} from 'zena:core';
 import {App, Request, Response} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
-import {PlcError, PlcOperation, checkNextOperation, didDocument, fetchOperations} from 'atproto/plc';
+import {
+  PlcError, PlcLogEntry, PlcOperation, activeOperations, checkOperation, didDocument, fetchOperations, nullifiedEntries
+} from 'atproto/plc';
+import {nowMicros} from 'pds/xrpc/common';
+import {formatTimestamp} from 'zena:time';
 import {isValidDid} from 'atproto/syntax';
 import {fetch} from 'zena:fetch';
 
 /** How many times an operation is tried while others for the same DID land first. */
 let SUBMIT_ATTEMPTS = 5;
 
-/** Where a directory keeps the operations it has recorded. */
+/**
+ * Where a directory keeps the operations it has recorded, every one, those
+ * a later one replaced included, which the directory works out from the
+ * order (`nullifiedEntries`); so a log is only ever appended to.
+ */
 export interface PlcLog {
-  /** The operations recorded for `did`, oldest first; empty when there are none. */
-  operations(did: String): Future<Array<PlcOperation>>;
+  /** The operations recorded for `did`, oldest first, with when; empty when there are none. */
+  entries(did: String): Future<Array<PlcLogEntry>>;
   /**
-   * Records `operation` as `did`'s operation at `index`, 0 for the genesis
-   * operation, if the log still has `index` operations. Returns false,
-   * recording nothing, when it does not.
+   * Records `entry` as `did`'s at `index`, 0 for the genesis operation, if
+   * the log still has `index` entries. Returns false, recording nothing,
+   * when it does not.
    */
-  append(did: String, index: i32, operation: PlcOperation): Future<boolean>;
+  append(did: String, index: i32, entry: PlcLogEntry): Future<boolean>;
 }
 
 /** Operations in memory. */
 export final class MemoryPlcLog implements PlcLog {
-  #logs = new HashMap<String, GrowableArray<PlcOperation>>();
+  #logs = new HashMap<String, GrowableArray<PlcLogEntry>>();
 
-  async operations(did: String): Future<Array<PlcOperation>> {
+  async entries(did: String): Future<Array<PlcLogEntry>> {
     if (let (true, log) = this.#logs.get(did)) {
       return log;
     }
-    return new GrowableArray<PlcOperation>();
+    return new GrowableArray<PlcLogEntry>();
   }
 
-  async append(did: String, index: i32, operation: PlcOperation): Future<boolean> {
-    var log = new GrowableArray<PlcOperation>();
+  async append(did: String, index: i32, entry: PlcLogEntry): Future<boolean> {
+    var log = new GrowableArray<PlcLogEntry>();
     if (let (true, existing) = this.#logs.get(did)) {
       log = existing;
     }
     if (log.length != index) {
       return false;
     }
-    log.push(operation);
+    log.push(entry);
     this.#logs[did] = log;
     return true;
   }
@@ -66,22 +79,26 @@ export final class PlcDirectory {
   #log: PlcLog;
   /** Such as `https://plc.directory`. */
   upstream: String;
+  /** The time, in microseconds since the epoch, which an operation is recorded at. */
+  var now: () => i64 = () => nowMicros();
 
   new(log: PlcLog, upstream: String) : #log = log, upstream = upstream;
 
   /**
    * Records `operation` for `did`, once it is checked to follow the
-   * operations recorded so far (`checkNextOperation`). Throws `PlcError`
-   * for an operation that may not follow them, and for a DID upstream.
+   * operations recorded so far, or to replace some of them
+   * (`checkOperation`). Throws `PlcError` for an operation that may not,
+   * and for a DID upstream.
    */
   async submit(did: String, operation: PlcOperation): Future<void> {
     for (var attempt = 0; attempt < SUBMIT_ATTEMPTS; attempt += 1) {
-      let log = await this.#log.operations(did);
-      if (log.length == 0 && await this.#upstreamHas(did)) {
+      let entries = await this.#log.entries(did);
+      if (entries.length == 0 && await this.#upstreamHas(did)) {
         throw new PlcError(`${did} is in ${this.upstream}; this directory takes operations only for DIDs it records`);
       }
-      checkNextOperation(did, log, operation);
-      if (await this.#log.append(did, log.length, operation)) {
+      let now = this.now();
+      checkOperation(did, entries, operation, now);
+      if (await this.#log.append(did, entries.length, new PlcLogEntry(operation, now))) {
         return;
       }
     }
@@ -89,11 +106,12 @@ export final class PlcDirectory {
   }
 
   /**
-   * The operations of `did`, oldest first, recorded here or read from
-   * upstream. Throws `PlcError` when neither has them.
+   * The operations of `did`, oldest first, but for those a later one
+   * replaced, recorded here or read from upstream. Throws `PlcError` when
+   * neither has them.
    */
   async operations(did: String): Future<Array<PlcOperation>> {
-    let log = await this.#log.operations(did);
+    let log = activeOperations(await this.#log.entries(did));
     if (log.length > 0) {
       return log;
     }
@@ -102,7 +120,7 @@ export final class PlcDirectory {
 
   /** The DID document of `did`, recorded here or read from upstream, or null when neither has it. */
   async document(did: String): Future<JsonObject | null> {
-    let log = await this.#log.operations(did);
+    let log = activeOperations(await this.#log.entries(did));
     if (log.length > 0) {
       return didDocument(did, log[log.length - 1]);
     }
@@ -135,13 +153,14 @@ export final class PlcDirectory {
     return app;
   }
 
-  /** Answers a request for `rest`, the path below the prefix: `<did>`, `<did>/log` or `<did>/log/last`. */
+  /** Answers a request for `rest`, the path below the prefix: `<did>`, `<did>/log`, `<did>/log/last` or `<did>/log/audit`. */
   async serveRequest(rest: String, req: Own<Request>, res: Response): Future<void> {
     let parts = rest.split('/');
     let did = parts[0];
     let what = if (parts.length == 1) '' else rest.sliceBytes(did.length + 1, rest.length);
     res.type = 'application/json';
-    if (!isValidDid(did) || !did.startsWith('did:plc:') || (what != '' && what != 'log' && what != 'log/last')) {
+    if (!isValidDid(did) || !did.startsWith('did:plc:') ||
+        (what != '' && what != 'log' && what != 'log/last' && what != 'log/audit')) {
       fail(res, 404, `not a DID's path: ${rest}`);
       return;
     }
@@ -153,13 +172,29 @@ export final class PlcDirectory {
       await this.#take(did, req, res);
       return;
     }
-    let log = await this.#log.operations(did);
-    if (log.length == 0) {
+    let entries = await this.#log.entries(did);
+    if (entries.length == 0) {
       await this.#forward(rest, res);
       return;
     }
+    let log = activeOperations(entries);
     let last = log[log.length - 1];
-    if (what == '') {
+    if (what == 'log/audit') {
+      // As plc.directory's: each operation, its CID, whether a later one
+      // replaced it, and when it was recorded.
+      let nullified = nullifiedEntries(entries);
+      let all = new JsonArray();
+      for (var i = 0; i < entries.length; i += 1) {
+        let entry = new JsonObject();
+        entry['did'] = did;
+        entry['operation'] = entries[i].operation.toJson();
+        entry['cid'] = entries[i].operation.cid().toString();
+        entry['nullified'] = new Box<boolean>(nullified[i]);
+        entry['createdAt'] = formatTimestamp(entries[i].createdAt * (1000 as i64));
+        all.push(entry);
+      }
+      res.body = stringify(all);
+    } else if (what == '') {
       res.body = stringify(didDocument(did, last));
     } else if (what == 'log') {
       let all = new JsonArray();
