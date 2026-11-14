@@ -64,6 +64,8 @@ suite('releases page and release metadata parser', () => {
       '43159d46c6c1d25bcc48ba051203c3a55a63b6811f924fd2d1a278e727799c25';
     const linuxHash =
       'b9fa08c731b1f135895152838e913e4eef2d24859f058c7f47c33ad0427add76';
+    const vsixHash =
+      '91f2a773c4602ef6125df35048bb98f814594a71db83bf37c132d0f6e595e1a0';
     const body = [
       '### Added',
       '',
@@ -78,6 +80,7 @@ suite('releases page and release metadata parser', () => {
       '| Platform | Archive | SHA-256 |',
       '| --- | --- | --- |',
       `| macOS (Apple Silicon) | [\`zena-v0.0.2-preview.1-aarch64-apple-darwin.tar.gz\`](https://example.test/mac.tar.gz) | \`${macHash}\` |`,
+      `| VS Code Extension | [\`vscode-zena-v0.1.0.vsix\`](https://example.test/vscode-zena-v0.1.0.vsix) | \`${vsixHash}\` |`,
     ].join('\n');
 
     assert.equal(
@@ -120,6 +123,19 @@ suite('releases page and release metadata parser', () => {
             digest: `sha256:${linuxHash.toUpperCase()}`,
           },
           {
+            name: 'vscode-zena-v0.1.0.vsix',
+            browser_download_url:
+              'https://example.test/vscode-zena-v0.1.0.vsix',
+            size: 1_900_544,
+            digest: null,
+          },
+          {
+            name: 'vscode-zena.vsix',
+            browser_download_url: 'https://example.test/vscode-zena.vsix',
+            size: 1_900_544,
+            digest: null,
+          },
+          {
             name: 'SHA256SUMS',
             browser_download_url: 'https://example.test/SHA256SUMS',
             size: 640,
@@ -146,14 +162,26 @@ suite('releases page and release metadata parser', () => {
     assert.equal(preview.isLatestStable, false);
     assert.equal(preview.publishedLabel, 'November 13, 2026');
     assert.equal(preview.sha256SumsUrl, 'https://example.test/SHA256SUMS');
-    assert.equal(preview.platforms.length, 2);
+    assert.equal(preview.platforms.length, 3);
     assert.equal(preview.platforms[0].sha256, macHash);
     assert.equal(preview.platforms[1].sha256, linuxHash);
+    assert.ok(preview.vscodeExtension);
+    assert.equal(
+      preview.vscodeExtension.archiveName,
+      'vscode-zena-v0.1.0.vsix',
+    );
+    assert.equal(preview.vscodeExtension.sha256, vsixHash);
+    assert.equal(
+      preview.vscodeExtension.unversionedUrl,
+      'https://example.test/vscode-zena.vsix',
+    );
+    assert.equal(preview.platforms[2].label, 'VS Code Extension');
 
     const stable = parsed[1];
     assert.equal(stable.tagName, 'v0.0.1');
     assert.equal(stable.isLatestStable, true);
     assert.equal(stable.isNewest, false);
+    assert.equal(stable.vscodeExtension, null);
   });
 });
 
