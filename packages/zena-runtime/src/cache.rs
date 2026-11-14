@@ -73,7 +73,7 @@ pub fn write_cwasm(
     wasm_path: &Path,
     cwasm_path: &Path,
     kind: Kind,
-    should_compile: impl Fn() -> bool,
+    mut should_compile: impl FnMut() -> bool,
 ) -> Result<()> {
     let lock_path = cwasm_path.with_extension("lock");
     let lock_file = std::fs::OpenOptions::new()
@@ -136,49 +136,22 @@ pub fn compile_component_uncached(engine: &Engine, wasm_path: &Path) -> Result<C
 /// Loads `cwasm_path`, first (re)writing it from `wasm_path` when it is
 /// stale or will not deserialize. A fresh-looking cwasm that will not
 /// deserialize was produced by an incompatible engine (different
-/// wasmtime version or config); it is recompiled in place, since
-/// otherwise every invocation would silently repeat the multi-second
-/// in-process compile.
+/// wasmtime version, config, or host CPU features); it is recompiled in
+/// place, and concurrent callers try deserializing again under the file
+/// lock so only the first one compiles.
 pub fn load_or_compile_component(
     engine: &Engine,
     wasm_path: &Path,
     cwasm_path: &Path,
 ) -> Result<Component> {
-    if cwasm_is_stale(wasm_path, cwasm_path) {
-        if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || {
-            cwasm_is_stale(wasm_path, cwasm_path)
-        }) {
-            eprintln!(
-                "WARNING: could not write {}: {e:#}; compiling in memory",
-                cwasm_path.display()
-            );
-            return compile_component_uncached(engine, wasm_path);
-        }
-    }
-    match unsafe { Component::deserialize_file(engine, cwasm_path) } {
-        Ok(c) => Ok(c),
-        Err(first_err) => {
-            eprintln!(
-                "WARNING: recompiling {}: deserialization failed: {:?}",
-                cwasm_path.display(),
-                first_err
-            );
-            if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || true) {
-                eprintln!(
-                    "WARNING: could not rewrite {}: {e:#}; compiling in memory",
-                    cwasm_path.display()
-                );
-                return compile_component_uncached(engine, wasm_path);
-            }
-            match unsafe { Component::deserialize_file(engine, cwasm_path) } {
-                Ok(c) => Ok(c),
-                Err(e) => {
-                    eprintln!("WARNING: deserialization of cwasm failed again: {:?}", e);
-                    compile_component_uncached(engine, wasm_path)
-                }
-            }
-        }
-    }
+    load_or_compile(
+        engine,
+        wasm_path,
+        cwasm_path,
+        Kind::Component,
+        |e, p| unsafe { Component::deserialize_file(e, p) }.map_err(anyhow::Error::from),
+        compile_component_uncached,
+    )
 }
 
 /// [`load_component_variant`], for a core module.
@@ -218,37 +191,69 @@ pub fn load_or_compile_module(
     wasm_path: &Path,
     cwasm_path: &Path,
 ) -> Result<Module> {
+    load_or_compile(
+        engine,
+        wasm_path,
+        cwasm_path,
+        Kind::CoreModule,
+        |e, p| unsafe { Module::deserialize_file(e, p) }.map_err(anyhow::Error::from),
+        compile_module_uncached,
+    )
+}
+
+fn load_or_compile<T>(
+    engine: &Engine,
+    wasm_path: &Path,
+    cwasm_path: &Path,
+    kind: Kind,
+    deserialize: impl Fn(&Engine, &Path) -> Result<T>,
+    compile_uncached: impl Fn(&Engine, &Path) -> Result<T>,
+) -> Result<T> {
     if cwasm_is_stale(wasm_path, cwasm_path) {
-        if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || {
+        if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, kind, || {
             cwasm_is_stale(wasm_path, cwasm_path)
         }) {
             eprintln!(
                 "WARNING: could not write {}: {e:#}; compiling in memory",
                 cwasm_path.display()
             );
-            return compile_module_uncached(engine, wasm_path);
+            return compile_uncached(engine, wasm_path);
         }
     }
-    match unsafe { Module::deserialize_file(engine, cwasm_path) } {
-        Ok(m) => Ok(m),
+    match deserialize(engine, cwasm_path) {
+        Ok(loaded) => Ok(loaded),
         Err(first_err) => {
-            eprintln!(
-                "WARNING: recompiling {}: deserialization failed: {:?}",
-                cwasm_path.display(),
-                first_err
-            );
-            if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || true) {
+            let mut refreshed = None;
+            if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, kind, || {
+                match deserialize(engine, cwasm_path) {
+                    Ok(loaded) => {
+                        refreshed = Some(loaded);
+                        false
+                    }
+                    Err(_) => {
+                        eprintln!(
+                            "WARNING: recompiling {}: deserialization failed: {:?}",
+                            cwasm_path.display(),
+                            first_err
+                        );
+                        true
+                    }
+                }
+            }) {
                 eprintln!(
                     "WARNING: could not rewrite {}: {e:#}; compiling in memory",
                     cwasm_path.display()
                 );
-                return compile_module_uncached(engine, wasm_path);
+                return compile_uncached(engine, wasm_path);
             }
-            match unsafe { Module::deserialize_file(engine, cwasm_path) } {
-                Ok(m) => Ok(m),
+            if let Some(loaded) = refreshed {
+                return Ok(loaded);
+            }
+            match deserialize(engine, cwasm_path) {
+                Ok(loaded) => Ok(loaded),
                 Err(e) => {
                     eprintln!("WARNING: deserialization of cwasm failed again: {:?}", e);
-                    compile_module_uncached(engine, wasm_path)
+                    compile_uncached(engine, wasm_path)
                 }
             }
         }
@@ -301,5 +306,95 @@ mod tests {
         assert!(cwasm_is_stale(&wasm, &cwasm));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
+    }
+
+    #[test]
+    fn incompatible_component_cwasm_refreshed_under_lock_is_reused_without_recompiling()
+    -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "zena-cwasm-component-recovery-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+
+        let host_engine = crate::engine::shared_component_engine(false)?;
+        let other_engine = crate::engine::shared_component_engine(true)?;
+        let valid_cwasm = host_engine.precompile_component(b"(component)")?;
+        let incompatible_cwasm = other_engine.precompile_component(b"(component)")?;
+
+        let wasm = dir.join("m.wasm");
+        let cwasm = dir.join("m.cwasm");
+        // Unusable source bytes prove the waiting caller reuses the refreshed
+        // .cwasm instead of running Cranelift a second time.
+        std::fs::write(&wasm, b"not valid wasm")?;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&cwasm, &incompatible_cwasm)?;
+        assert!(!cwasm_is_stale(&wasm, &cwasm));
+
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(cwasm.with_extension("lock"))?;
+        lock_file.lock()?;
+
+        let engine = host_engine.clone();
+        let wasm_for_worker = wasm.clone();
+        let cwasm_for_worker = cwasm.clone();
+        let worker = std::thread::spawn(move || {
+            load_or_compile_component(&engine, &wasm_for_worker, &cwasm_for_worker)
+        });
+
+        // Give the worker time to fail the initial deserialize and block on .lock,
+        // then replace .cwasm as the lock-holding process would.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&cwasm, &valid_cwasm)?;
+        drop(lock_file);
+
+        let result = worker.join().expect("worker panicked");
+        let _ = std::fs::remove_dir_all(&dir);
+        result.map(|_| ())
+    }
+
+    #[test]
+    fn incompatible_module_cwasm_refreshed_under_lock_is_reused_without_recompiling() -> Result<()>
+    {
+        let dir =
+            std::env::temp_dir().join(format!("zena-cwasm-module-recovery-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+
+        let host_engine = crate::engine::shared_component_engine(false)?;
+        let other_engine = crate::engine::shared_component_engine(true)?;
+        let valid_cwasm = host_engine.precompile_module(b"(module)")?;
+        let incompatible_cwasm = other_engine.precompile_module(b"(module)")?;
+
+        let wasm = dir.join("m.wasm");
+        let cwasm = dir.join("m.cwasm");
+        std::fs::write(&wasm, b"not valid wasm")?;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&cwasm, &incompatible_cwasm)?;
+        assert!(!cwasm_is_stale(&wasm, &cwasm));
+
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(cwasm.with_extension("lock"))?;
+        lock_file.lock()?;
+
+        let engine = host_engine.clone();
+        let wasm_for_worker = wasm.clone();
+        let cwasm_for_worker = cwasm.clone();
+        let worker = std::thread::spawn(move || {
+            load_or_compile_module(&engine, &wasm_for_worker, &cwasm_for_worker)
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&cwasm, &valid_cwasm)?;
+        drop(lock_file);
+
+        let result = worker.join().expect("worker panicked");
+        let _ = std::fs::remove_dir_all(&dir);
+        result.map(|_| ())
     }
 }

@@ -41,7 +41,19 @@
   "scripts": {
     "build": {
       "#": "The zena command: the host binary and the CLI module it runs.",
-      "dependencies": ["build:binary", "precompile:module"]
+      "#dependencies": "`cascade: false` on build:module so dependents rerun only when out/zena.wasm's bytes change, and on precompile:module so the untracked .cwasm step stays out of downstream fingerprints.",
+      "files": ["out/zena.wasm"],
+      "dependencies": [
+        "build:binary",
+        {
+          "script": "build:module",
+          "cascade": false
+        },
+        {
+          "script": "precompile:module",
+          "cascade": false
+        }
+      ]
     },
     "build:binary": {
       "#": "The host binary. Two scripts for one build: `build:cargo` declares no inputs, so wireit never calls it fresh and cargo is always consulted — cargo tracks its own inputs better than a `files` list could, and a no-op is a quarter of a second. This one names the binary cargo produced as an *input*, so its fingerprint changes exactly when the binary does, and that is what dependents inherit. `cascade: false` keeps `build:cargo`'s own fingerprint out: a script with no `files` is not `fullyTracked`, and wireit propagates that to everything downstream, where nothing can ever be fresh. Hashing the binary also makes freshness imply the binary exists, so a cache hit against an empty target dir cannot leave the scripts that run it failing with exit 127.",
@@ -128,18 +140,9 @@
       "dependencies": ["build"]
     },
     "precompile:module": {
-      "#": "The CLI module's .cwasm, so the first zena commands do not race to run Cranelift on it. After the binary, because wasmtime's version is what decides whether a .cwasm can be loaded at all.",
-      "#dependencies": "`cascade: false` on build:module: out/zena.wasm is an input, so this reruns when the module changes and not when build:module reruns to produce the same bytes. Everything that depends on `build` inherits that.",
+      "#": "The CLI module's .cwasm, so the first zena commands do not race to run Cranelift on it. After the binary, because wasmtime's version is what decides whether a .cwasm can be loaded at all. Untracked so remote caches never save machine code built for one host CPU and restore it onto another; when out/zena.cwasm already loads on this host, `precompile` exits after deserializing it.",
       "command": "../../target/release/zena-cli precompile out/zena.wasm",
-      "files": ["out/zena.wasm"],
-      "output": ["out/zena.cwasm"],
-      "dependencies": [
-        "build:binary",
-        {
-          "script": "build:module",
-          "cascade": false
-        }
-      ]
+      "dependencies": ["build:binary", "build:module"]
     },
     "test:cargo": {
       "#command": "--release reuses the dependency artifacts the build step produced instead of compiling wasmtime a second time in the dev profile. The features are build:cargo's, so the two share every artifact.",
