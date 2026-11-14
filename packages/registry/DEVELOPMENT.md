@@ -499,6 +499,12 @@ To serve from a restored database, set `DATABASE` in `deploy/env.sh` to
 it, then run `deploy:setup`, which gives the service account its role on
 it, and `deploy`.
 
+Cloud KMS never deletes a key, only its versions, and a version
+scheduled for destruction waits before it is destroyed, for a time fixed
+when its key was made. `deploy:setup` makes every key with a 120-day wait,
+the longest there is; staging's keys from before it wait 30 days. Until
+then, `gcloud kms keys versions restore` brings the version back.
+
 `deploy:smoke` checks an environment as its clients see it, with no
 browser and no personal account (`dev/smoke.zena`): both names' health,
 DID documents and descriptions, the site's home page, assets and OAuth
@@ -516,9 +522,41 @@ the other commands it runs need you signed in with `zena pkg login`.
 an uptime check of `/xrpc/_health` on each name, every 5 minutes from
 three regions, and two alerts emailed to `ZENA_ALERT_EMAIL`: one when two
 regions fail a check, and one when a service answers more than 4
-requests in 5 minutes with a 5xx. With `ZENA_MONTHLY_BUDGET`, in US
+requests in 5 minutes with a 5xx. A third, one for the whole project,
+emails when the project's audit log records anyone destroying or
+disabling a KMS key version, deleting the database, a backup, a bucket, a
+secret or a DNS zone, turning off the database's delete protection or
+point-in-time recovery, or making a key for a service account; the email
+says who did it, and to what. With `ZENA_MONTHLY_BUDGET`, in US
 dollars, it also sets a monthly budget on the project that warns at 50%,
 90% and 100%. Running it again adds only what is missing.
+
+### Operator accounts
+
+Only `deploy:setup`, `deploy:domain`, `deploy:alerts`, a reset of staging
+and a restore need roles that delete what the environments keep: Owner,
+Editor, `roles/datastore.owner`, `roles/storage.admin`,
+`roles/cloudkms.admin`, `roles/secretmanager.admin` and
+`roles/dns.admin`. Keep those on an account used only for these, and
+deploy with another that has only:
+
+- `roles/run.admin`, to deploy the services and let anyone call them;
+- `roles/cloudbuild.builds.editor`, and write access to Cloud Build's
+  bucket, `gs://<project>_cloudbuild`, to build the image;
+- on each environment's service account, `roles/iam.serviceAccountUser`,
+  to deploy as it, and `roles/iam.serviceAccountTokenCreator`, for
+  `operator.sh` (`deploy:setup` grants this one to the account that runs
+  it);
+- `roles/cloudkms.publicKeyViewer` on each rotation key, whose `did:key`
+  `deploy` reads;
+- `roles/secretmanager.secretAccessor` on each session secret and smoke
+  token, which `operator.sh` and `deploy:smoke` read.
+
+That account can still act as the service account, so it can change or
+delete documents and blobs, and sign with the online rotation key; but it
+cannot delete a backup, turn off delete protection or destroy a key, so
+what it damages can be restored, and the offline key undoes what it signs.
+This list has not yet been deployed with: try it on staging first.
 
 ### Rotation keys
 
