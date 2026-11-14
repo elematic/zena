@@ -986,6 +986,69 @@ export final class AppView {
   }
 
   /**
+   * Reads what the App View and its PDS keep of every account, and changes
+   * nothing, as after a restore of their database (`main.zena`'s
+   * `check-store`, `deploy/restore-drill.sh`): that its name leads back to
+   * it, that its repository has a commit, that a scope has its members
+   * record, and that a package has its profile and maintainers, its
+   * releases read, and the PDS has every blob they name. Runs `extra` on
+   * each account too, which throws for a problem. Returns what it checked,
+   * and each problem it found.
+   */
+  async checkStore(extra: ((account: AppViewAccount) => Future<void>) | null = null): Future<StoreCheck> {
+    let check = new StoreCheck();
+    for (let account in await this.#store.accounts()) {
+      check.accounts += 1;
+      let did = account.did;
+      let label = `${account.handle} (${did})`;
+      try {
+        let named = if (account.kind == AccountKind.Organization) await this.#store.scopeOwner(account.scope)
+            else await this.#store.nameInScope(account.scope, account.name);
+        if (named != did) {
+          check.problems.push(`${label}: its name leads to ${named ?? 'no account'}`);
+        }
+        if ((await this.#pds.latestCommit(did)) == null) {
+          check.problems.push(`${label}: its repository has no commit`);
+          continue;
+        }
+        if (account.kind == AccountKind.Organization) {
+          check.organizations += 1;
+          if ((await this.#current(did, MEMBERS_TYPE, 'self')) == null) {
+            check.problems.push(`${label}: it has no members record`);
+          }
+        } else if (account.kind == AccountKind.Package) {
+          check.packages += 1;
+          if ((await this.#current(did, PROFILE_TYPE, PROFILE_KEY)) == null) {
+            check.problems.push(`${label}: it has no profile`);
+          }
+          if ((await this.#current(did, MAINTAINERS_TYPE, 'self')) == null) {
+            check.problems.push(`${label}: it has no maintainers record`);
+          }
+          for (let record in await this.#pds.listRecords(did, RELEASE_TYPE)) {
+            check.releases += 1;
+            for (let artifact in Release.fromValue(record.value).artifacts) {
+              for (let blob in artifact.blobs()) {
+                check.blobs += 1;
+                if ((await this.#pds.getBlobRange(did, blob.cid, 0 as i64, 1 as i64)) == null) {
+                  check.problems.push(`${label}: release ${record.rkey} names the blob ${blob.cid.toString()}, which the PDS does not have`);
+                }
+              }
+            }
+          }
+        } else if (account.kind == AccountKind.Automation) {
+          check.automation += 1;
+        }
+        if (extra != null) {
+          await extra(account);
+        }
+      } catch (e) {
+        check.problems.push(`${label}: ${e.message}`);
+      }
+    }
+    return check;
+  }
+
+  /**
    * The DID of the account a call to `method` comes from, read from its
    * `authorization` header: a service-auth token for this App View and that
    * method, not seen before; or an automation account's token, which this
@@ -3586,6 +3649,18 @@ export final class Rekey {
   var detail = '';
 
   new(this.did, this.handle);
+}
+
+/** What `AppView.checkStore` read, and what it found that is not as it should be. */
+export final class StoreCheck {
+  var accounts = 0;
+  var organizations = 0;
+  var packages = 0;
+  var automation = 0;
+  var releases = 0;
+  var blobs = 0;
+  /** One line for each, naming the account. */
+  problems = new GrowableArray<String>();
 }
 
 /** An automation account `createAutomationAccount` made, with its token. */

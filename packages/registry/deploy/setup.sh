@@ -76,11 +76,16 @@ else
   gcloud firestore databases create --database "$DATABASE" --location "$FIRESTORE_LOCATION" \
     --type firestore-native --project "$PROJECT" --quiet
 fi
-# Read and write this database and no other.
+# Read and write this database and no other, but for the copies the
+# restore drill (restore-drill.sh) makes of it, which it checks as the
+# service.
 gcloud projects add-iam-policy-binding "$PROJECT" --member "$MEMBER" --role roles/datastore.user \
   --condition "expression=resource.name==\"projects/${PROJECT}/databases/${DATABASE}\",title=${DATABASE}-only" \
   --quiet > /dev/null
-echo "    $SERVICE_ACCOUNT may use it"
+gcloud projects add-iam-policy-binding "$PROJECT" --member "$MEMBER" --role roles/datastore.user \
+  --condition "expression=resource.name.startsWith(\"projects/${PROJECT}/databases/${DATABASE}-drill-\"),title=${DATABASE}-drills" \
+  --quiet > /dev/null
+echo "    $SERVICE_ACCOUNT may use it, and the restore drill's copies"
 # Releases are permanent, so the database is kept from deletion, and every
 # version of it from the last 7 days can be read back.
 gcloud firestore databases update --database "$DATABASE" --project "$PROJECT" --enable-pitr --delete-protection \
