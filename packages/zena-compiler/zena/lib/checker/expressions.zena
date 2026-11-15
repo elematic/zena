@@ -28,7 +28,8 @@ import {
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown, isWellKnown, wellKnownName } from '../well-known.zena';
 import {
-  adaptArmToContext, adaptCoalescedArm, adaptJoinedArm, adaptToExpected, armValueNode, boxForTemplateValue, checkAndRegisterInterfaceAdaptation, noteExistentialComparison
+  adaptArmToContext, adaptCoalescedArm, adaptJoinedArm, adaptToExpected, armValueNode, boxForTemplateValue, checkAndRegisterInterfaceAdaptation, noteExistentialComparison,
+  noteTupleTest,
 } from './adaptation.zena';
 import {
   inlineRecordOf, inlineRecordUnionBoxed, isInlineType, noteFieldsBesideRow, reportTwoRows,
@@ -941,6 +942,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     } else {
       sourceType = checkExpression(ctx, expression, castContext);
     }
+    noteTupleTest(ctx, sourceType, targetType);
     let isNarrowed = ctx.isExpressionNarrowed(expression);
     let isAutoCasted = if (expression is Identifier) {
       targetType is ClassType || targetType is InterfaceType
@@ -1020,6 +1022,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       }
     }
     checkTupleUnionTest(ctx, operandType, targetType, loc);
+    noteTupleTest(ctx, operandType, targetType);
     ctx.setNodeType(typeAnnotation, targetType);
     new BooleanType()
   }

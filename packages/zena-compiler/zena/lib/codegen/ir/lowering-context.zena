@@ -12,7 +12,7 @@ import {
   AssignmentExpression, BindingPattern, CallExpression, Expression, FunctionExpression, Identifier, IdentifierPattern, IndexExpression, MemberExpression, Node, Statement, VariableDeclaration,
 } from '../../ast.zena';
 import {
-  ClassType, FunctionType, InterfaceType, NullType, RecordType, ThisType, Type,
+  ClassType, FunctionType, InterfaceType, NullType, RecordType, ThisType, TupleType, Type,
   UnionType, baseType,
 } from '../../types.zena';
 import {
@@ -1688,6 +1688,64 @@ export final class LoweringContext {
     let source = if (have is ValTypeRefNull) this.stripNonNull(value) else value;
     let copy = this.copyTupleElements(source, from, to, reason);
     return if (want is ValTypeRefNull) copy else this.conformToSlot(copy, toVt, reason);
+  }
+
+  /**
+   * The elements of `value`, a non-null tuple of struct `st`, that a
+   * tuple of type `target` narrows: each class-typed element whose type is
+   * narrower than the field holding it, which a struct shared by tuples
+   * that meet widens to hold them all (#1137), and the same inside a
+   * nested tuple. With `cast`, each is cast to the target's element type,
+   * trapping when it is not one, and the result is -1. Otherwise the
+   * result is the i32 test of all of them, or -1 when none is narrower.
+   */
+  tupleElementChecks(value: i32, st: WasmStruct, target: TupleType, cast: boolean): i32 {
+    let i32Vt = new ValTypeI32() as ValType;
+    var all = -1;
+    for (var i = 0; i < target.elementTypes.length; i += 1) {
+      let name = i32ToString(i);
+      let index = st.fieldIndexByName(name);
+      if (index < 0) {
+        continue;
+      }
+      let fieldVt = st.fields[index].type;
+      let elementType = baseType(target.elementTypes[i]);
+      let wantVt = typeToValTypeWithSub(this.wasm, target.elementTypes[i], this.func);
+      if (this.refConforms(fieldVt, wantVt) || !isRefValType(wantVt)) {
+        continue;
+      }
+      let element = this.b.emit(IrOp.struct_get, fieldVt, value,
+          this.b.addRef(new IrRefField(st, name)));
+      var test = -1;
+      let nested = refTargetOf(fieldVt);
+      if (elementType is TupleType && nested is WasmStruct && fieldVt is ValTypeRef) {
+        test = this.tupleElementChecks(element, nested, elementType, cast);
+      } else if (cast) {
+        this.b.emit(IrOp.ref_cast, wantVt, element, this.b.internType(wantVt));
+      } else {
+        test = this.b.emit(IrOp.ref_test, i32Vt, element, this.b.internType(wantVt));
+      }
+      if (test >= 0) {
+        all = if (all < 0) test else this.b.binary(IrOp.i32_and, i32Vt, all, test);
+      }
+    }
+    return all;
+  }
+
+  /** Whether a tuple of type `target` narrows some element of struct `st` (`tupleElementChecks`). */
+  tupleNarrows(st: WasmStruct, target: TupleType): boolean {
+    for (var i = 0; i < target.elementTypes.length; i += 1) {
+      let index = st.fieldIndexByName(i32ToString(i));
+      if (index < 0) {
+        continue;
+      }
+      let fieldVt = st.fields[index].type;
+      let wantVt = typeToValTypeWithSub(this.wasm, target.elementTypes[i], this.func);
+      if (isRefValType(wantVt) && !this.refConforms(fieldVt, wantVt)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** A tuple of struct `to` built from the elements of `value`, of `from`. */

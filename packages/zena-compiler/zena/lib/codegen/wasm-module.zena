@@ -14,7 +14,8 @@ import {
 } from './wasm.zena';
 import { NodeMap } from '../node-map.zena';
 import {
-  ClassType, FunctionType, InterfaceType, Type, TypeInterner, TypeParameterType,
+  ClassType, FunctionType, InterfaceType, NullType, TupleType, Type, TypeAliasType, TypeInterner,
+  TypeParameterType, UnionType,
   TypeListTable,
 } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -22,7 +23,7 @@ import { stdlibLibraryOf, stdlibLibraryAnswers } from '../stdlib-manifest.zena';
 import { defaultImportedStringConstants, targetUsesJsStrings } from '../targets.zena';
 
 import {
-  compareStrings, ClassKey, InterfaceKey, ClassInterfaceKey, CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getClassPrivateFieldKey, isPresentWordName, presentWordCount, presentWordName, FunctionAdaptationKey, getFunctionAdaptationKey, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, ClosureSpecializationKey, FunctionValueWrapperKey,
+  compareStrings, ClassKey, InterfaceKey, ClassInterfaceKey, CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getClassPrivateFieldKey, getTypeKeyForSpecialization, isPresentWordName, presentWordCount, presentWordName, FunctionAdaptationKey, getFunctionAdaptationKey, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, ClosureSpecializationKey, FunctionValueWrapperKey,
 } from './codegen-utils.zena';
 
 @intrinsic('hash')
@@ -212,6 +213,171 @@ export final class StructKey implements Hashable {
     }
     return true;
   }
+}
+
+/**
+ * The class a field of type `vt` holds, when it holds an instance of one:
+ * a reference, nullable or not, to a class's struct. An extension class
+ * has no struct of its own, so none of its values is one.
+ */
+export function classOfField(vt: ValType): ClassType | null {
+  let target = refTargetOf(vt);
+  if (target is WasmStruct) {
+    let ct = target.classType;
+    if (ct != null && !ct.isExtension && !target.isTuple) {
+      return ct;
+    }
+  }
+  return null;
+}
+
+/** The topmost superclass of `ct`. */
+function rootClassOf(ct: ClassType) {
+  var c = ct;
+  while (true) {
+    let sup = c.superType;
+    if (sup == null) {
+      return c;
+    }
+    c = sup;
+  }
+  return c;
+}
+
+/**
+ * What tells tuple groups apart (`WasmModule.getTupleStruct`): which
+ * tuples meet (`component`, the root of a union-find class of exact
+ * representations, so tuples of one representation always share), the
+ * field names,
+ * and each field's type, except that a class-typed field is keyed by its
+ * class's root, nullable or not. So `(Bird, i32)` and `(Animal | null,
+ * i32)` can share a struct when they meet, and `(Bird, i32)` and
+ * `(anyref, i32)` never do.
+ */
+export final class TupleGroupKey implements Hashable {
+  component: StructKey;
+  names: GrowableArray<String>;
+  types: GrowableArray<ValType>;
+  roots: GrowableArray<String | null>;
+  new(this.component, this.names, this.types, this.roots);
+
+  hashCode(): i32 {
+    var h = this.component.hashCode();
+    for (var i = 0; i < this.names.length; i += 1) {
+      h = h * 31 + hash(this.names[i]);
+      let root = this.roots[i];
+      h = h * 31 + (if (root != null) hash(root) else valTypeHashCode(this.types[i]));
+    }
+    return h;
+  }
+
+  operator ==(other: TupleGroupKey): boolean {
+    if (!(this.component == other.component) || this.names.length != other.names.length) {
+      return false;
+    }
+    for (var i = 0; i < this.names.length; i += 1) {
+      if (this.names[i] != other.names[i]) {
+        return false;
+      }
+      let a = this.roots[i];
+      let b = other.roots[i];
+      if (a != null || b != null) {
+        if (a == null || b == null || a != b) {
+          return false;
+        }
+      } else if (!valTypeKeyEquals(this.types[i], other.types[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+}
+
+/**
+ * The class a tuple element of type `t` holds, nullable or not: the
+ * semantic counterpart of `classOfField`, for keying tuple types before
+ * any struct exists.
+ */
+function elementClassOf(t: Type): ClassType | null {
+  if (t is ClassType) {
+    return if (t.isExtension) null else t;
+  }
+  if (t is TypeAliasType && !t.isDistinct && t.typeParameters == null) {
+    return elementClassOf(t.target);
+  }
+  if (t is UnionType && t.types.length == 2) {
+    for (let member in t.types) {
+      if (!(member is NullType)) {
+        return elementClassOf(member);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The family of a tuple type: its elements, a class-typed one by its
+ * class's root. Tuple types of one family can share a struct, so only
+ * they are joined (`WasmModule.#joinTuples`).
+ */
+function tupleFamilyKey(tt: TupleType) {
+  var key = 'family';
+  for (let el in tt.elementTypes) {
+    let ct = elementClassOf(el);
+    key = if (ct != null) `${key}|C${getClassKey(rootClassOf(ct)) as String}`
+        else `${key}|${getTypeKeyForSpecialization(el)}`;
+  }
+  return key;
+}
+
+/**
+ * The boxed tuples whose types meet and whose class-typed fields share a
+ * root (`TupleGroupKey`), which are one struct (#1137, records-and-tuples.md
+ * §4.1). `classes[i]` lists the classes members put in a class-typed
+ * field, and is null for any other field; the field holds the lowest
+ * struct all of theirs extend, nullable when any member's is
+ * (`WasmModule.settleTupleSlots`).
+ */
+final class TupleGroup {
+  struct: WasmStruct;
+  classes: GrowableArray<GrowableArray<ClassType> | null>;
+  nullable: GrowableArray<boolean>;
+  new(this.struct, this.classes, this.nullable);
+}
+
+/** The lowest struct each of `structs` is or extends, or null when none is. */
+function commonSuperStruct(structs: GrowableArray<WasmStruct>): WasmStruct | null {
+  var candidate: WasmStruct | null = structs[0];
+  while (candidate != null) {
+    var all = true;
+    for (let st in structs) {
+      var s: WasmStruct | null = st;
+      var found = false;
+      while (s != null) {
+        if (s === candidate) {
+          found = true;
+          break;
+        }
+        s = s.superStruct;
+      }
+      if (!found) {
+        all = false;
+        break;
+      }
+    }
+    if (all) {
+      return candidate;
+    }
+    candidate = candidate.superStruct;
+  }
+  return null;
+}
+
+/** How much of one model's tuple notes `WasmModule.noteTupleJoins` has read. */
+final class TupleNoteCursor {
+  var widenings = 0;
+  var erased = 0;
+  var tested = 0;
 }
 
 export final class ArrayKey implements Hashable {
@@ -1876,6 +2042,23 @@ export final class WasmModule {
   adaptedDispatchInfos = new Array<RecordDispatchInfo>();
   /** Existential record types' dispatches (`getExistentialDispatch`). */
   existentialDispatchInfos = new Array<RecordDispatchInfo>();
+  /** Boxed tuples' structs, one per group (`getTupleStruct`). */
+  #tupleGroups = new HashMap<TupleGroupKey, TupleGroup>();
+  /** The same groups, in the order they were made, for `settleTupleSlots`. */
+  #tupleGroupList = new Array<TupleGroup>();
+  var #tupleSlotsSettled = false;
+  /** Union-find parents over tuple representations (exact element types). */
+  #tupleParents = new HashMap<StructKey, StructKey>();
+  /** The union-find classes some group's struct was made for. */
+  #tupleComponentsWithStructs = new HashSet<StructKey>();
+  /** Each mapped tuple type's representation, by `getTypeKeyForSpecialization`. */
+  #tuplePreciseOf = new HashMap<String, StructKey>();
+  /** Joins waiting for a tuple type to be mapped, both ways, by type key. */
+  #tuplePending = new HashMap<String, GrowableArray<String>>();
+  /** Per compilation unit, how much of its tuple notes `noteTupleJoins` read. */
+  #tupleCursors = new Array<TupleNoteCursor>();
+  #erasedTuples = new Array<TupleType>();
+  #testedTuples = new Array<TupleType>();
   /** Boxed tuples' stand-in dispatches, by tuple struct (`getTupleDispatch`). */
   tupleDispatchInfos = new HashMap<WasmStruct, RecordDispatchInfo>();
   /** Tables that pack a record into an existential (`getExistentialPack`). */
@@ -2102,16 +2285,282 @@ export final class WasmModule {
    * to: one immutable field per element, named by its position, except a
    * zero-width (`void`) element, which has none.
    */
-  getTupleStruct(elements: GrowableArray<ValType>): WasmStruct {
-    let fields = new Array<WasmField>(elements.length);
+  getTupleStruct(tt: TupleType, elements: GrowableArray<ValType>): WasmStruct {
+    // The tuple's exact representation, and the joins waiting for it.
+    let exact = new Array<WasmField>(elements.length);
     for (var i = 0; i < elements.length; i += 1) {
       if (!(elements[i] is ValTypeVoid)) {
-        fields.push(new WasmField(i32ToString(i), elements[i], false));
+        exact.push(new WasmField(i32ToString(i), elements[i], false));
       }
     }
-    let st = this.getStruct(null, fields);
+    let precise = new StructKey(null, exact);
+    let semantic = getTypeKeyForSpecialization(tt);
+    if (!this.#tuplePreciseOf.has(semantic)) {
+      this.#tuplePreciseOf[semantic] = precise;
+      if (let (true, partners) = this.#tuplePending.get(semantic)) {
+        for (let partner in partners) {
+          if (let (true, other) = this.#tuplePreciseOf.get(partner)) {
+            this.#joinRepresentations(precise, other);
+          }
+        }
+      }
+    }
+    let component = this.#findTuple(precise);
+    let names = new Array<String>(elements.length);
+    let types = new Array<ValType>(elements.length);
+    let roots = new Array<String | null>(elements.length);
+    let classes = new Array<ClassType | null>(elements.length);
+    let nullable = new Array<boolean>(elements.length);
+    for (var i = 0; i < elements.length; i += 1) {
+      let vt = elements[i];
+      if (vt is ValTypeVoid) {
+        continue;
+      }
+      let ct = classOfField(vt);
+      names.push(i32ToString(i));
+      types.push(vt);
+      roots.push(if (ct != null) getClassKey(rootClassOf(ct)) as String else null);
+      classes.push(ct);
+      nullable.push(vt is ValTypeRefNull);
+    }
+    let key = new TupleGroupKey(component, names, types, roots);
+    if (let (true, group) = this.#tupleGroups.get(key)) {
+      this.#widenTupleGroup(group, classes, nullable);
+      return group.struct;
+    }
+    if (this.isLayoutLocked) {
+      throw new Error("Tuple struct allocated after layout");
+    }
+    let fields = new Array<WasmField>(names.length);
+    for (var i = 0; i < names.length; i += 1) {
+      fields.push(new WasmField(names[i], types[i], false));
+    }
+    let st = new WasmStruct(null, fields);
     st.isTuple = true;
+    this.types.push(st);
+    this.anonymousStructs.push(st);
+    let members = new Array<GrowableArray<ClassType> | null>(classes.length);
+    for (let ct in classes) {
+      members.push(if (ct != null) growable<ClassType>([ct]) else null);
+    }
+    let group = new TupleGroup(st, members, nullable);
+    this.#tupleGroups[key] = group;
+    this.#tupleGroupList.push(group);
+    this.#tupleComponentsWithStructs.add(component);
     return st;
+  }
+
+  /**
+   * The union-find class of the tuple representation `key`: tuples whose
+   * elements have exactly these wasm types, by the class's root.
+   */
+  #findTuple(key: StructKey): StructKey {
+    var k = key;
+    while (true) {
+      if (let (true, parent) = this.#tupleParents.get(k)) {
+        k = parent;
+      } else {
+        break;
+      }
+    }
+    // Path compression.
+    var c = key;
+    while (!(c == k)) {
+      let next = this.#tupleParents[c];
+      this.#tupleParents[c] = k;
+      c = next;
+    }
+    return k;
+  }
+
+  /**
+   * Joins the tuple types `a` and `b`, of one family, so that they share a
+   * struct (`TupleGroupKey`). The join is between their representations,
+   * known once each type has been mapped (`getTupleStruct`); until then it
+   * waits (`#tuplePending`).
+   */
+  #joinTuples(a: TupleType, b: TupleType): void {
+    if (tupleFamilyKey(a) != tupleFamilyKey(b)) {
+      return;
+    }
+    let ka = getTypeKeyForSpecialization(a);
+    let kb = getTypeKeyForSpecialization(b);
+    if (ka == kb) {
+      return;
+    }
+    let pa = this.#tuplePreciseOf.get(ka);
+    let pb = this.#tuplePreciseOf.get(kb);
+    if (let (true, ra) = pa) {
+      if (let (true, rb) = pb) {
+        this.#joinRepresentations(ra, rb);
+        return;
+      }
+    }
+    this.#addPendingTupleJoin(ka, kb);
+    this.#addPendingTupleJoin(kb, ka);
+  }
+
+  #addPendingTupleJoin(from: String, to: String): void {
+    if (let (true, list) = this.#tuplePending.get(from)) {
+      list.push(to);
+    } else {
+      this.#tuplePending[from] = growable<String>([to]);
+    }
+  }
+
+  /**
+   * Joins the classes of two tuple representations. A join between two
+   * classes that both already have a struct is refused: the structs were
+   * handed out, so a widening between them copies instead
+   * (`LoweringContext.copyTuple`).
+   */
+  #joinRepresentations(a: StructKey, b: StructKey): void {
+    let ra = this.#findTuple(a);
+    let rb = this.#findTuple(b);
+    if (ra == rb) {
+      return;
+    }
+    let aHas = this.#tupleComponentsWithStructs.has(ra);
+    let bHas = this.#tupleComponentsWithStructs.has(rb);
+    if (aHas && bHas) {
+      return;
+    }
+    // A class with a struct stays the root, so its groups keep their keys.
+    if (bHas) {
+      this.#tupleParents[ra] = rb;
+    } else {
+      this.#tupleParents[rb] = ra;
+    }
+  }
+
+  /**
+   * Joins the tuple types the checker found meeting in `units` since the
+   * last call (`SemanticModel.tupleWidenings`), and each type an `is` or
+   * `as` tests from an erased slot with the erased types of its family
+   * (`erasedTupleTypes`, `testedTupleTypes`; #1181). Called before
+   * discovery, when no struct exists yet, and again when it ends, for
+   * what the bodies it checked on demand added.
+   */
+  noteTupleJoins(units: GrowableArray<CompilationUnit>): void {
+    for (var u = 0; u < units.length; u += 1) {
+      let model = units[u].model;
+      while (this.#tupleCursors.length <= u) {
+        this.#tupleCursors.push(new TupleNoteCursor());
+      }
+      let cursor = this.#tupleCursors[u];
+      while (cursor.widenings < model.tupleWidenings.length) {
+        let w = model.tupleWidenings[cursor.widenings];
+        this.#joinTuples(w.source, w.target);
+        cursor.widenings += 1;
+      }
+      while (cursor.erased < model.erasedTupleTypes.length) {
+        let erased = model.erasedTupleTypes[cursor.erased];
+        for (let tested in this.#testedTuples) {
+          this.#joinTuples(erased, tested);
+        }
+        this.#erasedTuples.push(erased);
+        cursor.erased += 1;
+      }
+      while (cursor.tested < model.testedTupleTypes.length) {
+        let tested = model.testedTupleTypes[cursor.tested];
+        for (let erased in this.#erasedTuples) {
+          this.#joinTuples(erased, tested);
+        }
+        this.#testedTuples.push(tested);
+        cursor.tested += 1;
+      }
+    }
+  }
+
+  /**
+   * Records a member of `group` whose class-typed fields hold `classes`,
+   * nullable where `nullable` says. The fields' types are settled once
+   * discovery ends (`settleTupleSlots`); a member that would widen one
+   * after that is a compiler error, since lowering has read them.
+   */
+  #widenTupleGroup(group: TupleGroup, classes: GrowableArray<ClassType | null>,
+      nullable: GrowableArray<boolean>): void {
+    for (var i = 0; i < classes.length; i += 1) {
+      let have = group.classes[i];
+      let add = classes[i];
+      if (have == null || add == null) {
+        continue;
+      }
+      var known = false;
+      for (let ct in have) {
+        if (getClassKey(ct) == getClassKey(add)) {
+          known = true;
+        }
+      }
+      if (known && (group.nullable[i] || !nullable[i])) {
+        continue;
+      }
+      if (this.#tupleSlotsSettled && !this.#tupleSlotHolds(group, i, add, nullable[i])) {
+        throw new Error(`Tuple field ${i} widened after discovery, by ${getClassKey(add) as String}`);
+      }
+      if (!known) {
+        have.push(add);
+      }
+      group.nullable[i] = group.nullable[i] || nullable[i];
+    }
+  }
+
+  /** The struct of class `ct`. */
+  #classStruct(ct: ClassType): WasmStruct {
+    if (let (true, info) = this.classInfos.get(getClassKey(ct))) {
+      return info.structType;
+    }
+    throw new Error(`A tuple field holds a class with no struct: ${getClassKey(ct) as String}`);
+  }
+
+  /** Whether field `i` of the settled `group` holds a `ct`, nullable when `isNull`. */
+  #tupleSlotHolds(group: TupleGroup, i: i32, ct: ClassType, isNull: boolean): boolean {
+    let vt = group.struct.fields[i].type;
+    let target = refTargetOf(vt);
+    if (isNull && !(vt is ValTypeRefNull) && !(vt is ValTypeStructRef)) {
+      return false;
+    }
+    if (vt is ValTypeStructRef) {
+      return true;
+    }
+    var s: WasmStruct | null = this.#classStruct(ct);
+    while (s != null) {
+      if (s === target) {
+        return true;
+      }
+      s = s.superStruct;
+    }
+    return false;
+  }
+
+  /**
+   * Gives every tuple group's class-typed fields their final types, once
+   * discovery has registered every tuple type the module uses and every
+   * class's struct: the lowest struct the members' classes' structs all
+   * extend, nullable when a member's field is, or `structref` when they
+   * share none. A struct chain need not follow the classes' own: a
+   * resource class extends `Resource`, and its struct does not. Lowering
+   * then reads the fields, casting an element to its own type where that
+   * is narrower.
+   */
+  settleTupleSlots(): void {
+    for (let group in this.#tupleGroupList) {
+      for (var i = 0; i < group.classes.length; i += 1) {
+        let members = group.classes[i];
+        if (members == null) {
+          continue;
+        }
+        let structs = new Array<WasmStruct>();
+        for (let ct in members) {
+          structs.push(this.#classStruct(ct));
+        }
+        let common = commonSuperStruct(structs);
+        group.struct.fields[i].type = if (common == null) new ValTypeStructRef() as ValType
+            else if (group.nullable[i]) new ValTypeRefNull(common) as ValType
+            else new ValTypeRef(common) as ValType;
+      }
+    }
+    this.#tupleSlotsSettled = true;
   }
 
   getClosureStruct(params: GrowableArray<ValType>, returns: GrowableArray<ValType>): WasmStruct {

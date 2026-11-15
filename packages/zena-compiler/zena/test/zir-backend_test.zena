@@ -1644,6 +1644,35 @@ export let tests = suite('zir backend', () => {
         'the result is returned as its elements');
   });
 
+  test('tuples whose types meet share a struct and widen without a copy', async (ctx) => {
+    // `(Bird, i32)` is used as `(Animal, i32)`, so the two share one struct
+    // whose element holds an `Animal` (#1137): passing one where the other
+    // is wanted builds nothing. The tuple is also kept at its own type, so
+    // a copy could not be folded into the literal. `(Fish, i32)` meets
+    // neither, so it keeps a struct of its own, whose element is read with
+    // no cast.
+    let result = await compileWithZir(dedentRaw`
+        class Animal { legs(): i32 { return 4; } }
+        class Bird extends Animal { legs(): i32 { return 2; } }
+        class Fish extends Animal { fins(): i32 { return 3; } }
+        var kept: (Animal, i32) | null = null;
+        var keptBird: (Bird, i32) | null = null;
+        function keep(p: (Animal, i32)): i32 { kept = p; return p[1]; }
+        function keepBird(p: (Bird, i32)): i32 { keptBird = p; return p[1]; }
+        function fins(p: (Fish, i32)): i32 { return p[0].fins() + p[1]; }
+        export let main = (b: Bird, f: Fish): i32 => {
+          let bird: (Bird, i32) = (b, 1);
+          let fish: (Fish, i32) = (f, 2);
+          return keep(bird) + keepBird(bird) + fins(fish);
+        };
+        `);
+    assertFunctionUsesTimes(result, '$main', 'struct.new', 2,
+        'only the two literals are built; the widening copies nothing');
+    let noCast = growable<String>(['ref.cast']);
+    assertFunctionOmits(result, '$fins', noCast,
+        'a tuple type that meets no other keeps its element type');
+  });
+
   test('a tuple rebuilt from every field of another is that tuple', async (ctx) => {
     // Each function keeps its parameter and has its result stored whole,
     // so neither explodes and the rebuild stays in the body. `copy`
