@@ -21,9 +21,10 @@ import {
 } from '../../types.zena';
 import {
   ValType, ValTypeAnyRef, ValTypeExternRef, ValTypeF32, ValTypeF64, ValTypeI32,
-  ValTypeI64, ValTypeNullRef, ValTypeRefExtern, ValTypeRefNull, ValTypeV128, isExternValType,
-  isRefValType, valTypeEquals,
+  ValTypeI64, ValTypeNullRef, ValTypeRef, ValTypeRefExtern, ValTypeRefNull, ValTypeV128,
+  isExternValType, isRefValType, refTargetOf, valTypeEquals,
 } from '../wasm.zena';
+import { WasmStruct } from '../wasm-module.zena';
 import { InlineLayout, eraseTypeParameters, getNonNullableType, inlineLayoutOf, typeToValTypeWithSub } from '../type-mapping.zena';
 import { getClassKey, parseFloatLiteral, parseI64OrU64Literal, unwrapAliases } from '../codegen-utils.zena';
 import { IrOp } from './ir.zena';
@@ -956,6 +957,38 @@ function checkTupleTag(cx: LoweringContext, expr: AsExpression, value: i32): voi
   cx.b.switchTo(pass);
 }
 
+/**
+ * `value`, cast by `expr` to `dstVt`, checked for the elements its tuple
+ * type narrows (`tupleElementChecks`): tuples that meet share a struct
+ * (#1137), so the cast of the struct alone does not check them. A
+ * nullable destination checks a non-null value only.
+ */
+function checkedTupleCast(cx: LoweringContext, expr: AsExpression, value: i32,
+    dstVt: ValType) {
+  let dstSem = cx.substitutedNodeType(expr);
+  if (dstSem == null) {
+    return value;
+  }
+  let target = getNonNullableType(baseType(dstSem));
+  let st = refTargetOf(dstVt);
+  if (!(target is TupleType) || !(st is WasmStruct) || !cx.tupleNarrows(st, target)) {
+    return value;
+  }
+  if (dstVt is ValTypeRef) {
+    cx.tupleElementChecks(value, st, target, true);
+    return value;
+  }
+  let isNull = cx.b.emit(IrOp.ref_is_null, new ValTypeI32() as ValType, value, -1);
+  let check = cx.b.newBlock();
+  let done = cx.b.newBlock();
+  cx.b.brIf(isNull, done, noValues(), check, noValues());
+  cx.b.switchTo(check);
+  cx.tupleElementChecks(cx.stripNonNull(value), st, target, true);
+  cx.b.br(done, noValues());
+  cx.b.switchTo(done);
+  return value;
+}
+
 export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
   // A cast to `void` reads back a slot that holds nothing: `slot as T`
   // with a `WithDefault<T>` slot at `T = void`. Its operand still runs.
@@ -1036,7 +1069,7 @@ export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
       recorder.noteConforms(srcVt, dstVt, conforms);
     }
     if (conforms) {
-      return value;
+      return checkedTupleCast(cx, expr, value, dstVt);
     }
     // A tuple to a tuple of other element types is a new tuple, each
     // element cast to its target type (#483): the two structs are
@@ -1113,8 +1146,8 @@ export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
         operand = cx.unwrapFatPointer(baseType(srcSemOpt), value);
       }
     }
-    return cx.b.emit(IrOp.ref_cast, dstVt, operand,
-        cx.b.internType(dstVt));
+    return checkedTupleCast(cx, expr, cx.b.emit(IrOp.ref_cast, dstVt, operand,
+        cx.b.internType(dstVt)), dstVt);
   }
   if (isRefValType(srcVt) &&
       (dstVt is ValTypeI32 || dstVt is ValTypeI64 ||

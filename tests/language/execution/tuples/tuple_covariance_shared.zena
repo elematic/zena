@@ -1,0 +1,61 @@
+// @mode: run
+// @result: 0
+// Tuples of related classes share one struct (#1137, #1138): the tuples of
+// one shape whose class elements share a root class are one struct, whose
+// element holds their common ancestor. So a widening is free in every
+// position, and a value's type tests answer by its elements however it
+// was built: through `anyref`, inside a union of tuples, and with the
+// tuple built at either type.
+
+class Animal {
+  legs(): i32 {
+    return 4;
+  }
+}
+
+class Bird extends Animal {
+  legs(): i32 {
+    return 2;
+  }
+  wings(): i32 {
+    return 2;
+  }
+}
+
+class Fish extends Animal {
+  legs(): i32 {
+    return 0;
+  }
+}
+
+function legsOf(u: (true, Animal) | (false, i32)): i32 {
+  return match (u) {
+    case (true, let a): a.legs()
+    case (false, let n): n
+  };
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  // Built at the wider type, holding a Bird.
+  let held: (Animal, i32) = (new Bird(), 1);
+  let a: anyref = held;
+  if (!(a is (Bird, i32))) { failures += 1; }
+  // Built at the narrower type, tested at the wider one.
+  let direct: anyref = (new Bird(), 1);
+  if (!(direct is (Animal, i32))) { failures += 2; }
+  // Neither is a Fish tuple.
+  if (a is (Fish, i32) || direct is (Fish, i32)) { failures += 4; }
+  // A Bird-only method on an element read at the narrow type.
+  let birds: (Bird, i32) = (new Bird(), 3);
+  let widened: (Animal, i32) = birds;
+  if (birds[0].wings() + widened[0].legs() != 4) { failures += 8; }
+  // A union of tuples widened element by element.
+  let u: (true, Bird) | (false, i32) = (true, new Bird());
+  let v: (true, Fish) | (false, i32) = (false, 7);
+  if (legsOf(u) != 2 || legsOf(v) != 7) { failures += 16; }
+  // `as` checks the elements.
+  let back = a as (Bird, i32);
+  if (back[0].wings() != 2) { failures += 32; }
+  return failures;
+};

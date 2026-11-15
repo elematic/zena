@@ -38,7 +38,7 @@ import { Set, HashMap, HashSet } from 'zena:collections';
 
 import { IterableUtils } from 'zena:core';
 import {
-  Type, ClassType, InterfaceType, FunctionType, RecordType, UnionType, TypeId,
+  Type, ClassType, InterfaceType, FunctionType, RecordType, TupleType, UnionType, TypeId,
 } from './types.zena';
 import { Diagnostic } from './diagnostics.zena';
 import {
@@ -495,6 +495,24 @@ export final class SemanticModel {
    * (ir/equality.zena, `lowerErasedEqDispatch`).
    */
   erasedRecordTypes = new Array<RecordType>();
+
+  /**
+   * Where this module uses a tuple of one type as a tuple of another,
+   * element by element (`(Bird, i32)` as `(Animal, i32)`), outermost and
+   * nested. Codegen joins each pair's representation, so the widening
+   * copies nothing (#1137, codegen/wasm-module.zena `getTupleStruct`).
+   */
+  tupleWidenings = new Array<TupleWidening>();
+
+  /**
+   * The tuple types this module converts to a slot that does not know
+   * the tuple's type (`anyref`, a type parameter's erasure, an interface,
+   * a union with other kinds of value), and those an `is` or `as` tests
+   * or casts to from such a slot. Codegen joins each tested type with the
+   * erased ones of its family, which a value can reach it from (#1181).
+   */
+  erasedTupleTypes = new Array<TupleType>();
+  testedTupleTypes = new Array<TupleType>();
 
   /**
    * Map from node.id → RecordAdaptation for implicit fat pointer adaptation.
@@ -1591,6 +1609,13 @@ export final class ClosureDependency {
   dependencies: SymbolDependencies;
 
   new(this.id, this.node, this.capturesThis, this.captures, this.dependencies);
+}
+
+/** A tuple of type `source` used as a tuple of type `target` (`tupleWidenings`). */
+export final class TupleWidening {
+  source: TupleType;
+  target: TupleType;
+  new(this.source, this.target);
 }
 
 export final class FunctionAdaptationDependency {

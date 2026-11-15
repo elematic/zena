@@ -182,19 +182,51 @@ The compiler will maintain a registry of used record shapes.
 - `{ x: i32, y: i32 }` -> `(type $Record_i32_i32 (struct (field $x i32) (field $y i32)))`
 
 A tuple is a struct with one immutable field per element, named by its
-position, interned by the elements' wasm types (`WasmModule.getTupleStruct`).
-It declares no supertype. The checker treats tuples as covariant element
-by element, so a `(Bird, i32)` stands for an `(Animal, i32)`, but the two
-are unrelated structs: a wasm struct has one supertype, and `(Bird, Bird)`
-would need three. So the conversion copies (#483): `conformToSlot` and
-`conformToBinding` build the wanted tuple from the source's elements,
-each conformed to its slot (`LoweringContext.copyTuple`), which handles
-nested tuples and a nullable tuple. Tuples have no identity, so the
-copy cannot be observed. The other direction goes element by element as
-well. `t is (Bird, i32)` with `t: (Animal, i32)` tests each element, and
-`t as (Bird, i32)` and a read of a `t` narrowed by `is` copy with each
-element cast down. An element that becomes an interface value needs a
-pack the copy cannot make from wasm types alone (#1132).
+position (`WasmModule.getTupleStruct`). It declares no supertype. The
+checker treats tuples as covariant element by element, so a `(Bird, i32)`
+stands for an `(Animal, i32)`. A wasm struct has one supertype, though, and
+`(Bird, Bird)` would need three, so subtyping can't relate the two structs.
+
+Instead, tuple types whose values meet share one struct (#1137):
+
+- **Where they meet.** The checker notes each place a tuple of one type is
+  used as a tuple of another (`SemanticModel.tupleWidenings`, from
+  `noteTupleWidening` in `checkAndRegisterInterfaceAdaptation`): arguments,
+  bindings, returns, fields, array and union elements, function values'
+  parameters and results, outermost and nested.
+- **Erased positions.** A tuple put where its type is not known (`anyref`,
+  an interface, a union with other kinds of value) and then tested or cast
+  back with `is` or `as` meets the tested type too. That is tracked
+  conservatively: each tested type joins every erased type of its family
+  (`erasedTupleTypes`, `testedTupleTypes`; the tradeoff is #1181).
+- **Groups.** Codegen joins the types that meet by union-find over their
+  exact representations, before discovery maps any of them
+  (`noteTupleJoins`). A group's struct is keyed by its union-find class and
+  shape, with each class-typed element keyed by its class's root, so only
+  one family's tuples share. A join is applied once both types are mapped;
+  one learned during discovery, from a body checked on demand, between two
+  types that both have structs already is refused.
+- **Element types.** When discovery ends (`settleTupleSlots`), each
+  class-typed field takes the lowest struct the members' classes' structs
+  all extend, nullable when any member's is, or `structref` when there's
+  none. A resource class extends `Resource`, but its struct does not
+  extend `Resource`'s, which is why the struct chain decides, not the
+  classes' chain.
+- **Reads** cast to the element's own type where it is narrower than the
+  field, the way every conversion between wasm types does
+  (`conformToSlot`). A tuple type that meets no other keeps exact field
+  types and pays no cast.
+- **`is` and `as`** against a tuple type test the struct and then each
+  element the type narrows (`LoweringContext.tupleElementChecks`), so
+  `x is (Bird, i32)` answers by the elements, through `anyref` too.
+
+A widening between tuple types that don't share a struct (a refused join,
+or one across families) copies the elements into the wanted tuple
+(`LoweringContext.copyTuple`), each conformed to its slot. That covers
+nested and nullable tuples, and tuples have no identity, so the copy
+can't be observed. `is`, `as` and narrowing on such a tuple go element by
+element. An element that becomes an interface value needs a pack that
+the copy can't make from wasm types alone (#1132).
 
 ### 4.2 Allocation Sinking (The "Unboxed" Optimization)
 

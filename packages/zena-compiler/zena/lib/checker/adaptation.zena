@@ -1,8 +1,8 @@
 import { BlockStatement, Expression, ExpressionStatement, Node } from '../ast.zena';
 import {
-  BooleanType, ClassType, ErrorType, FunctionType, InterfaceType, RecordType as RecordT, Type, TypeParameterType, UnionType as UnionT, baseType, instantiateClassType, isNullableType, isNumericType, typeContainsTypeParameter, typeToString, unwrapAliases
+  BooleanType, ClassType, ErrorType, FunctionType, InterfaceType, RecordType as RecordT, TupleType as TupleT, Type, TypeParameterType, UnionType as UnionT, baseType, instantiateClassType, isNullableType, isNumericType, typeContainsTypeParameter, typeToString, unwrapAliases
 } from '../types.zena';
-import { FunctionAdaptationDependency } from '../semantic-model.zena';
+import { FunctionAdaptationDependency, TupleWidening } from '../semantic-model.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown } from '../well-known.zena';
 import { CheckerContext } from './context.zena';
@@ -45,6 +45,104 @@ function noteRecordErasure(ctx: CheckerContext, source: Type, target: Type) {
       }
     }
     case _: {}
+  }
+}
+
+/**
+ * Notes the tuples `source` brings into a slot of type `target`: each
+ * pair of tuple types where a tuple of one is used as a tuple of the
+ * other, outermost and nested (`tupleWidenings`), and each tuple type put
+ * into a slot that does not know it (`erasedTupleTypes`). Codegen joins
+ * the representations of the types that meet (#1137). A type parameter
+ * knows its tuple: its code is specialized per argument.
+ */
+export function noteTupleWidening(ctx: CheckerContext, source: Type, target: Type): void {
+  let s = baseType(unwrapAliases(subtractNullFromType(source)));
+  let t = baseType(unwrapAliases(subtractNullFromType(target)));
+  if (t is TypeParameterType || t is ErrorType || s is ErrorType) {
+    return;
+  }
+  if (s is UnionT) {
+    for (let member in s.types) {
+      noteTupleWidening(ctx, member, target);
+    }
+    return;
+  }
+  if (s is FunctionType && t is FunctionType) {
+    // A result passes out, a parameter in.
+    noteTupleWidening(ctx, s.returnType, t.returnType);
+    let n = if (s.parameters.length < t.parameters.length) s.parameters.length
+        else t.parameters.length;
+    for (var i = 0; i < n; i += 1) {
+      noteTupleWidening(ctx, t.parameters[i], s.parameters[i]);
+    }
+    return;
+  }
+  if (!(s is TupleT)) {
+    return;
+  }
+  if (t is TupleT) {
+    noteTuplePair(ctx, s, t);
+    return;
+  }
+  if (t is UnionT) {
+    for (let member in t.types) {
+      let m = baseType(unwrapAliases(member));
+      if (m is TupleT && isAssignableTo(ctx, s, m)) {
+        noteTuplePair(ctx, s, m);
+        return;
+      }
+    }
+  }
+  noteErasedTuple(ctx, s);
+}
+
+/** Notes a tuple of type `s` used as one of type `t`, and their elements. */
+function noteTuplePair(ctx: CheckerContext, s: TupleT, t: TupleT): void {
+  if (s.elementTypes.length != t.elementTypes.length || typesEqual(s, t)) {
+    return;
+  }
+  ctx.model.tupleWidenings.push(new TupleWidening(s, t));
+  for (var i = 0; i < s.elementTypes.length; i += 1) {
+    noteTupleWidening(ctx, s.elementTypes[i], t.elementTypes[i]);
+  }
+}
+
+/** Notes `t`, a tuple type, put into a slot that does not know it. */
+function noteErasedTuple(ctx: CheckerContext, t: TupleT): void {
+  for (let noted in ctx.model.erasedTupleTypes) {
+    if (noted === t) {
+      return;
+    }
+  }
+  ctx.model.erasedTupleTypes.push(t);
+}
+
+/**
+ * Notes the tuple types `target` names when a value of type `source` is
+ * tested or cast to it (`is`, `as`) and `source` is not a tuple type
+ * itself: the value may be a tuple of another type of the same family,
+ * erased (`testedTupleTypes`, #1181).
+ */
+export function noteTupleTest(ctx: CheckerContext, source: Type, target: Type): void {
+  if (baseType(unwrapAliases(subtractNullFromType(source))) is TupleT) {
+    return;
+  }
+  let t = baseType(unwrapAliases(subtractNullFromType(target)));
+  let members = if (t is UnionT) t.types else growable<Type>([t]);
+  for (let member in members) {
+    let m = baseType(unwrapAliases(member));
+    if (m is TupleT) {
+      var seen = false;
+      for (let noted in ctx.model.testedTupleTypes) {
+        if (noted === m) {
+          seen = true;
+        }
+      }
+      if (!seen) {
+        ctx.model.testedTupleTypes.push(m);
+      }
+    }
   }
 }
 
@@ -117,6 +215,7 @@ export function boxForTemplateValue(ctx: CheckerContext, primitive: Type, valueT
 
 export function checkAndRegisterInterfaceAdaptation(ctx: CheckerContext, node: Node, sourceType: Type, targetType: Type): void {
   noteRecordErasure(ctx, sourceType, targetType);
+  noteTupleWidening(ctx, sourceType, targetType);
   // `C | null` is assignable to no single member of `I | null`, so the
   // payloads are what the adaptation is about: peel null off the source
   // and match that against the target's members. The peeled fact is

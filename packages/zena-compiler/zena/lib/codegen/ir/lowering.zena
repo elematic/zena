@@ -4814,7 +4814,7 @@ export final class FunctionLowerer {
     let structVt = new ValTypeRef(st) as ValType;
     let i32Vt = new ValTypeI32() as ValType;
     if (isValSubtype(this.#valueType(value), structVt)) {
-      return this.#tupleTagCompare(value, st, tt);
+      return this.#tupleTagAndElements(value, st, tt);
     }
     let join = this.b.newBlock();
     let result = this.b.blockParam(join, i32Vt);
@@ -4826,11 +4826,25 @@ export final class FunctionLowerer {
     this.b.switchTo(hit);
     let cast = this.b.emit(IrOp.ref_cast, structVt, value,
         this.b.internType(structVt));
-    this.b.br(join, growable<i32>([this.#tupleTagCompare(cast, st, tt)]));
+    this.b.br(join, growable<i32>([this.#tupleTagAndElements(cast, st, tt)]));
     this.b.switchTo(miss);
     this.b.br(join, growable<i32>([this.b.constI32(0, i32Vt)]));
     this.b.switchTo(join);
     return result;
+  }
+
+  /**
+   * Whether `value`, a tuple of struct `st`, has the literal `tt` starts
+   * with and the elements it narrows (`tupleElementChecks`).
+   */
+  #tupleTagAndElements(value: i32, st: WasmStruct, tt: TupleType): i32 {
+    let tag = this.#tupleTagCompare(value, st, tt);
+    if (!this.#cx().tupleNarrows(st, tt)) {
+      return tag;
+    }
+    let nonNull = this.#strippedNonNull(value);
+    let elements = this.#cx().tupleElementChecks(nonNull, st, tt, false);
+    return this.b.binary(IrOp.i32_and, new ValTypeI32() as ValType, tag, elements);
   }
 
   /** Whether field 0 of a tuple struct holds the literal `tt` starts with. */
@@ -7007,7 +7021,7 @@ export final class FunctionLowerer {
     for (let el in tt.elementTypes) {
       elements.push(typeToValTypeWithSub(this.wasm, el, this.func));
     }
-    return this.wasm.getTupleStruct(elements);
+    return this.wasm.getTupleStruct(tt, elements);
   }
 
   /** Each element of the tuple `expr` evaluates to, in order. */
@@ -7570,8 +7584,9 @@ export final class FunctionLowerer {
         isTupleTag(targetBase.elementTypes[0])) {
       return this.#tupleTagTest(value, targetBase);
     }
-    if (sourceBase is TupleType && targetBase is TupleType) {
-      let elementwise = this.#tupleIsTest(value, sourceBase, targetBase);
+    if (targetBase is TupleType) {
+      let source = if (sourceBase is TupleType) sourceBase else null;
+      let elementwise = this.#tupleIsTest(value, source, targetBase);
       if (elementwise >= 0) {
         return elementwise;
       }
@@ -7599,17 +7614,48 @@ export final class FunctionLowerer {
   }
 
   /**
-   * `value is target` for a tuple `value` of type `source`, when the two
-   * tuple types have different structs: whether each element is the
-   * target's element type. The structs are unrelated (#483), so a test
-   * of the tuple itself would always be false, while a `(Animal, i32)`
-   * whose element is a `Bird` is a `(Bird, i32)`. -1 when the structs
-   * are the same, or the arities differ.
+   * `value is target` for a tuple type `target` with no literal tag, when
+   * the answer depends on the elements: `value` is of type `source`, or of
+   * a type that is not a tuple when `source` is null. A tuple of another
+   * struct is tested element by element (#483): the structs are
+   * unrelated, so a test of the tuple itself would always be false. A
+   * tuple of the target's struct, which tuples that meet share (#1137),
+   * is tested for each element the target narrows. -1 when a test of the
+   * struct alone answers.
    */
-  #tupleIsTest(value: i32, source: TupleType, target: TupleType): i32 {
+  #tupleIsTest(value: i32, source: TupleType | null, target: TupleType): i32 {
+    let to = this.#tupleStruct(target);
+    if (source != null && this.#tupleStruct(source) !== to) {
+      return this.#tupleIsTestAcross(value, source, target);
+    }
+    if (!this.#cx().tupleNarrows(to, target)) {
+      return -1;
+    }
+    let toVt = new ValTypeRef(to) as ValType;
+    let have = this.#valueType(value);
+    if (have is ValTypeRef && isValSubtype(have, toVt)) {
+      return this.#cx().tupleElementChecks(value, to, target, false);
+    }
+    let i32Vt = new ValTypeI32() as ValType;
+    let join = this.b.newBlock();
+    let result = this.b.blockParam(join, i32Vt);
+    let test = this.b.emit(IrOp.ref_test, i32Vt, value, this.b.internType(toVt));
+    let hit = this.b.newBlock();
+    let miss = this.b.newBlock();
+    this.b.brIf(test, hit, this.#noArgs(), miss, this.#noArgs());
+    this.b.switchTo(hit);
+    let cast = this.b.emit(IrOp.ref_cast, toVt, value, this.b.internType(toVt));
+    this.b.br(join, growable<i32>([this.#cx().tupleElementChecks(cast, to, target, false)]));
+    this.b.switchTo(miss);
+    this.b.br(join, growable<i32>([this.b.constI32(0, i32Vt)]));
+    this.b.switchTo(join);
+    return result;
+  }
+
+  /** `#tupleIsTest` for a tuple of a struct other than the target's. */
+  #tupleIsTestAcross(value: i32, source: TupleType, target: TupleType): i32 {
     let from = this.#tupleStruct(source);
-    if (from === this.#tupleStruct(target) ||
-        source.elementTypes.length != target.elementTypes.length) {
+    if (source.elementTypes.length != target.elementTypes.length) {
       return -1;
     }
     let i32Vt = new ValTypeI32() as ValType;

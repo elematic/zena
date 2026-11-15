@@ -406,6 +406,9 @@ export final class ModuleGenerator {
 
 
     let tDiscovery = performance.start("codegen-discovery");
+    // The tuple types the checked code makes meet share a struct; joined
+    // before discovery maps any of them (#1137).
+    wasm.noteTupleJoins(this.program.units);
     let pass = new ReachabilityAnalysis(this.program, wasm, this.target);
     pass.run();
     if (this.zirStats) {
@@ -417,6 +420,12 @@ export final class ModuleGenerator {
     // Class structs now have their supertypes; immutable arrays of
     // them can declare theirs (lowering's conformance checks read it).
     wasm.linkArraySupertypes();
+    // Every tuple type the module uses is registered, so each tuple
+    // group's class fields can take their final types: the lowest
+    // common ancestor of what its members hold there. First the joins
+    // of the bodies discovery checked on demand.
+    wasm.noteTupleJoins(this.program.units);
+    wasm.settleTupleSlots();
     performance.end(tDiscovery);
 
 
