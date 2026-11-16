@@ -354,6 +354,27 @@ let tests = suite('formatter', () => {
     checkStable('range before cast', 'let x = (a..b) as Range;');
   });
 
+  test('keeps parentheses around a cast before `<` or `|`', (t) => {
+    // By precedence these are redundant, but after `as T` or `is T` the
+    // parser reads `<` as the start of type arguments and `|` as a union type.
+    checkStable('as before less', 'let x = (a as i32) < b;');
+    checkStable('is before less', 'let x = (a is i32) < b;');
+    checkStable('as before bitor', 'let x = (a as i32) | b;');
+    checkStable('is before bitor', 'let x = (a is i32) | b;');
+    checkStable('as in a less chain', 'let x = a < (b as i32) < c;');
+    checkStable('as in a bitor chain', 'let x = a | (b as i32) | c;');
+    checkStable('as ending a shift before less', 'let x = (a << b as i32) < c;');
+    checkStable('as ending a comparison before bitor', 'let x = (a < b as i32) | c;');
+    checkStable('as ending a range before less', 'let x = (a..b as i32) < c;');
+    checkStable('as ending a range before bitor', 'let x = (a..b as i32) | c;');
+    checkFormat('as before greater', 'let x = (a as i32) > b;', 'let x = a as i32 > b;');
+    checkFormat('as after less', 'let x = a < (b as i32);', 'let x = a < b as i32;');
+    checkFormat('as after bitor', 'let x = a | (b as i32);', 'let x = a | b as i32;');
+    checkFormat('open range after cast before bitor', 'let x = ((a as i32)..) | b;', 'let x = a as i32.. | b;');
+    // The inner parentheses are already printed, so no outer ones are added.
+    checkStable('parenthesized cast before less', 'let x = a + (b as i32) < c;');
+  });
+
   test('keeps parentheses a right operand needs for associativity', (t) => {
     // `-` and `/` are left-associative, so a right operand of equal
     // precedence is a different tree and keeps its parentheses.
