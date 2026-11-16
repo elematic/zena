@@ -1,6 +1,6 @@
 import { BlockStatement, Expression, ExpressionStatement, Node } from '../ast.zena';
 import {
-  BooleanType, ClassType, ErrorType, FunctionType, InterfaceType, RecordType as RecordT, TupleType as TupleT, Type, TypeParameterType, UnionType as UnionT, baseType, instantiateClassType, isNullableType, isNumericType, typeContainsTypeParameter, typeToString, unwrapAliases
+  ArrayType as ArrayT, BooleanType, ClassType, ErrorType, FunctionType, InterfaceType, RecordType as RecordT, TupleType as TupleT, Type, TypeParameterType, UnionType as UnionT, baseType, instantiateClassType, isNullableType, isNumericType, typeContainsTypeParameter, typeToString, unwrapAliases
 } from '../types.zena';
 import { FunctionAdaptationDependency, TupleWidening } from '../semantic-model.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
@@ -8,7 +8,7 @@ import { WellKnown } from '../well-known.zena';
 import { CheckerContext } from './context.zena';
 import { tryInstantiateGenericFunction } from './generics.zena';
 import { recordUnionMembersOf } from './members.zena';
-import { isAssignableTo, typesEqual } from './relations.zena';
+import { isAssignableTo, isWellKnownClassType, typesEqual } from './relations.zena';
 import { subtractNullFromType } from './unions.zena';
 import { growable } from 'zena:core';
 
@@ -65,6 +65,24 @@ export function noteTupleWidening(ctx: CheckerContext, source: Type, target: Typ
   if (s is UnionT) {
     for (let member in s.types) {
       noteTupleWidening(ctx, member, target);
+    }
+    return;
+  }
+  // An immutable array widens in its element: the tuples in it are used
+  // as tuples of the target's element type.
+  if (s is ClassType && t is ClassType &&
+      isWellKnownClassType(ctx, s, WellKnown.ImmutableArrayClass) &&
+      isWellKnownClassType(ctx, t, WellKnown.ImmutableArrayClass)) {
+    let sArgs = s.typeArguments;
+    let tArgs = t.typeArguments;
+    if (sArgs != null && tArgs != null && sArgs.length == 1 && tArgs.length == 1) {
+      noteTupleWidening(ctx, sArgs[0], tArgs[0]);
+    }
+    return;
+  }
+  if (s is ArrayT && t is ArrayT) {
+    if (!s.elementsMutable && !t.elementsMutable) {
+      noteTupleWidening(ctx, s.elementType, t.elementType);
     }
     return;
   }

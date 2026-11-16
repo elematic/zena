@@ -6323,6 +6323,14 @@ export final class FunctionLowerer {
     }
     let wrapper = if (let (true, w) = this.wasm.functionAdaptationWrappers.get(expr)) w else null;
     if (wrapper == null) {
+      // Discovery registers none when the closure is one of the target
+      // type already.
+      let source = substituteTypeParamsInFunctionContext(this.wasm, this.func, fa.source);
+      let target = substituteTypeParamsInFunctionContext(this.wasm, this.func, fa.target);
+      if (source is FunctionType && target is FunctionType &&
+          getClosureStruct(this.wasm, source) === getClosureStruct(this.wasm, target)) {
+        return value;
+      }
       this.#bail('function adaptation wrapper unregistered');
     }
     let actualStruct = wrapper.functionAdaptationResolvedSourceStruct ??
