@@ -1,0 +1,206 @@
+// @mode: run
+// @result: 24
+// `throw` expressions (#1200) and `never`-returning calls (#79) in value,
+// binding, short-circuit, literal, cast, and expression-body positions.
+
+type Bottom = never;
+
+function refuse(msg: String): never {
+  throw new Error(msg);
+}
+
+function refuseAlias(msg: String): Bottom {
+  throw new Error(msg);
+}
+
+async function refuseAsync(msg: String): Future<never> {
+  throw new Error(msg);
+}
+
+function takeVoid(f: () => void): void {
+  f();
+}
+
+function takeInt(f: () => i32): i32 {
+  return f();
+}
+
+async function takeAsyncInt(f: () => Future<i32>): Future<i32> {
+  return await f();
+}
+
+function unwrapOrThrow(text: String | null): String {
+  return text ?? throw new Error('missing-throw');
+}
+
+function unwrapOrRefuse(text: String | null): String {
+  return text ?? refuse('missing-refuse');
+}
+
+let inlineThrow = (): inline (i32, i32) => throw new Error('inline-throw');
+let inlineRefuse = (): inline (i32, i32) => refuse('inline-refuse');
+
+export async function main(): Future<i32> {
+  var score = 0;
+
+  // 1. Unannotated arrow expression body with `throw`.
+  let f1 = () => throw new Error('e1');
+  try { f1(); } catch (e) { if (e.message == 'e1') { score += 1; } }
+
+  // 2. Annotated arrow expression body with `throw`.
+  try {
+    takeInt((): i32 => throw new Error('e2'));
+  } catch (e) {
+    if (e.message == 'e2') { score += 1; }
+  }
+
+  // 3. Unannotated `() => throw ...` adapted to `() => void` and `() => i32`.
+  try {
+    takeVoid(() => throw new Error('e3'));
+  } catch (e) {
+    if (e.message == 'e3') { score += 1; }
+  }
+  try {
+    takeInt(() => throw new Error('e4'));
+  } catch (e) {
+    if (e.message == 'e4') { score += 1; }
+  }
+
+  // 4. Bound to typed function variable `() => i32`.
+  let f5: () => i32 = () => throw new Error('e5');
+  try { f5(); } catch (e) { if (e.message == 'e5') { score += 1; } }
+
+  // 5. Async expression-bodied closure with `throw`.
+  try {
+    await takeAsyncInt(async () => throw new Error('e6'));
+  } catch (e) {
+    if (e.message == 'e6') { score += 1; }
+  }
+
+  // 6. Typed and untyped `let` bindings with `throw`.
+  try {
+    let x: i32 = throw new Error('e7');
+    score += x;
+  } catch (e) {
+    if (e.message == 'e7') { score += 1; }
+  }
+
+  // 7. Nullish coalescing `??` and `??=`, and logical `||` with `throw`.
+  if (unwrapOrThrow('ok') == 'ok') { score += 1; }
+  try {
+    unwrapOrThrow(null);
+  } catch (e) {
+    if (e.message == 'missing-throw') { score += 1; }
+  }
+  try {
+    var slot: String | null = null;
+    slot ??= throw new Error('assign-throw');
+  } catch (e) {
+    if (e.message == 'assign-throw') { score += 1; }
+  }
+  try {
+    let _ = false || throw new Error('or-throw');
+  } catch (e) {
+    if (e.message == 'or-throw') { score += 1; }
+  }
+
+  // 8. Inline tuple expression body with `throw` and `never` call.
+  try {
+    let (a, b) = inlineThrow();
+    score += a + b;
+  } catch (e) {
+    if (e.message == 'inline-throw') { score += 1; }
+  }
+  try {
+    let (a, b) = inlineRefuse();
+    score += a + b;
+  } catch (e) {
+    if (e.message == 'inline-refuse') { score += 1; }
+  }
+
+  // 9. `never`-returning call (#79): untyped and typed bindings.
+  try {
+    let u = refuse('r1');
+  } catch (e) {
+    if (e.message == 'r1') { score += 1; }
+  }
+  try {
+    let typed: i32 = refuse('r2');
+    score += typed;
+  } catch (e) {
+    if (e.message == 'r2') { score += 1; }
+  }
+
+  // 10. `never`-returning call in sync/async expression bodies, `??`, `&&`, destructuring.
+  try {
+    takeInt(() => refuse('r3'));
+  } catch (e) {
+    if (e.message == 'r3') { score += 1; }
+  }
+  try {
+    await takeAsyncInt(async () => refuse('r4'));
+  } catch (e) {
+    if (e.message == 'r4') { score += 1; }
+  }
+  if (unwrapOrRefuse('ok') == 'ok') {
+    try {
+      unwrapOrRefuse(null);
+    } catch (e) {
+      if (e.message == 'missing-refuse') {
+        try {
+          let (p, q): (i32, i32) = refuse('r5');
+          score += p + q;
+        } catch (e2) {
+          if (e2.message == 'r5') { score += 1; }
+        }
+      }
+    }
+  }
+
+  // 11. Type-aliased `never` calls, `Future<never>`, literals, unary, and casts.
+  try {
+    let a: i32 = refuseAlias('alias-val');
+    score += a;
+  } catch (e) {
+    if (e.message == 'alias-val') { score += 1; }
+  }
+  try {
+    let arr: Array<i32> = [1, throw new Error('arr-throw'), 3];
+    score += arr.length;
+  } catch (e) {
+    if (e.message == 'arr-throw') { score += 1; }
+  }
+  try {
+    let rec: {a: i32, b: i32} = {a: 1, b: refuse('rec-refuse')};
+    score += rec.a;
+  } catch (e) {
+    if (e.message == 'rec-refuse') { score += 1; }
+  }
+  try {
+    let tup: (i32, i32) = (1, throw new Error('tup-throw'));
+    score += tup[0];
+  } catch (e) {
+    if (e.message == 'tup-throw') { score += 1; }
+  }
+  try {
+    let andVal: boolean = true && throw new Error('and-throw');
+    if (andVal) { score += 100; }
+  } catch (e) {
+    if (e.message == 'and-throw') { score += 1; }
+  }
+  try {
+    let c = (refuse('cast-refuse')) as i32;
+    score += c;
+  } catch (e) {
+    if (e.message == 'cast-refuse') {
+      try {
+        let fn: i32 = await refuseAsync('future-never');
+        score += fn;
+      } catch (e2) {
+        if (e2.message == 'future-never') { score += 1; }
+      }
+    }
+  }
+
+  return score;
+}

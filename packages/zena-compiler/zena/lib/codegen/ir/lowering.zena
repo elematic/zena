@@ -3511,8 +3511,25 @@ export final class FunctionLowerer {
    * for a positional multi-value (no union, no nesting), whose slots
    * are the elements in order.
    */
+  #unreachableSlots(count: i32): GrowableArray<i32> {
+    let none = new Array<i32>();
+    for (var i = 0; i < count; i += 1) {
+      none.push(-1);
+    }
+    return none;
+  }
+
+  #isDivergingCall(call: CallExpression): boolean {
+    let callT = this.func.model.getNodeType(call);
+    return callT != null && unwrapAliases(callT) is NeverType;
+  }
+
   #lowerIntoSlots(arg: Expression, layout: InlineLayout | null,
       slotVts: GrowableArray<ValType>): GrowableArray<i32> {
+    if (arg is ThrowExpression) {
+      this.#lowerThrowStatement(arg);
+      return this.#unreachableSlots(slotVts.length);
+    }
     if (arg is IfExpression || arg is MatchExpression) {
       // Each arm is lowered into the slots, and the merge takes them
       // (MergeState.slots).
@@ -3526,11 +3543,7 @@ export final class FunctionLowerer {
         return merged;
       }
       // Every arm ended unreachable, so nothing reads these.
-      let none = new Array<i32>();
-      for (var i = 0; i < slotVts.length; i += 1) {
-        none.push(-1);
-      }
-      return none;
+      return this.#unreachableSlots(slotVts.length);
     }
     let held = this.#heldInline(arg);
     if (held != null) {
@@ -3540,6 +3553,14 @@ export final class FunctionLowerer {
       return this.#convertInlineSlots(held.values, held.layout as InlineLayout, layout);
     }
     if (arg is CallExpression) {
+      if (this.#isDivergingCall(arg)) {
+        this.#lowerCall(arg);
+        if (this.#cx().reachable) {
+          this.b.unreachable();
+          this.#cx().reachable = false;
+        }
+        return this.#unreachableSlots(slotVts.length);
+      }
       // Forwarding form: `return f(...)`. The callee's union can be a
       // narrower one than this function's (`Step<T>` into
       // `AsyncStep<T>`), with different slots.
@@ -4341,8 +4362,7 @@ export final class FunctionLowerer {
         if (expression is ThrowExpression) {
           this.#lowerThrowStatement(expression);
         } else {
-          let t = this.func.model.getNodeType(expression);
-          if (t != null && t is NeverType && expression is CallExpression) {
+          if (expression is CallExpression && this.#isDivergingCall(expression)) {
             // A never-returning call ends the path like a throw: emit
             // the call, then close the block — nothing after it runs.
             // An intrinsic (cancel.raise) may have ended it already
@@ -4553,6 +4573,11 @@ export final class FunctionLowerer {
     let inlineLayout = inlineParamLayoutOf(this.wasm, subBinding);
     if (inlineLayout != null) {
       let values = this.#lowerIntoSlots(vd.init, inlineLayout, inlineLayout.slots);
+      if (!this.#cx().reachable) {
+        this.#cx().env[sym.id] = NO_VALUE;
+        this.#cx().symbols[sym.id] = sym;
+        return;
+      }
       if (this.#isCelled(sym.id)) {
         this.#bail('inline let is celled');
       }
@@ -4604,7 +4629,13 @@ export final class FunctionLowerer {
     this.#requireSupported(bindingVt, 'binding type');
     let heldDispatch = this.#heldVarDispatch(sym.id);
     let value = if (heldDispatch != null) {
-      this.#lowerHeldWrite(vd.init, heldDispatch)
+      let heldVal = this.#lowerHeldWrite(vd.init, heldDispatch);
+      if (!this.#cx().reachable) {
+        this.#cx().env[sym.id] = NO_VALUE;
+        this.#cx().symbols[sym.id] = sym;
+        return;
+      }
+      heldVal
     } else {
       let rawInit = this.#lowerExpressionCtx(vd.init, bindingVt);
       if (!this.#cx().reachable) {
@@ -4696,6 +4727,9 @@ export final class FunctionLowerer {
     }
     let value = this.#lowerExpressionCtx(expr,
         new ValTypeRef(d.fatPtrType) as ValType);
+    if (!this.#cx().reachable) {
+      return NO_VALUE;
+    }
     this.#cx().heldFields(d, value);
     return value;
   }
@@ -4958,6 +4992,14 @@ export final class FunctionLowerer {
       out.push(this.#lowerExpression(init));
       return new MultiValues(out, null);
     }
+    if (this.#isDivergingCall(init)) {
+      this.#lowerCall(init);
+      if (this.#cx().reachable) {
+        this.b.unreachable();
+        this.#cx().reachable = false;
+      }
+      return new MultiValues(out, null);
+    }
     if (init.callee is MemberExpression) {
       let member = init.callee as MemberExpression;
       let objT = this.#substitutedNodeType(member.object);
@@ -5009,10 +5051,16 @@ export final class FunctionLowerer {
       }
       let st = this.#tupleStruct(bt);
       let value = this.#lowerExpressionCtx(init, new ValTypeRef(st) as ValType);
+      if (!this.#cx().reachable) {
+        return;
+      }
       this.#bindTupleWithRest(tp, st, value, bt.elementTypes.length);
       return;
     }
     let source = this.#lowerMultiSource(vd.init);
+    if (!this.#cx().reachable) {
+      return;
+    }
     // One value per element, a nested tuple pattern at a nested inline
     // position read leaf by leaf.
     var elements = new Array<Node | null>();
@@ -5062,6 +5110,9 @@ export final class FunctionLowerer {
       this.#bail('uninitialized array destructuring');
     }
     let arrVal = this.#lowerExpression(vd.init as Expression);
+    if (!this.#cx().reachable) {
+      return;
+    }
     for (var i = 0; i < ap.elements.length; i += 1) {
       let el = ap.elements[i];
       if (el == null || el is LiteralPattern || el is BooleanLiteral ||
@@ -5117,6 +5168,9 @@ export final class FunctionLowerer {
     }
     let properties = recordPat.properties;
     let source = this.#lowerExpression(vd.init);
+    if (!this.#cx().reachable) {
+      return;
+    }
     let initTypeOpt = this.#substitutedNodeType(vd.init);
     if (initTypeOpt == null) {
       this.#bail('untyped destructuring source');
@@ -6600,20 +6654,19 @@ export final class FunctionLowerer {
       case UnaryExpression as un: this.#lowerUnary(un)
       case AssignmentExpression as assign: this.#lowerAssignment(assign)
       case CallExpression as call: {
-        // A never-returning call has no value to produce. Statement
-        // position handles it above; reaching here means a value
-        // position, which is not lowerable yet (elematic/zena#79 —
-        // now a loud bail).
-        let callT = this.func.model.getNodeType(call);
-        if (callT != null && callT is NeverType) {
-          let calleeDesc = match (call.callee) {
-            case Identifier {name}: name
-            case MemberExpression as me: me.property.name
-            case _: '?'
-          };
-          this.#bailValue('never call in value position: ' + calleeDesc);
+        if (this.#isDivergingCall(call)) {
+          this.#lowerCall(call);
+          if (this.#cx().reachable) {
+            this.b.unreachable();
+            this.#cx().reachable = false;
+          }
+          return NO_VALUE;
         }
         this.#lowerCall(call)
+      }
+      case ThrowExpression as thr: {
+        this.#lowerThrowStatement(thr);
+        NO_VALUE
       }
       case IfExpression as ifExpr: this.#lowerIfExpression(ifExpr)
       case MatchExpression as matchExpr: this.#lowerMatch(matchExpr)
@@ -6929,8 +6982,12 @@ export final class FunctionLowerer {
       this.#bail('inline tuple in value position');
     }
     let st = this.#tupleStruct(bt);
+    let fields = this.#lowerTupleLiteralFields(tl, bt, st);
+    if (!this.#cx().reachable) {
+      return NO_VALUE;
+    }
     return this.b.emit(IrOp.struct_new, new ValTypeRef(st) as ValType,
-        this.b.pushArgList(this.#lowerTupleLiteralFields(tl, bt, st)),
+        this.b.pushArgList(fields),
         this.b.addRef(new IrRefType(st)));
   }
 
@@ -6975,6 +7032,9 @@ export final class FunctionLowerer {
       pos += 1;
       if (fieldVt is ValTypeVoid) {
         this.#lowerExpression(tl.elements[i]);
+        if (!this.#cx().reachable) {
+          return args;
+        }
         continue;
       }
       let el = tl.elements[i];
@@ -6984,6 +7044,9 @@ export final class FunctionLowerer {
         continue;
       }
       var v = this.#lowerExpressionCtx(el, fieldVt);
+      if (!this.#cx().reachable) {
+        return args;
+      }
       v = this.#conformToSlot(v, fieldVt, 'tuple literal element type');
       args.push(v);
     }
@@ -7220,8 +7283,11 @@ export final class FunctionLowerer {
       this.#bail('record literal type');
     }
     let dispatch = this.#cx().recordDispatchOf(bt);
-    return this.#packRecord(dispatch,
-        this.#lowerRecordLiteralFields(lit, dispatch));
+    let fields = this.#lowerRecordLiteralFields(lit, dispatch);
+    if (!this.#cx().reachable) {
+      return NO_VALUE;
+    }
+    return this.#packRecord(dispatch, fields);
   }
 
   /**
@@ -7250,6 +7316,9 @@ export final class FunctionLowerer {
         propVals.push(this.#lowerExpression(prop.argument));
       } else {
         propVals.push(-1);
+      }
+      if (!this.#cx().reachable) {
+        return propVals;
       }
     }
     let args = new Array<i32>();
@@ -7495,6 +7564,9 @@ export final class FunctionLowerer {
     let args = new Array<i32>();
     for (let el in lit.elements) {
       let v = this.#lowerExpressionCtx(el, elemVt);
+      if (!this.#cx().reachable) {
+        return NO_VALUE;
+      }
       // Packed i8 elements store i32 values; everything else must
       // conform to the element type.
       args.push(if (elemVt is ValTypeI8) v
@@ -7719,12 +7791,10 @@ export final class FunctionLowerer {
   }
 
   /**
-   * `throw e;` in statement position, mirroring streaming: the payload
-   * value is stored in the shared exception-payload GLOBAL (the tag
-   * itself carries no values), then the module-wide tag is thrown.
-   * Expression-position throws still bail — they would have to yield a
-   * value of the surrounding type from an unreachable continuation, a
-   * shape lowering does not model yet.
+   * `throw e` in statement or expression position: the payload value is
+   * stored in the shared exception-payload global (the tag itself carries
+   * no values), then the module-wide tag is thrown and the current block
+   * is marked unreachable.
    */
   #lowerThrowStatement(thr: ThrowExpression): void {
     this.wasm.ensureExceptionInfra(this.func.model);
@@ -12046,6 +12116,9 @@ export final class FunctionLowerer {
           else this.#cx().env[resolved.id];
       value = this.#combineCompound(current, assign, assign.left);
     }
+    if (!this.#cx().reachable) {
+      return NO_VALUE;
+    }
     if (heldDispatch == null) {
       if (let (true, storeSym) = this.#cx().symbols.get(resolved.id)) {
         let bt = this.func.model.getBindingType(storeSym);
@@ -12107,21 +12180,23 @@ export final class FunctionLowerer {
     let saved = this.#copyEnv();
     this.b.switchTo(assignB);
     let rhs = this.#lowerExpressionCtx(assign.value, resultVt);
-    if (!isValSubtype(this.#valueType(rhs), resultVt)) {
-      this.#bail('nullish assign type');
-    }
-    if (celled) {
-      this.#cellWrite(this.#cx().env[symId], rhs);
-    } else {
-      this.#cx().env[symId] = rhs;
-      this.#cx().noteVarWrite(symId, rhs);
-    }
     let mergeB = this.b.newBlock();
     let mergeParams = this.#addParams(mergeB, mergeSyms);
     let resultParam = this.b.blockParam(mergeB, resultVt);
-    let assignArgs = this.#envValues(mergeSyms);
-    assignArgs.push(rhs);
-    this.b.br(mergeB, assignArgs);
+    if (this.#cx().reachable) {
+      if (!isValSubtype(this.#valueType(rhs), resultVt)) {
+        this.#bail('nullish assign type');
+      }
+      if (celled) {
+        this.#cellWrite(this.#cx().env[symId], rhs);
+      } else {
+        this.#cx().env[symId] = rhs;
+        this.#cx().noteVarWrite(symId, rhs);
+      }
+      let assignArgs = this.#envValues(mergeSyms);
+      assignArgs.push(rhs);
+      this.b.br(mergeB, assignArgs);
+    }
 
     this.#cx().env = this.#copyOf(saved);
     this.#cx().reachable = true;
