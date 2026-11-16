@@ -201,6 +201,38 @@ function printOperand(expr: Expression, minRank: i32) {
   return printExpression(expr);
 }
 
+/**
+ * Whether `expr` prints with a type annotation as its last token, as
+ * `a as T` and `a << b as T` do. A cast the printer parenthesizes, as in
+ * `a + (b as T)`, does not count.
+ */
+function endsWithType(expr: Expression): boolean {
+  return match (expr) {
+    case AsExpression {}: true
+    case IsExpression {}: true
+    case BinaryExpression {operator, right}: {
+      let rank = binaryOperatorRank(operator);
+      let rightMin = if (operator == '**') rank else rank + 1;
+      expressionRank(right) >= rightMin && endsWithType(right)
+    }
+    case RangeExpression {end}: {
+      end != null && expressionRank(end) >= PREC_AS && endsWithType(end)
+    }
+    case _: false
+  };
+}
+
+/**
+ * `printOperand`, but when `typeSensitive` (the operand is followed by `<` or
+ * `|`) an operand that ends with a type is parenthesized too.
+ */
+function printOperandBefore(expr: Expression, minRank: i32, typeSensitive: boolean) {
+  if (typeSensitive && endsWithType(expr)) {
+    return concat(docs3(text('('), printExpression(expr), text(')')));
+  }
+  return printOperand(expr, minRank);
+}
+
 // ============================================================================
 // Comment Printing Helpers
 // ============================================================================
@@ -1594,7 +1626,11 @@ function printBinaryExpression(expr: BinaryExpression): Doc {
   let leftMin = if (rightAssociative) rank + 1 else rank;
   let rightMin = if (rightAssociative) rank else rank + 1;
 
-  let parts = growable<Doc>([printOperand(operands[0], leftMin)]);
+  // After `as T` or `is T` the parser reads `<` as the start of type
+  // arguments and `|` as a union type, so an operand that would print with a
+  // type last keeps its parentheses before those two.
+  let typeSensitive = op == '<' || op == '|';
+  let parts = growable<Doc>([printOperandBefore(operands[0], leftMin, typeSensitive && operands.length > 1)]);
 
   let rest = new Array<Doc>(operands.length * 3);
   var j = 1;
@@ -1602,7 +1638,7 @@ function printBinaryExpression(expr: BinaryExpression): Doc {
     rest.push(line);
     rest.push(text(op));
     rest.push(text(' '));
-    rest.push(printOperand(operands[j], rightMin));
+    rest.push(printOperandBefore(operands[j], rightMin, typeSensitive && j < operands.length - 1));
     j += 1;
   }
   parts.push(indent(concat(rest)));
