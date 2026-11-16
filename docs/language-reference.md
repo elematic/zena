@@ -1050,11 +1050,37 @@ Explicit type annotations always take precedence over contextual types.
 
 ### Return Type
 
-The return type is inferred from the body expression. It can also be explicitly
-annotated.
+The return type is inferred from the body when omitted, and can also be
+explicitly annotated.
 
 ```zena
 let add = (a: i32, b: i32): i32 => a + b;
+```
+
+For an expression body, the inferred return type is the expression's type. For a
+block body:
+
+- If any `return` returns a value, the inferred return type is the union of the
+  returned types (absorbing subclasses into superclasses and classes into
+  interfaces, as `if` and `match` arms do), and every path through the body must
+  return a value or diverge. Each returned expression adapts to the joined type.
+- If no `return` returns a value and the body cannot complete normally (every
+  path throws, calls a `never` function, or loops forever), the inferred return
+  type is `never` (or `Future<never>` for an `async` function with no contextual
+  `Future<T>` return type).
+- Otherwise, the inferred return type is `void` (or `Future<void>` for `async`).
+
+```zena
+let find = (name: String) => {
+  if (name == '') {
+    return null;
+  }
+  return name;
+}; // (name: String) => String | null
+
+let fail = (msg: String) => {
+  throw new Error(msg);
+}; // (msg: String) => never
 ```
 
 ### Function Body

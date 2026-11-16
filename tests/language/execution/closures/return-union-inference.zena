@@ -1,0 +1,79 @@
+// @mode: run
+// @result: 5
+// Functions and closures with multiple `return` statements infer the union
+// (with subtype subsumption) of their returned types and adapt each return.
+
+import { Map, HashMap } from 'zena:collections';
+
+sealed class Shape {
+  case Circle(r: i32)
+  case Square(s: i32)
+}
+
+function find(lookup: (name: String) => String | null): String {
+  return lookup('a') ?? 'none';
+}
+
+function pickTop(name: String) {
+  if (name == 'b') {
+    return name;
+  }
+  return null;
+}
+
+function pickShape(s: Shape, f: (m: Shape) => Shape): Shape {
+  return f(s);
+}
+
+function makeMap(existing: Map<String, i32> | null, useExisting: boolean) {
+  if (useExisting && existing != null) {
+    return existing;
+  }
+  let m = new HashMap<String, i32>();
+  m['k'] = 42;
+  return m;
+}
+
+export function main(): i32 {
+  var score = 0;
+
+  // 1. Value return before null return in a closure (#1154).
+  let found = find((name) => {
+    if (name == 'a') {
+      return name;
+    }
+    return null;
+  });
+  if (found == 'a') { score += 1; }
+
+  // 2. Null return before value return in a closure.
+  let pick = (name: String) => {
+    if (name == 'b') {
+      return null;
+    }
+    return name;
+  };
+  if ((pick('b') ?? 'none') == 'none' && (pick('x') ?? 'none') == 'x') {
+    score += 1;
+  }
+
+  // 3. Top-level function returning value or null.
+  if ((pickTop('a') ?? 'none') == 'none' && (pickTop('b') ?? 'none') == 'b') {
+    score += 1;
+  }
+
+  // 4. Sibling subclasses (Square | Circle) returned from closure passed as (Shape) => Shape.
+  let swapped = pickShape(new Square(5), (m) => {
+    if (m is Square) {
+      return m;
+    }
+    return new Circle(1);
+  });
+  if (swapped is Square && swapped.s == 5) { score += 1; }
+
+  // 5. Class (HashMap) and interface (Map) returns join to Map, adapting the class return.
+  let mp = makeMap(null, false);
+  if (mp['k'] == 42) { score += 1; }
+
+  return score;
+}

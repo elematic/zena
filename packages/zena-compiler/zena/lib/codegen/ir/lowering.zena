@@ -294,13 +294,30 @@ function lowerFunctionAdaptation(wasm: WasmModule, func: WasmFunction) {
   if (actualSig.returns.length > 1) {
     throw new ZirUnsupported('adaptation result shape');
   }
+  if (unwrapAliases(actualFt.returnType) is NeverType) {
+    // Source never returns normally (throws or loops forever), so its
+    // call has 0 wasm results and satisfies any target return signature.
+    b.callRef(funcVal, args, null);
+    b.unreachable();
+    return b.finish();
+  }
   let resultPack = adaptationPackAt(wasm, func, -1);
   if (resultPack == null) {
     if (actualSig.returns.length == 1 && func.signature.returns.length == 1 &&
         !isValSubtype(actualSig.returns[0], func.signature.returns[0])) {
-      throw new ZirUnsupported(
-          'function-adaptation wrapper cannot convert its result: it ' +
-          'packs interfaces, not records or function values (#543)');
+      let wantRet = func.signature.returns[0];
+      if (!(wantRet is ValTypeRef || wantRet is ValTypeRefNull) ||
+          !isValSubtype(wantRet, actualSig.returns[0])) {
+        throw new ZirUnsupported(
+            'function-adaptation wrapper cannot convert its result: it ' +
+            'packs interfaces, not records or function values (#543)');
+      }
+      // Source returns a union widened to `eqref` whose members all extend
+      // the target class (`Square | Circle` → `Shape`): narrow on the way back.
+      let raw = b.callRef(funcVal, args, actualSig.returns[0]);
+      let narrowed = b.emit(IrOp.ref_cast, wantRet, raw, b.internType(wantRet));
+      b.ret(narrowed);
+      return b.finish();
     }
     // The fourth forwarding adapter, and a tail call for the same
     // reason as the other three (see requireForwardableResults).
@@ -4389,9 +4406,11 @@ export final class FunctionLowerer {
           // so a `never`-typed operand — a throw — in a value-returning
           // function keeps its existing path.)
           this.#lowerExpression(argument);
-          this.#emitExitDrops(stmt as Node);
-          if (!returnThroughFinally(this.#cx(), -1)) {
-            this.b.retVoid();
+          if (this.#cx().reachable) {
+            this.#emitExitDrops(stmt as Node);
+            if (!returnThroughFinally(this.#cx(), -1)) {
+              this.b.retVoid();
+            }
           }
         } else if (this.#explodedResult() != null) {
           this.#returnFields(argument, stmt as Node);
@@ -4587,8 +4606,13 @@ export final class FunctionLowerer {
     let value = if (heldDispatch != null) {
       this.#lowerHeldWrite(vd.init, heldDispatch)
     } else {
-      this.#conformToBinding(
-          this.#lowerExpressionCtx(vd.init, bindingVt), bindingVt)
+      let rawInit = this.#lowerExpressionCtx(vd.init, bindingVt);
+      if (!this.#cx().reachable) {
+        this.#cx().env[sym.id] = NO_VALUE;
+        this.#cx().symbols[sym.id] = sym;
+        return;
+      }
+      this.#conformToBinding(rawInit, bindingVt)
     };
     if (this.#isCelled(sym.id)) {
       // The binding lives in a heap cell shared with capturing
@@ -5441,6 +5465,9 @@ export final class FunctionLowerer {
       }
     }
     let value = this.#lowerExpressionDispatch(expr);
+    if (!this.#cx().reachable) {
+      return value;
+    }
     return this.#applyAdaptations(expr, value);
   }
 
@@ -6650,7 +6677,14 @@ export final class FunctionLowerer {
         this.#futureMethodOwner(resolved, ':valueOrThrow') != null &&
         this.#futureMethodOwner(resolved, ':subscribe') != null) {
       let future = this.#lowerExpression(aw.argument);
-      return this.#suspendOnFuture(resolved, future);
+      let awaitedVal = this.#suspendOnFuture(resolved, future);
+      let awT = this.#substitutedNodeType(aw);
+      if (awT != null && unwrapAliases(awT) is NeverType) {
+        this.b.unreachable();
+        this.#cx().reachable = false;
+        return -1;
+      }
+      return awaitedVal;
     }
     // Anything else reached lowering through the GENERIC await —
     // `await x` with `x: T` open, typed `Awaited<T>` — specialized at

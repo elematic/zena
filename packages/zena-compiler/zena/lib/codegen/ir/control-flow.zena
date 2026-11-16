@@ -3779,14 +3779,11 @@ export function lowerNullishCoalesce(cx: LoweringContext, bin: BinaryExpression)
   // receiver — so neither arm can rely on the post-expression hook;
   // the checker records the pack on the `??` and it applies here, to
   // the value arm, for every shape alike.
-  let okValue = coalesceArmAdaptation(cx, bin, if (leftIsOptionalChain) {
+  let okValue = cx.conformToSlot(coalesceArmAdaptation(cx, bin, if (leftIsOptionalChain) {
     optionalHit(cx, bin.left, cx.stripNonNull(testValue))
   } else {
     cx.stripNonNull(testValue)
-  });
-  if (!isValSubtype(cx.valueTypeOf(okValue), overallVt)) {
-    bail(cx, 'nullish arm type');
-  }
+  }), overallVt, 'nullish arm type');
   let mergeB = cx.b.newBlock();
   let mergeParams = cx.addParams(mergeB, mergeSyms);
   let resultParam = cx.b.blockParam(mergeB, overallVt);
@@ -3799,11 +3796,9 @@ export function lowerNullishCoalesce(cx: LoweringContext, bin: BinaryExpression)
   cx.b.switchTo(rightB);
   let rightValue = lowerExpr(cx, bin.right, overallVt);
   if (cx.reachable) {
-    if (!isValSubtype(cx.valueTypeOf(rightValue), overallVt)) {
-      bail(cx, 'nullish arm type');
-    }
+    let conformedRight = cx.conformToSlot(rightValue, overallVt, 'nullish arm type');
     let rightArgs = cx.envValues(mergeSyms);
-    rightArgs.push(rightValue);
+    rightArgs.push(conformedRight);
     cx.b.br(mergeB, rightArgs);
   }
 

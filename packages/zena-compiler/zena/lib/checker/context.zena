@@ -345,9 +345,15 @@ final class FlowSubject {
 export final class BodyContext {
   /** The body's expected return type, or null outside a function. */
   var returnType: Type | null = null;
+  /** Whether the body has no return annotation and infers its return type. */
+  var inferringReturn: boolean = false;
   /** Return types collected from `return` statements, for a body
    * with no return annotation. */
   var inferredReturnTypes: GrowableArray<Type> = new Array<Type>();
+  /** The `return` arguments those types came from (null for bare `return;`). */
+  var inferredReturnArguments: GrowableArray<Expression | null> = new Array<Expression | null>();
+  /** Source locations of those `return` statements. */
+  var inferredReturnLocs: GrowableArray<SourceLocation | null> = new Array<SourceLocation | null>();
   /** A generator's expected yield type, or null when the body is not a
    * `gen` function. VoidType is the inference sentinel, mirroring
    * `returnType`'s convention. */
@@ -355,6 +361,8 @@ export final class BodyContext {
   /** Yield types collected from `yield` statements, for a generator
    * with no yield annotation. */
   var inferredYieldTypes: GrowableArray<Type> = new Array<Type>();
+  /** The `yield` arguments those types came from, index for index. */
+  var inferredYieldArguments: GrowableArray<Expression> = new Array<Expression>();
   /** Depth of enclosing `try` blocks within the body. `yield`/`await`
    * inside `try` are rejected in v1 (generators.md §6, async.md §1). */
   var tryDepth: i32 = 0;
@@ -2157,12 +2165,26 @@ export final class CheckerContext {
     get { return this.#body.returnType; }
   }
 
+  inferringReturn: boolean {
+    get { return this.#body.inferringReturn; }
+  }
+
   inferredReturnTypes: GrowableArray<Type> {
     get { return this.#body.inferredReturnTypes; }
   }
 
-  addInferredReturnType(t: Type): void {
+  inferredReturnArguments: GrowableArray<Expression | null> {
+    get { return this.#body.inferredReturnArguments; }
+  }
+
+  inferredReturnLocs: GrowableArray<SourceLocation | null> {
+    get { return this.#body.inferredReturnLocs; }
+  }
+
+  addInferredReturnType(t: Type, argument: Expression | null, loc: SourceLocation | null): void {
     this.#body.inferredReturnTypes.push(t);
+    this.#body.inferredReturnArguments.push(argument);
+    this.#body.inferredReturnLocs.push(loc);
   }
 
   yieldType: Type | null {
@@ -2173,8 +2195,22 @@ export final class CheckerContext {
     get { return this.#body.inferredYieldTypes; }
   }
 
-  addInferredYieldType(t: Type): void {
+  inferredYieldArguments: GrowableArray<Expression> {
+    get { return this.#body.inferredYieldArguments; }
+  }
+
+  addInferredYieldType(t: Type, argument: Expression): void {
     this.#body.inferredYieldTypes.push(t);
+    this.#body.inferredYieldArguments.push(argument);
+  }
+
+  isTypeParameterInScope(tp: TypeParameterType): boolean {
+    for (var i = this.#typeScopes.length - 1; i >= 0; i -= 1) {
+      if (let (true, t) = this.#typeScopes[i].get(tp.name)) {
+        if (t === tp) { return true; }
+      }
+    }
+    return false;
   }
 
   tryDepth: i32 {

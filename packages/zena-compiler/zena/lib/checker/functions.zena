@@ -7,7 +7,13 @@ import {
   VariableDeclaration, hasEnsuresClause
 } from '../ast.zena';
 import {
-  ClassType, ErrorType, FunctionDeclInfo, FunctionType, Type, TypeParameterType, UnionType as UnionT, VoidType, isScopedType, scopedInner, typeContainsSecondClass, typeToString, unwrapAliases
+  ArrayType, ClassType, ErrorType, FunctionDeclInfo, FunctionType,
+  InlineParamType, InlineRecordType, InlineTupleType as InlineTupleT,
+  InterfaceType, MixinType, NeverType, RecordType as RecordT,
+  TupleType as TupleT, Type, TypeAliasType, TypeParameterType,
+  UnionType as UnionT, VoidType, isScopedType, scopedInner,
+  typeContainsSecondClass, typeContainsTypeParameter, typeToString,
+  unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { SymbolId, noSymbolId } from '../scope/symbol.zena';
@@ -32,6 +38,92 @@ import {
 } from './protocols.zena';
 import { isAssignableTo } from './relations.zena';
 import { checkStatement } from './statements.zena';
+import { combineArmTypes, createUnionType } from './unions.zena';
+
+/**
+ * Whether `t` mentions a type parameter not declared in `ctx` (such as an
+ * unbound type parameter of a generic callee during argument inference).
+ */
+function hasUnboundTypeParameter(ctx: CheckerContext, t: Type, depth: i32 = 8): boolean {
+  if (depth <= 0 || !typeContainsTypeParameter(t)) { return false; }
+  let next = depth - 1;
+  return match (t) {
+    case TypeParameterType as tp: !ctx.isTypeParameterInScope(tp)
+    case InlineParamType {param}: !ctx.isTypeParameterInScope(param)
+    case InlineRecordType {record}: hasUnboundTypeParameter(ctx, record, next)
+    case ArrayType {elementType}: hasUnboundTypeParameter(ctx, elementType, next)
+    case UnionT {types}: {
+      for (let m in types) {
+        if (hasUnboundTypeParameter(ctx, m, next)) { return true; }
+      }
+      false
+    }
+    case TupleT {elementTypes, row}: {
+      if (row != null && !ctx.isTypeParameterInScope(row)) { return true; }
+      for (let el in elementTypes) {
+        if (hasUnboundTypeParameter(ctx, el, next)) { return true; }
+      }
+      false
+    }
+    case InlineTupleT {elementTypes}: {
+      for (let el in elementTypes) {
+        if (hasUnboundTypeParameter(ctx, el, next)) { return true; }
+      }
+      false
+    }
+    case RecordT as rec: {
+      if (rec.row != null && !ctx.isTypeParameterInScope(rec.row as TypeParameterType)) { return true; }
+      for (let key in rec.properties.keys()) {
+        if (hasUnboundTypeParameter(ctx, rec.properties[key], next)) { return true; }
+      }
+      false
+    }
+    case FunctionType as ft: {
+      for (let p in ft.parameters) {
+        if (hasUnboundTypeParameter(ctx, p, next)) { return true; }
+      }
+      hasUnboundTypeParameter(ctx, ft.returnType, next)
+    }
+    case ClassType as ct: {
+      let args = ct.typeArguments;
+      if (args == null) { return false; }
+      for (let arg in args) {
+        if (hasUnboundTypeParameter(ctx, arg, next)) { return true; }
+      }
+      false
+    }
+    case InterfaceType as it: {
+      let args = it.typeArguments;
+      if (args == null) { return false; }
+      for (let arg in args) {
+        if (hasUnboundTypeParameter(ctx, arg, next)) { return true; }
+      }
+      false
+    }
+    case MixinType as mt: {
+      let args = mt.typeArguments;
+      if (args == null) { return false; }
+      for (let arg in args) {
+        if (hasUnboundTypeParameter(ctx, arg, next)) { return true; }
+      }
+      false
+    }
+    case TypeAliasType as ta: {
+      let args = ta.typeArguments;
+      if (args != null) {
+        for (let arg in args) {
+          if (hasUnboundTypeParameter(ctx, arg, next)) { return true; }
+        }
+      }
+      if (ta.resolving) { return false; }
+      ta.resolving = true;
+      let res = hasUnboundTypeParameter(ctx, ta.target, next);
+      ta.resolving = false;
+      res
+    }
+    case _: false
+  };
+}
 
 /**
  * An inline parameter changes a function's wasm signature, so a function
@@ -331,6 +423,7 @@ export function checkFunctionExpression(
   let bodyCtx = new BodyContext();
   bodyCtx.suspensionRelaxed = scopedReturnRelaxed;
   bodyCtx.returnType = retType;
+  bodyCtx.inferringReturn = needsInference;
   if (isGenerator) { bodyCtx.yieldType = declaredYieldType; }
   if (isAsync) {
     bodyCtx.asyncValueType = retType;
@@ -396,14 +489,54 @@ export function checkFunctionExpression(
       // After checking block body, infer return type from collected types.
       if (needsInference) {
         let inferred = ctx.inferredReturnTypes;
-        if (inferred.length == 0) {
-          retType = new VoidType();
-        } else if (inferred.length == 1) {
-          retType = inferred[0];
+        let returned = ctx.inferredReturnArguments;
+        let returnLocs = ctx.inferredReturnLocs;
+        let valueTypes = new Array<Type>();
+        var hasVoidReturn = false;
+        for (let t in inferred) {
+          if (t is VoidType) {
+            hasVoidReturn = true;
+          } else if (!(t is NeverType)) {
+            valueTypes.push(t);
+          }
+        }
+        if (valueTypes.length == 0) {
+          retType = if (!hasVoidReturn && branchDefinitelyExits(block, ctx.model)) {
+            new NeverType()
+          } else {
+            new VoidType()
+          };
         } else {
-          // Multiple return types - create union (or use first as approximation)
-          // For now, just use the first type as a simple heuristic
-          retType = inferred[0];
+          retType = createUnionType(valueTypes, ctx, loc);
+          for (var k = 0; k < inferred.length; k += 1) {
+            let t = inferred[k];
+            let arg = returned[k];
+            if (t is VoidType) {
+              if (arg == null) {
+                ctx.error(
+                  `Missing return value. Expected '${typeToString(retType)}'.`,
+                  DiagnosticCode.TypeMismatch,
+                  returnLocs[k] ?? loc
+                );
+              } else {
+                ctx.error(
+                  "Type mismatch: cannot return 'void' from function expecting '" +
+                  typeToString(retType) + "'.",
+                  DiagnosticCode.TypeMismatch,
+                  returnLocs[k] ?? loc
+                );
+              }
+            } else if (arg != null && !(t is NeverType) && isAssignableTo(ctx, t, retType)) {
+              adaptToExpected(ctx, arg, t, retType);
+            }
+          }
+          if (!branchDefinitelyExits(block, ctx.model)) {
+            ctx.error(
+              "A function with a non-void return type must return a value.",
+              DiagnosticCode.MissingReturnType,
+              loc
+            );
+          }
         }
       } else {
         // If it lacks a guaranteed return, a conforming trailing
@@ -486,7 +619,15 @@ export function checkFunctionExpression(
         );
         yieldT = new ErrorType();
       } else {
-        yieldT = inferredYs[0];
+        yieldT = combineArmTypes(inferredYs, ctx, loc);
+        if (!(yieldT is VoidType)) {
+          let yielded = ctx.inferredYieldArguments;
+          for (var yk = 0; yk < inferredYs.length; yk += 1) {
+            if (isAssignableTo(ctx, inferredYs[yk], yieldT)) {
+              adaptToExpected(ctx, yielded[yk], inferredYs[yk], yieldT);
+            }
+          }
+        }
       }
       finalRetType = if (isAsync) {
         makeAsyncIteratorType(ctx, yieldT, loc)
@@ -505,7 +646,22 @@ export function checkFunctionExpression(
     } else if (declaredFutureType != null) {
       finalRetType = declaredFutureType;
     } else {
-      finalRetType = makeFutureType(ctx, retType, loc);
+      // `Future<T>` is invariant in `T` (monomorphized per specialization), so
+      // an unannotated async body that never returns a value (`never`) takes a
+      // concrete contextual `Future<V>`'s `V` when one is present, and
+      // otherwise infers `Future<never>`.
+      var asyncVal = retType;
+      if (retType is NeverType && contextualFn != null && !ctx.diagnosticsSuppressed) {
+        var ctxRet = unwrapAliases(contextualFn.returnType);
+        if (isScopedType(ctxRet)) {
+          ctxRet = scopedInner(ctxRet) ?? ctxRet;
+        }
+        let ctxVal = extractFutureValueType(ctx, ctxRet);
+        if (ctxVal != null && !hasUnboundTypeParameter(ctx, ctxVal)) {
+          asyncVal = ctxVal;
+        }
+      }
+      finalRetType = makeFutureType(ctx, asyncVal, loc);
     }
   }
 
