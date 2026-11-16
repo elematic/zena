@@ -1479,7 +1479,7 @@ function printExpressionInner(expr: Expression): Doc {
   case MatchExpression {}: printMatchExpression(expr)
   case IfExpression {}: printIfExpression(expr)
   case ThrowExpression {argument}: concat(docs2(text('throw '), printExpression(argument)))
-  case AwaitExpression {argument}: concat(docs2(text('await '), printExpression(argument)))
+  case AwaitExpression {argument}: concat(docs2(text('await '), printOperand(argument, PREC_UNARY)))
   case TryExpression {}: printTryExpression(expr)
 };
 }
@@ -2513,88 +2513,13 @@ function printCondition(node: Node): Doc {
 
 /// Generic Node printer — dispatches to the right sub-printer.
 function printNode(node: Node): Doc {
-  return match (node) {
-  case Module {}: printModule(node)
-  // Expressions
-  case Identifier {}: printExpression(node as Expression)
-  case NumberLiteral {}: printExpression(node as Expression)
-  case StringLiteral {}: printExpression(node as Expression)
-  case BooleanLiteral {}: printExpression(node as Expression)
-  case NullLiteral {}: printExpression(node as Expression)
-  case TemplateLiteral {}: printExpression(node as Expression)
-  case TaggedTemplateExpression {}: printExpression(node as Expression)
-  case BinaryExpression {}: printExpression(node as Expression)
-  case UnaryExpression {}: printExpression(node as Expression)
-  case AssignmentExpression {}: printExpression(node as Expression)
-  case AsExpression {}: printExpression(node as Expression)
-  case IsExpression {}: printExpression(node as Expression)
-  case RangeExpression {}: printExpression(node as Expression)
-  case PipelineExpression {}: printExpression(node as Expression)
-  case PipePlaceholder {}: printExpression(node as Expression)
-  case FunctionExpression {}: printExpression(node as Expression)
-  case CallExpression {}: printExpression(node as Expression)
-  case MemberExpression {}: printExpression(node as Expression)
-  case IndexExpression {}: printExpression(node as Expression)
-  case ThisExpression {}: printExpression(node as Expression)
-  case SuperExpression {}: printExpression(node as Expression)
-  case NewExpression {}: printExpression(node as Expression)
-  case ArrayLiteral {}: printExpression(node as Expression)
-  case RecordLiteral {}: printExpression(node as Expression)
-  case MapLiteral {}: printExpression(node as Expression)
-  case TupleLiteral {}: printExpression(node as Expression)
-  case MatchExpression {}: printExpression(node as Expression)
-  case IfExpression {}: printExpression(node as Expression)
-  case ThrowExpression {}: printExpression(node as Expression)
-  case TryExpression {}: printExpression(node as Expression)
-  // Statements
-  case VariableDeclaration {}: printStatement(node as Statement)
-  case FunctionDeclaration {}: printStatement(node as Statement)
-  case ExpressionStatement {}: printStatement(node as Statement)
-  case BlockStatement {}: printStatement(node as Statement)
-  case ReturnStatement {}: printStatement(node as Statement)
-  case BreakStatement {}: printStatement(node as Statement)
-  case ContinueStatement {}: printStatement(node as Statement)
-  case IfStatement {}: printStatement(node as Statement)
-  case WhileStatement {}: printStatement(node as Statement)
-  case ForStatement {}: printStatement(node as Statement)
-  case ForInStatement {}: printStatement(node as Statement)
-  case ClassDeclaration {}: printStatement(node as Statement)
-  case InterfaceDeclaration {}: printStatement(node as Statement)
-  case EnumDeclaration {}: printStatement(node as Statement)
-  case MixinDeclaration {}: printStatement(node as Statement)
-  case TypeAliasDeclaration {}: printStatement(node as Statement)
-  case ImportDeclaration {}: printStatement(node as Statement)
-  case ExportAllDeclaration {}: printStatement(node as Statement)
-  case ExportFromDeclaration {}: printStatement(node as Statement)
-  case DeclareFunction {}: printStatement(node as Statement)
-  case SymbolDeclaration {}: printStatement(node as Statement)
-  // Patterns
-  case BindingPattern {}: printPattern(node as Pattern)
-  case IdentifierPattern {}: printPattern(node as Pattern)
-  case RecordPattern {}: printPattern(node as Pattern)
-  case TuplePattern {}: printPattern(node as Pattern)
-  case ArrayPattern {}: printPattern(node as Pattern)
-  case RestPattern {}: printPattern(node as Pattern)
-  case AsPattern {}: printPattern(node as Pattern)
-  case ClassPattern {}: printPattern(node as Pattern)
-  case LogicalPattern {}: printPattern(node as Pattern)
-  case AssignmentPattern {}: printPattern(node as Pattern)
-  case AbsencePattern {}: printPattern(node as Pattern)
-  case LiteralPattern {}: printPattern(node as Pattern)
-  // Type Annotations
-  case NamedTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
-  case UnionTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
-  case NullableTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
-  case FunctionTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
-  case LiteralTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
-  case RecordTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
-  case TupleTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
-  case InlineTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
-  case ThisTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
-  // Direct variants
-  case LetPatternCondition {pattern, init}: {
-    concat(docs3(text('let '), printPattern(pattern), concat(docs2(text(' = '), printExpression(init)))))
+  if (node is Module) { return printModule(node); }
+  if (node is Expression) { return printExpression(node); }
+  if (node is Statement) { return printStatement(node); }
+  if (node is Pattern) { return printPattern(node); }
+  if (node is TypeAnnotation) { return printTypeAnnotation(node); }
+  if (let LetPatternCondition {pattern, init} = node) {
+    return concat(docs3(text('let '), printPattern(pattern), concat(docs2(text(' = '), printExpression(init)))));
   }
-  case _: text('/* unknown node */')
-};
+  return text('/* unknown node */');
 }

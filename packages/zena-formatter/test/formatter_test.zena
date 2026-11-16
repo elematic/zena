@@ -389,6 +389,14 @@ let tests = suite('formatter', () => {
     checkStable('negate power', 'let x = -(a ** b);');
   });
 
+  test('keeps parentheses around a looser `await` operand', (t) => {
+    checkStable('await nullish', 'let f = async () => await (a ?? b);');
+    checkStable('await cast', 'let f = async () => await (x as Promise<i32>);');
+    checkStable('await sum', 'let f = async () => await (a + b);');
+    checkFormat('cast of await', 'let f = async () => (await x) as i32;', 'let f = async () => await x as i32;');
+    checkStable('await in if expression', 'let f = async () => if (cond) await a() else await b();');
+  });
+
   test('parenthesizes for exponentiation, which is right associative', (t) => {
     // `a ** b ** c` is `a ** (b ** c)`, so the left-nested form needs
     // parentheses and the right-nested form does not.
