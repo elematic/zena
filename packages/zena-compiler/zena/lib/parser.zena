@@ -1988,7 +1988,13 @@ export final class Parser {
           let name = this.#parseIdentifier();
           var value: Node = new IdentifierPattern(name.name, name.loc);
           if (this.#match(TokenType.Colon)) {
-            value = this.#parsePattern();
+            let subPattern = this.#parsePattern();
+            if (let IdentifierPattern {name as targetName} = subPattern) {
+              if (targetName != '_') {
+                throw this.#error(`Use 'as' to rename a destructured field: '${name.name} as ${targetName}'`);
+              }
+            }
+            value = subPattern;
           } else if (this.#match(TokenType.As)) {
             let newName = this.#parseIdentifier();
             value = new IdentifierPattern(newName.name, newName.loc);
@@ -2050,7 +2056,7 @@ export final class Parser {
       }
       let name = this.#parseIdentifier();
       
-      // Shorthand: { x } means { x: x }
+      // Shorthand: { x } binds x; { x as y } renames; { x: pattern } matches a sub-pattern.
       var value: Node = new IdentifierPattern(name.name, name.loc);
       if (this.#match(TokenType.Colon)) {
         value = if (matchContext) {
@@ -2058,6 +2064,11 @@ export final class Parser {
           m
         } else {
           let p: Node = this.#parsePattern(isUnderLet);
+          if (let IdentifierPattern {name as targetName} = p) {
+            if (targetName != '_') {
+              throw this.#error(`Use 'as' to rename a destructured field: '${name.name} as ${targetName}'`);
+            }
+          }
           p
         };
       } else if (this.#match(TokenType.As)) {

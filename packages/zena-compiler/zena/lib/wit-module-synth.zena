@@ -1660,7 +1660,7 @@ function lowerMemStmts(ty: Ty, value: String, ptrExpr: String,
     let innerStmt = lowerMemStmts(ty.children[0], bound,
         displaced(ptrExpr, payoff), uses);
     return zena`
-      if (let Some {value: ${bound}} = ${value}) {
+      if (let Some {value as ${bound}} = ${value}) {
         storeU8(${ptrExpr}, 1);
         ${innerStmt}
       } else {
@@ -1874,7 +1874,7 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
   if (ty.kind == TyKind.OptionT) {
     uses.option = true;
     let bound = `o${uses.nextTmp()}`;
-    sb.append(indent).append(`if (let Some {value: ${bound}} = ${value}) {\n`);
+    sb.append(indent).append(`if (let Some {value as ${bound}} = ${value}) {\n`);
     writeSlot(sb, indent + "  ", slots[base], base, "1", "i32");
     lowerFlatStmts(sb, ty.children[0], bound,
         slots, base + 1, indent + "  ", uses);
@@ -2412,7 +2412,7 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
     async function pumpStreamOut${k}(source: Stream<${z}>, end: i32): Future<void> {
       var open = true;
       while (open) {
-        if (let Some {value: v} = await source.readOne()) {
+        if (let Some {value as v} = await source.readOne()) {
           let m0 = stagedMark();
           let buf = stageBuffer(${size});
           ${lowerElemStmt}

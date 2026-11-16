@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- `{x: y}` field renaming in record and class destructuring patterns; use `{x as y}` instead (`:` in a pattern introduces a nested sub-pattern).
+
 ## [0.0.1-preview.1] - 2026-11-12
 
 ### Added

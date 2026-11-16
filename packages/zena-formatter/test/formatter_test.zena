@@ -1299,8 +1299,22 @@ let tests = suite('formatter', () => {
   });
 
   test('keeps a record pattern rest', (t) => {
-    checkStable('record pattern rest', 'let {x, y: renamed, ...rest} = point;');
+    checkStable('record pattern rest', 'let {x, y as renamed, ...rest} = point;');
     checkStable('only a rest', 'let {...all} = point;');
+  });
+
+  test('formats destructuring renames with `as` and keeps `:` for sub-patterns', (t) => {
+    checkStable('record destructure rename', 'let {x as foo, y as bar} = point;');
+    checkStable('record destructure default', 'let {x = 1, y as bar = 2} = point;');
+    checkStable('nested record destructure', 'let {origin: {x as x0, y as y0}} = rect;');
+    checkStable('class pattern rename and sub-patterns', dedentRaw`
+      let x = match (v) {
+        case Point {x as px, y as py}: px + py
+        case Wrapper {shape: Circle}: 1
+        case Wrapper {shape: let s}: 2
+        case Point {x: _}: 0
+      };
+    `);
   });
 
   test('keeps tuple type spreads and a tuple row bound', (t) => {
