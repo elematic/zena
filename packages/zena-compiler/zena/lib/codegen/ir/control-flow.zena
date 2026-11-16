@@ -347,7 +347,7 @@ export function lowerValueNode(cx: LoweringContext, node: Node, isVoid: boolean,
       // A never-returning call as an arm ends it the same way a bare
       // throw does. Statement lowering closes the block after the call.
       let t = cx.func.model.getNodeType(node);
-      if (t != null && t is NeverType) {
+      if (t != null && unwrapAliases(t) is NeverType) {
         lowerStmt(cx, new ExpressionStatement(node, node.loc));
         return -1;
       }
@@ -454,7 +454,7 @@ function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>
     if (lastExpr is CallExpression) {
       // A never-returning call in tail position: same as a throw.
       let t = cx.func.model.getNodeType(lastExpr);
-      if (t != null && t is NeverType) {
+      if (t != null && unwrapAliases(t) is NeverType) {
         lowerStmt(cx, last);
         return -1;
       }
@@ -1377,7 +1377,7 @@ function lowerArmSlots(cx: LoweringContext, node: Node,
   }
   if (node is CallExpression) {
     let t = cx.func.model.getNodeType(node);
-    if (t != null && t is NeverType) {
+    if (t != null && unwrapAliases(t) is NeverType) {
       lowerStmt(cx, new ExpressionStatement(node, node.loc));
       return new Array<i32>();
     }
@@ -3756,11 +3756,17 @@ export function lowerNullishCoalesce(cx: LoweringContext, bin: BinaryExpression)
   var testValue = -1;
   if (leftIsOptionalChain) {
     testValue = cx.chainReceiver(cx.optionalChainObject(bin.left));
+    if (!cx.reachable) {
+      return -1;
+    }
     if (!isRefValType(cx.valueTypeOf(testValue))) {
       bail(cx, 'optional receiver kind');
     }
   } else {
     testValue = lowerExpr(cx, bin.left, null);
+    if (!cx.reachable) {
+      return -1;
+    }
     if (!isRefValType(cx.valueTypeOf(testValue))) {
       bail(cx, 'nullish on non-reference');
     }

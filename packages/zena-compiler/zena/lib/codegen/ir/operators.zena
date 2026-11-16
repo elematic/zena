@@ -305,6 +305,9 @@ function lowerValueEqOperand(cx: LoweringContext, e: Expression, t: Type) {
 /** Short-circuit && and || as a value-producing diamond. */
 function lowerLogical(cx: LoweringContext, bin: BinaryExpression) {
   let left = lowerExpr(cx, bin.left, null);
+  if (!cx.reachable) {
+    return -1;
+  }
   let evalRight = cx.b.newBlock();
   let merge = cx.b.newBlock();
   let result = cx.b.blockParam(merge, new ValTypeI32());
@@ -317,8 +320,11 @@ function lowerLogical(cx: LoweringContext, bin: BinaryExpression) {
   }
   cx.b.switchTo(evalRight);
   let right = lowerExpr(cx, bin.right, null);
-  cx.b.br(merge, oneValue(right));
+  if (cx.reachable) {
+    cx.b.br(merge, oneValue(right));
+  }
   cx.b.switchTo(merge);
+  cx.reachable = true;
   return result;
 }
 
@@ -819,6 +825,9 @@ export function lowerUnary(cx: LoweringContext, un: UnaryExpression): i32 {
     }
   }
   let value = lowerExpr(cx, un.argument, null);
+  if (!cx.reachable) {
+    return -1;
+  }
   let vt = cx.valueTypeOf(value);
   if (un.operator == "!") {
     if (!(vt is ValTypeI32)) {
@@ -1029,6 +1038,9 @@ export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
         parseFloatLiteral((expr.expression as NumberLiteral).raw), dstVt);
   }
   let value = lowerExpr(cx, expr.expression, null);
+  if (!cx.reachable) {
+    return -1;
+  }
   if (value < 0 && cx.reachable && isRefValType(dstVt)) {
     // A `void` operand: `v as anyref` where this specialization made
     // T void. Like a primitive (below), it can never be a reference.
