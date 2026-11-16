@@ -1,0 +1,402 @@
+/**
+ * Verifies that the repository's Zebra manifests (`zena-package.json` and
+ * `zebra.json`) run the exact same task graph, services, commands,
+ * environment bindings, outputs, and discovered `*_test.zena` files as
+ * Wireit (`package.json`).
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, fail, isTrue} from 'zena:assert';
+import {HashMap, HashSet} from 'zena:collections';
+import {StringBuilder} from 'zena:core';
+import {FileType, GlobOptions, exists, glob, isDirectory, isFile, listDir, readFile} from 'zena:fs';
+import {hasMagic} from 'zena:glob';
+import {JsonObject} from 'zena:json';
+import {extname} from 'zena:path';
+import {compareStrings, sortBy} from 'workflow/canonical';
+import {joinWorkspace, readFileOrNull, withRoot} from 'zebra/fs-util';
+import {
+  EnvBinding,
+  EnvExternal,
+  EnvLiteral,
+  ScriptConfig,
+  ScriptRef,
+  WireitWorkspace,
+  ZENA_TEST_RULE_TYPE,
+  parseJsonObject,
+  refKey,
+} from 'zebra/wireit-config';
+import {ZebraWorkspace} from 'zebra/zebra-config';
+
+let STDLIB_FILESET_KEY = 'packages/stdlib:lib';
+
+function formatList(items: Array<String>) {
+  let sb = new StringBuilder();
+  sb.append('[');
+  for (var i = 0; i < items.length; i += 1) {
+    if (i > 0) {
+      sb.append(', ');
+    }
+    sb.append(items[i]);
+  }
+  sb.append(']');
+  return sb.toString();
+}
+
+function sortedStrings(items: Array<String>): Array<String> {
+  let copy = new GrowableArray<String>();
+  for (let item in items) {
+    copy.push(item);
+  }
+  sortBy(copy, compareStrings);
+  return copy;
+}
+
+function normalizedDeps(
+  config: ScriptConfig,
+  filesetKeys: HashSet<String>,
+) {
+  let seen = new HashSet<String>();
+  let cascadeByKey = new HashMap<String, boolean>();
+  let keys = new GrowableArray<String>();
+  for (let dep in config.dependencies) {
+    let key = refKey(dep.ref);
+    if (key == STDLIB_FILESET_KEY || filesetKeys.has(key)) {
+      continue;
+    }
+    if (seen.add(key)) {
+      keys.push(key);
+      cascadeByKey[key] = dep.cascade;
+    } else if (dep.cascade) {
+      cascadeByKey[key] = true;
+    }
+  }
+  sortBy(keys, compareStrings);
+  let formatted = new GrowableArray<String>();
+  for (let key in keys) {
+    let cascade = cascadeByKey.getOr(key, true);
+    formatted.push(if (cascade) key else `${key}(cascade=false)`);
+  }
+  return formatList(formatted);
+}
+
+function formatEnv(env: Array<(String, EnvBinding)>) {
+  let parts = new GrowableArray<String>();
+  for (let (name, binding) in env) {
+    match (binding) {
+      case EnvLiteral as lit: {
+        parts.push(`${name}=${lit.value}`);
+      }
+      case EnvExternal as ext: {
+        let def = ext.defaultValue;
+        parts.push(if (def != null) `${name}=ext(${def})` else `${name}=ext`);
+      }
+    }
+  }
+  return formatList(parts);
+}
+
+function formatService(config: ScriptConfig) {
+  let svc = config.service;
+  if (svc == null) {
+    return 'none';
+  }
+  let pat = svc.readyWhenLineMatches;
+  return if (pat != null) `service:${pat}` else 'service:ready';
+}
+
+class ParsedWireitZenaTest {
+  cwdDir: String;
+  debug: boolean;
+  patterns: Array<String>;
+
+  new(this.cwdDir, this.debug, this.patterns);
+}
+
+/** Tokenizes simple shell words supporting single and double quotes. */
+function tokenizeShellWords(cmd: String): Array<String> {
+  let words = new GrowableArray<String>();
+  let current = new StringBuilder();
+  var inWord = false;
+  var quote = 0;
+  var i = 0;
+  while (i < cmd.length) {
+    let b = cmd.getByteAt(i);
+    if (quote != 0) {
+      if (b == quote) {
+        quote = 0;
+      } else if (quote == 34 && b == 92 && i + 1 < cmd.length) {
+        i += 1;
+        current.appendByte(cmd.getByteAt(i));
+      } else {
+        current.appendByte(b);
+      }
+      i += 1;
+      continue;
+    }
+    if (b == 39 || b == 34) {
+      quote = b;
+      inWord = true;
+      i += 1;
+      continue;
+    }
+    if (b == 32 || b == 9 || b == 10 || b == 13) {
+      if (inWord) {
+        words.push(current.toString());
+        current.clear();
+        inWord = false;
+      }
+      i += 1;
+      continue;
+    }
+    inWord = true;
+    current.appendByte(b);
+    i += 1;
+  }
+  if (inWord) {
+    words.push(current.toString());
+  }
+  return words;
+}
+
+/** Parses a Wireit `zena-cli [-g] test <patterns...>` command string. */
+function parseWireitZenaTestCommand(
+  stepKey: String,
+  packageDir: String,
+  command: String?,
+) {
+  if (command == null) {
+    fail(`${stepKey}: Wireit config has no command to match Zebra "tests"`);
+  }
+  var rest = (command ?? '').trim();
+  var cwdDir = packageDir;
+  if (rest.startsWith('cd ../.. &&')) {
+    cwdDir = '';
+    rest = rest.sliceBytes('cd ../.. &&'.length, rest.length).trim();
+  }
+  let tokens = tokenizeShellWords(rest);
+  var cliIdx = -1;
+  for (var i = 0; i < tokens.length; i += 1) {
+    if (tokens[i].endsWith('/zena-cli') || tokens[i] == 'zena-cli') {
+      cliIdx = i;
+      break;
+    }
+  }
+  if (cliIdx < 0) {
+    fail(`${stepKey}: expected Wireit command to invoke zena-cli, got: ${rest}`);
+  }
+  var debug = false;
+  var testIdx = -1;
+  for (var i = cliIdx + 1; i < tokens.length; i += 1) {
+    let tok = tokens[i];
+    if (tok == '-g' || tok == '--debug') {
+      debug = true;
+    } else if (tok == 'test') {
+      testIdx = i;
+      break;
+    } else {
+      fail(`${stepKey}: unexpected token "${tok}" before "test" in: ${rest}`);
+    }
+  }
+  if (testIdx < 0) {
+    fail(`${stepKey}: expected "test" subcommand in Wireit command: ${rest}`);
+  }
+  let patterns = new GrowableArray<String>();
+  for (var i = testIdx + 1; i < tokens.length; i += 1) {
+    let tok = tokens[i];
+    if (tok.startsWith('-')) {
+      fail(`${stepKey}: unhandled CLI flag "${tok}" in Wireit test command: ${rest}`);
+    }
+    patterns.push(tok);
+  }
+  isTrue(patterns.length > 0, `${stepKey}: Wireit test command listed no patterns`);
+  return new ParsedWireitZenaTest(cwdDir, debug, patterns);
+}
+
+/** Expands test patterns relative to `baseDir` under `root` into sorted repo-relative `.zena` paths. */
+async function expandTestFiles(
+  root: String,
+  baseDir: String,
+  patterns: Array<String>,
+): Future<Array<String>> {
+  let seen = new HashSet<String>();
+  let files = new GrowableArray<String>();
+  for (let raw in patterns) {
+    let joined = joinWorkspace(baseDir, raw);
+    var globPattern = joined;
+    if (!hasMagic(raw)) {
+      let full = withRoot(root, joined);
+      isTrue(await exists(full), `missing test path "${joined}"`);
+      if (await isDirectory(full)) {
+        globPattern = if (joined == '') '**/*_test.zena' else `${joined}/**/*_test.zena`;
+      }
+    }
+    let opts = new GlobOptions();
+    opts.cwd = root;
+    for (let m in await glob(globPattern, opts)) {
+      if (extname(m) == '.zena' && seen.add(m)) {
+        files.push(m);
+      }
+    }
+  }
+  sortBy(files, compareStrings);
+  return files;
+}
+
+export let tests = suite('repository Wireit vs Zebra parity', () => {
+  // Under `zena test`, the repository root is preopened at `.`.
+  let root = '.';
+
+  test('every workspace package with a package.json test script is wired into Zebra and root :test', async () => {
+    let readRepoFile = (rel: String) => readFileOrNull(withRoot(root, rel));
+    let zebraWs = new ZebraWorkspace(readRepoFile);
+    let rootClosure = await zebraWs.collect([new ScriptRef('', 'test')]);
+    let inRootTest = new HashSet<String>();
+    for (let cfg in rootClosure) {
+      inRootTest.add(refKey(cfg.ref));
+    }
+
+    let entries = await listDir(withRoot(root, 'packages'));
+    for (let entry in entries) {
+      if (entry.fileType != FileType.Directory) {
+        continue;
+      }
+      let pkgDir = `packages/${entry.name}`;
+      let pkgJsonPath = withRoot(root, `${pkgDir}/package.json`);
+      if (!(await isFile(pkgJsonPath))) {
+        continue;
+      }
+      let pkgObj = parseJsonObject(`${pkgDir}/package.json`, await readFile(pkgJsonPath));
+      let scriptsVal = pkgObj['scripts'];
+      if (scriptsVal is JsonObject && scriptsVal['test'] != null) {
+        let key = `${pkgDir}:test`;
+        // Must resolve in ZebraWorkspace without falling back to a missing script.
+        let cfg = await zebraWs.scriptConfig(new ScriptRef(pkgDir, 'test'));
+        equal(refKey(cfg.ref), key);
+        isTrue(
+          inRootTest.has(key),
+          `${key} is defined in ${pkgDir}/package.json but missing from root :test closure`,
+        );
+      }
+    }
+  });
+
+  test('test, smoke, build, and opt-in test targets match between WireitWorkspace and ZebraWorkspace', async () => {
+    let readRepoFile = (rel: String) => readFileOrNull(withRoot(root, rel));
+    let wireitWs = new WireitWorkspace(readRepoFile);
+    let zebraWs = new ZebraWorkspace(readRepoFile);
+
+    let entryTargets: Array<ScriptRef> = [
+      new ScriptRef('', 'test'),
+      new ScriptRef('', 'test:smoke'),
+      new ScriptRef('', 'build'),
+      new ScriptRef('packages/google-cloud', 'test:emulator'),
+      new ScriptRef('packages/pds', 'test:emulator'),
+      new ScriptRef('packages/registry', 'test:emulator'),
+      new ScriptRef('packages/zena-cli', 'test:pds-js'),
+      new ScriptRef('packages/zenafx', 'test:gui'),
+    ];
+
+    let wireitConfigs = await wireitWs.collect(entryTargets);
+    let zebraConfigs = await zebraWs.collect(entryTargets);
+
+    let filesetKeys = new HashSet<String>();
+    let zebraByKey = new HashMap<String, ScriptConfig>();
+    let zebraKeys = new GrowableArray<String>();
+    for (let cfg in zebraConfigs) {
+      let key = refKey(cfg.ref);
+      if (cfg.isFileset) {
+        filesetKeys.add(key);
+        continue;
+      }
+      zebraByKey[key] = cfg;
+      zebraKeys.push(key);
+    }
+
+    let wireitByKey = new HashMap<String, ScriptConfig>();
+    let wireitKeys = new GrowableArray<String>();
+    for (let cfg in wireitConfigs) {
+      let key = refKey(cfg.ref);
+      if (key == STDLIB_FILESET_KEY) {
+        continue;
+      }
+      wireitByKey[key] = cfg;
+      wireitKeys.push(key);
+    }
+
+    let sortedZebraKeys = sortedStrings(zebraKeys);
+    let sortedWireitKeys = sortedStrings(wireitKeys);
+    equal(
+      formatList(sortedZebraKeys),
+      formatList(sortedWireitKeys),
+      'Reachable non-fileset step sets differ between Zebra and Wireit',
+    );
+
+    var nativeTestsCount = 0;
+    for (let key in sortedZebraKeys) {
+      let zCfg = zebraByKey[key];
+      let wCfg = wireitByKey[key];
+
+      equal(
+        normalizedDeps(zCfg, filesetKeys),
+        normalizedDeps(wCfg, filesetKeys),
+        `${key}: non-fileset dependencies differ between Zebra and Wireit`,
+      );
+      equal(
+        formatService(zCfg),
+        formatService(wCfg),
+        `${key}: service config differs between Zebra and Wireit`,
+      );
+      equal(
+        formatEnv(zCfg.env),
+        formatEnv(wCfg.env),
+        `${key}: env bindings differ between Zebra and Wireit`,
+      );
+      equal(
+        formatList(sortedStrings(zCfg.output)),
+        formatList(sortedStrings(wCfg.output)),
+        `${key}: output globs differ between Zebra and Wireit`,
+      );
+
+      let zTests = zCfg.tests;
+      if (zTests == null) {
+        equal(
+          zCfg.ruleType ?? '<none>',
+          '<none>',
+          `${key}: non-test script should have no ruleType`,
+        );
+        equal(
+          zCfg.command ?? '<none>',
+          wCfg.command ?? '<none>',
+          `${key}: command differs between Zebra and Wireit`,
+        );
+      } else {
+        nativeTestsCount += 1;
+        equal(
+          zCfg.ruleType ?? '<none>',
+          ZENA_TEST_RULE_TYPE,
+          `${key}: Zebra "tests" script must declare "type": "${ZENA_TEST_RULE_TYPE}"`,
+        );
+        let parsed = parseWireitZenaTestCommand(key, zCfg.ref.packageDir, wCfg.command);
+        equal(
+          zCfg.testDebug,
+          parsed.debug,
+          `${key}: debug (-g) flag differs between Zebra and Wireit`,
+        );
+        let zebraFiles = await expandTestFiles(root, zCfg.ref.packageDir, zTests);
+        let wireitFiles = await expandTestFiles(root, parsed.cwdDir, parsed.patterns);
+        isTrue(zebraFiles.length > 0, `${key}: Zebra "tests" matched 0 files`);
+        equal(
+          formatList(zebraFiles),
+          formatList(wireitFiles),
+          `${key}: discovered *_test.zena files differ between Zebra and Wireit`,
+        );
+      }
+    }
+
+    isTrue(
+      nativeTestsCount >= 20,
+      `Expected at least 20 native "tests" steps across the workspace, saw ${i32ToString(nativeTestsCount)}`,
+    );
+  });
+});

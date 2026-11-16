@@ -28,7 +28,7 @@ import { CompileFailure, CompileRequest, compileTo } from './compile.zena';
 import { Options, repoRelative, resolveUserPath, userCwd } from './env.zena';
 import { runCommand } from './run.zena';
 import { lspCommand } from './lsp.zena';
-import { testCommand } from './test-run.zena';
+import { CliTestStepRunner, testCommand } from './test-run.zena';
 import { lintCommand } from './lint.zena';
 import { fetchCommand } from './fetch.zena';
 import { addCommand, updateCommand } from './add.zena';
@@ -136,8 +136,8 @@ function describe() {
         },
       },
       'run' => {
-        help: 'Compile and run a Zena file, or run a compiled module',
-        // Everything after the file belongs to the program being run.
+        help: 'Compile and run a Zena file, run a compiled module, or run a package script',
+        // Everything after the file or script belongs to it.
         stopAtPositional: true,
         options: {
           'help' => help,
@@ -145,6 +145,25 @@ function describe() {
           'dir' => {
             type: OptionType.MultiString,
             help: 'Pre-open a directory, as HOST or HOST::GUEST',
+          },
+          'jobs' => {
+            abbr: 'j',
+            help: 'Maximum concurrent target scripts to run',
+          },
+          'watch' => {
+            type: OptionType.Flag,
+            abbr: 'w',
+            help: 'Watch target inputs and rerun the script incrementally',
+          },
+          'force' => {
+            type: OptionType.Flag,
+            abbr: 'f',
+            help: 'Rerun target scripts even when fresh or cached',
+          },
+          'verbose' => {
+            type: OptionType.Flag,
+            abbr: 'v',
+            help: 'List fresh and skipped target steps and print step command output',
           },
           'time' => time,
           'no-cache' => noCache,
@@ -159,7 +178,7 @@ function describe() {
         },
       },
       'test' => {
-        help: 'Run the test suites in .zena files',
+        help: 'Run the test script, or the test suites in .zena files',
         options: {
           'help' => help,
           'filter' => {
@@ -170,6 +189,25 @@ function describe() {
             type: OptionType.MultiString,
             help: 'Skip files matching this glob',
           },
+          'jobs' => {
+            abbr: 'j',
+            help: 'Maximum concurrent tests or target scripts to run',
+          },
+          'watch' => {
+            type: OptionType.Flag,
+            abbr: 'w',
+            help: 'Watch target inputs and rerun the test script incrementally',
+          },
+          'force' => {
+            type: OptionType.Flag,
+            help: 'Rerun the test script even when fresh or cached',
+          },
+          'verbose' => {
+            type: OptionType.Flag,
+            abbr: 'v',
+            help: 'List fresh and skipped target steps and print step command output',
+          },
+          'no-cache' => noCache,
           'single' => {
             type: OptionType.Flag,
             help: 'Run one file in this process (what each test runs as)',
@@ -455,10 +493,10 @@ async function dispatch(
     return await build(sub, options, rawArgs);
   }
   if (name == 'run') {
-    return await runCommand(sub, options);
+    return await run(sub, options);
   }
   if (name == 'test') {
-    return await testCommand(sub, options);
+    return await test(sub, options, rawArgs);
   }
   if (name == 'doc') {
     return await doc(sub);
@@ -691,21 +729,11 @@ async function build(
       return await buildFile(args, options, argument, path);
     }
   }
-  var jobs = 0;
-  if (let (true, rawJobs) = args.getOption('jobs')) {
-    if (let (true, parsed) = parseI32(rawJobs)) {
-      if (parsed >= 1) {
-        jobs = parsed;
-      } else {
-        console.error(`Error: invalid job count "${rawJobs}"`);
-        return 2;
-      }
-    } else {
-      console.error(`Error: invalid job count "${rawJobs}"`);
-      return 2;
-    }
+  let jobs = parseJobsOption(args);
+  if (jobs < 0) {
+    return 2;
   }
-  return await buildScript(argument, {
+  return await buildScript(argument, options, {
     jobs,
     watch: args.getFlag('watch'),
     force: args.getFlag('force'),
@@ -713,6 +741,135 @@ async function build(
     verbose: options.verbose || args.getFlag('verbose'),
     extraArgs,
   });
+}
+
+function parseJobsOption(args: ParsedArgs): i32 {
+  if (let (true, rawJobs) = args.getOption('jobs')) {
+    if (let (true, parsed) = parseI32(rawJobs)) {
+      if (parsed >= 1) {
+        return parsed;
+      }
+    }
+    console.error(`Error: invalid job count "${rawJobs}"`);
+    return -1;
+  }
+  return 0;
+}
+
+/**
+ * `zena run`: a `.zena`, `.wasm`, or `.wat` file (or existing file path)
+ * compiles and runs as a Wasm module; anything else is a package script
+ * run with zebra.
+ */
+async function run(args: ParsedArgs, options: Options): Future<i32> {
+  if (args.rest.length == 0) {
+    console.error('Error: run needs a .zena or .wasm file, or a script name');
+    return 2;
+  }
+  let argument = args.rest[0];
+  let ext = extname(argument);
+  let path = resolveUserPath(argument);
+  if (ext == '.zena' || ext == '.wasm' || ext == '.wat' || await isFile(path.value)) {
+    if (args.getFlag('watch')) {
+      console.error('Error: --watch is only supported when running a target script');
+      return 2;
+    }
+    if (args.getFlag('force')) {
+      console.error('Error: --force is only supported when running a target script');
+      return 2;
+    }
+    if (args.hasOption('jobs')) {
+      console.error('Error: --jobs is only supported when running a target script');
+      return 2;
+    }
+    return await runCommand(args, options);
+  }
+  if (args.hasOption('invoke')) {
+    console.error('Error: --invoke is only supported when running a .zena or .wasm file');
+    return 2;
+  }
+  if (args.getMultiOption('dir').length > 0) {
+    console.error('Error: --dir is only supported when running a .zena or .wasm file');
+    return 2;
+  }
+  if (args.getFlag('allow-spawn')) {
+    console.error('Error: --allow-spawn is only supported when running a .zena or .wasm file');
+    return 2;
+  }
+  if (args.getFlag('allow-extensions')) {
+    console.error('Error: --allow-extensions is only supported when running a .zena or .wasm file');
+    return 2;
+  }
+  if (args.getFlag('time')) {
+    console.error('Error: --time is only supported when running a .zena file');
+    return 2;
+  }
+  let jobs = parseJobsOption(args);
+  if (jobs < 0) {
+    return 2;
+  }
+  let extraArgs = new GrowableArray<String>();
+  let startExtra = if (args.rest.length > 1 && args.rest[1] == '--') 2 else 1;
+  for (var i = startExtra; i < args.rest.length; i += 1) {
+    extraArgs.push(args.rest[i]);
+  }
+  return await buildScript(argument, options, {
+    jobs,
+    watch: args.getFlag('watch'),
+    force: args.getFlag('force'),
+    useCache: !args.getFlag('no-cache'),
+    verbose: options.verbose || args.getFlag('verbose'),
+    extraArgs,
+  });
+}
+
+/**
+ * `zena test`: with no paths or file-discovery filters, runs the `test`
+ * script of the current package with zebra; with paths, directories,
+ * globs, `--filter`, or `--exclude`, runs `.zena` test suites (`['.']`
+ * when only `--filter` or `--exclude` is given).
+ */
+async function test(
+  args: ParsedArgs,
+  options: Options,
+  rawArgs: Array<String>,
+): Future<i32> {
+  if (args.getFlag('single') || args.getFlag('compile')) {
+    return await testCommand(args, options);
+  }
+  let splitArgs = splitBuildExtraArgs(rawArgs, args.rest);
+  let positional = splitArgs.positional;
+  let extraArgs = splitArgs.extra;
+  let jobs = parseJobsOption(args);
+  if (jobs < 0) {
+    return 2;
+  }
+  let hasFilterOrExclude =
+    args.hasOption('filter') || args.getMultiOption('exclude').length > 0;
+  if (positional.length == 0 && !hasFilterOrExclude) {
+    return await buildScript('test', options, {
+      jobs,
+      watch: args.getFlag('watch'),
+      force: args.getFlag('force'),
+      useCache: !args.getFlag('no-cache'),
+      verbose: options.verbose || args.getFlag('verbose'),
+      extraArgs,
+    });
+  }
+  if (extraArgs.length > 0) {
+    console.error('Error: extra arguments after -- are only supported when running the test target');
+    return 2;
+  }
+  if (args.getFlag('watch')) {
+    console.error('Error: --watch is only supported when running the test target');
+    return 2;
+  }
+  if (args.getFlag('force')) {
+    console.error('Error: --force is only supported when running the test target');
+    return 2;
+  }
+  let paths: Array<String> = if (positional.length == 0) ['.'] else positional;
+  return await testCommand(args, options, paths, jobs, args.getFlag('no-cache'));
 }
 
 /**
@@ -777,6 +934,7 @@ type BuildScriptOptions = {
  */
 async function buildScript(
   argument: String,
+  cliOptions: Options,
   options: BuildScriptOptions,
 ) {
   let {jobs, watch, force, useCache, verbose, extraArgs} = options;
@@ -809,6 +967,7 @@ async function buildScript(
   let relative = packageDir.stripPrefix(root);
   let packageRef = if (relative == null) '' else relative.value;
   let entry = new ScriptRef(packageRef, script);
+  let testRunner = await CliTestStepRunner.create(cliOptions, jobs, !useCache);
   var outcome: BuildOutcome | null = null;
   try {
     outcome = if (watch)
@@ -818,6 +977,7 @@ async function buildScript(
         useCache,
         verbose,
         extraArgs,
+        testRunner,
       })
     else
       await buildTarget(root.value, entry, {
@@ -825,6 +985,7 @@ async function buildScript(
         force,
         useCache,
         extraArgs,
+        testRunner,
       });
   } catch (e) {
     console.error(`Error: ${e.message}`);
