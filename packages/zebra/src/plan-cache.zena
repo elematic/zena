@@ -44,7 +44,7 @@ import {
 } from './wireit-config.zena';
 import {ZebraWorkspace} from './zebra-config.zena';
 
-let PLAN_SNAPSHOT_HEADER = 'zebra-plan-v1\n';
+let PLAN_SNAPSHOT_HEADER = 'zebra-plan-v3\n';
 
 /**
  * Config files modified within 20ms of the plan snapshot's own mtime are
@@ -178,6 +178,15 @@ export function planSnapshotToText(
       }
     }
     writeStrList(sb, config.packageLocks);
+    writeOptStr(sb, config.ruleType);
+    let tests = config.tests;
+    if (tests == null) {
+      writeBool(sb, false);
+    } else {
+      writeBool(sb, true);
+      writeStrList(sb, tests);
+      writeBool(sb, config.testDebug);
+    }
   }
   return sb.toString();
 }
@@ -399,6 +408,14 @@ export function planSnapshotFromText(text: String): PlanSnapshot {
       }
     }
     let locks = reader.readStrList();
+    let ruleType = reader.readOptStr();
+    let hasTests = reader.readBool();
+    var tests: Array<String>? = null;
+    var testDebug = false;
+    if (hasTests) {
+      tests = reader.readStrList();
+      testDebug = reader.readBool();
+    }
     configs.push(new ScriptConfig(
       new ScriptRef(pkgDir, script),
       isWireit,
@@ -414,6 +431,10 @@ export function planSnapshotFromText(text: String): PlanSnapshot {
       locks,
       cacheEnabled,
       isFileset,
+      tests,
+      testDebug,
+      null,
+      ruleType,
     ));
   }
   if (!reader.atEnd()) {
@@ -424,7 +445,7 @@ export function planSnapshotFromText(text: String): PlanSnapshot {
 
 /** Path of `entry`'s plan snapshot under `<root>/.zebra/plans/`. */
 export function planSnapshotPath(root: String, entry: ScriptRef): String {
-  let keyHash = sha256HexOfString(`zebra-plan-v1:${refKey(entry)}`);
+  let keyHash = sha256HexOfString(`zebra-plan-v3:${refKey(entry)}`);
   return withRoot(root, `.zebra/plans/${keyHash}.plan`);
 }
 

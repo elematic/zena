@@ -1,35 +1,42 @@
 /**
  * `zena test`: find the test files, compile the ones the cache does not
- * hold, then run each in a copy of this module.
+ * hold, then run each in its own Wasmtime store.
  *
- * When more files are stale than copies run at once, compiling comes
- * first, in that many copies (`zena test --compile <files...>`) that
- * each compile their share of the files on one compiler, so the standard
- * library and the packages the tests share are loaded and checked once
- * per copy rather than once per file (`compileIntoCache`). Then a copy
- * per file (`zena test --single
- * <file>`) finds its module in the cache, runs it with `zena:wasm`, and
- * prints what the test printed; a file that did not compile is compiled
- * there again, alone, and its errors are what that copy prints. This
- * module starts a bounded number of copies at once, again with
- * `zena:wasm`, and reports each file in order as pass or fail. Each copy
- * and each test runs in its own store, so a trapping test takes nothing
- * else down and its memory goes with it.
+ * When more files are stale than workers run at once, compiling comes
+ * first (`zena test --compile <files...>`), each worker compiling its
+ * share of the files on one `CompileSession` so the standard library and
+ * shared packages are loaded and checked once per worker rather than once
+ * per file (`compileIntoCache`). Each test whose cached `.wasm` is fresh
+ * then runs directly with `startModule(cachedWasm, ...)`; a file that did
+ * not compile in `--compile` falls back to `zena test --single <file>` so
+ * its diagnostics are captured and reported.
+ *
+ * `CliTestStepRunner` shares one `ConcurrencyLimiter` across all
+ * `"type": "zena:test"` steps in a build or watch run so concurrent package
+ * test suites share a single worker cap and run in-process.
  */
 
-import { ParsedArgs } from 'zena:args';
-import { Future } from 'zena:async';
-import { HashSet } from 'zena:collections';
-import { Own, StringBuilder, Unmanaged, disown } from 'zena:core';
-import { GlobOptions, exists, glob, isDirectory } from 'zena:fs';
+import { ArgParser, OptionType, ParsedArgs } from 'zena:args';
+import { Completer, Future } from 'zena:async';
+import { getEnv, getEnvironment } from 'zena:cli';
+import { HashMap, HashSet } from 'zena:collections';
+import { StringBuilder } from 'zena:core';
+import { GlobOptions, exists, glob, isDirectory, isFile } from 'zena:fs';
 import { hasMagic } from 'zena:glob';
-import { AbsolutePath, RelativePath, extname } from 'zena:path';
+import { AbsolutePath, RelativePath, extname, isAbsolute, join2, normalize } from 'zena:path';
 import { div } from 'zena:math';
-import { Run, RunOutcome, runModule, startModule } from 'zena:wasm';
-import { CompileFailure, CompileRequest, compileCached, compileIntoCache, isCached } from './compile.zena';
+import { monotonic } from 'zena:time';
+import { RunOutcome, RunResult, runModule } from 'zena:wasm';
+import { StepExecution, TestStepRequest, TestStepRunner } from 'zebra/builder';
+import { joinWorkspace } from 'zebra/fs-util';
+import { appendShellArgs } from 'zebra/shell';
 import {
-  Options, cliModule, hostEnv, parallelism, repoRelative, workspaceRoot, resolveUserPath,
-  stdlibDir
+  CompileRequest, cachedModuleIfFresh, compileCached, compileIntoCache,
+  testRunnerFingerprint
+} from './compile.zena';
+import {
+  Options, cliModule, envInt, hostEnv, normalizeHostPath, parallelism, repoRelative,
+  resolveUserPath, stdlibDir, workspaceRoot
 } from './env.zena';
 import { hostDir } from './run.zena';
 
@@ -47,10 +54,159 @@ let green = sgr('32');
 let red = sgr('31');
 let reset = sgr('0');
 
+class WaiterBucket {
+  waiters = new GrowableArray<Completer<void>>();
+  var head = 0;
+
+  isEmpty(): boolean {
+    return this.head >= this.waiters.length;
+  }
+
+  push(w: Completer<void>): void {
+    this.waiters.push(w);
+  }
+
+  pop(): Completer<void> {
+    let w = this.waiters[this.head];
+    this.head += 1;
+    if (this.head >= this.waiters.length) {
+      this.waiters.clear();
+      this.head = 0;
+    }
+    return w;
+  }
+}
+
 /**
- * The glob pattern one `zena test` argument stands for, relative to the
- * repository root, or null when it names nothing. A directory means
- * every `_test.zena` file beneath it.
+ * Permit limiter shared across concurrent test steps, servicing waiting
+ * package queues in round-robin order so a package with many fast files
+ * never starves another package's long critical-path suite.
+ */
+class ConcurrencyLimiter {
+  #limit: i32;
+  var #active = 0;
+  var #nextQueueId = 1;
+  #buckets = new HashMap<i32, WaiterBucket>();
+  #ring = new GrowableArray<i32>();
+  var #ringHead = 0;
+
+  new(limit: i32) : #limit = if (limit >= 1) limit else 1;
+
+  limit: i32 {
+    get { return this.#limit; }
+  }
+
+  allocateQueue(): i32 {
+    let id = this.#nextQueueId;
+    this.#nextQueueId += 1;
+    return id;
+  }
+
+  async acquire(queueId: i32 = 0): Future<void> {
+    if (this.#active < this.#limit) {
+      this.#active += 1;
+      return;
+    }
+    let waiter = new Completer<void>();
+    var bucket: WaiterBucket | null = null;
+    if (let (true, existing) = this.#buckets.get(queueId)) {
+      bucket = existing;
+    } else {
+      let created = new WaiterBucket();
+      this.#buckets[queueId] = created;
+      bucket = created;
+    }
+    let wasEmpty = bucket.isEmpty();
+    bucket.push(waiter);
+    if (wasEmpty) {
+      this.#ring.push(queueId);
+    }
+    await waiter.future;
+  }
+
+  tryAcquire(): boolean {
+    if (this.#active < this.#limit) {
+      this.#active += 1;
+      return true;
+    }
+    return false;
+  }
+
+  release(): void {
+    while (this.#ringHead < this.#ring.length) {
+      let queueId = this.#ring[this.#ringHead];
+      this.#ringHead += 1;
+      if (this.#ringHead >= this.#ring.length) {
+        this.#ring.clear();
+        this.#ringHead = 0;
+      }
+      if (let (true, bucket) = this.#buckets.get(queueId)) {
+        if (!bucket.isEmpty()) {
+          let next = bucket.pop();
+          if (!bucket.isEmpty()) {
+            this.#ring.push(queueId);
+          } else {
+            this.#buckets.delete(queueId);
+          }
+          next.complete();
+          return;
+        }
+        this.#buckets.delete(queueId);
+      }
+    }
+    this.#active -= 1;
+  }
+}
+
+/**
+ * Resolves a user/config argument relative to `baseDir` within `targetRoot`
+ * into a glob pattern relative to `targetRoot`, or `null` when a literal
+ * path does not exist.
+ */
+async function resolveTestPatternInRoot(
+  targetRoot: String,
+  baseDir: String,
+  argument: String,
+): Future<String | null> {
+  let normalizedArg = normalizeHostPath(argument, getEnv('ZENA_HOST_PLATFORM'));
+  let rootPath = new AbsolutePath(targetRoot);
+  let resolved = if (isAbsolute(normalizedArg))
+    new AbsolutePath(normalize(normalizedArg))
+  else
+    new AbsolutePath(
+      normalize(
+        join2(
+          if (baseDir == '') targetRoot else `${targetRoot}/${baseDir}`,
+          normalizedArg,
+        ),
+      ),
+    );
+  let rel = resolved.stripPrefix(rootPath);
+  let fromRoot = if (rel == null) resolved.value else rel.value;
+  if (hasMagic(normalizedArg)) {
+    return fromRoot;
+  }
+  let checkInProcess = targetRoot == workspaceRoot().value;
+  let found = if (checkInProcess)
+    (await exists(fromRoot)) || (await exists(resolved.value))
+  else
+    await exists(resolved.value);
+  if (!found) {
+    return null;
+  }
+  let isDir = if (checkInProcess)
+    (await isDirectory(fromRoot)) || (await isDirectory(resolved.value))
+  else
+    await isDirectory(resolved.value);
+  if (isDir) {
+    return if (fromRoot == '' || fromRoot == '.') '**/*_test.zena' else `${fromRoot}/**/*_test.zena`;
+  }
+  return fromRoot;
+}
+
+/**
+ * The glob pattern one `zena test` CLI argument stands for, relative to
+ * the workspace root, or null when it names nothing.
  */
 async function testPattern(argument: String): Future<String | null> {
   let resolved = resolveUserPath(argument);
@@ -62,13 +218,13 @@ async function testPattern(argument: String): Future<String | null> {
     return null;
   }
   if ((await isDirectory(fromRoot)) || (await isDirectory(resolved.value))) {
-    return fromRoot + '/**/*_test.zena';
+    return if (fromRoot == '' || fromRoot == '.') '**/*_test.zena' else `${fromRoot}/**/*_test.zena`;
   }
   return fromRoot;
 }
 
-/** The test files the arguments name, repo-relative and in order. */
-async function findTests(args: ParsedArgs): Future<Array<String> | null> {
+/** Discovers `.zena` test files for CLI `zena test <paths...>`. */
+async function findTests(args: ParsedArgs, paths: Array<String>): Future<Array<String> | null> {
   let excludes = args.getMultiOption('exclude');
   var filter = '';
   if (let (true, value) = args.getOption('filter')) {
@@ -76,7 +232,7 @@ async function findTests(args: ParsedArgs): Future<Array<String> | null> {
   }
   let found = new GrowableArray<String>();
   let seen = new HashSet<String>();
-  for (let argument in args.rest) {
+  for (let argument in paths) {
     let pattern = await testPattern(argument);
     if (pattern == null) {
       console.error('Error: path not found: ' + argument);
@@ -102,135 +258,493 @@ async function findTests(args: ParsedArgs): Future<Array<String> | null> {
   return found;
 }
 
-/** A test file whose copy of this module has been started. */
-class RunningTest {
-  path: String;
-  /** Unmanaged: a plain class cannot hold an owner, and every run is
-   * waited on before the runner exits. */
-  run: Unmanaged<Run>;
-  new(this.path, this.run);
+/** Discovers `.zena` test files for a Zebra `"type": "zena:test"` step. */
+async function findStepTests(
+  targetRoot: String,
+  packageDir: String,
+  patterns: Array<String>,
+  filter: String,
+  excludes: Array<String>,
+  errorsOut: GrowableArray<String>,
+): Future<Array<String> | null> {
+  let found = new GrowableArray<String>();
+  let seen = new HashSet<String>();
+  for (let raw in patterns) {
+    let pattern = await resolveTestPatternInRoot(targetRoot, packageDir, raw);
+    if (pattern == null) {
+      errorsOut.push('Error: path not found: ' + raw);
+      return null;
+    }
+    let opts = new GlobOptions();
+    opts.cwd = targetRoot;
+    for (let exclude in excludes) {
+      let scopedExclude = if (packageDir == '' || isAbsolute(exclude) || exclude.startsWith('**/'))
+        exclude
+      else
+        joinWorkspace(packageDir, exclude);
+      opts.exclude.push(scopedExclude);
+    }
+    for (let match in await glob(pattern, opts)) {
+      if (extname(match) != '.zena') {
+        continue;
+      }
+      if (filter != '' && !match.contains(filter)) {
+        continue;
+      }
+      if (seen.add(match)) {
+        found.push(match);
+      }
+    }
+  }
+  return found;
 }
 
-function printIndented(label: String, text: String) {
+/** Builds an explicit guest WASI environment map (preserving first-entry-wins). */
+function buildGuestEnv(
+  targetRoot: String,
+  overrides: Array<(String, String)>,
+  removals: Array<String>,
+  includeCliHostVars: boolean,
+  cliModuleOverride: AbsolutePath | null = null,
+): Map<String, String> {
+  let removed = new HashSet<String>();
+  for (let name in removals) {
+    removed.add(name);
+  }
+  let env = new Map<String, String>();
+  for (let entry in getEnvironment()) {
+    if (!removed.has(entry.name) && !env.has(entry.name)) {
+      env[entry.name] = entry.value;
+    }
+  }
+  if (includeCliHostVars) {
+    for (let entry in hostEnv()) {
+      if (!removed.has(entry.key)) {
+        env[entry.key] = entry.value;
+      }
+    }
+    if (cliModuleOverride != null && !removed.has('ZENA_CLI_MODULE')) {
+      env['ZENA_CLI_MODULE'] = cliModuleOverride.value;
+    }
+    env['ZENA_CWD'] = targetRoot;
+  }
+  for (let (name, value) in overrides) {
+    env[name] = value;
+  }
+  env['ZENA_WORKSPACE_ROOT'] = targetRoot;
+  return env;
+}
+
+class TestFileOutcome(passed: boolean, formatted: String)
+
+function appendIndented(out: StringBuilder, label: String, text: String) {
   if (text.length == 0) {
     return;
   }
-  console.log(`      --- ${label} ---`);
+  out.append(`      --- ${label} ---\n`);
   for (let line in text.split('\n')) {
-    console.log(`      ${line}`);
+    out.append(`      ${line}\n`);
   }
 }
 
-/** Waits for a test and prints its result line. Returns whether it passed. */
-async function report(running: RunningTest): Future<boolean> {
-  let result = await running.run.wait();
+function formatTestResult(
+  path: String,
+  direct: boolean,
+  result: RunResult,
+  useColor: boolean,
+) {
   let ms = (result.callTime as i64 as f64) / 1000000.0;
   let tenths = ((ms * 10.0) as i64 as f64) / 10.0;
-  if (result.succeeded()) {
-    console.log(`${green}PASS${reset}  ${running.path} (${tenths}ms)`);
-    return true;
+  let passed = if (direct)
+    result.outcome == RunOutcome.Returned &&
+      result.exitCode == 0 &&
+      !result.stdout.contains('FAIL')
+  else
+    result.succeeded();
+
+  let passTag = if (useColor) `${green}PASS${reset}` else 'PASS';
+  let failTag = if (useColor) `${red}FAIL${reset}` else 'FAIL';
+
+  if (passed) {
+    return new TestFileOutcome(true, `${passTag}  ${path} (${tenths}ms)\n`);
   }
-  console.log(`${red}FAIL${reset}  ${running.path} (${tenths}ms)`);
-  printIndented('Stdout', result.stdout);
-  printIndented('Stderr', result.stderr);
-  if (result.message != '') {
-    printIndented('Error', result.message);
+
+  let block = new StringBuilder();
+  block.append(`${failTag}  ${path} (${tenths}ms)\n`);
+  appendIndented(block, 'Stdout', result.stdout);
+  if (direct) {
+    var errText = result.stderr;
+    let reason = if (result.message != '') {
+      result.message
+    } else if (result.exitCode != 0) {
+      `Suite returned non-zero code: ${result.exitCode}`
+    } else {
+      'Suite reported failure in output'
+    };
+    if (reason != '') {
+      errText = if (errText == '')
+        reason
+      else if (errText.endsWith('\n'))
+        `${errText}${reason}`
+      else
+        `${errText}\n${reason}`;
+    }
+    appendIndented(block, 'Stderr', errText);
+  } else {
+    appendIndented(block, 'Stderr', result.stderr);
+    if (result.message != '') {
+      appendIndented(block, 'Error', result.message);
+    }
   }
-  return false;
+  return new TestFileOutcome(false, block.toString());
 }
 
-/**
- * A test file's absolute path: a copy measures relative paths from where
- * the user is, and `file` is relative to the repository root.
- */
-function testPath(file: String) {
-  return workspaceRoot().join(new RelativePath(file)).value;
+/** Absolute path of `file` (which is relative to `targetRoot`). */
+function testPathInRoot(targetRoot: String, file: String) {
+  return new AbsolutePath(targetRoot).join(new RelativePath(file)).value;
 }
 
-/** The compile `zena test --single` asks the cache for. */
+/** The compile request for `absOrRelPath` in the current CLI workspace. */
 function testRequest(path: String) {
   let request = new CompileRequest(resolveUserPath(path));
   request.testMode = true;
   return request;
 }
 
-/** Starts a copy of this module on one test file. */
-function startWorker(file: String, options: Options) {
-  return startCopy('--single', [testPath(file)], options);
+function testRequestForAbs(absPath: String) {
+  let request = new CompileRequest(new AbsolutePath(normalize(absPath)));
+  request.testMode = true;
+  return request;
 }
 
-/** Starts a copy of this module as `zena test <mode> <paths...>`. */
-function startCopy(mode: String, paths: Array<String>, options: Options) {
+/** Runs a copy of this CLI module as `zena test <mode> <paths...>`. */
+async function runCopyInRoot(
+  targetRoot: String,
+  mode: String,
+  paths: Array<String>,
+  options: Options,
+  noCache: boolean,
+  cliGuestEnv: Map<String, String>,
+  cliModuleOverride: AbsolutePath | null = null,
+): Future<RunResult> {
   let args = new GrowableArray<String>();
   args.push('zena');
   if (options.debug) {
     args.push('-g');
   }
+  let opt = options.optLevel;
+  if (opt != null) {
+    args.push('-O');
+    args.push(opt);
+  }
   args.push('test');
   args.push(mode);
+  if (noCache) {
+    args.push('--no-cache');
+  }
   for (let path in paths) {
     args.push(path);
   }
-  // The same view of the filesystem this module has, the repository
-  // root first as `.` so relative paths mean the same thing, and the
-  // variables the host told this module.
-  return startModule(cliModule().value, {
+  let modulePath = if (cliModuleOverride != null) cliModuleOverride.value else cliModule().value;
+  return await runModule(modulePath, {
     args: args,
-    env: hostEnv(),
-    inheritEnv: true,
+    env: cliGuestEnv,
+    inheritEnv: false,
     dirs: [
-      {from: workspaceRoot().value, to: '.'},
+      {from: targetRoot, to: '.'},
       {from: stdlibDir().value, to: '/stdlib'},
       {from: '/', to: '/'},
     ],
     grant: true,
     grantExtensions: true,
+    debug: options.debug,
   });
 }
 
+async function runCompileShareWithPermit(
+  targetRoot: String,
+  share: Array<String>,
+  options: Options,
+  noCache: boolean,
+  cliGuestEnv: Map<String, String>,
+  cliModuleOverride: AbsolutePath | null,
+  limiter: ConcurrencyLimiter,
+): Future<void> {
+  try {
+    await runCopyInRoot(
+      targetRoot,
+      '--compile',
+      share,
+      options,
+      noCache,
+      cliGuestEnv,
+      cliModuleOverride,
+    );
+  } finally {
+    limiter.release();
+  }
+}
+
 /**
- * Compiles the test files the cache does not hold fresh, before any of
- * them runs: their share in each of `parallelism()` copies, in file
- * order, so files beside each other, which tend to import the same
- * things, share a compiler. What a copy prints is dropped. A file it did
- * not compile is compiled again by its `--single` copy, which reports
- * why, and a copy that dies leaves its files to theirs the same way.
- *
- * With no more stale files than copies, each copy would compile one file
- * and share nothing, and waiting for all of them before running any test
- * would only cost: the `--single` copies compile their own files then,
- * each test running as soon as its compile is done.
+ * Checks `.zena` cache freshness once per file, batch-compiles stale files
+ * across available `limiter` workers (releasing each permit as soon as its
+ * worker finishes), and returns the map of `file -> freshCachedWasmPath`.
  */
-async function compileAhead(files: Array<String>, options: Options): Future<void> {
-  let stale = new GrowableArray<String>();
+async function prepareTestModules(
+  targetRoot: String,
+  files: Array<String>,
+  options: Options,
+  limiter: ConcurrencyLimiter,
+  noCache: boolean,
+  cliGuestEnv: Map<String, String>,
+  cliModuleOverride: AbsolutePath | null = null,
+  identityMemo: HashMap<String, String> | null = null,
+): Future<HashMap<String, AbsolutePath>> {
+  let fresh = new HashMap<String, AbsolutePath>();
+  let canCheckCacheHere = !noCache && targetRoot == workspaceRoot().value;
+  let staleFiles = new GrowableArray<String>();
+  let staleAbs = new GrowableArray<String>();
   for (let file in files) {
-    let path = testPath(file);
-    if (!(await isCached(testRequest(path), options))) {
-      stale.push(path);
+    let absPath = testPathInRoot(targetRoot, file);
+    if (canCheckCacheHere) {
+      let cached = await cachedModuleIfFresh(
+        testRequestForAbs(absPath),
+        options,
+        cliModuleOverride,
+        identityMemo,
+      );
+      if (cached != null) {
+        fresh[file] = cached;
+        continue;
+      }
+    }
+    staleFiles.push(file);
+    staleAbs.push(absPath);
+  }
+
+  if (staleAbs.length <= 1) {
+    return fresh;
+  }
+  let maxCopies = if (staleAbs.length < limiter.limit) staleAbs.length else limiter.limit;
+  if (staleAbs.length <= maxCopies && targetRoot != workspaceRoot().value) {
+    return fresh;
+  }
+
+  // Acquire 1 permit, then take up to `maxCopies - 1` immediately available permits.
+  await limiter.acquire();
+  var copies = 1;
+  while (copies < maxCopies && limiter.tryAcquire()) {
+    copies += 1;
+  }
+  if (staleAbs.length <= copies) {
+    for (var r = 0; r < copies; r += 1) {
+      limiter.release();
+    }
+    return fresh;
+  }
+
+  let compileTasks = new GrowableArray<Future<void>>();
+  var unstarted = copies;
+  try {
+    var start = 0;
+    for (var i = 0; i < copies; i += 1) {
+      var size = div(staleAbs.length, copies);
+      if (i < staleAbs.length % copies) {
+        size += 1;
+      }
+      let share = new GrowableArray<String>();
+      for (var j = start; j < start + size; j += 1) {
+        share.push(staleAbs[j]);
+      }
+      start += size;
+      compileTasks.push(
+        runCompileShareWithPermit(
+          targetRoot,
+          share,
+          options,
+          noCache,
+          cliGuestEnv,
+          cliModuleOverride,
+          limiter,
+        ),
+      );
+      unstarted -= 1;
+    }
+  } finally {
+    for (var r = 0; r < unstarted; r += 1) {
+      limiter.release();
     }
   }
-  let copies = parallelism();
-  if (stale.length <= copies) {
-    return;
+  for (let task in compileTasks) {
+    await task;
   }
-  let compiling = new GrowableArray<Unmanaged<Run>>();
-  var start = 0;
-  for (var i = 0; i < copies; i += 1) {
-    // The first `stale.length % copies` shares are one file longer.
-    var size = div(stale.length, copies);
-    if (i < stale.length % copies) {
-      size += 1;
+
+  if (canCheckCacheHere) {
+    for (var i = 0; i < staleFiles.length; i += 1) {
+      let cached = await cachedModuleIfFresh(
+        testRequestForAbs(staleAbs[i]),
+        options,
+        cliModuleOverride,
+        identityMemo,
+      );
+      if (cached != null) {
+        fresh[staleFiles[i]] = cached;
+      }
     }
-    let share = new GrowableArray<String>();
-    for (var j = start; j < start + size; j += 1) {
-      share.push(stale[j]);
+  }
+  return fresh;
+}
+
+/**
+ * Acquires one permit, runs `file`, immediately releases both the `Run`
+ * resource and the `limiter` permit on completion, and returns the formatted
+ * result line(s).
+ */
+async function runOneTestFile(
+  targetRoot: String,
+  file: String,
+  cachedModule: AbsolutePath | null,
+  tmpDir: String,
+  options: Options,
+  limiter: ConcurrencyLimiter,
+  queueId: i32,
+  noCache: boolean,
+  directGuestEnv: Map<String, String>,
+  cliGuestEnv: Map<String, String>,
+  useColor: boolean,
+  cliModuleOverride: AbsolutePath | null,
+): Future<TestFileOutcome> {
+  await limiter.acquire(queueId);
+  let absFile = testPathInRoot(targetRoot, file);
+  let direct = cachedModule != null;
+  let result = try {
+    if (cachedModule != null) {
+      await runModule(cachedModule.value, {
+        args: [absFile],
+        env: directGuestEnv,
+        inheritEnv: false,
+        dirs: [
+          {from: targetRoot, to: '.'},
+          {from: stdlibDir().value, to: '/stdlib'},
+          {from: tmpDir, to: '/tmp'},
+        ],
+        grant: true,
+        grantExtensions: true,
+        debug: options.debug,
+      })
+    } else {
+      await runCopyInRoot(
+        targetRoot,
+        '--single',
+        [absFile],
+        options,
+        noCache,
+        cliGuestEnv,
+        cliModuleOverride,
+      )
     }
-    start += size;
-    compiling.push(disown(startCopy('--compile', share, options)));
+  } finally {
+    limiter.release();
+  };
+  return formatTestResult(file, direct, result, useColor);
+}
+
+/** Runs `files` under `limiter`, streaming to console or capturing into `capturedOut`. */
+async function executeTestFiles(
+  targetRoot: String,
+  files: Array<String>,
+  options: Options,
+  limiter: ConcurrencyLimiter,
+  noCache: boolean,
+  envOverrides: Array<(String, String)>,
+  envRemovals: Array<String>,
+  streamToConsole: boolean,
+  capturedOut: StringBuilder,
+  cliModuleOverride: AbsolutePath | null = null,
+  identityMemo: HashMap<String, String> | null = null,
+): Future<i32> {
+  let header = `Running ${files.length} tests...`;
+  if (streamToConsole) {
+    console.log(header);
+  } else {
+    capturedOut.append(header);
+    capturedOut.append('\n');
   }
-  for (let run in compiling) {
-    await run.wait();
+
+  let directGuestEnv = buildGuestEnv(targetRoot, envOverrides, envRemovals, false);
+  let cliGuestEnv = buildGuestEnv(
+    targetRoot,
+    envOverrides,
+    envRemovals,
+    true,
+    cliModuleOverride,
+  );
+
+  let freshModules = await prepareTestModules(
+    targetRoot,
+    files,
+    options,
+    limiter,
+    noCache,
+    cliGuestEnv,
+    cliModuleOverride,
+    identityMemo,
+  );
+
+  let tmpDir = (await hostDir('/tmp')).value;
+  let useColor = getEnv('NO_COLOR') == null;
+  let queueId = limiter.allocateQueue();
+
+  let tasks = new GrowableArray<Future<TestFileOutcome>>();
+  for (let file in files) {
+    var cachedMod: AbsolutePath | null = null;
+    if (let (true, hit) = freshModules.get(file)) {
+      cachedMod = hit;
+    }
+    tasks.push(
+      runOneTestFile(
+        targetRoot,
+        file,
+        cachedMod,
+        tmpDir,
+        options,
+        limiter,
+        queueId,
+        noCache,
+        directGuestEnv,
+        cliGuestEnv,
+        useColor,
+        cliModuleOverride,
+      ),
+    );
   }
+
+  var passed = 0;
+  var failed = 0;
+  for (let task in tasks) {
+    let outcome = await task;
+    if (outcome.passed) {
+      passed += 1;
+    } else {
+      failed += 1;
+    }
+    if (streamToConsole) {
+      echo(outcome.formatted, false);
+    } else {
+      capturedOut.append(outcome.formatted);
+    }
+  }
+
+  let summary = `Test Summary: ${passed} passed, ${failed} failed`;
+  if (streamToConsole) {
+    console.log('');
+    console.log(summary);
+  } else {
+    capturedOut.append('\n');
+    capturedOut.append(summary);
+    capturedOut.append('\n');
+  }
+  return if (failed > 0) { 1 } else { 0 };
 }
 
 /**
@@ -242,22 +756,28 @@ async function compileOnly(args: ParsedArgs, options: Options): Future<i32> {
   for (let path in args.rest) {
     requests.push(testRequest(path));
   }
-  await compileIntoCache(requests, options);
+  await compileIntoCache(requests, options, args.getFlag('no-cache'));
   return 0;
 }
 
-export async function testCommand(args: ParsedArgs, options: Options): Future<i32> {
+export async function testCommand(
+  args: ParsedArgs,
+  options: Options,
+  paths: Array<String> = args.rest,
+  jobs: i32 = 0,
+  noCache: boolean = false,
+): Future<i32> {
   if (args.getFlag('single')) {
     return await runSingle(args, options);
   }
   if (args.getFlag('compile')) {
     return await compileOnly(args, options);
   }
-  if (args.rest.length == 0) {
+  if (paths.length == 0) {
     console.error('Error: test needs a file, directory or glob');
     return 2;
   }
-  let files = await findTests(args);
+  let files = await findTests(args, paths);
   if (files == null) {
     return 2;
   }
@@ -265,35 +785,236 @@ export async function testCommand(args: ParsedArgs, options: Options): Future<i3
     console.error('Error: no tests found matching the path or filter');
     return 2;
   }
-  console.log(`Running ${files.length} tests...`);
-  await compileAhead(files, options);
+  let limit = if (jobs > 0) jobs else parallelism();
+  let limiter = new ConcurrencyLimiter(limit);
+  let emptyOverrides = new GrowableArray<(String, String)>();
+  let emptyRemovals = new GrowableArray<String>();
+  return await executeTestFiles(
+    workspaceRoot().value,
+    files,
+    options,
+    limiter,
+    noCache,
+    emptyOverrides,
+    emptyRemovals,
+    true,
+    new StringBuilder(),
+  );
+}
 
-  // A sliding window: at most `limit` copies in flight, results printed
-  // in file order as the window advances.
-  let limit = parallelism();
-  var passed = 0;
-  var failed = 0;
-  let running = new GrowableArray<RunningTest>();
-  var reported = 0;
-  var next = 0;
-  while (next < files.length || reported < running.length) {
-    if (running.length - reported >= limit || next >= files.length) {
-      if (await report(running[reported])) {
-        passed += 1;
-      } else {
-        failed += 1;
-      }
-      reported += 1;
-      continue;
-    }
-    let file = files[next];
-    next += 1;
-    running.push(new RunningTest(file, disown(startWorker(file, options))));
+function stepExtraArgsParser() {
+  return new ArgParser({
+    name: 'zena test',
+    options: {
+      'filter' => {
+        abbr: 'f',
+        help: 'Only run files whose path contains this',
+      },
+      'exclude' => {
+        type: OptionType.MultiString,
+        help: 'Skip files matching this glob',
+      },
+      'no-cache' => {
+        type: OptionType.Flag,
+        help: 'Compile even if the cache has an answer',
+      },
+    },
+  });
+}
+
+function formatStepCommandLabel(
+  patterns: Array<String>,
+  extraArgs: Array<String>,
+  debug: boolean,
+) {
+  let base = if (debug) 'zena -g test' else 'zena test';
+  let all = new GrowableArray<String>();
+  for (let p in patterns) {
+    all.push(p);
+  }
+  for (let a in extraArgs) {
+    all.push(a);
+  }
+  return appendShellArgs(base, all);
+}
+
+function stepRunnerParallelism(jobs: i32): i32 {
+  if (jobs > 0) {
+    return jobs;
+  }
+  let explicitTest = envInt('ZENA_TEST_PARALLELISM');
+  if (explicitTest > 0) {
+    return explicitTest;
+  }
+  let zebraPar = envInt('ZEBRA_PARALLEL');
+  if (zebraPar > 0) {
+    return zebraPar;
+  }
+  let available = envInt('ZENA_AVAILABLE_PARALLELISM');
+  if (available <= 0) {
+    return parallelism();
+  }
+  if (available > 16) {
+    return 16;
+  }
+  return available;
+}
+
+/**
+ * Shared in-process runner passed to Zebra's `buildTarget` and `watchTarget`
+ * so `"type": "zena:test"` steps run without spawning shell or CLI processes.
+ */
+export class CliTestStepRunner implements TestStepRunner {
+  #options: Options;
+  #limiter: ConcurrencyLimiter;
+  #noCache: boolean;
+  #builtCliPath: String;
+  #startedOnBootstrapFallback: boolean;
+  #identityMemo = new HashMap<String, String>();
+  var #activeSteps = 0;
+
+  new(
+    options: Options,
+    jobs: i32,
+    noCache: boolean,
+    builtCliPath: String,
+    startedOnBootstrapFallback: boolean,
+  ) : #options = options,
+      #limiter = new ConcurrencyLimiter(stepRunnerParallelism(jobs)),
+      #noCache = noCache,
+      #builtCliPath = builtCliPath,
+      #startedOnBootstrapFallback = startedOnBootstrapFallback;
+
+  static async create(
+    options: Options,
+    jobs: i32,
+    noCache: boolean,
+  ): Future<CliTestStepRunner> {
+    let root = workspaceRoot().value;
+    let builtPath = `${root}/packages/zena-cli/out/zena.wasm`;
+    let bootstrapPath = `${root}/packages/zena-cli/bootstrap/zena.wasm`;
+    let startedOnBootstrap =
+      cliModule().value == bootstrapPath && !(await isFile(builtPath));
+    return new CliTestStepRunner(options, jobs, noCache, builtPath, startedOnBootstrap);
   }
 
-  console.log('');
-  console.log(`Test Summary: ${passed} passed, ${failed} failed`);
-  return if (failed > 0) { 1 } else { 0 };
+  async #activeCliModule(): Future<AbsolutePath> {
+    if (this.#startedOnBootstrapFallback && (await isFile(this.#builtCliPath))) {
+      return new AbsolutePath(this.#builtCliPath);
+    }
+    return cliModule();
+  }
+
+  async fingerprint(): Future<String> {
+    if (this.#activeSteps == 0) {
+      this.#identityMemo.clear();
+    }
+    return await testRunnerFingerprint(this.#options, await this.#activeCliModule());
+  }
+
+  async runTests(request: TestStepRequest): Future<StepExecution> {
+    let startNs = monotonic() as i64;
+    let cmdLabel = formatStepCommandLabel(
+      request.patterns,
+      request.extraArgs,
+      request.debug || this.#options.debug,
+    );
+    var filter = '';
+    var excludes: Array<String> = new GrowableArray<String>();
+    var stepNoCache = this.#noCache;
+    var activePatterns = request.patterns;
+
+    if (request.extraArgs.length > 0) {
+      let parser = stepExtraArgsParser();
+      var parsed: ParsedArgs | null = null;
+      try {
+        parsed = parser.parse(request.extraArgs);
+      } catch (e) {
+        let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+        return new StepExecution(cmdLabel, 2, '', `Error: ${e.message}\n`, durationMs);
+      }
+      let p = parsed;
+      if (let (true, f) = p.getOption('filter')) {
+        filter = f;
+      }
+      excludes = p.getMultiOption('exclude');
+      if (p.getFlag('no-cache')) {
+        stepNoCache = true;
+      }
+      if (p.rest.length > 0) {
+        activePatterns = p.rest;
+      }
+    }
+
+    let errors = new GrowableArray<String>();
+    let files = await findStepTests(
+      request.root,
+      request.packageDir,
+      activePatterns,
+      filter,
+      excludes,
+      errors,
+    );
+    if (files == null) {
+      let errSb = new StringBuilder();
+      for (let msg in errors) {
+        errSb.append(msg);
+        errSb.append('\n');
+      }
+      let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+      return new StepExecution(cmdLabel, 2, '', errSb.toString(), durationMs);
+    }
+    if (files.length == 0) {
+      let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+      return new StepExecution(
+        cmdLabel,
+        2,
+        '',
+        'Error: no tests found matching the path or filter\n',
+        durationMs,
+      );
+    }
+
+    let stepOptions = new Options(
+      this.#options.verbose,
+      this.#options.debug || request.debug,
+      this.#options.optLevel,
+    );
+    let activeCli = await this.#activeCliModule();
+    let capturedOut = new StringBuilder();
+    if (this.#activeSteps == 0) {
+      this.#identityMemo.clear();
+    }
+    this.#activeSteps += 1;
+    let exitCode = try {
+      await executeTestFiles(
+        request.root,
+        files,
+        stepOptions,
+        this.#limiter,
+        stepNoCache,
+        request.env,
+        request.envRemove,
+        false,
+        capturedOut,
+        activeCli,
+        this.#identityMemo,
+      )
+    } finally {
+      this.#activeSteps -= 1;
+      if (this.#activeSteps == 0) {
+        this.#identityMemo.clear();
+      }
+    };
+    let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+    return new StepExecution(
+      cmdLabel,
+      exitCode,
+      capturedOut.toString(),
+      '',
+      durationMs,
+    );
+  }
 }
 
 /** Writes captured output through without adding a newline of its own. */
@@ -328,7 +1049,7 @@ async function runSingle(args: ParsedArgs, options: Options): Future<i32> {
   let request = testRequest(file);
   var module: AbsolutePath | null = null;
   try {
-    module = await compileCached(request, options);
+    module = await compileCached(request, options, args.getFlag('no-cache'));
   } catch (e) {
     console.error(e.message);
     return 1;
@@ -336,10 +1057,12 @@ async function runSingle(args: ParsedArgs, options: Options): Future<i32> {
   if (module == null) {
     return 1;
   }
+  let emptyOverrides = new GrowableArray<(String, String)>();
+  let emptyRemovals = new GrowableArray<String>();
   let result = await runModule(module.value, {
     args: [file],
-    env: {'ZENA_WORKSPACE_ROOT' => workspaceRoot().value},
-    inheritEnv: true,
+    env: buildGuestEnv(workspaceRoot().value, emptyOverrides, emptyRemovals, false),
+    inheritEnv: false,
     dirs: [
       {from: workspaceRoot().value, to: '.'},
       {from: stdlibDir().value, to: '/stdlib'},

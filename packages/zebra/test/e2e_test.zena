@@ -12,7 +12,7 @@ import {
   Succeeded,
 } from 'workflow/engine';
 import {StepKey} from 'workflow/step';
-import {REMOTE_CACHE_ENV_VARS} from 'zebra/builder';
+import {REMOTE_CACHE_ENV_VARS, StepExecution} from 'zebra/builder';
 import {Colors} from 'zebra/colors';
 import {ensureDir, ensureParentDir, withRoot} from 'zebra/fs-util';
 import {FileHasher} from 'zebra/fs-walk';
@@ -20,6 +20,8 @@ import {PlanLoadStats} from 'zebra/plan-cache';
 import {
   BuildOptions,
   BuildOutcome,
+  TestStepRequest,
+  TestStepRunner,
   WatchOptions,
   buildTarget as runBuildTarget,
   defaultParallelism,
@@ -42,6 +44,27 @@ function localEnv(name: String): String? {
   return getEnv(name);
 }
 
+class FakeTestRunner implements TestStepRunner {
+  calls: GrowableArray<TestStepRequest>;
+  var fp: String;
+  fpFile: String?;
+
+  new(this.calls, this.fp, this.fpFile = null);
+
+  async fingerprint(): Future<String> {
+    let path = this.fpFile;
+    if (path != null && (await isFile(path))) {
+      return await readFile(path);
+    }
+    return this.fp;
+  }
+
+  async runTests(req: TestStepRequest): Future<StepExecution> {
+    this.calls.push(req);
+    return new StepExecution('zena test', 0, 'ok\n', '', 1 as i64);
+  }
+}
+
 async function buildTarget(
   root: String,
   entry: ScriptRef,
@@ -60,6 +83,8 @@ async function buildTarget(
   if (let {planStatsOut as s} = options) { planStatsOut = s; }
   var extraArgs: Array<String>? = null;
   if (let {extraArgs as a} = options) { extraArgs = a; }
+  var testRunner: TestStepRunner? = null;
+  if (let {testRunner as tr} = options) { testRunner = tr; }
   return await runBuildTarget(root, entry, {
     parallelism,
     force,
@@ -70,6 +95,7 @@ async function buildTarget(
     hasherOut,
     planStatsOut,
     extraArgs,
+    testRunner,
   });
 }
 
@@ -1517,5 +1543,120 @@ export let tests = suite('zebra end to end', () => {
     isTrue(ran.succeeded(), ran.stdout + ran.stderr);
     equal(await readFile(withRoot(root, 'stripped.txt')), '|||');
     equal(await readFile(withRoot(root, 'forwarded.txt')), 'github|0');
+  });
+
+  test('tests steps execute via TestStepRunner, track runner and lockfile fingerprints, and forward extraArgs', async () => {
+    let root = `/tmp/zebra-test-runner-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    await write(root, 'zena-lock.json', '{"v":1}\n');
+    await write(root, 'zena-package.json', `{
+      "workspace": {"packages": ["packages/*"]}
+    }`);
+    await write(root, 'packages/pkg/zena-package.json', `{
+      "name": "pkg"
+    }`);
+    await write(root, 'packages/pkg/src/lib.zena', 'export let x = 1;\n');
+    await write(root, 'packages/pkg/test/lib_test.zena', '// test v1\n');
+
+    let calls = new GrowableArray<TestStepRequest>();
+    let runner = new FakeTestRunner(calls, 'runner-v1');
+
+    let entry = new ScriptRef('packages/pkg', 'test');
+
+    // 1. Zero-config synthesized `test` step runs through TestStepRunner.
+    let r1 = await buildTarget(root, entry, {testRunner: runner});
+    isTrue(r1.result.allSucceeded);
+    equal(calls.length, 1);
+    equal(calls[0].packageDir, 'packages/pkg');
+    equal(calls[0].extraArgs.length, 0);
+    isTrue(sourceOf(r1.result, 'packages/pkg:test') == StepSource.Ran);
+
+    // 2. Warm run stays fresh without invoking TestStepRunner again.
+    let r2 = await buildTarget(root, entry, {testRunner: runner});
+    isTrue(r2.result.allSucceeded);
+    equal(calls.length, 1);
+    isTrue(sourceOf(r2.result, 'packages/pkg:test') == StepSource.Fresh);
+
+    // 3. extraArgs run uncached and forward to TestStepRunner without clobbering saved freshness.
+    let r3 = await buildTarget(root, entry, {
+      testRunner: runner,
+      extraArgs: ['-f', 'lib'],
+    });
+    isTrue(r3.result.allSucceeded);
+    equal(calls.length, 2);
+    equal(calls[1].extraArgs.length, 2);
+    equal(calls[1].extraArgs[0], '-f');
+    equal(calls[1].extraArgs[1], 'lib');
+
+    let r4 = await buildTarget(root, entry, {testRunner: runner});
+    isTrue(r4.result.allSucceeded);
+    equal(calls.length, 2);
+    isTrue(sourceOf(r4.result, 'packages/pkg:test') == StepSource.Fresh);
+
+    // 4. Changing runner fingerprint invalidates freshness.
+    runner.fp = 'runner-v2';
+    let r5 = await buildTarget(root, entry, {testRunner: runner});
+    isTrue(r5.result.allSucceeded);
+    equal(calls.length, 3);
+    isTrue(sourceOf(r5.result, 'packages/pkg:test') == StepSource.Ran);
+
+    // 5. Editing zena-lock.json invalidates the tests step.
+    await write(root, 'zena-lock.json', '{"v":2}\n');
+    let r6 = await buildTarget(root, entry, {testRunner: runner});
+    isTrue(r6.result.allSucceeded);
+    equal(calls.length, 4);
+    isTrue(sourceOf(r6.result, 'packages/pkg:test') == StepSource.Ran);
+
+    // 6. TestStepRunner.fingerprint() is evaluated lazily AFTER upstream
+    // dependencies finish, so a cascade:false compiler build step that rewrites
+    // the runner binary mid-build invalidates downstream tests in the SAME run.
+    let fpPath = withRoot(root, 'packages/compiler/out/runner.fp');
+    await write(root, 'packages/compiler/zena-package.json', `{
+      "name": "compiler",
+      "scripts": {
+        "build": {
+          "command": "mkdir -p out && cat src/ver.txt > out/runner.fp",
+          "files": ["src/**"],
+          "output": ["out/**"]
+        }
+      }
+    }`);
+    await write(root, 'packages/compiler/src/ver.txt', 'compiler-v1\n');
+    await write(root, 'packages/pkg/zena-package.json', `{
+      "name": "pkg",
+      "scripts": {
+        "test": {
+          "type": "zena:test",
+          "tests": ["test/**/*_test.zena"],
+          "files": ["src/**", "test/**"],
+          "dependencies": [
+            {"script": "../compiler:build", "cascade": false}
+          ]
+        }
+      }
+    }`);
+    let lazyRunner = new FakeTestRunner(calls, 'bootstrap-fp', fpPath);
+    let r7 = await buildTarget(root, entry, {testRunner: lazyRunner});
+    isTrue(r7.result.allSucceeded);
+    equal(calls.length, 5);
+    isTrue(sourceOf(r7.result, 'packages/compiler:build') == StepSource.Ran);
+    isTrue(sourceOf(r7.result, 'packages/pkg:test') == StepSource.Ran);
+
+    // Warm run: both compiler:build and pkg:test are Fresh.
+    let r8 = await buildTarget(root, entry, {testRunner: lazyRunner});
+    isTrue(r8.result.allSucceeded);
+    equal(calls.length, 5);
+    isTrue(sourceOf(r8.result, 'packages/compiler:build') == StepSource.Fresh);
+    isTrue(sourceOf(r8.result, 'packages/pkg:test') == StepSource.Fresh);
+
+    // Bump compiler source: even with cascade:false on the dependency edge,
+    // compiler:build runs first, updates out/runner.fp, and pkg:test sees the
+    // new lazy runner fingerprint and reruns in the SAME build!
+    await write(root, 'packages/compiler/src/ver.txt', 'compiler-v2\n');
+    let r9 = await buildTarget(root, entry, {testRunner: lazyRunner});
+    isTrue(r9.result.allSucceeded);
+    equal(calls.length, 6);
+    isTrue(sourceOf(r9.result, 'packages/compiler:build') == StepSource.Ran);
+    isTrue(sourceOf(r9.result, 'packages/pkg:test') == StepSource.Ran);
   });
 });

@@ -16,10 +16,12 @@ zena pkg add zena-lang:zebra
 
 ```sh
 zena build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<target>] [-- <args>...]
+zena run [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] <target> [-- <args>...]
+zena test [-j <jobs>] [-w|--watch] [--force] [--no-cache] [-v|--verbose] [-- <args>...]
 zena build --migrate [--dry-run] [-f|--force] [<package-dir>...]
 ```
 
-- `<target>` can be a script name in the current package (`zena build test`), a package directory (`zena build ./packages/app`, which runs `build`), or `<package-dir>:<script>` (`zena build ./packages/app:test`). With no `<target>`, `zena build` runs the current package's `build` script.
+- `<target>` can be a script name in the current package (`zena build test`, `zena run check`), a package directory (`zena build ./packages/app`, which runs `build`), or `<package-dir>:<script>` (`zena build ./packages/app:test`). With no `<target>`, `zena build` runs the current package's `build` script and `zena test` runs its `test` script.
 - `-- <args>...` appends shell-quoted arguments to the entry target's command only, running that entry step uncached without overwriting its saved freshness record.
 - `-j` / `--jobs <n>` bounds parallel command execution (defaulting to `ZEBRA_PARALLEL`, `WIREIT_PARALLEL`, or `ZENA_AVAILABLE_PARALLELISM`).
 - `-w` / `--watch` watches input globs, lockfiles, and package manifests for changes, re-running affected steps incrementally while keeping unchanged services alive in a `ServicePool` across rebuilds.
@@ -60,15 +62,15 @@ Zena packages configure scripts and filesets directly in `zena-package.json`. No
       "dependencies": ["source", "assets"],
     },
     "test": {
-      "command": "zena test",
-      "files": ["test/**/*_test.zena"],
-      "dependencies": ["source"],
+      "type": "zena:test",
+      "tests": "test/*_test.zena",
     },
     "fmt": "zena fmt --check .",
   },
 }
 ```
 
+- **Declarative `zena:test` steps and default `test` target**: Scripts in `zena-package.json` and `zebra.json` can set `"type": "zena:test"` (with optional `"tests": true`, `"tests": "test/*_test.zena"`, or `"tests": ["test/*_test.zena", ...]` — defaulting to `["test/**/*_test.zena", "tests/**/*_test.zena"]` when omitted — and optional `"debug": true` for `-g`) to run Zena tests in-process through `TestStepRunner`. Test pattern globs merge into `files`, and `zena-package.json` `"zena:test"` steps automatically depend on `source`. When a `zena-package.json` omits a `test` script (and no fallback `package.json` defines `test`), Zebra synthesizes a `"type": "zena:test"` target over `test/**/*_test.zena` and `tests/**/*_test.zena`.
 - **Automatic `source` fileset**: Every package with `zena-package.json` exposes an automatic `source` fileset covering its library `.zena` files (from `"source"`, defaulting to `"src"` and excluding `*_test.zena`, `test/**`, and `tests/**`), `zena-package.json`, any `"wit"` dependencies, and the `source` filesets of all `"path"` dependencies. Scripts opt into it via `"dependencies": ["source"]` (or `"../pkg:source"`).
 - **Named `filesets`**: Entries accept either a glob array shorthand (`"wit": ["wit/**/*.wit"]`) or `{"files": [...], "dependencies": [...]}` and compose transitively without spawning commands.
 - **Caching and tracking**: Task scripts cache automatically whenever `files`, `output`, or a fileset dependency is declared, defaulting `output` to `[]` when omitted. Setting `"cache": false` opts a step out of freshness and caching while keeping its `files` globs active in `--watch` mode. Omitting `files`, `output`, and fileset dependencies on a command step leaves it untracked so it runs every time. String entries (`"fmt": "zena fmt --check ."`) are shorthands for always-run commands.

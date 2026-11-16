@@ -7,7 +7,7 @@
 import { ParsedArgs } from 'zena:args';
 import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
-import { exists, isDirectory } from 'zena:fs';
+import { exists, isDirectory, isFile } from 'zena:fs';
 import { AbsolutePath, RelativePath, extname } from 'zena:path';
 import { DirMapping, RunOutcome, runModule } from 'zena:wasm';
 import { CompileRequest, compileCached, ensureDir } from './compile.zena';
@@ -73,12 +73,12 @@ function extensionsAllowed(flag: boolean): boolean {
 
 export async function runCommand(args: ParsedArgs, options: Options): Future<i32> {
   if (args.rest.length == 0) {
-    console.error('Error: run needs a .zena or .wasm file');
+    console.error('Error: run needs a .zena or .wasm file, or a script name');
     return 2;
   }
   let file = args.rest[0];
   let path = resolveUserPath(file);
-  if (!(await exists(path.value))) {
+  if (!(await isFile(path.value))) {
     console.error(`Error: no such file: ${file}`);
     return 2;
   }

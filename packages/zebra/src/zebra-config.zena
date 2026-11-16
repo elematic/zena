@@ -16,6 +16,7 @@ import {
   EnvBinding,
   ScriptConfig,
   ScriptRef,
+  ZENA_TEST_RULE_TYPE,
   isCommentKey,
   parseClean,
   parseDependency,
@@ -41,9 +42,10 @@ function isZebraTopKey(key: String) {
 }
 
 function isRecognizedScriptKey(key: String) {
-  return key == 'command' || key == 'files' || key == 'output' ||
-    key == 'dependencies' || key == 'cache' || key == 'clean' ||
-    key == 'service' || key == 'env' || key == 'locks' || isCommentKey(key);
+  return key == 'type' || key == 'command' || key == 'tests' || key == 'debug' ||
+    key == 'files' || key == 'output' || key == 'dependencies' ||
+    key == 'cache' || key == 'clean' || key == 'service' ||
+    key == 'env' || key == 'locks' || isCommentKey(key);
 }
 
 function isRecognizedFilesetKey(key: String) {
@@ -190,6 +192,7 @@ export function parseZebraScript(
   entry: JsonValue,
   defaultLocks: Array<String>,
   hasFilesetDep: boolean = false,
+  autoAddSourceDep: boolean = false,
 ): ScriptConfig {
   let where = refKey(ref);
 
@@ -227,6 +230,20 @@ export function parseZebraScript(
     }
   });
 
+  var ruleType: String? = null;
+  let rawType = entry['type'];
+  if (rawType != null) {
+    if (!(rawType is String)) {
+      throw new ConfigError(`script "${where}": type must be a string`);
+    }
+    if (rawType != ZENA_TEST_RULE_TYPE) {
+      throw new ConfigError(
+        `script "${where}": unsupported script type "${rawType}" (expected "${ZENA_TEST_RULE_TYPE}")`,
+      );
+    }
+    ruleType = rawType;
+  }
+
   var command: String? = null;
   let rawCommand = entry['command'];
   if (rawCommand != null) {
@@ -235,6 +252,79 @@ export function parseZebraScript(
     } else {
       throw new ConfigError(`script "${where}": command must be a string`);
     }
+  }
+
+  let isZenaTest = ruleType == ZENA_TEST_RULE_TYPE;
+  let rawTests = entry['tests'];
+  if (!isZenaTest && rawTests != null) {
+    throw new ConfigError(
+      `script "${where}": "tests" requires "type": "${ZENA_TEST_RULE_TYPE}"`,
+    );
+  }
+
+  var tests: Array<String>? = null;
+  var defaultTestFiles = false;
+  if (isZenaTest) {
+    if (rawTests == null) {
+      defaultTestFiles = true;
+      let defaults = new GrowableArray<String>();
+      defaults.push('test/**/*_test.zena');
+      defaults.push('tests/**/*_test.zena');
+      tests = defaults;
+    } else if (rawTests is Box<boolean>) {
+      if (!rawTests.value) {
+        throw new ConfigError(
+          `script "${where}": tests must be true, a pattern string, or an array of patterns`,
+        );
+      }
+      defaultTestFiles = true;
+      let defaults = new GrowableArray<String>();
+      defaults.push('test/**/*_test.zena');
+      defaults.push('tests/**/*_test.zena');
+      tests = defaults;
+    } else if (rawTests is String) {
+      if (rawTests == '') {
+        throw new ConfigError(`script "${where}": tests pattern must not be empty`);
+      }
+      let single = new GrowableArray<String>();
+      single.push(rawTests);
+      tests = single;
+    } else if (rawTests is JsonArray) {
+      let parsedTests = stringList(rawTests, `script "${where}": tests`);
+      if (parsedTests.length == 0) {
+        throw new ConfigError(`script "${where}": tests must name at least one pattern`);
+      }
+      for (let pat in parsedTests) {
+        if (pat == '') {
+          throw new ConfigError(`script "${where}": tests pattern must not be empty`);
+        }
+      }
+      tests = parsedTests;
+    } else {
+      throw new ConfigError(
+        `script "${where}": tests must be true, a pattern string, or an array of patterns`,
+      );
+    }
+  }
+
+  var testDebug = false;
+  let rawDebug = entry['debug'];
+  if (rawDebug != null) {
+    if (!(rawDebug is Box<boolean>)) {
+      throw new ConfigError(`script "${where}": debug must be a boolean`);
+    }
+    if (!isZenaTest) {
+      throw new ConfigError(
+        `script "${where}": "debug" requires "type": "${ZENA_TEST_RULE_TYPE}"`,
+      );
+    }
+    testDebug = rawDebug.value;
+  }
+
+  if (isZenaTest && command != null) {
+    throw new ConfigError(
+      `script "${where}": "type": "${ZENA_TEST_RULE_TYPE}" cannot be combined with "command"`,
+    );
   }
 
   let deps = new GrowableArray<DependencySpec>();
@@ -247,20 +337,65 @@ export function parseZebraScript(
       deps.push(parseDependency(ref.packageDir, where, rawDeps[i]));
     }
   }
+  if (tests != null && autoAddSourceDep) {
+    let sourceKey = refKey(new ScriptRef(ref.packageDir, 'source'));
+    var hasSource = false;
+    for (let dep in deps) {
+      if (refKey(dep.ref) == sourceKey) {
+        hasSource = true;
+        break;
+      }
+    }
+    if (!hasSource) {
+      deps.push(new DependencySpec(new ScriptRef(ref.packageDir, 'source'), true));
+    }
+  }
 
   let clean = parseClean(where, entry['clean']);
 
   let service = parseService(where, entry['service']);
+  if (isZenaTest && service != null) {
+    throw new ConfigError(
+      `script "${where}": "type": "${ZENA_TEST_RULE_TYPE}" cannot be combined with "service"`,
+    );
+  }
   if (command == null && service != null) {
     throw new ConfigError(`script "${where}": a service needs a command`);
   }
   if (service != null && entry['output'] != null) {
     throw new ConfigError(`script "${where}": a service cannot declare output`);
   }
+  if (isZenaTest && entry['output'] != null) {
+    throw new ConfigError(
+      `script "${where}": "type": "${ZENA_TEST_RULE_TYPE}" cannot declare "output"`,
+    );
+  }
 
   let hasExplicitFiles = entry['files'] != null;
   let hasExplicitOutput = entry['output'] != null;
-  let files = stringList(entry['files'], `script "${where}": files`);
+  let explicitFiles = stringList(entry['files'], `script "${where}": files`);
+  let files = new GrowableArray<String>();
+  let seenFiles = new HashSet<String>();
+  for (let glob in explicitFiles) {
+    if (seenFiles.add(glob)) {
+      files.push(glob);
+    }
+  }
+  if (tests != null) {
+    if (defaultTestFiles) {
+      for (let glob in ['test/**/*.zena', 'tests/**/*.zena']) {
+        if (seenFiles.add(glob)) {
+          files.push(glob);
+        }
+      }
+    } else {
+      for (let glob in tests) {
+        if (seenFiles.add(glob)) {
+          files.push(glob);
+        }
+      }
+    }
+  }
   let output = stringList(entry['output'], `script "${where}": output`);
 
   let trackedByInputs = if (service != null)
@@ -291,7 +426,7 @@ export function parseZebraScript(
     validateLockFilenames(`script "${where}"`, 'locks', locks);
   }
 
-  let filesDeclared = if (command == null && service == null)
+  let filesDeclared = if (command == null && service == null && tests == null)
     hasExplicitFiles
   else
     trackedByInputs;
@@ -312,6 +447,10 @@ export function parseZebraScript(
     locks,
     cacheEnabled,
     false,
+    tests,
+    testDebug,
+    null,
+    ruleType,
   );
 }
 
@@ -473,6 +612,63 @@ export function synthesizeZenaSourceFileset(
   );
 }
 
+function packageDefinesScript(pkgJson: JsonObject, script: String): boolean {
+  let wireit = pkgJson['wireit'];
+  if (wireit is JsonObject && wireit[script] != null) {
+    return true;
+  }
+  let scripts = pkgJson['scripts'];
+  return scripts is JsonObject && scripts[script] != null;
+}
+
+/**
+ * Synthesizes the default `"test"` step for a `zena-package.json` manifest
+ * that declares no explicit `"test"` script: discovers `_test.zena` files
+ * under `test/` and `tests/` against the package's `"source"` fileset.
+ */
+export function synthesizeZenaTestScript(
+  packageDir: String,
+  path: String,
+  manifest: JsonObject,
+): ScriptConfig {
+  let ref = new ScriptRef(packageDir, 'test');
+  let isRootSource =
+    manifest['source'] != null && normalizeSourceDir(path, manifest['source']) == '.';
+  let tests = new GrowableArray<String>();
+  let files = new GrowableArray<String>();
+  if (isRootSource) {
+    tests.push('**/*_test.zena');
+    files.push('**/*_test.zena');
+  } else {
+    tests.push('test/**/*_test.zena');
+    tests.push('tests/**/*_test.zena');
+  }
+  files.push('test/**/*.zena');
+  files.push('tests/**/*.zena');
+  let deps = new GrowableArray<DependencySpec>();
+  deps.push(new DependencySpec(new ScriptRef(packageDir, 'source'), true));
+  return new ScriptConfig(
+    ref,
+    true,
+    null,
+    files,
+    new GrowableArray<String>(),
+    true,
+    true,
+    deps,
+    'false',
+    null,
+    new GrowableArray<(String, EnvBinding)>(),
+    resolveDefaultLocks(path, manifest),
+    true,
+    false,
+    tests,
+    false,
+    null,
+    ZENA_TEST_RULE_TYPE,
+  );
+}
+
 class LoadedPackage {
   nativePath: String?;
   nativeJson: JsonObject?;
@@ -630,6 +826,7 @@ export class ZebraWorkspace {
             scriptEntry,
             defaultLocks,
             hasFilesetDep,
+            loaded.zenaJson != null && ref.script != 'source',
           );
         }
       }
@@ -650,9 +847,20 @@ export class ZebraWorkspace {
       }
     }
 
+    let canSynthesizeTest =
+      ref.script == 'test' &&
+      zenaJson != null &&
+      loaded.zenaPath != null &&
+      loaded.nativePath == loaded.zenaPath;
+
     let fallback = loaded.fallbackPkgJson;
-    if (fallback != null) {
+    if (fallback != null && (!canSynthesizeTest || packageDefinesScript(fallback, ref.script))) {
       return parseWireitScriptFromPackage(ref, fallback);
+    }
+
+    if (canSynthesizeTest && zenaJson != null) {
+      let zenaPath = loaded.zenaPath ?? ZENA_PACKAGE_FILE;
+      return synthesizeZenaTestScript(ref.packageDir, zenaPath, zenaJson);
     }
 
     throw new ConfigError(`no script or fileset "${ref.script}" in ${nativePath}`);

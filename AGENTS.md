@@ -311,14 +311,23 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
 - **`build [target]`**: Run a build target using `zebra` (e.g.,
   `zena-cli build`, `zena-cli build test`, or
   `zena-cli build ./packages/zebra:test`).
-- **`run <file.zena|file.wasm> [-- args...]`**: Compile (through the `.zena`
-  compile cache) and run a source file, or run a compiled `.wasm` module.
-  Supports `--dir HOST[::GUEST]`, `--allow-spawn`, `--allow-extensions`,
-  `--invoke <fn>`, `--no-cache`, and `--time`. These go before the file:
-  everything after it is passed to the program.
-- **`test [paths/globs...]`**: Discover and run `*_test.zena` files in parallel.
-  Supports `-f` / `--filter <substring>` (a substring of the test file's
-  path, not a test's name), `--exclude <glob>`, and `--single`.
+- **`run <file.zena|file.wasm> [-- args...]`** or **`run <target> [-- args...]`**:
+  Compile (through the `.zena` compile cache) and run a `.zena`, `.wasm`, or
+  `.wat` file (`--dir HOST[::GUEST]`, `--allow-spawn`, `--allow-extensions`,
+  `--invoke <fn>`, `--no-cache`, `--time` go before the file; everything after
+  it is passed to the program). When the argument is a script or `<path>:<script>`
+  target (`zena-cli run test`, `zena-cli run check`, `zena-cli run ./packages/zebra:test`),
+  run that target with `zebra` (`-j`, `-w`, `-f` / `--force`, `--no-cache`, `-v`,
+  and `-- <args...>`).
+- **`test [paths/globs...]`**: With no paths or globs, run the current
+  package's `test` target via `zebra` (`zebra.json`, `zena-package.json`, or
+  `package.json`), executing declarative `"type": "zena:test"` steps and
+  zero-config `zena-package.json` packages in-process (`-j` / `--jobs`,
+  `-w` / `--watch`, `--force`, `--no-cache`, `-v` / `--verbose`, and
+  `-- <args...>`). With paths, globs, `-f` / `--filter <substring>` (a
+  substring of the test file's path), or `--exclude <glob>`, discover and run
+  `*_test.zena` files in parallel (also supports `--single`, `-j`, and
+  `--no-cache`).
 - **`fmt [--write|-w | --check] <files...>`**: Format `.zena` files.
 - **`lint [--fix] [--only rules] [--skip rules] <paths...>`**: Report what
   the lint rules (`packages/zena-lint`) find in `.zena` files, as
@@ -514,8 +523,11 @@ Every wireit script also exists as a zebra script: in the package's
 without a Zena manifest. The two run side by side until zebra caches in
 CI. A change to a script's command, dependencies (`cascade` included),
 inputs or outputs in one goes into the other in the same commit. They
-differ only where zebra has its own means, such as a fileset
-(`../stdlib:lib`, `../registry:source`) in place of a list of files.
+differ only where zebra has its own means: a fileset (`../stdlib:lib`,
+`../registry:source`) in place of a list of files, or a
+`"type": "zena:test"` rule in place of a `zena-cli test ...` command.
+`packages/zebra/test/repo-parity_test.zena` checks that the two stay in
+sync.
 
 ### `ERR_MODULE_NOT_FOUND` on a file whose source exists
 

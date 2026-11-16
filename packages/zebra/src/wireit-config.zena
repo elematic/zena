@@ -9,6 +9,9 @@ import {
 import {compareStrings, sortBy} from 'workflow/canonical';
 import {joinWorkspace} from './fs-util.zena';
 
+/** Rule `type` identifier for native Zena `*_test.zena` test suites. */
+export let ZENA_TEST_RULE_TYPE = 'zena:test';
+
 /** Raised for malformed or unsupported build configuration. */
 export class ConfigError extends Error {
   new(message: String) : super(message);
@@ -90,12 +93,24 @@ export class ScriptConfig {
    * a runnable script.
    */
   isFileset: boolean;
+  /**
+   * Zena test file patterns (relative to `ref.packageDir`) for a
+   * `"type": "zena:test"` step, or `null` for command/group/service/fileset steps.
+   */
+  tests: Array<String>?;
+  /** Run `"type": "zena:test"` modules with debug names and inlining disabled (`-g`). */
+  testDebug: boolean;
+  /** Extra CLI arguments after `--` passed to an entry `"type": "zena:test"` step. */
+  testExtraArgs: Array<String>?;
+  /** Explicit rule discriminator (such as `'zena:test'`), or `null` for standard scripts. */
+  ruleType: String?;
 
   /**
    * True when freshness and caching apply to this script at all. A
-   * command-less script or fileset always tracks (unless `cacheEnabled`
-   * is false); a service tracks when `files` (or a fileset dependency) is
-   * declared; a command task needs both `files` and `output` declared.
+   * command-less script, `"type": "zena:test"` step, or fileset always tracks
+   * (unless `cacheEnabled` is false); a service tracks when `files` (or a
+   * fileset dependency) is declared; a command task needs both `files` and
+   * `output` declared.
    */
   fingerprintable: boolean {
     get {
@@ -127,6 +142,10 @@ export class ScriptConfig {
     this.packageLocks,
     this.cacheEnabled = true,
     this.isFileset = false,
+    this.tests = null,
+    this.testDebug = false,
+    this.testExtraArgs = null,
+    this.ruleType = null,
   );
 }
 

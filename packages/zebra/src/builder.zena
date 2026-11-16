@@ -1,3 +1,4 @@
+import {Future} from 'zena:async';
 import {getEnv} from 'zena:cli';
 import { HashSet } from 'zena:collections';
 import {div} from 'zena:math';
@@ -23,6 +24,7 @@ import {
 import {deleteIfExists, joinWorkspace, withRoot} from './fs-util.zena';
 import {FileHasher, expandGlobs, hashFile, validateGlobs} from './fs-walk.zena';
 import {sha256HexOfString} from 'zena:crypto';
+import {appendShellArgs} from './shell.zena';
 import {
   ConfigError,
   DependencySpec,
@@ -30,6 +32,7 @@ import {
   EnvExternal,
   EnvLiteral,
   ScriptConfig,
+  ZENA_TEST_RULE_TYPE,
   refKey,
 } from './wireit-config.zena';
 
@@ -55,6 +58,42 @@ export class StepExecution {
     }
     return `${this.stdout}\n${this.stderr}`;
   }
+}
+
+/** Parameters for running one package's native Zena `"tests"` step. */
+export class TestStepRequest {
+  root: String;
+  packageDir: String;
+  patterns: Array<String>;
+  extraArgs: Array<String>;
+  env: Array<(String, String)>;
+  envRemove: Array<String>;
+  debug: boolean;
+
+  new(
+    this.root,
+    this.packageDir,
+    this.patterns,
+    this.extraArgs,
+    this.env,
+    this.envRemove,
+    this.debug,
+  );
+}
+
+/**
+ * In-process executor for native Zena `"tests"` steps, supplied by `zena-cli`
+ * so test targets compile and run without spawning shell or CLI child processes.
+ */
+export interface TestStepRunner {
+  /**
+   * Identity of the compiler and standard library running tests, evaluated
+   * lazily after a step's dependencies settle so upstream compiler builds
+   * invalidate downstream test steps in the same run.
+   */
+  fingerprint(): Future<String>;
+  /** Runs one package's Zena test step and returns its captured output and status. */
+  runTests(request: TestStepRequest): Future<StepExecution>;
 }
 
 /** A planned build: the step graph, initial leaf map, and captured step runs. */
@@ -159,6 +198,7 @@ function configFingerprint(
   config: ScriptConfig,
   salt: String,
   forceSalted: boolean = false,
+  hasInProcessRunner: boolean = false,
 ) {
   let sb = new StringBuilder();
   appendSegment(sb, 'zebra-config-v1');
@@ -175,6 +215,21 @@ function configFingerprint(
     );
   } else {
     appendSegment(sb, 'service:none');
+  }
+  let ruleType = config.ruleType;
+  if (ruleType != null) {
+    appendSegment(sb, 'type:' + ruleType);
+  }
+  let tests = config.tests;
+  if (ruleType == ZENA_TEST_RULE_TYPE && tests != null) {
+    for (let pat in tests) {
+      appendSegment(sb, 'test-glob:' + pat);
+    }
+    appendSegment(sb, if (config.testDebug) 'test-debug:1' else 'test-debug:0');
+    appendSegment(
+      sb,
+      if (hasInProcessRunner) 'test-runner:in-process' else 'test-runner:shell',
+    );
   }
   for (let glob in config.files) {
     appendSegment(sb, 'file:' + glob);
@@ -240,11 +295,27 @@ function binPathPrefix(packageDir: String) {
   return `node_modules/.bin:${up.toString()}node_modules/.bin`;
 }
 
+function fallbackTestShellCommand(
+  patterns: Array<String>,
+  extraArgs: Array<String>,
+  debug: boolean,
+) {
+  let base = if (debug) 'zena -g test' else 'zena test';
+  let allArgs = new GrowableArray<String>();
+  for (let p in patterns) {
+    allArgs.push(p);
+  }
+  for (let a in extraArgs) {
+    allArgs.push(a);
+  }
+  return appendShellArgs(base, allArgs);
+}
+
 /**
- * Runs one script's command and collects its outputs. The child runs
- * through `sh -c` in the package directory with node_modules/.bin on
- * PATH, like wireit through npm, and awaits exit asynchronously so
- * independent steps run in parallel.
+ * Runs one script's command (or native Zena `"tests"` step) and collects its
+ * outputs. Shell commands run through `sh -c` in the package directory with
+ * node_modules/.bin on PATH, like wireit through npm, and await exit
+ * asynchronously so independent steps run in parallel.
  */
 export async function runScript(
   root: String,
@@ -253,9 +324,12 @@ export async function runScript(
   volatileMark: String?,
   hasher: FileHasher?,
   executions: HashMap<String, StepExecution>? = null,
+  testRunner: TestStepRunner? = null,
 ): Future<OutputManifest> {
   let command = config.command;
-  if (command == null && config.output.length == 0) {
+  let isZenaTest = config.ruleType == ZENA_TEST_RULE_TYPE;
+  let tests = if (isZenaTest) config.tests else null;
+  if (command == null && tests == null && config.output.length == 0) {
     // Command-less group or fileset scripts forward their resolved
     // inputs as virtual entries so upstream manifest changes (and
     // $volatile markers) propagate to downstream dependents.
@@ -268,7 +342,68 @@ export async function runScript(
     }
     return new OutputManifest(forwarded);
   }
-  if (command != null) {
+  if (tests != null) {
+    let key = refKey(config.ref);
+    let sigBefore = checkSignal();
+    if (sigBefore != 0) {
+      throw new Error(
+        `script "${key}" interrupted by signal ${i32ToString(sigBefore)}`,
+      );
+    }
+    let extra = config.testExtraArgs ?? new GrowableArray<String>();
+    let envOverrides = resolveEnvOverrides(config.env);
+    let envRemovals = resolveEnvRemovals(config.env);
+    var exec: StepExecution | null = null;
+    if (testRunner != null) {
+      exec = await testRunner.runTests(
+        new TestStepRequest(
+          root,
+          config.ref.packageDir,
+          tests,
+          extra,
+          envOverrides,
+          envRemovals,
+          config.testDebug,
+        ),
+      );
+    } else {
+      let startNs = monotonic() as i64;
+      let cwd = withRoot(root, config.ref.packageDir);
+      let shellCmd = fallbackTestShellCommand(tests, extra, config.testDebug);
+      let wrapped =
+        `export PATH="${binPathPrefix(config.ref.packageDir)}:$PATH"; ${shellCmd}`;
+      let result = await runWith(['sh', '-c', wrapped], {
+        cwd: cwd,
+        env: envOverrides,
+        envRemove: envRemovals,
+        processGroup: true,
+      });
+      let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+      exec = new StepExecution(
+        shellCmd,
+        result.exitCode,
+        result.stdout,
+        result.stderr,
+        durationMs,
+      );
+    }
+    let sigAfter = checkSignal();
+    if (sigAfter != 0) {
+      throw new Error(
+        `script "${key}" interrupted by signal ${i32ToString(sigAfter)}`,
+      );
+    }
+    let finished = exec;
+    if (executions != null) {
+      executions[key] = finished;
+    }
+    if (finished.exitCode != 0) {
+      throw new Error(
+        `script "${key}" failed (exit ${i32ToString(finished.exitCode)}): ${finished.command}\n` +
+        finished.stdout + finished.stderr,
+      );
+    }
+  } else if (command != null) {
     let key = refKey(config.ref);
     let sigBefore = checkSignal();
     if (sigBefore != 0) {
@@ -563,16 +698,43 @@ export function lockfileCandidates(
   return candidates;
 }
 
+async function resolveTestRunnerLeaf(
+  runner: TestStepRunner,
+): Future<Array<(String, Fingerprint)>> {
+  let entries = new GrowableArray<(String, Fingerprint)>();
+  entries.push(('__zena_test_runner__', new Fingerprint(await runner.fingerprint())));
+  return entries;
+}
+
+class CoalescedRunnerLeaf {
+  #runner: TestStepRunner;
+  var #pending: Future<Array<(String, Fingerprint)>>? = null;
+
+  new(runner: TestStepRunner) : #runner = runner;
+
+  resolve(): Future<Array<(String, Fingerprint)>> {
+    let existing = this.#pending;
+    if (existing != null) {
+      return existing;
+    }
+    let started = resolveTestRunnerLeaf(this.#runner);
+    this.#pending = started;
+    return started;
+  }
+}
+
 function buildStepInputs(
   config: ScriptConfig,
   hasher: FileHasher,
+  runnerLeaf: CoalescedRunnerLeaf? = null,
 ): Array<InputRef> {
   validateGlobs(config.ref.packageDir, config.files);
   validateGlobs(config.ref.packageDir, config.output);
   let inputs = new GrowableArray<InputRef>();
+  let isZenaTest = config.ruleType == ZENA_TEST_RULE_TYPE && config.tests != null;
   let lockCandidates = if (
     config.isWireit &&
-    config.command != null &&
+    (config.command != null || isZenaTest) &&
     config.fingerprintable &&
     config.packageLocks.length > 0
   )
@@ -585,6 +747,10 @@ function buildStepInputs(
     inputs.push(
       new LeafSet('files', () => hasher.hashInputs(pkgDir, globs, lockCandidates)),
     );
+  }
+  if (isZenaTest && config.fingerprintable && runnerLeaf != null) {
+    let sharedLeaf = runnerLeaf;
+    inputs.push(new LeafSet('test-runner', () => sharedLeaf.resolve()));
   }
   // Deduplicate dependency edges, letting `cascade: true` win if listed both ways.
   let order = new GrowableArray<String>();
@@ -621,27 +787,30 @@ export function planScripts(
   salt: String,
   hasher: FileHasher? = null,
   foregroundServiceKey: String? = null,
+  testRunner: TestStepRunner? = null,
 ): Plan {
   let fileHasher = hasher ?? new FileHasher(root);
+  let hasRunner = testRunner != null;
+  let runnerLeaf = if (testRunner != null) new CoalescedRunnerLeaf(testRunner) else null;
   let leaves = new HashMap<String, Fingerprint>();
   let executions = new HashMap<String, StepExecution>();
   let steps = new GrowableArray<Step>();
   for (let config in configs) {
     let key = refKey(config.ref);
-    let inputs = buildStepInputs(config, fileHasher);
+    let inputs = buildStepInputs(config, fileHasher, runnerLeaf);
     if (config.service != null) {
       let readyRegex = compileReadyRegex(config);
       if (foregroundServiceKey != null && key == foregroundServiceKey) {
         steps.push(new TaskStep(
           new StepKey(key),
-          configFingerprint(config, salt, true),
+          configFingerprint(config, salt, true, hasRunner),
           inputs,
           (ctx) => runForegroundService(root, config, readyRegex, salt, fileHasher),
         ));
       } else {
         steps.push(new ServiceStep(
           new StepKey(key),
-          configFingerprint(config, salt),
+          configFingerprint(config, salt, false, hasRunner),
           inputs,
           (svcCtx) => startService(root, config, readyRegex, fileHasher, executions),
         ));
@@ -649,7 +818,7 @@ export function planScripts(
     } else {
       steps.push(new TaskStep(
         new StepKey(key),
-        configFingerprint(config, salt),
+        configFingerprint(config, salt, false, hasRunner),
         inputs,
         (ctx) => runScript(
           root,
@@ -658,6 +827,7 @@ export function planScripts(
           if (config.fingerprintable) null else salt,
           fileHasher,
           executions,
+          testRunner,
         ),
       ));
     }

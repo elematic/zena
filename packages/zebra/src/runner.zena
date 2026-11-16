@@ -23,7 +23,13 @@ import {OutputManifest} from 'workflow/manifest';
 import {EngineState, StepRecord} from 'workflow/state';
 import {StepKey} from 'workflow/step';
 import {Spinner} from './animation.zena';
-import {StepExecution, lockfileCandidates, planScripts} from './builder.zena';
+import {
+  StepExecution,
+  TestStepRequest,
+  TestStepRunner,
+  lockfileCandidates,
+  planScripts,
+} from './builder.zena';
 import {Colors} from './colors.zena';
 import {DiskCache, TieredCache, stateDirOf} from './disk-cache.zena';
 import {ensureParentDir, withRoot} from './fs-util.zena';
@@ -41,6 +47,8 @@ import {appendShellArgs} from './shell.zena';
 import {stateFromJson, stateToJson} from './state-json.zena';
 import {ConfigError, ScriptConfig, ScriptRef, refKey} from './wireit-config.zena';
 import {MigrationResult} from './zebra-config.zena';
+
+export {TestStepRequest, TestStepRunner} from './builder.zena';
 
 // State is stored per package ('<pkg>/.zebra/state.json'), like wireit's
 // .wireit/, so its location does not depend on the invocation
@@ -366,8 +374,10 @@ export type BuildOptions = {
   hasherOut?: FileHasher?,
   /** Optional sink populated with warm/cold plan snapshot load statistics. */
   planStatsOut?: PlanLoadStats?,
-  /** Extra CLI arguments after `--` appended to the entry target's command only. */
+  /** Extra CLI arguments after `--` appended to the entry target's command or `"tests"` step. */
   extraArgs?: Array<String>?,
+  /** Optional in-process executor for native Zena `"tests"` steps. */
+  testRunner?: TestStepRunner?,
 };
 
 /** Options for `watchTarget`. Every field is optional. */
@@ -394,8 +404,10 @@ export type WatchOptions = {
   onIteration?: ((iteration: i32, outcome: BuildOutcome) => Future<boolean>)?,
   /** Print `fresh` and `skipped` steps and passing step output on each watch report. */
   verbose?: boolean,
-  /** Extra CLI arguments after `--` appended to the entry target's command only. */
+  /** Extra CLI arguments after `--` appended to the entry target's command or `"tests"` step. */
   extraArgs?: Array<String>?,
+  /** Optional in-process executor for native Zena `"tests"` steps. */
+  testRunner?: TestStepRunner?,
 };
 
 type RunTargetOptions = {
@@ -412,6 +424,7 @@ type RunTargetOptions = {
   configsOut: GrowableArray<ScriptConfig>?,
   planStatsOut: PlanLoadStats?,
   extraArgs: Array<String>?,
+  testRunner: TestStepRunner?,
 };
 
 async function runTargetOnce(
@@ -433,6 +446,7 @@ async function runTargetOnce(
     configsOut,
     planStatsOut,
     extraArgs,
+    testRunner,
   } = options;
   listenSignals();
   let startNs = monotonic() as i64;
@@ -453,7 +467,8 @@ async function runTargetOnce(
     for (let config in loadedConfigs) {
       if (refKey(config.ref) == entryKey) {
         let baseCommand = config.command;
-        if (config.isFileset || baseCommand == null) {
+        let baseTests = config.tests;
+        if (config.isFileset || (baseCommand == null && baseTests == null)) {
           throw new ConfigError(
             `script "${entryKey}" has no command and cannot accept extra arguments after --`,
           );
@@ -462,7 +477,7 @@ async function runTargetOnce(
           new ScriptConfig(
             config.ref,
             config.isWireit,
-            appendShellArgs(baseCommand, cliExtra),
+            if (baseCommand != null) appendShellArgs(baseCommand, cliExtra) else null,
             config.files,
             config.output,
             config.filesDeclared,
@@ -474,6 +489,10 @@ async function runTargetOnce(
             config.packageLocks,
             false,
             config.isFileset,
+            baseTests,
+            config.testDebug,
+            if (baseTests != null) cliExtra else null,
+            config.ruleType,
           ),
         );
       } else {
@@ -503,6 +522,7 @@ async function runTargetOnce(
     i64ToString(monotonic() as i64),
     hasher,
     foregroundServiceKey,
+    testRunner,
   );
   let stateDirs = new GrowableArray<String>();
   let seenDirs = new HashSet<String>();
@@ -671,6 +691,10 @@ export async function buildTarget(
   if (let {extraArgs as a} = options) {
     extraArgs = a;
   }
+  var testRunner: TestStepRunner? = null;
+  if (let {testRunner as tr} = options) {
+    testRunner = tr;
+  }
   return await runTargetOnce(root, entry, {
     parallelism,
     force,
@@ -685,6 +709,7 @@ export async function buildTarget(
     configsOut: null,
     planStatsOut,
     extraArgs,
+    testRunner,
   });
 }
 
@@ -766,7 +791,7 @@ async function snapshotWatchFiles(
   for (let config in configs) {
     let lockCandidates = if (
       config.isWireit &&
-      config.command != null &&
+      (config.command != null || config.tests != null) &&
       config.fingerprintable &&
       config.packageLocks.length > 0
     )
@@ -849,6 +874,10 @@ export async function watchTarget(
   if (let {extraArgs as a} = options) {
     extraArgs = a;
   }
+  var testRunner: TestStepRunner? = null;
+  if (let {testRunner as tr} = options) {
+    testRunner = tr;
+  }
   listenSignals();
   let servicePool = new ServicePool();
   let interval = if (pollIntervalMs > (0 as i64)) pollIntervalMs else 50 as i64;
@@ -871,6 +900,7 @@ export async function watchTarget(
         configsOut: configs,
         planStatsOut: null,
         extraArgs,
+        testRunner,
       });
       if (checkSignal() != 0) {
         return outcome;

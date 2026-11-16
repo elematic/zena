@@ -1,0 +1,343 @@
+/**
+ * `zena test` with no file, directory, or glob runs the `test` target of
+ * the current package with zebra (`zena-package.json`, `package.json`, or
+ * `zebra.json`), executing declarative `"type": "zena:test"` steps and
+ * zero-config `zena-package.json` packages in-process without shelling out.
+ * `zena run <target>` runs scripts from those manifests when the argument is
+ * not a `.zena`, `.wasm`, or `.wat` file.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {run} from 'zena:process';
+import {MAIN, Scratch, described, read, write, zenaBinary, zenaIn} from './cli-support.zena';
+
+let CHOOSERS = [
+  'ZENA_CLI_MODULE', 'ZENA_STDLIB_DIR', 'ZENA_PROJECT_CACHE', 'ZENA_LOCAL_CACHE', 'ZENA_COMPILER_WASM',
+  'ZEBRA_CACHE', 'ZEBRA_CACHE_READ_ONLY', 'ZEBRA_GITHUB_CUSTODIAN_URL',
+  'WIREIT_CACHE_GITHUB_CUSTODIAN_PORT',
+];
+
+function unsetChoosers() {
+  var unset = '';
+  for (let name in CHOOSERS) {
+    unset = `${unset} -u ${name}`;
+  }
+  return unset;
+}
+
+function passingSuite(name: String) {
+  return "import { suite, test } from 'zena:test';\n" +
+    "import { equal } from 'zena:assert';\n\n" +
+    `export let tests = suite('${name}', () => {\n` +
+    "  test('passes', (ctx) => {\n    equal(1 + 1, 2);\n  });\n});\n";
+}
+
+function failingSuite(name: String) {
+  return "import { suite, test } from 'zena:test';\n" +
+    "import { equal } from 'zena:assert';\n\n" +
+    `export let tests = suite('${name}', () => {\n` +
+    "  test('fails', (ctx) => {\n    equal(1, 2);\n  });\n});\n";
+}
+
+export let tests = suite('zena test targets, native tests steps, and zena run scripts', () => {
+  test('runs native tests steps and zero-config zena-package.json packages in-process without PATH', async (ctx) => {
+    let scratch = await Scratch.create('test-native');
+    try {
+      // 1. Zero-config zena-package.json (no `scripts` block) synthesizes `test`
+      //    and executes in-process even with PATH="" (no sh or zena-cli on PATH).
+      await write(scratch.at('zero/zena-package.json'), '{"name":"zero"}\n');
+      await write(scratch.at('zero/src/math.zena'), 'export function double(n: i32): i32 { return n * 2; }\n');
+      await write(
+        scratch.at('zero/test/alpha_test.zena'),
+        "import { suite, test } from 'zena:test';\n" +
+        "import { equal } from 'zena:assert';\n" +
+        "import { double } from 'zero/math';\n\n" +
+        "export let tests = suite('alpha', () => {\n" +
+        "  test('doubles', () => { equal(double(21), 42); });\n" +
+        "});\n",
+      );
+
+      let zenaZero = zenaIn(scratch, 'zero').set('NO_COLOR', '1').set('PATH', '');
+      let first = await zenaZero.run(['test']);
+      isTrue(first.succeeded(), described(first));
+      isTrue(first.stdout.contains(':test: ran'), first.stdout);
+
+      // Second run is fresh at the Zebra step level, and warm forced run executes
+      // cached test modules directly in-process.
+      let warm = await zenaZero.run(['test', '-v']);
+      isTrue(warm.succeeded(), described(warm));
+      isTrue(warm.stdout.contains(':test: fresh'), warm.stdout);
+
+      let forced = await zenaZero.run(['test', '--force']);
+      isTrue(forced.succeeded(), described(forced));
+      isTrue(forced.stdout.contains(':test: ran'), forced.stdout);
+
+      // Editing library source invalidates the automatic `source` dependency.
+      await write(scratch.at('zero/src/math.zena'), 'export function double(n: i32): i32 { return n + n; }\n');
+      let afterEdit = await zenaZero.run(['test']);
+      isTrue(afterEdit.succeeded(), described(afterEdit));
+      isTrue(afterEdit.stdout.contains(':test: ran'), afterEdit.stdout);
+
+      // 2. Explicit `"type": "zena:test"` entry forwards extra args after `--` (filtering out a failing suite)
+      //    without marking the unfiltered target fresh.
+      await write(
+        scratch.at('explicit/zena-package.json'),
+        '{"name":"explicit","scripts":{"test":{"type":"zena:test","tests":"test/*_test.zena"}}}\n',
+      );
+      await write(scratch.at('explicit/test/keep_test.zena'), passingSuite('keep'));
+      await write(scratch.at('explicit/test/broken_test.zena'), failingSuite('broken'));
+
+      let zenaExplicit = zenaIn(scratch, 'explicit').set('NO_COLOR', '1').set('PATH', '');
+      let filtered = await zenaExplicit.run(['test', '--', '-f', 'keep']);
+      isTrue(filtered.succeeded(), described(filtered));
+
+      let full = await zenaExplicit.run(['test']);
+      isTrue(!full.succeeded(), described(full));
+
+      // 3. Using `"tests"` without `"type": "zena:test"` fails with a clear ConfigError.
+      await write(
+        scratch.at('missing-type/zena-package.json'),
+        '{"name":"missing-type","scripts":{"test":{"tests":"test/*_test.zena"}}}\n',
+      );
+      let zenaMissingType = zenaIn(scratch, 'missing-type').set('NO_COLOR', '1');
+      let missingTypeRes = await zenaMissingType.run(['test']);
+      equal(missingTypeRes.exitCode, 1);
+      isTrue(
+        missingTypeRes.stderr.contains('"tests" requires "type": "zena:test"'),
+        missingTypeRes.stderr,
+      );
+    } finally {
+      await scratch.remove();
+    }
+  });
+
+  test('runs multiple multi-file native tests packages concurrently without deadlocking', async (ctx) => {
+    let scratch = await Scratch.create('test-concurrent-pkgs');
+    try {
+      await write(
+        scratch.at('ws/zena-package.json'),
+        '{"workspace":{"packages":["pkg-a","pkg-b","pkg-c","pkg-d"]},"scripts":{"test":{"dependencies":["./pkg-a:test","./pkg-b:test","./pkg-c:test","./pkg-d:test"]}}}\n',
+      );
+      for (let pkg in ['pkg-a', 'pkg-b', 'pkg-c', 'pkg-d']) {
+        await write(scratch.at(`ws/${pkg}/zena-package.json`), `{"name":"${pkg}"}\n`);
+        for (let idx in ['1', '2', '3', '4']) {
+          await write(
+            scratch.at(`ws/${pkg}/test/s${idx}_test.zena`),
+            passingSuite(`${pkg}-${idx}`),
+          );
+        }
+      }
+
+      // 4 Zebra steps run concurrently (`ZEBRA_PARALLEL=4`) sharing a 2-permit
+      // test limiter (`ZENA_TEST_PARALLELISM=2`), with 4 test files per package.
+      let zena = zenaIn(scratch, 'ws')
+        .set('NO_COLOR', '1')
+        .set('PATH', '')
+        .set('ZEBRA_PARALLEL', '4')
+        .set('ZENA_TEST_PARALLELISM', '2');
+
+      let cold = await zena.run(['test']);
+      isTrue(cold.succeeded(), described(cold));
+      for (let pkg in ['pkg-a', 'pkg-b', 'pkg-c', 'pkg-d']) {
+        isTrue(cold.stdout.contains(`${pkg}:test: ran`), cold.stdout);
+      }
+
+      // Warm forced run exercises direct `startModule` execution under contention.
+      let warmForced = await zena.run(['test', '--force']);
+      isTrue(warmForced.succeeded(), described(warmForced));
+      for (let pkg in ['pkg-a', 'pkg-b', 'pkg-c', 'pkg-d']) {
+        isTrue(warmForced.stdout.contains(`${pkg}:test: ran`), warmForced.stdout);
+      }
+    } finally {
+      await scratch.remove();
+    }
+  });
+
+  test('runs command test scripts from zena-package.json, package.json, or zebra.json', async (ctx) => {
+    let outside = (await run(['mktemp', '-d'])).stdout.trim();
+    let unset = unsetChoosers();
+    try {
+      // 1. zena-package.json command script with dependencies and a `./test` directory present.
+      let setupZena = await run(['/bin/sh', '-c', `mkdir -p "$1/zena-ws/test" &&
+printf '%s\\n' '{"name":"app","scripts":{"prep":{"command":"printf prepped > prep.txt","files":[],"output":["prep.txt"]},"test":{"command":"cat prep.txt > tested.txt","files":[],"output":["tested.txt"],"dependencies":["prep"]}}}' > "$1/zena-ws/zena-package.json"`,
+          'sh', outside]);
+      isTrue(setupZena.succeeded(), described(setupZena));
+
+      let zenaFirst = await run(['/bin/sh', '-c',
+          `cd "$1/zena-ws" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" test`,
+          'sh', outside, zenaBinary()]);
+      isTrue(zenaFirst.succeeded(), described(zenaFirst));
+      isTrue(zenaFirst.stdout.contains(':prep: ran'), zenaFirst.stdout);
+      isTrue(zenaFirst.stdout.contains(':test: ran'), zenaFirst.stdout);
+      equal((await run(['/bin/sh', '-c', 'cat "$1/zena-ws/tested.txt"', 'sh', outside])).stdout, 'prepped');
+
+      let rmTested = await run(['rm', '-f', `${outside}/zena-ws/tested.txt`]);
+      isTrue(rmTested.succeeded(), described(rmTested));
+      let zenaNoCache = await run(['/bin/sh', '-c',
+          `cd "$1/zena-ws" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" test --no-cache`,
+          'sh', outside, zenaBinary()]);
+      isTrue(zenaNoCache.succeeded(), described(zenaNoCache));
+      isTrue(zenaNoCache.stdout.contains(':test: ran'), zenaNoCache.stdout);
+
+      // 2. package.json: wireit `test` script and bare npm `scripts.test`.
+      let setupPkg = await run(['/bin/sh', '-c', `mkdir -p "$1/wireit-ws" "$1/npm-ws" &&
+printf '%s\\n' '{"scripts":{"test":"wireit"},"wireit":{"test":{"command":"printf wireit-ok > ran.txt","files":[],"output":["ran.txt"]}}}' > "$1/wireit-ws/package.json" &&
+printf '%s\\n' '{"scripts":{"test":"printf npm-ok > ran.txt"}}' > "$1/npm-ws/package.json"`,
+          'sh', outside]);
+      isTrue(setupPkg.succeeded(), described(setupPkg));
+
+      let wireitRun = await run(['/bin/sh', '-c',
+          `cd "$1/wireit-ws" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" test`,
+          'sh', outside, zenaBinary()]);
+      isTrue(wireitRun.succeeded(), described(wireitRun));
+      equal((await run(['/bin/sh', '-c', 'cat "$1/wireit-ws/ran.txt"', 'sh', outside])).stdout, 'wireit-ok');
+
+      let npmRun = await run(['/bin/sh', '-c',
+          `cd "$1/npm-ws" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" test`,
+          'sh', outside, zenaBinary()]);
+      isTrue(npmRun.succeeded(), described(npmRun));
+      equal((await run(['/bin/sh', '-c', 'cat "$1/npm-ws/ran.txt"', 'sh', outside])).stdout, 'npm-ok');
+
+      // 3. zebra.json with extra arguments forwarded after `--`.
+      let setupZebra = await run(['/bin/sh', '-c', `mkdir -p "$1/zebra-ws" &&
+printf '%s\\n' 'printf "%s|%s\\n" "$#" "$1" > args.txt' > "$1/zebra-ws/check.sh" &&
+printf '%s\\n' '{"scripts":{"test":{"command":"sh check.sh","files":["check.sh"],"output":[]}}}' > "$1/zebra-ws/zebra.json"`,
+          'sh', outside]);
+      isTrue(setupZebra.succeeded(), described(setupZebra));
+
+      let zebraExtra = await run(['/bin/sh', '-c',
+          `cd "$1/zebra-ws" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" test -- --grep "two words"`,
+          'sh', outside, zenaBinary()]);
+      isTrue(zebraExtra.succeeded(), described(zebraExtra));
+      equal((await run(['/bin/sh', '-c', 'cat "$1/zebra-ws/args.txt"', 'sh', outside])).stdout, '2|--grep\n');
+    } finally {
+      await run(['rm', '-rf', outside]);
+    }
+  });
+
+  test('errors when no manifest, no test script, or no test files exist', async (ctx) => {
+    let outside = (await run(['mktemp', '-d'])).stdout.trim();
+    let unset = unsetChoosers();
+    try {
+      let setup = await run(['/bin/sh', '-c', `mkdir -p "$1/empty" "$1/no-files-zena" "$1/no-test-pkg" "$1/no-test-zebra" &&
+printf '%s\\n' '{"name":"only-meta"}' > "$1/no-files-zena/zena-package.json" &&
+printf '%s\\n' '{"name":"only-build","scripts":{"build":"echo hi"}}' > "$1/no-test-pkg/package.json" &&
+printf '%s\\n' '{"scripts":{"build":"echo hi"}}' > "$1/no-test-zebra/zebra.json"`,
+          'sh', outside]);
+      isTrue(setup.succeeded(), described(setup));
+
+      let emptyRes = await run(['/bin/sh', '-c',
+          `cd "$1/empty" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" test`,
+          'sh', outside, zenaBinary()]);
+      equal(emptyRes.exitCode, 2);
+      isTrue(emptyRes.stderr.contains('no zebra.json, zena-package.json, or package.json'), emptyRes.stderr);
+
+      // Zero-config zena-package.json synthesizes `test`, which fails when no `*_test.zena` files exist.
+      let zenaNoFiles = await run(['/bin/sh', '-c',
+          `cd "$1/no-files-zena" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" test`,
+          'sh', outside, zenaBinary()]);
+      isTrue(!zenaNoFiles.succeeded(), described(zenaNoFiles));
+      let zenaCombined = zenaNoFiles.stdout + zenaNoFiles.stderr;
+      isTrue(zenaCombined.contains('no tests found'), described(zenaNoFiles));
+
+      for (let dir in ['no-test-pkg', 'no-test-zebra']) {
+        let res = await run(['/bin/sh', '-c',
+            `cd "$1/${dir}" && exec env${unset} NO_COLOR=1 ZENA_CACHE_DIR="$1/.cache" "$2" test`,
+            'sh', outside, zenaBinary()]);
+        isTrue(!res.succeeded(), `${dir}: ${described(res)}`);
+        isTrue(res.stderr.contains('"test"'), `${dir}: ${described(res)}`);
+      }
+    } finally {
+      await run(['rm', '-rf', outside]);
+    }
+  });
+
+  test('discovers .zena suites when paths, globs, --filter, or --exclude are given', async (ctx) => {
+    let scratch = await Scratch.create('test-discovery');
+    try {
+      // Manifest has a failing `test` script so we can tell file discovery ran instead of the script.
+      await write(
+        scratch.at('ws/zena-package.json'),
+        '{"name":"ws","scripts":{"test":"exit 99"}}\n',
+      );
+      await write(scratch.at('ws/test/alpha_test.zena'), passingSuite('alpha'));
+      await write(scratch.at('ws/test/beta_test.zena'), passingSuite('beta'));
+
+      let zena = zenaIn(scratch, 'ws');
+
+      // Explicit `.` at workspace root finds both suites without calling the `test` script.
+      let dotRun = await zena.run(['test', '.']);
+      isTrue(dotRun.succeeded(), described(dotRun));
+      isTrue(dotRun.stdout.contains('alpha_test.zena') && dotRun.stdout.contains('beta_test.zena'), dotRun.stdout);
+
+      // `-f` with no positional path discovers in `.` and filters to `alpha`.
+      let filtered = await zena.run(['test', '-f', 'alpha']);
+      isTrue(filtered.succeeded(), described(filtered));
+      isTrue(filtered.stdout.contains('alpha_test.zena') && !filtered.stdout.contains('beta_test.zena'), filtered.stdout);
+
+      // `--exclude` with no positional path discovers in `.` and skips `beta`.
+      let excluded = await zena.run(['test', '--exclude', '**/beta_test.zena']);
+      isTrue(excluded.succeeded(), described(excluded));
+      isTrue(excluded.stdout.contains('alpha_test.zena') && !excluded.stdout.contains('beta_test.zena'), excluded.stdout);
+
+      // Target-only flags are rejected when paths or filters are passed.
+      let badForce = await zena.run(['test', '--force', 'test']);
+      equal(badForce.exitCode, 2);
+      isTrue(badForce.stderr.contains('--force is only supported when running the test target'), badForce.stderr);
+
+      let badExtra = await zena.run(['test', 'test', '--', '--extra']);
+      equal(badExtra.exitCode, 2);
+      isTrue(badExtra.stderr.contains('extra arguments after -- are only supported when running the test target'), badExtra.stderr);
+    } finally {
+      await scratch.remove();
+    }
+  });
+
+  test('zena run executes scripts when argument is not a module file and preserves file execution', async (ctx) => {
+    let scratch = await Scratch.create('run-script');
+    try {
+      await write(
+        scratch.at('ws/zena-package.json'),
+        '{"workspace":{"packages":["sub"]},"scripts":{"test":{"dependencies":["./sub:test"]},"greet":"sh greet.sh"}}\n',
+      );
+      await write(scratch.at('ws/greet.sh'), 'printf "%s|%s" "$#" "$1" > greeted.txt\n');
+      await write(scratch.at('ws/sub/zena-package.json'), '{"name":"sub"}\n');
+      await write(scratch.at('ws/sub/test/sub_test.zena'), passingSuite('sub'));
+      await write(
+        scratch.at('ws/prog.zena'),
+        "import { getArguments } from 'zena:cli';\n" +
+        `${MAIN} {\n  let args = getArguments();\n  console.log(args[1]);\n  return 0;\n}\n`,
+      );
+
+      let zena = zenaIn(scratch, 'ws').set('NO_COLOR', '1');
+
+      // `zena run test` runs the root `test` script (even if a `test/` directory exists).
+      let mkdirTest = await zena.run(['run', 'test']);
+      isTrue(mkdirTest.succeeded(), described(mkdirTest));
+      isTrue(mkdirTest.stdout.contains('sub:test: ran'), mkdirTest.stdout);
+
+      // `zena run ./sub:test --force` runs a cross-package target with target flags.
+      let subRun = await zena.run(['run', '-f', './sub:test']);
+      isTrue(subRun.succeeded(), described(subRun));
+      isTrue(subRun.stdout.contains(': ran'), subRun.stdout);
+
+      // `zena run greet -- 'hello world'` forwards extra arguments to the entry script.
+      let greetRun = await zena.run(['run', 'greet', '--', 'hello world']);
+      isTrue(greetRun.succeeded(), described(greetRun));
+      equal(await read(scratch.at('ws/greeted.txt')), '1|hello world');
+
+      // `zena run prog.zena --flag` still compiles and runs the `.zena` file.
+      let progRun = await zena.run(['run', 'prog.zena', '--flag']);
+      isTrue(progRun.succeeded(), described(progRun));
+      equal(progRun.stdout, '--flag\n0\n');
+
+      // Missing `.zena` file still reports `no such file` rather than treating it as a script.
+      let missingFile = await zena.run(['run', 'missing.zena']);
+      equal(missingFile.exitCode, 2);
+      isTrue(missingFile.stderr.contains('no such file: missing.zena'), missingFile.stderr);
+    } finally {
+      await scratch.remove();
+    }
+  });
+});

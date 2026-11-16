@@ -131,7 +131,17 @@ the `zena` command. The design is in
      moves wall time from one run to the next.
 
 4. **Tests**
-   - `zena test` finds files with `zena:fs`'s `glob`, then starts one copy
+   - With no paths or filters (`--filter`, `--exclude`), `zena test` runs the
+     current package's `test` target with zebra (`zebra.json`,
+     `zena-package.json`, or `package.json`), sharing `buildScript` with
+     `zena build` and `zena run <target>`. Declarative `"type": "zena:test"`
+     steps and zero-config `zena-package.json` packages execute in-process
+     through `CliTestStepRunner` (`zena/test-run.zena`), sharing one
+     concurrency cap across packages and starting cached `.wasm` test modules
+     directly with `startModule`.
+   - With paths, globs, `--filter`, or `--exclude`, `zena test` finds files
+     with `zena:fs`'s `glob` (defaulting to `.` when only `--filter` or
+     `--exclude` is passed), then starts one copy
      of the CLI module per file (`zena test --single <file>`) with
      `zena:wasm`, at most `ZENA_TEST_PARALLELISM` (default: CPUs, up to 8)
      at a time. Each copy compiles its file in test mode and runs it with

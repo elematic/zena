@@ -33,16 +33,16 @@ do much without calling back into Rust.
 
 The CLI module contains:
 
-| Command                   | What it uses                                         |
-| ------------------------- | ---------------------------------------------------- |
-| argument parsing and help | `zena:args`                                          |
-| `zena build`, `zena run`  | the compiler, linked in as a library                 |
-| `zena test`               | the compiler, and the host import that runs a module |
-| `zena build <target>`     | zebra, linked in as a library                        |
-| `zena doc`                | zenadoc, linked in                                   |
-| `zena fmt`                | the formatter, linked in                             |
-| `zena bench`              | `zena:bench`'s `runSuite`, which runs modules        |
-| `zena lsp`                | the language service, and a JSON-RPC loop over stdio |
+| Command                   | What it uses                                                                             |
+| ------------------------- | ---------------------------------------------------------------------------------------- |
+| argument parsing and help | `zena:args`                                                                              |
+| `zena build`, `zena run`  | the compiler, linked in as a library                                                     |
+| `zena test`               | zebra for the default `test` script; the compiler and `zena:wasm` for `.zena` test files |
+| `zena build <target>`     | zebra, linked in as a library                                                            |
+| `zena doc`                | zenadoc, linked in                                                                       |
+| `zena fmt`                | the formatter, linked in                                                                 |
+| `zena bench`              | `zena:bench`'s `runSuite`, which runs modules                                            |
+| `zena lsp`                | the language service, and a JSON-RPC loop over stdio                                     |
 
 The compiler, zebra, zenadoc and the formatter are all Zena packages
 already. The compiler's own command-line program
@@ -196,15 +196,26 @@ cache is in the CLI module (`compile.zena`):
 
 `zena run main.zena` compiles through the cache and then runs the
 module with `zena:wasm`, with stdio connected to the terminal. A `.wasm`
-argument is run as it is.
+or `.wat` argument is run directly. Any other argument (`zena run test`,
+`zena run ./packages/zebra:test`) runs that script target with zebra.
 
 ### `zena test`
 
-The test runner is Zena from end to end:
+With no paths or file-discovery filters (`--filter`, `--exclude`), `zena test`
+runs the current package's `test` target with zebra (`zebra.json`,
+`zena-package.json`, or `package.json`), accepting the same target flags as
+`zena build` (`-j`, `-w`, `--force`, `--no-cache`, `-v`, and `-- <args...>`).
+Scripts with `"type": "zena:test"` (and `zena-package.json` packages that omit
+a `test` script) run in-process through `CliTestStepRunner`, sharing one worker
+pool across concurrent package test steps and starting fresh cached test
+modules directly with `zena:wasm`.
+
+When given files, directories, globs, `--filter`, or `--exclude`, the test
+runner is Zena from end to end:
 
 1. Find the test files: each argument is a file, a directory (meaning
    every `_test.zena` beneath it) or a glob, found with `zena:fs`'s
-   `glob`.
+   `glob` (defaulting to `.` when only `--filter` or `--exclude` is passed).
 2. When more files are stale in the compile cache than copies run at
    once, compile them first: as many copies as run at once, each started
    as `zena test --compile <files...>` with its share in file order,

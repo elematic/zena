@@ -13,6 +13,7 @@ import {
   ScriptConfig,
   ScriptRef,
   ServiceConfig,
+  ZENA_TEST_RULE_TYPE,
   refKey,
 } from 'zebra/wireit-config';
 import {
@@ -291,6 +292,28 @@ export let tests = suite('zebra-config and plan-cache', () => {
     await checkZebraThrows(`{"locks": ["sub/lock.json"], "scripts": {"x": {"command": "true"}}}`);
     // Service declaring output.
     await checkZebraThrows(`{"scripts": {"x": {"command": "true", "service": true, "output": ["a"]}}}`);
+    // "type": "zena:test" required for "tests"/"debug", and incompatible with command, service, or output.
+    await checkZebraThrows(`{"scripts": {"x": {"tests": "test/*_test.zena"}}}`);
+    await checkZebraThrows(`{"scripts": {"x": {"type": "other", "tests": "test/*_test.zena"}}}`);
+    await checkZebraThrows(`{"scripts": {"x": {"type": 123}}}`);
+    await checkZebraThrows(`{"scripts": {"x": {"type": "zena:test", "tests": true, "command": "true"}}}`);
+    await checkZebraThrows(`{"scripts": {"x": {"type": "zena:test", "tests": true, "service": true}}}`);
+    await checkZebraThrows(`{"scripts": {"x": {"type": "zena:test", "tests": true, "output": ["a"]}}}`);
+    await checkZebraThrows(`{"scripts": {"x": {"type": "zena:test", "tests": false}}}`);
+    await checkZebraThrows(`{"scripts": {"x": {"type": "zena:test", "tests": []}}}`);
+    await checkZebraThrows(`{"scripts": {"x": {"command": "true", "files": [], "debug": true}}}`);
+
+    // "tests" without "type": "zena:test" is also rejected in zena-package.json.
+    let wsMissingType = new ZebraWorkspace(
+      async (path: String): Future<String?> =>
+        if (path == 'zena-package.json')
+          `{"name": "p", "scripts": {"test": {"tests": "test/*_test.zena"}}}`
+        else
+          null,
+    );
+    await rejects(async () => {
+      await wsMissingType.scriptConfig(new ScriptRef('', 'test'));
+    });
 
     // Wireit block pasted into zena-package.json.
     let wsZena = new ZebraWorkspace(async (path: String): Future<String?> => {
@@ -298,6 +321,109 @@ export let tests = suite('zebra-config and plan-cache', () => {
     });
     await rejects(async () => {
       await wsZena.scriptConfig(new ScriptRef('', 'source'));
+    });
+  });
+
+  test('tests scripts parse patterns, merge input globs, auto-add source, and synthesize zero-config zena-package.json test', async () => {
+    let files = {
+      'zena-package.json' => `{"workspace": {"packages": ["packages/*"]}}`,
+      'packages/explicit/zena-package.json' => `{
+        "name": "explicit",
+        "scripts": {
+          "test": {
+            "type": "zena:test",
+            "tests": "test/*_test.zena",
+            "files": ["test/fixtures/**"]
+          },
+          "test:multi": {
+            "type": "zena:test",
+            "tests": ["test/*_test.zena", "integration/*_test.zena"],
+            "debug": true
+          },
+          "test:default": {
+            "type": "zena:test",
+            "tests": true
+          },
+          "test:omitted-tests": {
+            "type": "zena:test"
+          }
+        }
+      }`,
+      'packages/zero-src/zena-package.json' => `{"name": "zero-src"}`,
+      'packages/zero-dot/zena-package.json' => `{"name": "zero-dot", "source": "."}`,
+      'packages/fallback-pkg/zena-package.json' => `{"name": "fallback-pkg"}`,
+      'packages/fallback-pkg/package.json' => `{
+        "scripts": {"test": "node --test"}
+      }`,
+      'packages/no-pkg-test/zena-package.json' => `{"name": "no-pkg-test"}`,
+      'packages/no-pkg-test/package.json' => `{
+        "scripts": {"build": "tsc"}
+      }`,
+      'packages/only-zebra/zebra.json' => `{
+        "scripts": {"build": {"command": "true", "files": []}}
+      }`,
+    };
+    let ws = new ZebraWorkspace(async (path: String): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    let explicit = await ws.scriptConfig(new ScriptRef('packages/explicit', 'test'));
+    equal(explicit.ruleType, ZENA_TEST_RULE_TYPE);
+    let explicitTests = explicit.tests ?? new GrowableArray<String>();
+    equal(explicitTests.length, 1);
+    equal(explicitTests[0], 'test/*_test.zena');
+    isFalse(explicit.testDebug);
+    isTrue(explicit.fingerprintable);
+    isTrue(hasStr(explicit.files, 'test/fixtures/**'));
+    isTrue(hasStr(explicit.files, 'test/*_test.zena'));
+    equal(explicit.dependencies.length, 1);
+    equal(refKey(explicit.dependencies[0].ref), 'packages/explicit:source');
+
+    let multi = await ws.scriptConfig(new ScriptRef('packages/explicit', 'test:multi'));
+    let multiTests = multi.tests ?? new GrowableArray<String>();
+    equal(multiTests.length, 2);
+    isTrue(multi.testDebug);
+    isTrue(hasStr(multi.files, 'integration/*_test.zena'));
+
+    let defTestsCfg = await ws.scriptConfig(new ScriptRef('packages/explicit', 'test:default'));
+    let defTests = defTestsCfg.tests ?? new GrowableArray<String>();
+    equal(defTests.length, 2);
+    isTrue(hasStr(defTestsCfg.files, 'test/**/*.zena'));
+    isTrue(hasStr(defTestsCfg.files, 'tests/**/*.zena'));
+
+    let omittedTestsCfg = await ws.scriptConfig(new ScriptRef('packages/explicit', 'test:omitted-tests'));
+    equal(omittedTestsCfg.ruleType, ZENA_TEST_RULE_TYPE);
+    let omittedTests = omittedTestsCfg.tests ?? new GrowableArray<String>();
+    equal(omittedTests.length, 2);
+    isTrue(hasStr(omittedTestsCfg.files, 'test/**/*.zena'));
+
+    // Zero-config zena-package.json synthesizes `test` (both default `src` and `"source": "."`).
+    let zeroSrc = await ws.scriptConfig(new ScriptRef('packages/zero-src', 'test'));
+    equal(zeroSrc.ruleType, ZENA_TEST_RULE_TYPE);
+    isNotNull(zeroSrc.tests);
+    isTrue(hasStr(zeroSrc.files, 'test/**/*.zena'));
+    equal(zeroSrc.dependencies.length, 1);
+    equal(refKey(zeroSrc.dependencies[0].ref), 'packages/zero-src:source');
+
+    let zeroDot = await ws.scriptConfig(new ScriptRef('packages/zero-dot', 'test'));
+    let dotPatterns = zeroDot.tests ?? new GrowableArray<String>();
+    isTrue(hasStr(dotPatterns, '**/*_test.zena'));
+
+    // When zena-package.json omits scripts and package.json defines `test`, package.json wins.
+    let fallbackTest = await ws.scriptConfig(new ScriptRef('packages/fallback-pkg', 'test'));
+    isNull(fallbackTest.tests);
+    equal(fallbackTest.command, 'node --test');
+
+    // When package.json exists without a `test` script, zena-package.json still synthesizes `test`.
+    let synthBesidePkg = await ws.scriptConfig(new ScriptRef('packages/no-pkg-test', 'test'));
+    isNotNull(synthBesidePkg.tests);
+
+    // zebra.json without `test` does not synthesize one.
+    await rejects(async () => {
+      await ws.scriptConfig(new ScriptRef('packages/only-zebra', 'test'));
     });
   });
 
@@ -445,6 +571,26 @@ export let tests = suite('zebra-config and plan-cache', () => {
         true,
         false,
       ),
+      new ScriptConfig(
+        new ScriptRef('packages/app', 'test'),
+        true,
+        null,
+        ['test/**/*.zena'],
+        new GrowableArray<String>(),
+        true,
+        true,
+        [new DependencySpec(new ScriptRef('packages/app', 'source'), true)],
+        'false',
+        null,
+        new GrowableArray<(String, EnvBinding)>(),
+        ['zena-lock.json'],
+        true,
+        false,
+        ['test/*_test.zena'],
+        true,
+        null,
+        ZENA_TEST_RULE_TYPE,
+      ),
     ];
 
     let encoded = planSnapshotToText(probes, configs);
@@ -461,9 +607,10 @@ export let tests = suite('zebra-config and plan-cache', () => {
     equal(decProbes[1].size, 512 as i64);
     equal(decProbes[1].sha256, 'deadbeef');
 
-    equal(decConfigs.length, 3);
+    equal(decConfigs.length, 4);
     let c0 = decConfigs[0];
     equal(refKey(c0.ref), 'packages/app:build:all');
+    isNull(c0.ruleType);
     equal(c0.command, 'printf "line1\nline2:ok\n" > out.txt');
     isFalse(c0.cacheEnabled);
     isFalse(c0.isFileset);
@@ -489,6 +636,14 @@ export let tests = suite('zebra-config and plan-cache', () => {
     if (svc != null) {
       equal(svc.readyWhenLineMatches, 'Ready: [0-9]+');
     }
+
+    let c3 = decConfigs[3];
+    isNull(c3.command);
+    equal(c3.ruleType, ZENA_TEST_RULE_TYPE);
+    isTrue(c3.testDebug);
+    let c3Tests = c3.tests ?? new GrowableArray<String>();
+    equal(c3Tests.length, 1);
+    equal(c3Tests[0], 'test/*_test.zena');
 
     throws(() => {
       planSnapshotFromText('wrong-header\n');

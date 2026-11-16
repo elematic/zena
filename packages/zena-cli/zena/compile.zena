@@ -19,7 +19,8 @@ import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
 import { HashMap, HashSet } from 'zena:collections';
 import {
-  exists, isDirectory, isFile, mkdir, readFile, rename, stat, unlink, writeFile
+  GlobOptions, exists, glob, isDirectory, isFile, mkdir, readFile, readFileBytes, rename, stat,
+  unlink, writeFile
 } from 'zena:fs';
 import { AbsolutePath, basename, dirname, extname } from 'zena:path';
 import { monotonic } from 'zena:time';
@@ -29,7 +30,8 @@ import {
   openCompileSession, parseOptLevel
 } from 'zena-compiler/compile-file';
 import { targetEmitsComponent } from 'zena-compiler/targets';
-import { sha256HexOfString } from 'zena:crypto';
+import { sha256Hex, sha256HexOfString } from 'zena:crypto';
+import { StringBuilder } from 'zena:core';
 import {
   Options, cliModule, envSet, repoRelative, workspaceRoot, resolveUserPath, stdlibDir
 } from './env.zena';
@@ -442,21 +444,40 @@ function cacheSubdir(inProject: String, inUserCache: String): String {
 }
 
 /** A file's identity for the cache: its modification time and size. */
-async function identity(path: String): Future<String> {
+async function identity(
+  path: String,
+  memo: HashMap<String, String> | null = null,
+): Future<String> {
+  if (memo != null) {
+    if (let (true, hit) = memo.get(path)) {
+      return hit;
+    }
+  }
   let info = await stat(path);
-  return `${info.modified} ${info.size}`;
+  let stamp = `${info.modified} ${info.size}`;
+  if (memo != null) {
+    memo[path] = stamp;
+  }
+  return stamp;
 }
 
 /** What decides the module a compile produces, apart from its sources. */
-async function cacheKey(request: CompileRequest, options: Options): Future<String> {
-  let compiler = getEnv('ZENA_COMPILER_WASM') ?? cliModule().value;
+async function cacheKey(
+  request: CompileRequest,
+  options: Options,
+  compilerOverride: AbsolutePath | null = null,
+  identityMemo: HashMap<String, String> | null = null,
+): Future<String> {
+  let defaultCli = if (compilerOverride != null) compilerOverride.value else cliModule().value;
+  let compiler = getEnv('ZENA_COMPILER_WASM') ?? defaultCli;
   var key = `zena-cache-1\n${request.source.value}\n`;
   key = key + `test=${request.testMode} debug=${options.debug}\n`;
   key = key + `target=${request.target ?? ''} opt=${optLevelText(options)}\n`;
   key = key + `strings=${request.importedStringConstants ?? ''}\n`;
   key = key + `compact=${request.compactImports}\n`;
   key = key + `wide=${envSet('ZENA_WIDE_ARITHMETIC')}\n`;
-  key = `${key}${compiler} ${await identity(resolveUserPath(compiler).value)}\n`;
+  let compilerPath = resolveUserPath(compiler).value;
+  key = `${key}${compiler} ${await identity(compilerPath, identityMemo)}\n`;
   return sha256HexOfString(key).sliceBytes(0, 16);
 }
 
@@ -485,7 +506,11 @@ function joinLines(lines: Array<String>) {
  * Whether every file a cache entry lists still has the modification
  * time and size it had when the entry was written.
  */
-async function entryIsFresh(depsPath: String, modulePath: String): Future<boolean> {
+async function entryIsFresh(
+  depsPath: String,
+  modulePath: String,
+  identityMemo: HashMap<String, String> | null = null,
+): Future<boolean> {
   if (!(await isFile(depsPath)) || !(await isFile(modulePath))) {
     return false;
   }
@@ -503,7 +528,7 @@ async function entryIsFresh(depsPath: String, modulePath: String): Future<boolea
     }
     let path = line.sliceBytes(second + 1, line.length);
     let recorded = line.sliceBytes(0, second);
-    let current = try { await identity(path) } catch (e) { '' };
+    let current = try { await identity(path, identityMemo) } catch (e) { '' };
     if (current != recorded) {
       return false;
     }
@@ -513,18 +538,138 @@ async function entryIsFresh(depsPath: String, modulePath: String): Future<boolea
 }
 
 /** The name of `request`'s entry in the cache, before `.wasm` and `.deps`. */
-async function cacheName(request: CompileRequest, options: Options): Future<String> {
+async function cacheName(
+  request: CompileRequest,
+  options: Options,
+  compilerOverride: AbsolutePath | null = null,
+  identityMemo: HashMap<String, String> | null = null,
+): Future<String> {
   let stem = basename(request.source.value, extname(request.source.value));
-  return `${stem}_${await cacheKey(request, options)}`;
+  return `${stem}_${await cacheKey(request, options, compilerOverride, identityMemo)}`;
 }
 
 /** Whether the cache holds a fresh module for `request`. */
-export async function isCached(request: CompileRequest, options: Options): Future<boolean> {
+export async function isCached(
+  request: CompileRequest,
+  options: Options,
+  compilerOverride: AbsolutePath | null = null,
+): Future<boolean> {
+  return (await cachedModuleIfFresh(request, options, compilerOverride)) != null;
+}
+
+/**
+ * Returns the cached module path for `request` when the cache holds a
+ * fresh entry, or `null` otherwise.
+ */
+export async function cachedModuleIfFresh(
+  request: CompileRequest,
+  options: Options,
+  compilerOverride: AbsolutePath | null = null,
+  identityMemo: HashMap<String, String> | null = null,
+): Future<AbsolutePath | null> {
   if (getEnv('ZENA_COMPILER_WASM') != null) {
-    return false;
+    return null;
   }
-  let name = `${cacheDir()}/${await cacheName(request, options)}`;
-  return await entryIsFresh(`${name}.deps`, `${name}.wasm`);
+  let name = `${cacheDir()}/${await cacheName(request, options, compilerOverride, identityMemo)}`;
+  let modulePath = `${name}.wasm`;
+  if (await entryIsFresh(`${name}.deps`, modulePath, identityMemo)) {
+    return new AbsolutePath(modulePath);
+  }
+  return null;
+}
+
+/**
+ * Content-addressed fingerprint of the compiler module, compile flags, and
+ * standard library sources for Zebra `"tests"` step cache keys, memoized by
+ * `(modified, size)` in `cacheDir()`.
+ */
+export async function testRunnerFingerprint(
+  options: Options,
+  compilerOverride: AbsolutePath | null = null,
+): Future<String> {
+  let defaultCli = if (compilerOverride != null) compilerOverride.value else cliModule().value;
+  let compilerPath = resolveUserPath(getEnv('ZENA_COMPILER_WASM') ?? defaultCli).value;
+  let stdlibRoot = stdlibDir().value;
+  let flagsKey =
+    `debug=${options.debug} opt=${optLevelText(options)} wide=${envSet('ZENA_WIDE_ARITHMETIC')}`;
+
+  let globOpts = new GlobOptions();
+  globOpts.cwd = stdlibRoot;
+  let stdlibFiles = await glob('**/*.{zena,wit,json}', globOpts);
+
+  let watched = new GrowableArray<String>();
+  watched.push(compilerPath);
+  for (let rel in stdlibFiles) {
+    watched.push(`${stdlibRoot}/${rel}`);
+  }
+
+  let stamps = new GrowableArray<String>();
+  var allStated = true;
+  for (let p in watched) {
+    try {
+      stamps.push(`${await identity(p)} ${p}`);
+    } catch (e) {
+      allStated = false;
+      break;
+    }
+  }
+
+  let dir = cacheDir();
+  let memoKey = sha256HexOfString(`runner-fp-v1\n${flagsKey}\n${compilerPath}\n`).sliceBytes(0, 16);
+  let memoPath = `${dir}/runner_${memoKey}.memo`;
+  if (allStated && await isFile(memoPath)) {
+    let lines = (await readFile(memoPath)).split('\n');
+    if (lines.length >= 2 && lines[0].startsWith('sha256:')) {
+      let cachedDigest = lines[0];
+      var matches = true;
+      var lineIdx = 1;
+      for (let stamp in stamps) {
+        if (lineIdx >= lines.length || lines[lineIdx] != stamp) {
+          matches = false;
+          break;
+        }
+        lineIdx += 1;
+      }
+      if (matches && (lineIdx == lines.length || (lineIdx + 1 == lines.length && lines[lineIdx] == ''))) {
+        return cachedDigest;
+      }
+    }
+  }
+
+  let sb = new StringBuilder();
+  sb.append(`runner-fp-v1\n${flagsKey}\n`);
+  try {
+    sb.append(`compiler:${sha256Hex(await readFileBytes(compilerPath))}\n`);
+  } catch (e) {
+    sb.append(`compiler-missing:${compilerPath}\n`);
+  }
+  for (let rel in stdlibFiles) {
+    let full = `${stdlibRoot}/${rel}`;
+    try {
+      sb.append(`stdlib:${rel}:${sha256Hex(await readFileBytes(full))}\n`);
+    } catch (e) {
+      sb.append(`stdlib-missing:${rel}\n`);
+    }
+  }
+  let digest = `sha256:${sha256HexOfString(sb.toString())}`;
+
+  if (allStated) {
+    try {
+      await ensureDir(dir);
+      let memoLines = new GrowableArray<String>();
+      memoLines.push(digest);
+      for (let stamp in stamps) {
+        memoLines.push(stamp);
+      }
+      let unique = i64ToString(monotonic() as i64);
+      let tmpMemo = `${memoPath}.tmp-${unique}`;
+      await writeFile(tmpMemo, joinLines(memoLines));
+      await rename(tmpMemo, memoPath);
+    } catch (e) {
+      // Memo write is a warm-run optimization only.
+    }
+  }
+  return digest;
 }
 
 /**
@@ -600,7 +745,11 @@ export async function compileCached(
  * reports why. Nothing can be shared with the compiler module
  * ZENA_COMPILER_WASM names, so with it set nothing is compiled here.
  */
-export async function compileIntoCache(requests: Array<CompileRequest>, options: Options): Future<void> {
+export async function compileIntoCache(
+  requests: Array<CompileRequest>,
+  options: Options,
+  noCache: boolean = false,
+): Future<void> {
   if (requests.length == 0 || getEnv('ZENA_COMPILER_WASM') != null) {
     return;
   }
@@ -608,7 +757,7 @@ export async function compileIntoCache(requests: Array<CompileRequest>, options:
   await ensureDir(dir);
   let stale = new GrowableArray<CompileRequest>();
   for (let request in requests) {
-    if (!(await isCached(request, options))) {
+    if (noCache || !(await isCached(request, options))) {
       stale.push(request);
     }
   }
