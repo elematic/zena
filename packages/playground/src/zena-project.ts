@@ -202,6 +202,7 @@ export class ZenaProject extends LitElement {
     number,
     (wasm: Uint8Array<ArrayBuffer> | null) => void
   >();
+  private pendingFormats = new Map<number, (formatted: string) => void>();
   private compiledWasmCache = new Map<
     string,
     Promise<Uint8Array<ArrayBuffer> | null>
@@ -520,10 +521,18 @@ export class ZenaProject extends LitElement {
         this.pendingCompiles.get(res.id)?.(res.wasm);
         this.pendingCompiles.delete(res.id);
         break;
+      case 'format':
+        this.pendingFormats.get(res.id)?.(res.formatted);
+        this.pendingFormats.delete(res.id);
+        break;
       case 'error':
         if (res.id !== undefined && this.pendingCompiles.has(res.id)) {
           this.pendingCompiles.get(res.id)?.(null);
           this.pendingCompiles.delete(res.id);
+        }
+        if (res.id !== undefined && this.pendingFormats.has(res.id)) {
+          this.pendingFormats.get(res.id)?.('');
+          this.pendingFormats.delete(res.id);
         }
         this.status = 'error';
         this.#addLog('error', res.message);
@@ -900,6 +909,42 @@ export class ZenaProject extends LitElement {
   /** Alias for run(). */
   runProgram() {
     this.run();
+  }
+
+  /**
+   * Formats a `.zena` file in the project and updates its content if changed.
+   * Defaults to the currently active file.
+   */
+  async formatFile(filename = this.activeFile): Promise<string | null> {
+    const isZena =
+      filename.endsWith('.zena') || !/\.[a-z0-9]+$/i.test(filename);
+    if (!isZena) return null;
+
+    const source = this._fileMap[filename];
+    if (source === undefined) return null;
+
+    if (!this.worker) return null;
+    await this.workerReadyDeferred.promise;
+    if (!this.worker) return null;
+
+    const id = this.nextRequestId++;
+    const formatted = await new Promise<string>((resolve) => {
+      this.pendingFormats.set(id, resolve);
+      this.worker!.postMessage({
+        type: 'format',
+        id,
+        source,
+      } satisfies WorkerRequest);
+    });
+
+    if (
+      formatted &&
+      formatted !== source &&
+      this._fileMap[filename] === source
+    ) {
+      this.setFileContent(filename, formatted);
+    }
+    return formatted || source;
   }
 
   /** Type information at a byte offset — what the hover tooltip shows. */

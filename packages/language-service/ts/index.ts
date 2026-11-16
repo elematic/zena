@@ -696,8 +696,12 @@ export class ZenaLanguageService {
 
   /** Formats a whole document. Returns the source unchanged if it cannot. */
   format(source: string): string {
-    const handle = this.#exports.format(this.#writeString(source));
-    return handle ? this.#readRef(handle) : source;
+    try {
+      const handle = this.#exports.format(this.#writeString(source));
+      return handle ? this.#readRef(handle) : source;
+    } catch {
+      return source;
+    }
   }
 
   #readSymbol(sym: unknown): DocumentSymbolInfo {

@@ -239,7 +239,18 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
         editorDoc !== content
       ) {
         this.isSwitchingFile = true;
-        this.codeMirrorEl.value = content;
+        const view = this.codeMirrorEl.editorView;
+        if (view?.state) {
+          const selection = view.state.selection.main;
+          const anchor = Math.min(selection.anchor, content.length);
+          const head = Math.min(selection.head, content.length);
+          view.dispatch({
+            changes: {from: 0, to: view.state.doc.length, insert: content},
+            selection: {anchor, head},
+          });
+        } else {
+          this.codeMirrorEl.value = content;
+        }
         this.isSwitchingFile = false;
       }
       this.#updateDiagnostics();
@@ -255,6 +266,13 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
           key: 'Mod-Enter',
           run: () => {
             this.projectElement?.run();
+            return true;
+          },
+        },
+        {
+          key: 'Shift-Alt-f',
+          run: () => {
+            void this.projectElement?.formatFile(this.effectiveFilename);
             return true;
           },
         },

@@ -144,4 +144,47 @@ suite('ZenaProject file management', () => {
     assert.strictEqual(mainDiags.length, 0);
     assert.strictEqual(project.getEffectiveDiagnostics().length, 0);
   });
+
+  test('formatFile formats active .zena file via worker and updates project content', async () => {
+    const project = new ZenaProject();
+    project.files = {
+      'main.zena': 'let   x=1;',
+      'index.html': '<h1>Hi</h1>',
+    };
+
+    // Mock worker to respond to format requests
+    const postedMessages: any[] = [];
+    (project as any).worker = {
+      postMessage(msg: any) {
+        postedMessages.push(msg);
+        if (msg.type === 'format') {
+          (project as any).pendingFormats.get(msg.id)?.('let x = 1;\n');
+          (project as any).pendingFormats.delete(msg.id);
+        }
+      },
+      terminate() {},
+    };
+    (project as any).workerReadyDeferred.resolve();
+
+    let filesChangedCount = 0;
+    project.addEventListener('files-changed', () => {
+      filesChangedCount += 1;
+    });
+
+    const formatted = await project.formatFile();
+    assert.strictEqual(formatted, 'let x = 1;\n');
+    assert.strictEqual(project.getAllFiles()['main.zena'], 'let x = 1;\n');
+    assert.strictEqual(filesChangedCount, 1);
+    assert.strictEqual(
+      postedMessages.some(
+        (m) => m.type === 'format' && m.source === 'let   x=1;',
+      ),
+      true,
+    );
+
+    // Non-.zena files should return null without formatting
+    const htmlFormatted = await project.formatFile('index.html');
+    assert.strictEqual(htmlFormatted, null);
+    assert.strictEqual(project.getAllFiles()['index.html'], '<h1>Hi</h1>');
+  });
 });

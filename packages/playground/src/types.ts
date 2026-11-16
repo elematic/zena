@@ -68,12 +68,20 @@ export interface CompileRequest {
   files?: Record<string, string>;
 }
 
+/** Formats a `.zena` document. */
+export interface FormatRequest {
+  type: 'format';
+  id: number;
+  source: string;
+}
+
 export type WorkerRequest =
   | InitRequest
   | CheckRequest
   | HoverRequest
   | CompletionsRequest
-  | CompileRequest;
+  | CompileRequest
+  | FormatRequest;
 
 /** The compiler is loaded and initialized. */
 export interface ReadyResponse {
@@ -112,6 +120,12 @@ export interface CompileResponse {
   diagnostics: Diagnostic[];
 }
 
+export interface FormatResponse {
+  type: 'format';
+  id: number;
+  formatted: string;
+}
+
 /** The worker itself failed — bad Wasm, a compiler crash, a failed run. */
 export interface ErrorResponse {
   type: 'error';
@@ -126,6 +140,7 @@ export type WorkerResponse =
   | HoverResponse
   | CompletionsResponse
   | CompileResponse
+  | FormatResponse
   | ErrorResponse;
 
 export type PlaygroundStatus = 'loading' | 'ready' | 'checking' | 'error';
