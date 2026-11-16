@@ -2282,6 +2282,22 @@ function printRecordTypeItem(item: Node): Doc {
   };
 }
 
+/**
+ * Whether `ann` prints with an unparenthesized `inline` or function return
+ * type at its right edge, where `#parseTypeAnnotation` would absorb a
+ * following `| U`.
+ */
+function typeCapturesUnion(ann: TypeAnnotation): boolean {
+  return match (ann) {
+    case InlineTypeAnnotation {}: true
+    case FunctionTypeAnnotation {}: true
+    case UnionTypeAnnotation {types}: {
+      types.length > 0 && typeCapturesUnion(types[types.length - 1])
+    }
+    case _: false
+  };
+}
+
 function printTypeAnnotationInner(ann: TypeAnnotation): Doc {
   return match (ann) {
   case NamedTypeAnnotation {name, typeArguments, elementsMutable}: {
@@ -2302,11 +2318,11 @@ function printTypeAnnotationInner(ann: TypeAnnotation): Doc {
     let typeDocs = new Array<Doc>();
     var i = 0;
     while (i < types.length) {
-      // `inline` takes every member after it, so one that stops short of
-      // the end was parenthesized.
+      // `inline` and function return types take every union member after
+      // them, so one that stops short of the end was parenthesized.
       let member = types[i];
       let doc = printTypeAnnotation(member);
-      if (member is InlineTypeAnnotation && i < types.length - 1) {
+      if (i < types.length - 1 && typeCapturesUnion(member)) {
         typeDocs.push(concat(docs3(text('('), doc, text(')'))));
       } else {
         typeDocs.push(doc);
