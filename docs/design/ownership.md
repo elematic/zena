@@ -434,6 +434,17 @@ The fix is **elision**:
 Projections through fields and indices follow the same rule: a borrow of a place
 reachable from a borrowed value derives from that value.
 
+A callback whose result can be second-class counts as a borrow parameter. To
+return a borrow, a callback must capture one, which makes the callback itself
+second-class, so what it returns has the caller's extent:
+
+```zena
+let call = <scoped T>(make: () => T): T => make();   // derives from `make`
+```
+
+`TaskGroup.spawn` is the case that needed it: it returns the future its
+callback produced, at whatever `T` the callback's result has.
+
 This does reintroduce a weak form of lifetime reasoning. Pure second-class-ness
 says a borrow never outlives the frame that made it; elision relaxes that to "a
 borrow may travel out one frame, to the caller that supplied its source". That
