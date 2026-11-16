@@ -407,10 +407,11 @@ the structured half of the sequencing.
 
 Implicit interest — cancel when nobody holds the future — is not
 available: WasmGC has no deterministic finalization, so the death of a
-last reference is unobservable. Interest is therefore declared and
-released explicitly, which is also the safer contract: disclaiming has
-consequences for other consumers, and should be an act rather than a
-garbage-collection artifact.
+last reference is unobservable. Interest is therefore declared, by
+holding a claim, and released by the claim's owner, which is also the
+safer contract: disclaiming has consequences for other consumers, and
+should be an act rather than a garbage-collection artifact. An owner's
+drop is such an act, since the ownership regime places it.
 
 The encoding is an affine handle in the ownership regime —
 `FutureClaim<T>` as the working name (`Lease<T>` is the alternative;
@@ -419,16 +420,16 @@ Rust's `Shared`, whose clones are counted interests with last-drop
 cancelling the inner future, and Rx's `refCount`):
 
 - Spawning shared work (`FutureClaim.spawn`) yields an
-  `FutureClaim<T>`: awaitable through its `future`, and a handle whose
-  release — `using`, `[Disposable.dispose]`, or an explicit `release()` —
-  decrements the interest count. Sharing is an explicit `split()` that
-  increments before the second handle exists. The discipline is
-  enforced dynamically today — release is per-handle and idempotent,
-  and a released handle refuses to split — and becomes static when the
-  ownership regime's affine handles wrap ordinary classes: an affine
-  handle cannot be aliased, so "two holders, one drops what the other
-  needs" cannot be written — a holder either moved its handle away or
-  split it, and splits are counted.
+  `Own<FutureClaim<T>>`: awaitable through its `future`, and a handle
+  whose release decrements the interest count. `FutureClaim` is a
+  resource class, so the release is the handle's drop, `using`, or an
+  explicit `release()`. Sharing is an explicit `split()` that increments
+  before the second handle exists. An affine handle cannot be aliased,
+  so "two holders, one drops what the other needs" cannot be written: a
+  holder either moved its handle away or split it, and splits are
+  counted. Release is still per-handle and idempotent, and a released
+  handle refuses to split. At an owner or a borrow, a claim has one
+  holder (owner-futures.md, "FutureClaim").
 - The last release cancels the scope, deferred by one turn of the
   task queue so a handoff that re-establishes interest in the same
   turn never observes the transient zero, and so a release never
@@ -444,13 +445,16 @@ cancelling the inner future, and Rx's `refCount`):
   shared-cancellation design needs somewhere.
 
 Two boundary markers from the precedent record, both deliberate here:
-handle lifetime is not interest (Swift's SE-0304 made dropping an
-unstructured task handle not cancel it, and tokio's `JoinHandle`
-detaches on drop — an `FutureClaim` released by the ownership regime
-is an explicit act, not a scope exit surprise), and interest never
-lives on the shared value (TC39's cancelable-promises proposal
-foundered on making every promise holder a threat to every other; the
-inert `Future` is the same lesson enforced by type).
+a task handle is not interest, and interest never lives on the shared
+value. Swift's SE-0304 made dropping an unstructured task handle not
+cancel it, and tokio's `JoinHandle` detaches on drop. A `FutureClaim`
+is not a task handle but an interest handle, as `Shared`'s clones are:
+dropping the last one does cancel. The drop is a scope exit the program
+shows, an owner leaving its binding's scope, and not a collector's
+decision, and a claim dropped as a temporary is the discarded-owner
+warning. TC39's cancelable-promises proposal foundered on making every
+promise holder a threat to every other; the inert `Future` is the same
+lesson enforced by type.
 
 ## Abandonment and generator disposal
 

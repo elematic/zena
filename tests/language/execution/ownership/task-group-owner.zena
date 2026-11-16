@@ -1,0 +1,65 @@
+// @mode: run
+// @result: 111
+// A `TaskGroup` member whose result is an owner. The group watches the
+// member's future without claiming it (owner-futures.md §"FutureClaim"),
+// so the caller is its one consumer, `join` settles once the member
+// does, and a member's failure still reaches `join`.
+import {Own, Disposable} from 'zena:core';
+import {Completer, TaskGroup, drainMicrotasks} from 'zena:async';
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  value(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let gated = async (gate: Future<i32>): Future<Own<Res>> => {
+  let n = await gate;
+  return new Res(n);
+};
+
+let failing = async (gate: Future<i32>): Future<Own<Res>> => {
+  let n = await gate;
+  throw new Error('member failed');
+};
+
+export async function main(): Future<i32> {
+  var result = 0;
+  let gate = new Completer<i32>();
+  let group = new TaskGroup();
+  let member = group.spawn(() => gated(gate.future));
+  let joined = group.join();
+  drainMicrotasks();
+  gate.complete(4);
+  drainMicrotasks();
+  if (joined.isCompleted) {
+    result += 1;
+  }
+  let r = await member;
+  if (r.value() == 4) {
+    result += 10;
+  }
+
+  let failGate = new Completer<i32>();
+  let failingGroup = new TaskGroup();
+  let doomed = failingGroup.spawn(() => failing(failGate.future));
+  failGate.complete(0);
+  drainMicrotasks();
+  let message = try {
+    await failingGroup.join();
+    ''
+  } catch (e) {
+    e.message
+  };
+  if (message == 'member failed') {
+    result += 100;
+  }
+  let outcome = try {
+    let lost = await doomed;
+    0
+  } catch (e) {
+    1
+  };
+  return result;
+}

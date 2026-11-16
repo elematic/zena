@@ -1,0 +1,77 @@
+// @mode: run
+// @result: 1111
+// A `FutureClaim` of an owner (owner-futures.md §"FutureClaim"). A claim
+// is a resource: dropping it releases the claim, which cancels the work
+// once no claim is left. Its one holder takes the future and awaits it,
+// `split()` is refused, and a future nobody took is dropped with the
+// claim, so its value is released.
+import {Own, Disposable} from 'zena:core';
+import {FutureClaim, Completer, drainMicrotasks} from 'zena:async';
+
+var released = 0;
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  value(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+let make = async (n: i32): Future<Own<Res>> => new Res(n);
+
+let gated = async (gate: Future<i32>): Future<Own<Res>> => {
+  let n = await gate;
+  return new Res(n);
+};
+
+async function awaited(): Future<i32> {
+  let claim = FutureClaim.spawn(() => make(5));
+  let r = await claim.future;
+  return r.value();
+}
+
+function splitRefused(): i32 {
+  let claim = FutureClaim.spawn(() => make(1));
+  return try {
+    let other = claim.split();
+    0
+  } catch (e) {
+    if (e.message == 'A claim on work whose result holds an owner or a borrow has one holder') 1 else 2
+  };
+}
+
+function dropped(): void {
+  let claim = FutureClaim.spawn(() => make(2));
+}
+
+function droppedBeforeValue(gate: Completer<i32>): void {
+  let claim = FutureClaim.spawn(() => gated(gate.future));
+}
+
+export async function main(): Future<i32> {
+  var result = 0;
+  // The holder's owner is released when it leaves `awaited`.
+  if (await awaited() == 5 && released == 1) {
+    result += 1;
+  }
+  // The claim's untaken future goes with it.
+  if (splitRefused() == 1 && released == 2) {
+    result += 10;
+  }
+  dropped();
+  if (released == 3) {
+    result += 100;
+  }
+  // Dropping the last claim cancels the work before it makes a value.
+  let gate = new Completer<i32>();
+  droppedBeforeValue(gate);
+  drainMicrotasks();
+  gate.complete(9);
+  drainMicrotasks();
+  if (released == 3) {
+    result += 1000;
+  }
+  return result;
+}
