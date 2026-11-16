@@ -11,7 +11,7 @@
 
 `packages/pds` is an atproto PDS written in Zena (see [pds.md](./pds.md)).
 The Zena App View, `packages/registry`, runs in the same server: it
-creates package and organization accounts, takes scope and package
+creates scope and package accounts, takes scope and package
 names, checks the callers of its `dev.zena-lang.registry.*` methods,
 writes handle records to DNS, and checks releases before recording them
 ([package-manager.md](./package-manager.md), "Hosting, keys and
