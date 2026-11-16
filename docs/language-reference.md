@@ -5005,9 +5005,12 @@ wider as (Bird, i32);   // a (Bird, i32); traps when an element is not
 ```
 
 `is` and `as` against a tuple type test each element, and an `is` test
-narrows the tuple like any other value. An element that would become an
-interface value (`(Bird, i32)` as `(Named, i32)`) is not supported yet
-(#1132).
+narrows the tuple like any other value. A tuple keeps this variance inside
+other types: a function returning `(Bird, i32)` is a function returning
+`(Animal, i32)`, one taking `(Animal, i32)` is one taking `(Bird, i32)`,
+and an immutable array of the one is an immutable array of the other. An
+element that would become an interface value (`(Bird, i32)` as
+`(Named, i32)`) is not supported yet (#1132).
 
 #### Tuple Element Narrowing
 
@@ -6069,7 +6072,10 @@ mutable `(array (mut T))`. Wasm gives no subtyping between the two in
 either direction, so they do not interchange. An immutable array is
 covariant in its element along the class chain and up to `anyref`: an
 `ImmutableArray<Cat>` is an `ImmutableArray<Animal>` and an
-`ImmutableArray<anyref>`, with no copy. A mutable array is invariant.
+`ImmutableArray<anyref>`, with no copy. A tuple element widens the same
+way, element by element along the class chain, so an
+`ImmutableArray<(Cat, i32)>` is an `ImmutableArray<(Animal, i32)>`. A
+mutable array is invariant.
 See `docs/design/array-mutability.md`.
 
 #### GrowableArray\<T\>

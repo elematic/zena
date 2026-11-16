@@ -228,6 +228,25 @@ can't be observed. `is`, `as` and narrowing on such a tuple go element by
 element. An element that becomes an interface value needs a pack that
 the copy can't make from wasm types alone (#1132).
 
+Inside other types a tuple keeps the usual variance, and sharing is
+what makes that free:
+
+- **Function values.** A function type is covariant in its result and
+  contravariant in its parameters. The tuple types in a function value's
+  parameters and results meet like any others, so the two closures'
+  signatures end up equal. Discovery then registers no adaptation wrapper
+  where the source and target closure structs are the same struct, and
+  lowering passes the value on.
+- **Immutable arrays.** An immutable array is covariant in its element.
+  For a tuple element, the checker accepts only widenings that share a
+  struct: element by element, equal, a class to a class it extends
+  (nullable or not), or a nested tuple the same way (`tupleElementsShare`
+  in relations.zena). `noteTupleWidening` looks inside the array, so the
+  element types meet, and the two arrays are one wasm array type. A
+  copy can't help here: there is no single value to copy. So a widening
+  that changes representation, such as `(Cat, i32)` to `(anyref, i32)`,
+  is rejected, and a mutable array stays invariant.
+
 ### 4.2 Allocation Sinking (The "Unboxed" Optimization)
 
 The user explicitly requested that we avoid allocations for common patterns like named arguments and multiple return values.

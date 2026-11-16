@@ -28,3 +28,16 @@ let dogs: ImmutableArray<Dog> = [new Dog()];
 let named: ImmutableArray<Named> = dogs; // @error: Type mismatch
 
 let back: ImmutableArray<Cat> = animals; // @error: Type mismatch
+
+// An immutable array of tuples widens element by element along the class
+// chain, nullable or not, and through nested tuples: tuple types that
+// meet share a struct (#1137). A tuple element that would change
+// representation does not widen, and a mutable array stays invariant.
+let catPairs: ImmutableArray<(Cat, i32)> = [(new Cat(), 1)];
+let animalPairs: ImmutableArray<(Animal, i32)> = catPairs;
+let maybePairs: ImmutableArray<(Animal | null, i32)> = catPairs;
+let nested: ImmutableArray<(i32, (Cat, Cat))> = [(1, (new Cat(), new Cat()))];
+let nestedWide: ImmutableArray<(i32, (Animal, Cat))> = nested;
+let refPairs: ImmutableArray<(anyref, i32)> = catPairs; // @error: Type mismatch
+let fixedPairs: FixedArray<(Cat, i32)> = [(new Cat(), 1)];
+let fixedWide: FixedArray<(Animal, i32)> = fixedPairs; // @error: Type mismatch

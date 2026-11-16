@@ -580,17 +580,61 @@ function immutableElementWidens(ctx: CheckerContext, a: Type, b: Type): boolean 
   if (typesEqual(a, b)) { return true; }
   if (b is AnyRefType) { return isReferenceType(a); }
   if (a is ClassType && b is ClassType) {
-    let src = a;
-    let tgt = b;
-    if (src.isExtension || tgt.isExtension) { return false; }
-    var current = src.superType;
-    while (current != null) {
-      let cur = current;
-      if (typesEqual(cur, tgt)) { return true; }
-      current = cur.superType;
-    }
+    return classExtends(a, b);
+  }
+  let sa = unwrapAliases(a);
+  let sb = unwrapAliases(b);
+  if (sa is TupleT && sb is TupleT) {
+    return tupleElementsShare(sa, sb);
   }
   return false;
+}
+
+/** Whether `src` is `tgt` or extends it, neither an extension class. */
+function classExtends(src: ClassType, tgt: ClassType): boolean {
+  if (src.isExtension || tgt.isExtension) { return false; }
+  if (typesEqual(src, tgt)) { return true; }
+  var current = src.superType;
+  while (current != null) {
+    let cur = current;
+    if (typesEqual(cur, tgt)) { return true; }
+    current = cur.superType;
+  }
+  return false;
+}
+
+/**
+ * Whether a tuple of type `a` widens to one of type `b` keeping its
+ * representation: element by element, equal, a class to a class it
+ * extends (nullable or not), or a nested tuple the same way. These are
+ * the tuple types codegen can give one struct when they meet (#1137),
+ * so an immutable array of the one is an immutable array of the other.
+ */
+function tupleElementsShare(a: TupleT, b: TupleT): boolean {
+  if (a.row != null || b.row != null || a.elementTypes.length != b.elementTypes.length) {
+    return false;
+  }
+  for (var i = 0; i < a.elementTypes.length; i += 1) {
+    if (!tupleElementShares(a.elementTypes[i], b.elementTypes[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function tupleElementShares(a: Type, b: Type): boolean {
+  if (typesEqual(a, b)) { return true; }
+  let sa = unwrapAliases(a);
+  let sb = unwrapAliases(b);
+  if (sa is TupleT && sb is TupleT) {
+    return tupleElementsShare(sa, sb);
+  }
+  let aNull = isNullableType(sa);
+  let bNull = isNullableType(sb);
+  if (aNull && !bNull) { return false; }
+  let ca = baseType(subtractNullFromType(sa));
+  let cb = baseType(subtractNullFromType(sb));
+  return ca is ClassType && cb is ClassType && classExtends(ca, cb);
 }
 
 /** Same nominal head, ignoring type arguments? */
