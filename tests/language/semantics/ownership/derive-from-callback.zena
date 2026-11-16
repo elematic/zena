@@ -1,0 +1,30 @@
+// @mode: check
+// A function that returns what a callback gave it derives its result
+// from the callback. A callback whose result can be second-class is a
+// source, as a borrow parameter is (ownership.md §"Derived borrows"):
+// to hand back a borrow it must capture one, so it is second-class
+// itself, and its extent is the caller's. So a `scoped T` function may
+// return what it called, as `TaskGroup.spawn` returns its member's
+// future.
+import { Own, Borrow, Disposable } from 'zena:core';
+
+resource class File {
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let call = <scoped T>(make: () => T): T => make();
+
+let started = <scoped T>(make: () => Future<T>): Future<T> => make();
+
+// Two sources are ambiguous, as two borrow parameters are.
+let either = <scoped T>(a: () => T, b: () => T): T => a(); // @error: derives from is ambiguous
+
+// A callback with a first-class result is no source.
+let counted = <scoped T>(count: () => i32): Future<T> => new Future<T>(); // @error: no borrow parameter to derive from
+
+export let main = (): i32 => {
+  let f = new File();
+  let b = call(() => 1);
+  let owned = call(() => new File());
+  return b;
+};

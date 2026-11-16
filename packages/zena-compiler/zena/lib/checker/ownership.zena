@@ -571,6 +571,11 @@ export function rejectSecondClassFunctionTypeArgs(
  *
  * `borrowedReceiver` counts a method's `this` as a source, which is what
  * it will be once a resource's methods take `this` as a borrow.
+ *
+ * A callback whose result can be second-class is a source too: to hand
+ * back a borrow it must capture one, which makes it second-class, so a
+ * result it produced has the caller's extent (`TaskGroup.spawn` returns
+ * its member's future).
  */
 export function checkBorrowDerivation(
   ctx: CheckerContext,
@@ -582,7 +587,7 @@ export function checkBorrowDerivation(
   if (!typeContainsSecondClass(returnType)) { return; }
   var sources = if (borrowedReceiver) 1 else 0;
   for (let p in paramTypes) {
-    if (typeContainsSecondClass(p)) { sources += 1; }
+    if (typeContainsSecondClass(p) || producesSecondClass(p)) { sources += 1; }
   }
   if (sources == 1) { return; }
   let shown = typeToString(returnType);
@@ -603,6 +608,12 @@ export function checkBorrowDerivation(
     DiagnosticCode.TypeMismatch,
     loc
   );
+}
+
+/** Whether `t` is a function whose result can be second-class. */
+function producesSecondClass(t: Type): boolean {
+  let core = unwrapAliases(t);
+  return core is FunctionType && typeContainsSecondClass(core.returnType);
 }
 
 /**
