@@ -1,23 +1,26 @@
 /**
  * `zena pkg scope create`, `zena pkg scope info` and `zena pkg scope profile`: the
  * scopes on a registry
- * (docs/design/package-manager.md, "Scopes"). A scope is an organization
- * account whose handle is one label below the registry's domain, and packages
- * are created in it by `zena pkg publish` (`publish.zena`), which never
- * creates a scope itself.
+ * (docs/design/package-manager.md, "Scopes"). A scope is an account whose
+ * handle is one label below the registry's domain, with a maintainers
+ * record of its owners and publishers; packages are created in it by
+ * `zena pkg publish` (`publish.zena`), which never creates a scope itself.
  */
 
 import { ParsedArgs } from 'zena:args';
 import { Future } from 'zena:async';
-import { JsonArray, JsonObject, JsonValue } from 'zena:json';
+import { JsonArray, JsonObject } from 'zena:json';
 import { fromJson, toJson } from 'atproto/data';
 import { XrpcClient, XrpcError } from 'atproto/xrpc';
-import { MEMBERS_TYPE, RecordError, SCOPE_PROFILE_TYPE, ScopeProfile, isValidScopeName } from 'package-manager/records';
+import {
+  MEMBERS_TYPE, OWNER, RecordError, SCOPE_MAINTAINERS_TYPE, SCOPE_PROFILE_TYPE, ScopeMaintainers, ScopeProfile,
+  isValidScopeName
+} from 'package-manager/records';
 import { PUT_SCOPE_PROFILE } from 'package-manager/registry-methods';
 import { Options } from './env.zena';
 import { packageResolver } from './fetch.zena';
 import {
-  PublishError, createOrganization, findRegistry, registryClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
+  PublishError, createScope, findRegistry, registryClient, runCommand, saveIfRefreshed, handleDid, signedIn
 } from './publish.zena';
 import { REPO_GET_RECORD } from 'atproto/methods';
 
@@ -38,23 +41,25 @@ export async function scopeCreateCommand(args: ParsedArgs, options: Options): Fu
     let session = await signedIn();
     let registry = await findRegistry(args);
     let handle = `${name}.${registry.domain}`;
-    if ((await scopeOrganization(handle)) != null) {
+    if ((await handleDid(handle)) != null) {
       throw new PublishError(`${registry.origin} already has the scope ${name} (${handle})`);
     }
     if (!args.getFlag('yes')) {
       throw new PublishError(
           `Run again with --yes to create the scope ${handle} on ${registry.origin}, owned by ${session.handle}.`);
     }
-    await createOrganization(session, registry, name);
+    await createScope(session, registry, name);
     await saveIfRefreshed(session);
   });
 }
 
 /**
- * `zena pkg scope info <scope>`: the scope's DID, handle and PDS, and its
- * members record: how many members it commits to, and its thresholds.
- * The scope is its name on the registry, its handle, or its DID. Who the
- * members are is private (package-manager.md, "Private membership").
+ * `zena pkg scope info <scope>`: the scope's DID, handle and PDS, its
+ * maintainers record (how many owners and publishers, and how many owners a
+ * change needs), and for an organization, how many members it has. The
+ * scope is its name on the registry, its handle, or its DID. Who a private
+ * maintainer or member is stays private (package-manager.md, "Private
+ * membership").
  */
 export async function scopeInfoCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
@@ -68,7 +73,7 @@ export async function scopeInfoCommand(args: ParsedArgs, options: Options): Futu
         let reg = await findRegistry(args);
         `${given}.${reg.domain}`
       };
-      let found = await scopeOrganization(handle);
+      let found = await handleDid(handle);
       if (found == null) {
         throw new PublishError(`no scope has the handle ${handle}`);
       }
@@ -81,15 +86,17 @@ export async function scopeInfoCommand(args: ParsedArgs, options: Options): Futu
     if (document.pds == null) {
       throw new PublishError(`${did} names no PDS`);
     }
-    let params: Array<(String, String)> = [('repo', did), ('collection', MEMBERS_TYPE), ('rkey', 'self')];
-    var record: JsonObject | null = null;
-    try {
-      record = (await new XrpcClient(document.pds as String).query(REPO_GET_RECORD, params))
-        as JsonObject;
-    } catch (e) {
-      throw new PublishError(`${did} has no members record, so it is not a scope: ${e.message}`);
+    let held = await recordOf(did, SCOPE_MAINTAINERS_TYPE);
+    if (held == null) {
+      throw new PublishError(`${did} has no scope maintainers record, so it is not a scope`);
     }
-    let members = record['value'] as JsonObject;
+    let maintainers = ScopeMaintainers.fromValue(fromJson(held['value']));
+    var owners = 0;
+    for (let maintainer in maintainers.maintainers) {
+      if (maintainer.role == OWNER) {
+        owners += 1;
+      }
+    }
     console.log(identity.handle ?? '(no handle)');
     let profile = await recordOf(did, SCOPE_PROFILE_TYPE);
     if (profile != null) {
@@ -97,9 +104,13 @@ export async function scopeInfoCommand(args: ParsedArgs, options: Options): Futu
     }
     console.log(`  DID: ${did}`);
     console.log(`  PDS: ${document.pds as String}`);
-    console.log(`  Members: ${(members['members'] as JsonArray).length}`);
-    console.log(`  Owners needed to change members: ${number(members['ownerThreshold'])}`);
-    console.log(`  Admins needed to change teams: ${number(members['adminThreshold'])}`);
+    console.log(`  Owners: ${owners}`);
+    console.log(`  Publishers: ${maintainers.maintainers.length - owners}`);
+    console.log(`  Owners needed to change it: ${maintainers.ownerThreshold}`);
+    let members = await recordOf(did, MEMBERS_TYPE);
+    if (members != null) {
+      console.log(`  Organization members: ${((members['value'] as JsonObject)['members'] as JsonArray).length}`);
+    }
   });
 }
 
@@ -107,7 +118,7 @@ export async function scopeInfoCommand(args: ParsedArgs, options: Options): Futu
  * `zena pkg scope profile <scope> [--name <text>] [--description <text>]
  * [--website <url>]`: how the scope presents itself on the registry's pages.
  * A flag given empty clears its field. With no flags, prints it. Its
- * admins write it at once: it decides no one's role.
+ * owners write it at once: it decides no one's role.
  */
 export async function scopeProfileCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
@@ -117,11 +128,11 @@ export async function scopeProfileCommand(args: ParsedArgs, options: Options): F
     let scope = args.rest[1];
     let session = await signedIn();
     let registry = await findRegistry(args);
-    let org = await scopeOrganization(`${scope}.${registry.domain}`);
-    if (org == null) {
+    let scopeDid = await handleDid(`${scope}.${registry.domain}`);
+    if (scopeDid == null) {
       throw new PublishError(`${registry.origin} has no scope ${scope}`);
     }
-    let held = await recordOf(org, SCOPE_PROFILE_TYPE);
+    let held = await recordOf(scopeDid, SCOPE_PROFILE_TYPE);
     let profile = if (held == null) new ScopeProfile()
         else ScopeProfile.fromValue(fromJson(held['value']));
     var changed = false;
@@ -153,7 +164,7 @@ export async function scopeProfileCommand(args: ParsedArgs, options: Options): F
       throw e;
     }
     let input = new JsonObject();
-    input['organization'] = org;
+    input['scope'] = scopeDid;
     input['profile'] = toJson(profile.toValue());
     if (held != null) {
       input['swapRecord'] = held['cid'] as String;
@@ -187,12 +198,4 @@ async function recordOf(did: String, collection: String): Future<JsonObject | nu
     }
     throw e;
   }
-}
-
-/** A JSON number as a whole number, or `?` when it is not one. */
-function number(value: JsonValue): String {
-  if (value is Box<f64>) {
-    return `${value.value as i64}`;
-  }
-  return '?';
 }

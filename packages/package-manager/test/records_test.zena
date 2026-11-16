@@ -15,12 +15,14 @@ import {
   MAINTAINERS_TYPE,
   Maintainer,
   Maintainers,
+  MEMBER,
   MemberEntry,
   Members,
   OWNER,
   POLICY_TYPE,
   Policy,
   SCOPE_PROFILE_TYPE,
+  ScopeMaintainers,
   ScopeProfile,
   TeamRole,
   PROFILE_TYPE,
@@ -458,14 +460,48 @@ export let tests = suite('package-manager/records', () => {
     isFalse(keyed.commitment().equals(entry.commitment()));
   });
 
+  test("reads a scope's maintainers record, whose roles are owner and publisher", (ctx) => {
+    let json = `{
+      "$type": "dev.zena-lang.scope.maintainers",
+      "maintainers": [
+        {"did": "did:plc:alicealicealicealicealic", "role": "owner"},
+        {"commitment": "bafyreib2rxk3rh6kzwq4fhfuofkqmxyyn4b4fy3mvaz7t6zqbw4pt2bnim", "role": "publisher"},
+        {"org": "did:plc:acmeacmeacmeacmeacmeacme", "team": "core", "role": "publisher"}
+      ],
+      "ownerThreshold": 2
+    }`;
+    let record = ScopeMaintainers.fromValue(value(json));
+    equal(record.maintainers.length, 3);
+    equal(record.maintainers[0].role, OWNER);
+    equal(record.maintainers[1].role, PUBLISHER);
+    equal(record.maintainers[2].org as String, 'did:plc:acmeacmeacmeacmeacmeacme');
+    equal(record.ownerThreshold, 2 as i64);
+    jsonEqual(toJson(record.toValue()), parseJson(json));
+
+    var refused = 0;
+    for (let bad in [
+      '{"$type": "dev.zena-lang.scope.maintainers", "maintainers": [], "ownerThreshold": 1}',
+      '{"$type": "dev.zena-lang.scope.maintainers", "maintainers": [{"did": "did:plc:alicealicealicealicealic", "role": "member"}], "ownerThreshold": 1}',
+      '{"$type": "dev.zena-lang.scope.maintainers", "maintainers": [{"did": "did:plc:alicealicealicealicealic", "role": "owner"}], "ownerThreshold": 0}',
+      '{"$type": "dev.zena-lang.package.maintainers", "maintainers": [{"did": "did:plc:alicealicealicealicealic", "role": "owner"}], "ownerThreshold": 1}',
+    ]) {
+      try {
+        ScopeMaintainers.fromValue(value(bad));
+      } catch (e) {
+        if (e is RecordError) {
+          refused += 1;
+        }
+      }
+    }
+    equal(refused, 4);
+  });
+
   test('reads members and team records, which list commitments', (ctx) => {
-    let commitment = new MemberEntry('did:plc:alicealicealicealicealic', OWNER, new FixedArray<u8>(32, 7 as u8))
+    let commitment = new MemberEntry('did:plc:alicealicealicealicealic', MEMBER, new FixedArray<u8>(32, 7 as u8))
       .commitment();
-    let members = Members.fromValue(new Members([commitment], 2 as i64, 3 as i64).toValue());
+    let members = Members.fromValue(new Members([commitment]).toValue());
     equal(members.members.length, 1);
     isTrue(members.members[0].equals(commitment));
-    equal(members.ownerThreshold, 2 as i64);
-    equal(members.adminThreshold, 3 as i64);
     let team = Team.fromValue(new Team([commitment], 2 as i64).toValue());
     isTrue(team.members[0].equals(commitment));
     equal(team.threshold, 2 as i64);
@@ -486,40 +522,38 @@ export let tests = suite('package-manager/records', () => {
 
   test('reads a scope\'s policy and writes it back, leaving out what it does not change', async (ctx) => {
     let parts = POLICY_TYPE.split('.');
-    let lexicon = parseJson(await readFile(`packages/package-manager/lexicons/dev/zena-lang/org/${parts[parts.length - 1]}.json`))
+    let lexicon = parseJson(await readFile(`packages/package-manager/lexicons/dev/zena-lang/scope/${parts[parts.length - 1]}.json`))
       as JsonObject;
     equal(lexicon['id'] as String, POLICY_TYPE);
     // An empty policy asks nothing more than a package's own record.
-    let empty = Policy.fromValue(value('{"$type": "dev.zena-lang.org.policy"}'));
+    let empty = Policy.fromValue(value('{"$type": "dev.zena-lang.scope.policy"}'));
     equal(empty.minimumThreshold, 1 as i64);
     equal(empty.minimumHumans, 0 as i64);
     equal(empty.defaultTeams.length, 0);
-    equal(empty.creators.length, 0);
-    jsonEqual(toJson(empty.toValue()), parseJson('{"$type": "dev.zena-lang.org.policy"}'));
+    jsonEqual(toJson(empty.toValue()), parseJson('{"$type": "dev.zena-lang.scope.policy"}'));
 
     let policy = new Policy();
     policy.minimumThreshold = 2 as i64;
     policy.minimumHumans = 1 as i64;
-    policy.defaultTeams = [new TeamRole('core', 'publisher')];
+    policy.defaultTeams = [new TeamRole('did:plc:acmeacmeacmeacmeacmeacme', 'core', 'publisher')];
     policy.defaultThreshold = 2 as i64;
     policy.defaultHumans = 1 as i64;
-    policy.creators = ['core'];
     let read = Policy.fromValue(policy.toValue());
     equal(read.minimumThreshold, 2 as i64);
     equal(read.minimumHumans, 1 as i64);
+    equal(read.defaultTeams[0].org, 'did:plc:acmeacmeacmeacmeacmeacme');
     equal(read.defaultTeams[0].team, 'core');
     equal(read.defaultTeams[0].role, 'publisher');
     equal(read.defaultThreshold, 2 as i64);
     equal(read.defaultOwnerThreshold, 1 as i64);
     equal(read.defaultHumans, 1 as i64);
-    equal(read.creators[0], 'core');
 
     var refused = 0;
     for (let bad in [
-      '{"$type": "dev.zena-lang.org.policy", "minimumThreshold": 0}',
-      '{"$type": "dev.zena-lang.org.policy", "minimumHumans": -1}',
-      '{"$type": "dev.zena-lang.org.policy", "defaultTeams": [{"team": "core", "role": "member"}]}',
-      '{"$type": "dev.zena-lang.org.policy", "creators": ["Not A Team"]}',
+      '{"$type": "dev.zena-lang.scope.policy", "minimumThreshold": 0}',
+      '{"$type": "dev.zena-lang.scope.policy", "minimumHumans": -1}',
+      '{"$type": "dev.zena-lang.scope.policy", "defaultTeams": [{"org": "did:plc:acmeacmeacmeacmeacmeacme", "team": "core", "role": "member"}]}',
+      '{"$type": "dev.zena-lang.scope.policy", "defaultTeams": [{"team": "core", "role": "publisher"}]}',
     ]) {
       try {
         Policy.fromValue(value(bad));
@@ -533,7 +567,7 @@ export let tests = suite('package-manager/records', () => {
   });
 
   test('reads a scope\'s profile, and refuses a website that is not a web address', async (ctx) => {
-    let lexicon = parseJson(await readFile('packages/package-manager/lexicons/dev/zena-lang/org/profile.json'))
+    let lexicon = parseJson(await readFile('packages/package-manager/lexicons/dev/zena-lang/scope/profile.json'))
       as JsonObject;
     equal(lexicon['id'] as String, SCOPE_PROFILE_TYPE);
     let profile = new ScopeProfile();
@@ -550,9 +584,9 @@ export let tests = suite('package-manager/records', () => {
     }
     var refused = 0;
     for (let bad in [
-      '{"$type": "dev.zena-lang.org.profile", "website": "javascript:alert(1)"}',
-      '{"$type": "dev.zena-lang.org.profile", "website": "not a url"}',
-      `{"$type": "dev.zena-lang.org.profile", "displayName": "${long}"}`,
+      '{"$type": "dev.zena-lang.scope.profile", "website": "javascript:alert(1)"}',
+      '{"$type": "dev.zena-lang.scope.profile", "website": "not a url"}',
+      `{"$type": "dev.zena-lang.scope.profile", "displayName": "${long}"}`,
     ]) {
       try {
         ScopeProfile.fromValue(value(bad));

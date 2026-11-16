@@ -207,7 +207,7 @@ Before deploying a change to staging, try what it touches here:
   `version` in `zena-package.json` and run `zena pkg publish`; then
   `zena pkg update` in the workspace that added it.
 - **Who belongs.** `zena pkg scope info zena-lang`,
-  `zena pkg scope members zena-lang`, and `zena pkg owner list` in
+  `zena pkg scope maintainers zena-lang`, and `zena pkg owner list` in
   `.zena/demo/packages/wit-parser`.
 - **The pages.** At `http://127.0.0.1:2583`: the home page's listing,
   `/scopes/zena-lang`, `/packages/wit-parser.zena-lang.pkg.test` with its
@@ -329,7 +329,7 @@ MiB for a package's releases, those waiting for approval included, and
 256 MiB for the releases of a scope's packages. It also counts each day's
 actions on each package and scope and by each caller, and the scopes and
 packages created (docs/design/package-manager.md, "Limits on creating
-accounts"). `set-limit` raises one for a package, a scope's organization
+accounts"). `set-limit` raises one for a package, a scope
 and its packages, or a caller.
 
 `zena` uses staging with two variables, which `deploy/try-staging.sh` sets;
@@ -512,7 +512,7 @@ The check is `registry/main`'s `check-store`, run on this machine with
 the App View and padstone in one process over the copy, as the service
 account, which `deploy:setup` lets read the drill's copies. It writes
 nothing, and reads every account the App View holds: that its name leads
-back to it; that its repository has a commit; a scope's members record;
+back to it; that its repository has a commit; a scope's maintainers record;
 a package's profile, maintainers and releases, and every blob they name,
 in the live bucket; and that its signing key decrypts and is the one its
 DID document names. It prints each problem and exits 1 if there is one.

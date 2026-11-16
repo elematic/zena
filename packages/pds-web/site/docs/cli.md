@@ -82,7 +82,7 @@ Creates the package's account on the registry and writes its `did` into `zena-pa
 zena pkg approve [<package>@]<version> | <scope> | <package> [--yes]
 ```
 
-Without `--yes`, displays the pending release or pending membership/settings change waiting for maintainer attestations. With `--yes`, writes your attestation record to your repository and submits it to the registry.
+Without `--yes`, shows the release, or the changes to who belongs and to settings, waiting for approval. With `--yes`, writes your attestation record to your repository and submits it to the registry.
 
 ### `zena pkg retract`
 
@@ -108,48 +108,73 @@ zena pkg ci token <scope>/<name>
 
 Gives the automation account a new token, for one that leaked or was lost. The old token stops working.
 
+### `zena pkg ci retire`
+
+```sh
+zena pkg ci retire <scope>/<name>
+```
+
+Retires the automation account, for CI that no longer runs: its token stops working, and it gets no other. The registry refuses while a package's maintainers name it.
+
 ---
 
-## Scopes, teams & maintainers
+## Scopes, organizations, teams & maintainers
 
 ### `zena pkg scope`
 
 ```sh
 zena pkg scope create <scope> [--yes]
 zena pkg scope info <scope>
-zena pkg scope profile <scope> [--display-name <text>] [--description <text>] [--website <url>]
-zena pkg scope members <scope>
-zena pkg scope add <scope> <person> [--role <owner|admin|member>] [--public]
+zena pkg scope profile <scope> [--name <text>] [--description <text>] [--website <url>]
+zena pkg scope maintainers <scope>
+zena pkg scope add <scope> <person> [--role <publisher|owner>]
+zena pkg scope add <scope> --team <org>/<team> [--role <publisher|owner>]
 zena pkg scope remove <scope> <person>
+zena pkg scope remove <scope> --team <org>/<team>
 zena pkg scope settings <scope> [--owner-threshold <n>]
-zena pkg scope policy <scope> [--min-release-threshold <n>] [--default-release-threshold <n>] [--min-owner-threshold <n>] [--package-creators <admin|member>]
+zena pkg scope policy <scope> [--minimum-threshold <n>] [--minimum-humans <n>] [--default-teams <org>/<team>:<role>,...] [--default-threshold <n>] [--default-owner-threshold <n>] [--default-humans <n>]
+zena pkg scope upgrade <scope> --yes
+zena pkg scope join <scope> <org>
+zena pkg scope leave <scope>
 ```
 
-Creates and manages organization scopes, their public profile, members, approval thresholds, and package security policies.
+Creates scopes and manages their profile, their maintainers (`publisher` and `owner`), how many owners must approve a change, and their policy for their packages. `upgrade` makes a scope an organization; `join` and `leave` put a scope in an organization and take it out. See [Scopes, Orgs & Teams](/docs/orgs-and-teams/).
+
+### `zena pkg org`
+
+```sh
+zena pkg org add <org> <person>
+zena pkg org remove <org> <person>
+zena pkg org members <org>
+```
+
+Manages an organization's members, the people its teams can have.
 
 ### `zena pkg team`
 
 ```sh
-zena pkg team create <scope> <team>
-zena pkg team delete <scope> <team>
-zena pkg team members <scope> <team>
-zena pkg team add <scope> <team> <person> [--role <maintainer|member>]
-zena pkg team remove <scope> <team> <person>
-zena pkg team settings <scope> <team> [--threshold <n>]
+zena pkg team create <org>/<team>
+zena pkg team delete <org>/<team>
+zena pkg team members <org>/<team>
+zena pkg team add <org>/<team> <person> [--role <member|maintainer>]
+zena pkg team remove <org>/<team> <person>
+zena pkg team settings <org>/<team> [--threshold <n>]
 ```
 
-Creates and manages teams within an organization scope.
+Creates and manages an organization's teams.
 
 ### `zena pkg owner`
 
 ```sh
-zena pkg owner list [<package>]
-zena pkg owner add [<package>] <person-or-team> [--role <owner|publisher>] [--public]
-zena pkg owner remove [<package>] <person-or-team>
-zena pkg owner settings [<package>] [--threshold <n>] [--owner-threshold <n>]
+zena pkg owner list [--package <package>]
+zena pkg owner add <person> [--role <publisher|owner>] [--automation] [--package <package>]
+zena pkg owner add --team <org>/<team> [--role <publisher|owner>] [--package <package>]
+zena pkg owner remove <person> [--package <package>]
+zena pkg owner remove --team <org>/<team> [--package <package>]
+zena pkg owner settings [--threshold <n>] [--owner-threshold <n>] [--humans <n>] [--package <package>]
 ```
 
-Lists and modifies a package's maintainers (`owner` and `publisher` roles) and release/owner approval thresholds.
+Lists and changes a package's maintainers (`publisher` and `owner`) and its approval thresholds: the package in the current directory, or the one `--package` names by `scope:name`, handle or DID. `--automation` marks an automation account from `zena pkg ci create`.
 
 ---
 
@@ -157,7 +182,7 @@ Lists and modifies a package's maintainers (`owner` and `publisher` roles) and r
 
 | Variable              | Default                                | Description                                                                   |
 | --------------------- | -------------------------------------- | ----------------------------------------------------------------------------- |
-| `ZENA_REGISTRY`       | `https://padstone.zena-lang.dev`       | The registry `publish`, `scope`, `team` and `owner` call                      |
+| `ZENA_REGISTRY`       | `https://pkg.zena-lang.dev`            | The registry `publish`, `scope`, `org`, `team` and `owner` call               |
 | `ZENA_CONFIG_DIR`     | `~/.config/zena`                       | Directory where `session.json` is stored                                      |
 | `ZENA_CACHE_DIR`      | `~/.cache/zena`                        | Base directory for the unpacked package cache (`packages/sources/<cid>`)      |
 | `ZENA_PROJECT_CACHE`  | _(unset)_                              | When set, stores the package cache in `.zena/packages` inside the workspace   |

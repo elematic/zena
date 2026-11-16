@@ -89,16 +89,16 @@ export final class FirestoreAppViewStore implements AppViewStore {
     return all;
   }
 
-  async scopeOwner(scope: String): Future<String | null> {
-    return stringAt(await this.#root.collection('scopes').doc(scope).get(), 'org');
+  async scopeAccount(scope: String): Future<String | null> {
+    return stringAt(await this.#root.collection('scopes').doc(scope).get(), 'did');
   }
 
-  async claimScope(scope: String, org: String): Future<boolean> {
-    return await claim(this.#db, this.#root.collection('scopes').doc(scope), new Fields().string('org', org));
+  async claimScope(scope: String, did: String): Future<boolean> {
+    return await claim(this.#db, this.#root.collection('scopes').doc(scope), new Fields().string('did', did));
   }
 
-  async releaseScope(scope: String, org: String): Future<void> {
-    await release(this.#db, this.#root.collection('scopes').doc(scope), 'org', org);
+  async releaseScope(scope: String, did: String): Future<void> {
+    await release(this.#db, this.#root.collection('scopes').doc(scope), 'did', did);
   }
 
   async nameInScope(scope: String, name: String): Future<String | null> {
@@ -117,9 +117,9 @@ export final class FirestoreAppViewStore implements AppViewStore {
   async allScopes(): Future<Array<ClaimedScope>> {
     let all = new GrowableArray<ClaimedScope>();
     for (let snapshot in await this.#root.collection('scopes').get()) {
-      let org = stringAt(snapshot, 'org');
-      if (org != null) {
-        all.push(new ClaimedScope(snapshot.id, org));
+      let did = stringAt(snapshot, 'did');
+      if (did != null) {
+        all.push(new ClaimedScope(snapshot.id, did));
       }
     }
     return all;

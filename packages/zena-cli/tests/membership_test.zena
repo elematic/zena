@@ -1,7 +1,8 @@
 /**
  * Changing who belongs, from end to end, against
  * `tests/fixtures/publish-stack.zena`: Alice creates a scope and a package,
- * adds Bob to the scope and to a team, gives the team the package, and Bob
+ * adds Bob to the scope's maintainers, makes the scope an organization with
+ * Bob as a member and on a team, gives the team the package, and Bob
  * publishes it until the team loses it.
  */
 
@@ -14,8 +15,8 @@ let ALICE = 'did:plc:alicealicealicealicealic';
 let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
 let MALLORY = 'did:plc:mallorymallorymallorymal';
 
-export let tests = suite('zena pkg scope, team and owner', () => {
-  test('adds people to a scope, a team and a package, and takes them away', async (ctx) => {
+export let tests = suite('zena pkg scope, org, team and owner', () => {
+  test('adds people to a scope, an organization, a team and a package, and takes them away', async (ctx) => {
     let scratch = await Scratch.create('membership');
     let stack = await startFakePds(scratch, 'publish-stack.zena');
     try {
@@ -43,16 +44,17 @@ export let tests = suite('zena pkg scope, team and owner', () => {
       let manifestAt = async (version: String) => await write(scratch.at('lib/zena-package.json'),
           `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "${version}"}\n`);
 
-      // Alice is the only member; Bob, who is none, sees no one and can
+      // Alice is the only maintainer; Bob, who is none, sees no one and can
       // change nothing.
-      let members = await alice.run(['pkg', 'scope', 'members', 'acme']);
-      isTrue(members.succeeded() && members.stdout.contains(`${ALICE}  owner`), described(members));
+      let maintainers = await alice.run(['pkg', 'scope', 'maintainers', 'acme']);
+      isTrue(maintainers.succeeded() && maintainers.stdout.contains(`${ALICE}  owner`) &&
+          maintainers.stdout.contains("Changes to acme's maintainers and policy need 1 owner."), described(maintainers));
       let outsider = await bob.run(['pkg', 'scope', 'add', 'acme', BOB, '--role', 'owner']);
       isTrue(!outsider.succeeded() && outsider.stderr.contains('cannot change it'), described(outsider));
-      let badRole = await alice.run(['pkg', 'scope', 'add', 'acme', BOB, '--role', 'pope']);
+      let badRole = await alice.run(['pkg', 'scope', 'add', 'acme', BOB, '--role', 'member']);
       isTrue(!badRole.succeeded() && badRole.stderr.contains('not a role'), described(badRole));
 
-      // Alice says how the scope presents itself; Bob, no admin, cannot.
+      // Alice says how the scope presents itself; Bob, no owner, cannot.
       let profile = await alice.run(['pkg', 'scope', 'profile', 'acme', '--name', 'Acme Corp', '--website', 'https://acme.example/']);
       isTrue(profile.succeeded() && profile.stdout.contains('Changed the profile of acme'), described(profile));
       let info = await alice.run(['pkg', 'scope', 'info', 'acme']);
@@ -61,23 +63,44 @@ export let tests = suite('zena pkg scope, team and owner', () => {
       let badSite = await alice.run(['pkg', 'scope', 'profile', 'acme', '--website', 'javascript:alert(1)']);
       isTrue(!badSite.succeeded() && badSite.stderr.contains('not an http: or https: URL') &&
           !badSite.stderr.contains('backtrace'), described(badSite));
-      let notAdmin = await bob.run(['pkg', 'scope', 'profile', 'acme', '--name', 'Bob Corp']);
-      isTrue(!notAdmin.succeeded() && notAdmin.stderr.contains('Forbidden'), described(notAdmin));
+      let notOwner = await bob.run(['pkg', 'scope', 'profile', 'acme', '--name', 'Bob Corp']);
+      isTrue(!notOwner.succeeded() && notOwner.stderr.contains('Forbidden'), described(notOwner));
 
-      // Alice adds Bob as an admin, who then sees every member.
-      let added = await alice.run(['pkg', 'scope', 'add', 'acme', BOB, '--role', 'admin']);
-      isTrue(added.succeeded() && added.stdout.contains('as admin'), described(added));
-      let seen = await bob.run(['pkg', 'scope', 'members', 'acme']);
-      isTrue(seen.succeeded() && seen.stdout.contains(`${ALICE}  owner`) && seen.stdout.contains(`${BOB}  admin`),
-          described(seen));
+      // Alice adds Bob as a publisher, who sees his own entry, and Alice's as
+      // private.
+      let added = await alice.run(['pkg', 'scope', 'add', 'acme', BOB]);
+      isTrue(added.succeeded() && added.stdout.contains(`Added ${BOB} to acme as publisher`), described(added));
+      let seen = await bob.run(['pkg', 'scope', 'maintainers', 'acme']);
+      isTrue(seen.succeeded() && seen.stdout.contains(`${BOB}  publisher`) && !seen.stdout.contains(ALICE) &&
+          seen.stdout.contains('(private)  owner'), described(seen));
       // Alice's own attestation was enough, so nothing waits.
       let nothing = await alice.run(['pkg', 'approve', 'acme']);
       isTrue(!nothing.succeeded() && nothing.stderr.contains('no change to acme is waiting for approval'),
           described(nothing));
 
+      // A scope has no members until it is an organization, which only
+      // an owner makes it.
+      let noOrg = await alice.run(['pkg', 'org', 'add', 'acme', BOB]);
+      isTrue(!noOrg.succeeded() && noOrg.stderr.contains('zena pkg scope upgrade acme'), described(noOrg));
+      let asked = await alice.run(['pkg', 'scope', 'upgrade', 'acme']);
+      isTrue(!asked.succeeded() && asked.stderr.contains('Run again with --yes'), described(asked));
+      let byPublisher = await bob.run(['pkg', 'scope', 'upgrade', 'acme', '--yes']);
+      isTrue(!byPublisher.succeeded() && byPublisher.stderr.contains('Forbidden'), described(byPublisher));
+      let upgraded = await alice.run(['pkg', 'scope', 'upgrade', 'acme', '--yes']);
+      isTrue(upgraded.succeeded() && upgraded.stdout.contains('acme is an organization'), described(upgraded));
+      let joined = await alice.run(['pkg', 'org', 'add', 'acme', BOB]);
+      isTrue(joined.succeeded() && joined.stdout.contains(`Added ${BOB} to acme.`), described(joined));
+      let orgMembers = await alice.run(['pkg', 'org', 'members', 'acme']);
+      isTrue(orgMembers.succeeded() && orgMembers.stdout.contains(`${ALICE}  member`) &&
+          orgMembers.stdout.contains(`${BOB}  member`), described(orgMembers));
+
       // A team, with Bob on it, publishes the package.
       let team = await alice.run(['pkg', 'team', 'create', 'acme/core']);
       isTrue(team.succeeded() && team.stdout.contains('Created the team acme/core'), described(team));
+      let teamSettings = await alice.run(['pkg', 'team', 'settings', 'acme/core', '--threshold', '2']);
+      isTrue(teamSettings.succeeded() &&
+          teamSettings.stdout.contains('Changes to the team acme/core need 2 of its maintainers, or the owners of acme'),
+          described(teamSettings));
       let onTeam = await alice.run(['pkg', 'team', 'add', 'acme/core', BOB]);
       isTrue(onTeam.succeeded(), described(onTeam));
       let teamMembers = await bob.run(['pkg', 'team', 'members', 'acme/core']);
@@ -94,10 +117,11 @@ export let tests = suite('zena pkg scope, team and owner', () => {
       let byBob = await bob.run(['pkg', 'publish']);
       isTrue(byBob.succeeded() && byBob.stdout.contains('Published greet 1.1.0'), described(byBob));
       // As a publisher, Bob does not choose the package's maintainers.
-      let notOwner = await bob.run(['pkg', 'owner', 'add', ALICE, '--role', 'owner']);
-      isTrue(!notOwner.succeeded() && notOwner.stderr.contains('Forbidden'), described(notOwner));
+      let publisher = await bob.run(['pkg', 'owner', 'add', ALICE, '--role', 'owner']);
+      isTrue(!publisher.succeeded() && publisher.stderr.contains('Forbidden'), described(publisher));
 
-      // Taken away: the team loses the package, and Bob the scope.
+      // Taken away: the team loses the package, and Bob the organization
+      // and the scope.
       let taken = await alice.run(['pkg', 'owner', 'remove', '--team', 'acme/core']);
       isTrue(taken.succeeded(), described(taken));
       await manifestAt('1.2.0');
@@ -105,13 +129,18 @@ export let tests = suite('zena pkg scope, team and owner', () => {
       isTrue(!refused.succeeded() && refused.stderr.contains('Forbidden'), described(refused));
       let deleted = await alice.run(['pkg', 'team', 'delete', 'acme/core']);
       isTrue(deleted.succeeded(), described(deleted));
-      let removed = await alice.run(['pkg', 'scope', 'remove', 'acme', BOB]);
-      isTrue(removed.succeeded(), described(removed));
-      let gone = await bob.run(['pkg', 'scope', 'members', 'acme']);
-      isTrue(gone.succeeded() && gone.stdout.contains('none you can see'), described(gone));
+      let left = await alice.run(['pkg', 'org', 'remove', 'acme', BOB]);
+      isTrue(left.succeeded() && left.stdout.contains(`Removed ${BOB} from acme.`), described(left));
+      let noLonger = await bob.run(['pkg', 'org', 'members', 'acme']);
+      isTrue(noLonger.succeeded() && noLonger.stdout.contains('none you can see'), described(noLonger));
       // The last owner stays: the registry refuses a record with none.
       let lastOwner = await alice.run(['pkg', 'scope', 'remove', 'acme', ALICE]);
-      isTrue(!lastOwner.succeeded() && lastOwner.stderr.contains('InvalidRequest'), described(lastOwner));
+      isTrue(!lastOwner.succeeded() && lastOwner.stderr.contains('too few for its owner threshold'),
+          described(lastOwner));
+      let removed = await alice.run(['pkg', 'scope', 'remove', 'acme', BOB]);
+      isTrue(removed.succeeded(), described(removed));
+      let gone = await bob.run(['pkg', 'scope', 'maintainers', 'acme']);
+      isTrue(gone.succeeded() && !gone.stdout.contains(BOB), described(gone));
     } finally {
       await stopFakePds(stack);
       await scratch.remove();
@@ -135,14 +164,14 @@ export let tests = suite('zena pkg scope, team and owner', () => {
       isTrue(scope.succeeded(), described(scope));
 
       // Mallory's document claims the scope's handle, which resolves to the
-      // scope. Listed as a member, she is her DID alone.
-      let added = await alice.run(['pkg', 'scope', 'add', 'acme', MALLORY, '--role', 'member']);
+      // scope. Listed as a maintainer, she is her DID alone.
+      let added = await alice.run(['pkg', 'scope', 'add', 'acme', MALLORY]);
       isTrue(added.succeeded(), described(added));
-      let members = await alice.run(['pkg', 'scope', 'members', 'acme']);
-      isTrue(members.succeeded() && members.stdout.contains(`${MALLORY}  member`), described(members));
+      let maintainers = await alice.run(['pkg', 'scope', 'maintainers', 'acme']);
+      isTrue(maintainers.succeeded() && maintainers.stdout.contains(`${MALLORY}  publisher`), described(maintainers));
 
-      // The scope has its handle; Mallory, whose repository holds a members
-      // record too, does not.
+      // The scope has its handle; Mallory, whose repository holds a scope
+      // maintainers record too, does not.
       let info = await alice.run(['pkg', 'scope', 'info', 'acme']);
       isTrue(info.succeeded() && info.stdout.startsWith('acme.pkg.test\n'), described(info));
       let posing = await alice.run(['pkg', 'scope', 'info', MALLORY]);

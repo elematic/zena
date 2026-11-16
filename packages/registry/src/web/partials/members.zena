@@ -77,21 +77,43 @@ export function describe(maintainer: Maintainer, shown: Shown): HTMLPartial {
   return html`<span class="muted">a private member</span> ${automation}`;
 }
 
+/** Maintainers as a record lists them, each with their role. */
+export function maintainerList(maintainers: FixedArray<Maintainer>, shown: Shown): HTMLPartial {
+  return html`
+    <ul class="plain">${each(maintainers, (maintainer: Maintainer) => html`
+      <li>${describe(maintainer, shown)} ${chip(maintainer.role)}</li>`)}
+    </ul>
+  `;
+}
+
+/** Adds to `shown` the scope of each organization whose team is among `maintainers`. */
+export async function addTeamScopes(shown: Shown, maintainers: FixedArray<Maintainer>): Future<void> {
+  for (let maintainer in maintainers) {
+    let org = maintainer.org;
+    if (org != null) {
+      let account = await shown.context.appView.accountOf(org);
+      if (account != null) {
+        shown.scopes[org] = account.scope;
+      }
+    }
+  }
+}
+
 /**
- * The private entries behind `account`'s members or maintainers record,
- * or its team `team`, that the person signed in may see, by commitment:
- * their own; all of them for the account's owners and admins, a team's
- * maintainers, and the App View's admins (`AppView.getEntries`). None for
- * a visitor.
+ * The private entries behind `account`'s maintainers record, an
+ * organization's members record with `members`, or its team `team`, that
+ * the person signed in may see, by commitment: their own; all of them for
+ * a scope's owners, a team's maintainers, a package's owners and the App
+ * View's admins (`AppView.getEntries`). None for a visitor.
  */
-export async function visibleEntries(context: PageContext, account: String, team: String | null)
-    : Future<HashMap<String, MemberEntry>> {
+export async function visibleEntries(context: PageContext, account: String, team: String | null,
+    members: boolean = false): Future<HashMap<String, MemberEntry>> {
   let found = new HashMap<String, MemberEntry>();
   let who = context.who;
   if (who == null) {
     return found;
   }
-  for (let entry in await context.appView.getEntries(who.did, account, team)) {
+  for (let entry in await context.appView.getEntries(who.did, account, team, members)) {
     found[entry.commitment().toString()] = entry;
   }
   return found;

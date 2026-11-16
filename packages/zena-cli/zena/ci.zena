@@ -20,7 +20,7 @@ import { JsonObject } from 'zena:json';
 import { Options } from './env.zena';
 import { packageResolver } from './fetch.zena';
 import {
-  PublishError, Registry, findRegistry, registryClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
+  PublishError, Registry, findRegistry, registryClient, runCommand, saveIfRefreshed, handleDid, signedIn
 } from './publish.zena';
 import { CREATE_AUTOMATION_ACCOUNT, ISSUE_AUTOMATION_TOKEN, RETIRE_AUTOMATION_ACCOUNT } from 'package-manager/registry-methods';
 
@@ -61,12 +61,12 @@ export async function ciCommand(args: ParsedArgs, options: Options): Future<i32>
       await saveIfRefreshed(session);
       return;
     }
-    let org = await scopeOrganization(`${scope}.${registry.domain}`);
-    if (org == null) {
+    let scopeDid = await handleDid(`${scope}.${registry.domain}`);
+    if (scopeDid == null) {
       throw new PublishError(`${registry.origin} has no scope ${scope}`);
     }
     let input = new JsonObject();
-    input['organization'] = org;
+    input['scope'] = scopeDid;
     input['name'] = name;
     let client = await registryClient(session, registry, CREATE_AUTOMATION_ACCOUNT);
     let made = (await client.procedure(CREATE_AUTOMATION_ACCOUNT, input)) as JsonObject;

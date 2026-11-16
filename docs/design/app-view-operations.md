@@ -18,8 +18,8 @@ they live.
 - **A person** signs in with their atproto account, at their own PDS
   (`packages/pds-web`, "Signing in"). Everything below a visitor is a
   person in some role.
-- **A scope's maintainers** are its `owner`s and `creator`s, named in its
-  maintainers record by DID, by commitment, or as a team. Creators create
+- **A scope's maintainers** are its `owner`s and `publisher`s, named in its
+  maintainers record by DID, by commitment, or as a team. Publishers create
   packages in the scope; owners also change the scope and any of its
   packages' maintainers.
 - **An organization** is a scope with members and teams. Its **owners**
@@ -104,55 +104,53 @@ session, because the App View holds nothing that can write there
 
 ## Scopes and organizations
 
-The App View builds an earlier model today, in which every scope is an
-organization whose members record, with the roles `member`, `admin` and
-`owner`, decides who acts on it. #988 builds the model of package-manager.md,
-"Scopes", which these rows describe; the Exists column says what is there
-now.
+These rows follow package-manager.md, "Scopes": a scope's maintainers
+record decides who acts on it, and an organization is a scope with members
+and teams.
 
-| Operation                                            | Who                                                                                      | Exists                                                                                                                 |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Create a scope                                       | a person the App View allows                                                             | `zena pkg scope create`; `createOrganization`, to become `createScope` (#988)                                          |
-| List who may create scopes, while only those may     | App View admins                                                                          | `zena pkg admin`; `putScopeCreator`, `listScopeCreators`; seen on `/admin`                                             |
-| Approve a scope request                              | App View admins                                                                          | no; `create-scope` for the operator                                                                                    |
-| Claim a scope by domain or GitHub org                | a person                                                                                 | no                                                                                                                     |
-| See a scope's maintainers                            | its maintainers; owners see all                                                          | today a scope's members: `/scopes/<name>`, `zena pkg scope members`, `getEntries`                                      |
-| See and approve changes waiting                      | maintainers; owners approve                                                              | `zena pkg approve <scope>`; `getPendingChanges`, `completeChange`, `withdrawChange`                                    |
-| Add and remove owners and creators                   | owners (_threshold_)                                                                     | today members and their roles: `zena pkg scope add --role`, `scope remove`, `putMembers`; `putScopeMaintainers` (#988) |
-| Change the scope's thresholds                        | owners (_threshold_)                                                                     | `zena pkg scope settings`; `putMembers`, to become `putScopeMaintainers` (#988)                                        |
-| Set minimums and defaults for the scope's packages   | owners (_threshold_)                                                                     | `zena pkg scope policy`; `putPolicy`                                                                                   |
-| Change any of the scope's packages' maintainers      | owners (_threshold_)                                                                     | no (#988)                                                                                                              |
-| Edit the scope's profile: name, description, website | owners                                                                                   | `zena pkg scope profile`; `putScopeProfile`, today by admins                                                           |
-| Upgrade a scope to an organization                   | owners (_threshold_)                                                                     | no; `zena pkg scope upgrade`, `upgradeScope` (#988)                                                                    |
-| Add and remove an organization's members             | the organization's owners (_threshold_)                                                  | today `putMembers` on every scope; `zena pkg org add`, `org remove` (#988)                                             |
-| Create, change and delete teams                      | the organization's owners; a team's maintainers (_threshold_)                            | `zena pkg team`; `putTeam`, `deleteTeam`, today by admins                                                              |
-| Put a scope in an organization, or take it out       | joining, the scope's owners and the organization's; leaving, either side's (_threshold_) | no; `zena pkg scope join`, `scope leave`, `putScopeOrganization` (#988)                                                |
-| Rename a scope                                       | owners, the operator                                                                     | no; `renameScope` is designed                                                                                          |
-| Reclaim a scope no one uses, or one in dispute       | the operator                                                                             | no; package-manager.md, "Changing names"                                                                               |
-| Release a name a rename reserved, in the scope       | owners, the package that held it                                                         | no; `releaseName` is designed (package-manager.md, "Changing names")                                                   |
-| Dissolve a scope                                     | owners, App View admins                                                                  | no                                                                                                                     |
-| Create an automation account                         | owners                                                                                   | `zena pkg ci create`; `createAutomationAccount`, today by owners and admins                                            |
-| Reset or revoke an automation account's token        | owners                                                                                   | `zena pkg ci token`; `issueAutomationToken`, which replaces it                                                         |
-| Retire an automation account                         | owners                                                                                   | `zena pkg ci retire`; `retireAutomationAccount`, refused while maintainers name it                                     |
+| Operation                                            | Who                                                                                      | Exists                                                                              |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Create a scope                                       | a person the App View allows                                                             | `zena pkg scope create`; `createScope`                                              |
+| List who may create scopes, while only those may     | App View admins                                                                          | `zena pkg admin`; `putScopeCreator`, `listScopeCreators`; seen on `/admin`          |
+| Approve a scope request                              | App View admins                                                                          | no; `create-scope` for the operator                                                 |
+| Claim a scope by domain or GitHub org                | a person                                                                                 | no                                                                                  |
+| See a scope's maintainers                            | its maintainers; owners see all                                                          | `/scopes/<name>`, `zena pkg scope maintainers`; `getEntries`                        |
+| See and approve changes waiting                      | maintainers; owners approve                                                              | `zena pkg approve <scope>`; `getPendingChanges`, `completeChange`, `withdrawChange` |
+| Add and remove owners and publishers                 | owners (_threshold_)                                                                     | `zena pkg scope add --role`, `scope remove`; `putScopeMaintainers`                  |
+| Change the scope's thresholds                        | owners (_threshold_)                                                                     | `zena pkg scope settings`; `putScopeMaintainers`                                    |
+| Set minimums and defaults for the scope's packages   | owners (_threshold_)                                                                     | `zena pkg scope policy`; `putPolicy`                                                |
+| Change any of the scope's packages' maintainers      | owners (_threshold_)                                                                     | `zena pkg owner`; `putMaintainers`, approved by the package's owners or the scope's |
+| Edit the scope's profile: name, description, website | owners                                                                                   | `zena pkg scope profile`; `putScopeProfile`                                         |
+| Upgrade a scope to an organization                   | owners (_threshold_)                                                                     | `zena pkg scope upgrade`; `upgradeScope`                                            |
+| Add and remove an organization's members             | the organization's owners (_threshold_)                                                  | `zena pkg org add`, `org remove`, `org members`; `putMembers`                       |
+| Create, change and delete teams                      | the organization's owners; a team's maintainers (_threshold_)                            | `zena pkg team`; `putTeam`, `deleteTeam`                                            |
+| Put a scope in an organization, or take it out       | joining, the scope's owners and the organization's; leaving, either side's (_threshold_) | no; `zena pkg scope join`, `scope leave`, `putScopeOrganization` (#988)             |
+| Rename a scope                                       | owners, the operator                                                                     | no; `renameScope` is designed                                                       |
+| Reclaim a scope no one uses, or one in dispute       | the operator                                                                             | no; package-manager.md, "Changing names"                                            |
+| Release a name a rename reserved, in the scope       | owners, the package that held it                                                         | no; `releaseName` is designed (package-manager.md, "Changing names")                |
+| Dissolve a scope                                     | owners, App View admins                                                                  | no                                                                                  |
+| Create an automation account                         | owners                                                                                   | `zena pkg ci create`; `createAutomationAccount`                                     |
+| Reset or revoke an automation account's token        | owners                                                                                   | `zena pkg ci token`; `issueAutomationToken`, which replaces it                      |
+| Retire an automation account                         | owners                                                                                   | `zena pkg ci retire`; `retireAutomationAccount`, refused while maintainers name it  |
 
 ## Packages
 
-| Operation                                        | Who                                         | Exists                                                                                                   |
-| ------------------------------------------------ | ------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Create a package                                 | the scope's creators and owners             | `zena pkg create`, `zena pkg publish`; `createPackage`, today by the scope's admins or a team they allow |
-| Edit the profile: description, license, links    | owners                                      | no; `putProfile` is designed                                                                             |
-| Add and remove maintainers and owners            | owners, or the scope's owners (_threshold_) | `zena pkg owner add --role`, `owner remove`; `putMaintainers`, today by the package's owners             |
-| See and approve changes of maintainers waiting   | maintainers; owners approve                 | `zena pkg approve <package>`; `getPendingChanges`, `completeChange`                                      |
-| Add a team as maintainers                        | owners (_threshold_)                        | `zena pkg owner add --team`; `putMaintainers`                                                            |
-| Add a collaborator from outside the scope        | owners (_threshold_)                        | `zena pkg owner add <handle or DID>`; `putMaintainers`                                                   |
-| Change the thresholds                            | owners (_threshold_)                        | `zena pkg owner settings`; `putMaintainers`                                                              |
-| Rename the package                               | owners                                      | no; `renamePackage` is designed                                                                          |
-| Release the name a rename left it                | owners                                      | no; `releaseName` is designed                                                                            |
-| Move it to another scope on the App View         | owners, and the new scope's owners          | no                                                                                                       |
-| Move it to another App View                      | owners (_threshold_)                        | no; designed, without methods                                                                            |
-| Deprecate it, with a pointer to a replacement    | owners                                      | no                                                                                                       |
-| Recover it (reset maintainers via recovery keys) | recovery key holders                        | no; designed                                                                                             |
-| See its PLC history and recovery keys            | anyone                                      | no                                                                                                       |
+| Operation                                        | Who                                         | Exists                                                              |
+| ------------------------------------------------ | ------------------------------------------- | ------------------------------------------------------------------- |
+| Create a package                                 | the scope's publishers and owners           | `zena pkg create`, `zena pkg publish`; `createPackage`              |
+| Edit the profile: description, license, links    | owners                                      | no; `putProfile` is designed                                        |
+| Add and remove maintainers and owners            | owners, or the scope's owners (_threshold_) | `zena pkg owner add --role`, `owner remove`; `putMaintainers`       |
+| See and approve changes of maintainers waiting   | maintainers; owners approve                 | `zena pkg approve <package>`; `getPendingChanges`, `completeChange` |
+| Add a team as maintainers                        | owners (_threshold_)                        | `zena pkg owner add --team`; `putMaintainers`                       |
+| Add a collaborator from outside the scope        | owners (_threshold_)                        | `zena pkg owner add <handle or DID>`; `putMaintainers`              |
+| Change the thresholds                            | owners (_threshold_)                        | `zena pkg owner settings`; `putMaintainers`                         |
+| Rename the package                               | owners                                      | no; `renamePackage` is designed                                     |
+| Release the name a rename left it                | owners                                      | no; `releaseName` is designed                                       |
+| Move it to another scope on the App View         | owners, and the new scope's owners          | no                                                                  |
+| Move it to another App View                      | owners (_threshold_)                        | no; designed, without methods                                       |
+| Deprecate it, with a pointer to a replacement    | owners                                      | no                                                                  |
+| Recover it (reset maintainers via recovery keys) | recovery key holders                        | no; designed                                                        |
+| See its PLC history and recovery keys            | anyone                                      | no                                                                  |
 
 ## Releases
 

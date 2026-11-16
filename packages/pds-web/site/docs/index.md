@@ -43,7 +43,7 @@ Every dependency is pinned by its content hash, a published version never change
 
 ## Scopes, organizations and teams
 
-Packages are published under a scope, such as `acme`, that an organization owns. Its owners give members and teams roles, and who belongs stays private until they act. See [Scopes, Orgs & Teams](/docs/orgs-and-teams/).
+Packages are published under a scope, such as `acme`, whose owners and publishers create its packages. A scope can be upgraded to an organization, with members and teams, and who belongs stays private until they act. See [Scopes, Orgs & Teams](/docs/orgs-and-teams/).
 
 ## Decentralized
 
@@ -59,7 +59,7 @@ No single registry owns your packages: each keeps its own identity and data wher
 | [Defining a Package](/docs/manifests/)                | `zena-package.json` fields, `exports`, `virtual` targets, and dependency types                     |
 | [Security](/docs/security/)                           | Pinned hashes, immutable versions, maintainer approvals, automation accounts, and what is planned  |
 | [Approvals & Policies](/docs/approvals-and-settings/) | Release approvals, thresholds, scope policies, and CI automation accounts                          |
-| [Scopes, Orgs & Teams](/docs/orgs-and-teams/)         | Organization scopes, member roles, teams, package maintainers, and private memberships             |
+| [Scopes, Orgs & Teams](/docs/orgs-and-teams/)         | Scope maintainers, organizations, teams, package maintainers, and private memberships              |
 | [Decentralized Packages](/docs/decentralized/)        | Package identity, owning your data, mirrors and indexes, and labels                                |
 | [AT Protocol Architecture](/docs/architecture/)       | DIDs, handles, repository records, `dev.zena-lang.*` lexicons, and source archives                 |
 | [CLI Commands](/docs/cli/)                            | Subcommands, flags, and environment variables for `zena`                                           |

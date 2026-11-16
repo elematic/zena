@@ -8,10 +8,11 @@
  *   maintainers attest it. The command shows the release, who published
  *   it, its dependencies, and who has approved it so far.
  * - `zena pkg approve <scope>` or `zena pkg approve <package>`: the changes
- *   waiting to an organization's members and teams, or to a package's
- *   maintainers, which the registry holds until enough owners, admins or team
- *   maintainers of the record before each attest it. The command shows
- *   who each change adds and removes, and the thresholds it changes.
+ *   waiting to a scope's maintainers and policy, an organization's members
+ *   and teams, or a package's maintainers, which the registry holds until
+ *   enough owners or team maintainers of the record before each attest it.
+ *   The command shows who each change adds and removes, and the thresholds
+ *   it changes.
  *
  * With `--yes` it writes the attestations to the caller's own repository
  * and asks the registry to complete each, as `zena pkg publish` and `zena pkg scope
@@ -26,8 +27,8 @@ import { JsonArray, JsonObject } from 'zena:json';
 import { Cid } from 'atproto/cid';
 import { fromJson } from 'atproto/data';
 import {
-  MAINTAINERS_TYPE, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, Members, POLICY_TYPE, Policy, Release,
-  TEAM_TYPE, Team, parsePackageVersion
+  MAINTAINERS_TYPE, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, POLICY_TYPE, Policy, Release,
+  SCOPE_MAINTAINERS_TYPE, ScopeMaintainers, TEAM_TYPE, Team, parsePackageVersion
 } from 'package-manager/records';
 import { Options } from './env.zena';
 import {
@@ -127,8 +128,8 @@ function describeRelease(entry: JsonObject, label: String): void {
 
 /**
  * Shows, and with `--yes` approves, the changes waiting to the records of
- * the organization `<scope>`, a name with no `:` or `.`, or the package
- * `given` names.
+ * the scope `<scope>`, a name with no `:` or `.`, or the package `given`
+ * names.
  */
 async function approveChanges(args: ParsedArgs, session: Session, registry: Registry, given: String): Future<void> {
   let isScope = !given.startsWith('did:') && !given.contains(':') && !given.contains('.');
@@ -173,6 +174,9 @@ async function approveChanges(args: ParsedArgs, session: Session, registry: Regi
 /** The record `change` is to, in words, of `given`. */
 function whatChanges(change: JsonObject, given: String): String {
   let collection = change['collection'] as String;
+  if (collection == SCOPE_MAINTAINERS_TYPE) {
+    return `the maintainers of ${given}`;
+  }
   if (collection == MEMBERS_TYPE) {
     return `the members of ${given}`;
   }
@@ -193,11 +197,19 @@ async function describeChange(session: Session, registry: Registry, account: Str
   console.log(`  record: ${change['uri'] as String} (${change['cid'] as String})`);
   let held = await current(account, collection, rkey);
   let before = if (held == null) new GrowableArray<MemberEntry>()
-      else await visibleEntries(session, registry, account, if (collection == TEAM_TYPE) rkey else null);
+      else await visibleEntries(session, registry, account, if (collection == TEAM_TYPE) rkey else null,
+          collection == MEMBERS_TYPE);
   let after = new GrowableArray<MemberEntry>();
   let list = change['entries'] as JsonArray;
   for (var i = 0; i < list.length; i += 1) {
     after.push(MemberEntry.fromValue(fromJson(list[i])));
+  }
+  let known = new GrowableArray<MemberEntry>();
+  for (let entry in before) {
+    known.push(entry);
+  }
+  for (let entry in after) {
+    known.push(entry);
   }
   let record = fromJson(change['record']);
   if (collection == POLICY_TYPE) {
@@ -205,13 +217,6 @@ async function describeChange(session: Session, registry: Registry, account: Str
     console.log(indent(`was: ${describePolicy(given, was)}`));
     console.log(indent(`now: ${describePolicy(given, Policy.fromValue(record))}`));
   } else if (collection == MAINTAINERS_TYPE) {
-    let known = new GrowableArray<MemberEntry>();
-    for (let entry in before) {
-      known.push(entry);
-    }
-    for (let entry in after) {
-      known.push(entry);
-    }
     let next = Maintainers.fromValue(record);
     let previous = if (held == null) null else Maintainers.fromValue(fromJson(held.value));
     let was = maintainerLines(previous?.maintainers ?? [], known);
@@ -222,14 +227,15 @@ async function describeChange(session: Session, registry: Registry, account: Str
       printThreshold('ownerThreshold', previous.ownerThreshold, next.ownerThreshold);
       printThreshold('humans', previous.humans, next.humans);
     }
+  } else if (collection == SCOPE_MAINTAINERS_TYPE) {
+    let next = ScopeMaintainers.fromValue(record);
+    let previous = if (held == null) null else ScopeMaintainers.fromValue(fromJson(held.value));
+    printDifference(maintainerLines(previous?.maintainers ?? [], known), maintainerLines(next.maintainers, known));
+    if (previous != null) {
+      printThreshold('ownerThreshold', previous.ownerThreshold, next.ownerThreshold);
+    }
   } else {
     printDifference(entryLines(before), entryLines(after));
-    if (held != null && collection == MEMBERS_TYPE) {
-      let previous = Members.fromValue(fromJson(held.value));
-      let next = Members.fromValue(record);
-      printThreshold('ownerThreshold', previous.ownerThreshold, next.ownerThreshold);
-      printThreshold('adminThreshold', previous.adminThreshold, next.adminThreshold);
-    }
     if (held != null && collection == TEAM_TYPE) {
       printThreshold('threshold', Team.fromValue(fromJson(held.value)).threshold,
           Team.fromValue(record).threshold);

@@ -1,8 +1,10 @@
 /**
- * Who belongs: `zena pkg scope add`, `remove` and `members` for an
- * organization's members, `zena pkg team` for its teams, and `zena pkg owner` for a
- * package's maintainers (docs/design/package-manager.md, "Adding and
- * removing people").
+ * Who belongs: `zena pkg scope add`, `remove`, `maintainers`, `settings`
+ * and `upgrade` for a scope's maintainers, its owners and publishers;
+ * `zena pkg org` for an organization's members, `zena pkg team` for its
+ * teams, and `zena pkg owner` for a package's maintainers
+ * (docs/design/package-manager.md, "Scopes" and "Adding and removing
+ * people").
  *
  * Each change takes the same steps: read the record and its CID from the
  * account's repository, and the private entries behind its commitments
@@ -12,10 +14,10 @@
  * made since is refused rather than overwritten; attest the new record in
  * the caller's own repository; and ask the registry to write it
  * (`completeChange`). The registry holds it until the record before it allows
- * it: until enough of the owners, admins or team maintainers that record
- * names have attested it, which with thresholds of one is the caller.
- * Until then the command says what it waits for, and the others approve it
- * with `zena pkg approve` (`approve.zena`).
+ * it: until enough of the owners or team maintainers that record names, or
+ * the scope's owners, have attested it, which with thresholds of one is the
+ * caller. Until then the command says what it waits for, and the others
+ * approve it with `zena pkg approve` (`approve.zena`).
  */
 
 import { ParsedArgs } from 'zena:args';
@@ -28,19 +30,20 @@ import { fromJson, toJson } from 'atproto/data';
 import { Session } from 'atproto/session';
 import { XrpcClient } from 'atproto/xrpc';
 import {
-  ADMIN, MAINTAINER, MAINTAINERS_TYPE, MEMBER, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, Members, OWNER,
-  POLICY_TYPE, PUBLISHER, Policy, TEAM_TYPE, Team, TeamRole
+  MAINTAINER, MAINTAINERS_TYPE, MEMBER, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, Members, OWNER,
+  POLICY_TYPE, PUBLISHER, Policy, SCOPE_MAINTAINERS_TYPE, ScopeMaintainers, TEAM_TYPE, Team, TeamRole
 } from 'package-manager/records';
 import { isScopedIdentifier } from 'package-manager/registry';
 import { DiskFiles, readWorkspace } from 'package-manager/workspace';
 import { Options, workspaceRoot, userCwd } from './env.zena';
 import { packageResolver } from './fetch.zena';
 import {
-  Registry, PublishError, attest, findRegistry, registryClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn
+  Registry, PublishError, attest, findRegistry, registryClient, runCommand, saveIfRefreshed, handleDid, signedIn
 } from './publish.zena';
 import { REPO_GET_RECORD } from 'atproto/methods';
 import {
-  COMPLETE_CHANGE, DELETE_TEAM, GET_ENTRIES, PUT_MAINTAINERS, PUT_MEMBERS, PUT_POLICY, PUT_TEAM
+  COMPLETE_CHANGE, DELETE_TEAM, GET_ENTRIES, PUT_MAINTAINERS, PUT_MEMBERS, PUT_POLICY, PUT_SCOPE_MAINTAINERS, PUT_TEAM,
+  UPGRADE_SCOPE
 } from 'package-manager/registry-methods';
 
 /** A record in an account's repository, as it is now. */
@@ -52,95 +55,135 @@ export final class Held {
   new(this.value, this.cid, this.uri);
 }
 
-/** `zena pkg scope add <scope> <person> [--role member|admin|owner]`. */
+/**
+ * `zena pkg scope add <scope> <person> [--role publisher|owner]`, or with
+ * `--team <org>/<team>` in place of the person: adds them to the scope's
+ * maintainers, as a publisher unless `--role` says owner. A publisher creates
+ * packages in the scope, and starts as an owner of each; an owner also
+ * changes the scope, its policy and every package's maintainers in it.
+ */
 export async function scopeAddCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await changeScopeMaintainers(args, true);
+}
+
+/** `zena pkg scope remove <scope> <person>`, or `--team <org>/<team>`: takes them out of the scope's maintainers. */
+export async function scopeRemoveCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await changeScopeMaintainers(args, false);
+}
+
+async function changeScopeMaintainers(args: ParsedArgs, adding: boolean): Future<i32> {
   return await runCommand(async (): Future<void> => {
-    let (scope, person) = twoArguments(args, 'zena pkg scope add <scope> <handle or DID> [--role member|admin|owner]');
-    let role = roleOf(args, MEMBER, [MEMBER, ADMIN, OWNER]);
+    let verb = if (adding) 'add' else 'remove';
+    let usage = `usage: zena pkg scope ${verb} <scope> <handle or DID>${
+        if (adding) ' [--role publisher|owner]' else ''}, or zena pkg scope ${verb} <scope> --team <org>/<team>`;
+    if (args.rest.length != 2 && args.rest.length != 3) {
+      throw new PublishError(usage);
+    }
+    let scope = args.rest[1];
+    let person = if (args.rest.length == 3) args.rest[2] else null;
+    let role = roleOf(args, PUBLISHER, [PUBLISHER, OWNER]);
     let session = await signedIn();
     let registry = await findRegistry(args);
-    let org = await scopeDid(registry, scope);
-    let did = await personDid(person);
-    let held = required(await current(org, MEMBERS_TYPE, 'self'), `${scope} has no members record`);
-    let members = Members.fromValue(fromJson(held.value));
-    let entries = withoutPerson(await allEntries(session, registry, org, null, members.members, scope), did);
-    let added = newEntry(did, role);
-    entries.push(added);
-    let record = new Members(commitmentsOf(entries), members.ownerThreshold, members.adminThreshold);
+    let account = await scopeDid(registry, scope);
+    let held = required(await current(account, SCOPE_MAINTAINERS_TYPE, 'self'), `${scope} has no maintainers record`);
+    let record = ScopeMaintainers.fromValue(fromJson(held.value));
+    let entries = await allEntries(session, registry, account, null, false, commitmentsIn(record.maintainers), scope);
+    let change = await changeMaintainers(registry, args, record.maintainers, entries, person, adding, role, false, scope,
+        usage);
     let input = new JsonObject();
-    input['organization'] = org;
-    input['members'] = toJson(record.toValue());
-    input['entries'] = entriesJson([added]);
+    input['scope'] = account;
+    input['maintainers'] = toJson(new ScopeMaintainers(change.maintainers, record.ownerThreshold).toValue());
+    input['entries'] = entriesJson(change.fresh);
     input['swapRecord'] = held.cid;
-    if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, scope)) {
-      console.log(`Added ${person} to ${scope} as ${role}.`);
+    if (await write(session, registry, PUT_SCOPE_MAINTAINERS, input, `${scope}'s maintainers`, scope)) {
+      console.log(if (adding) `Added ${change.who} to ${scope} as ${role}.` else `Removed ${change.who} from ${scope}.`);
     }
     await saveIfRefreshed(session);
   });
 }
 
-/** `zena pkg scope remove <scope> <person>`. */
-export async function scopeRemoveCommand(args: ParsedArgs, options: Options): Future<i32> {
+/** `zena pkg scope maintainers <scope>`: its owners and publishers, each named when the caller may see them. */
+export async function scopeMaintainersCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
-    let (scope, person) = twoArguments(args, 'zena pkg scope remove <scope> <handle or DID>');
+    if (args.rest.length != 2) {
+      throw new PublishError('give the scope: zena pkg scope maintainers <scope>');
+    }
+    let scope = args.rest[1];
     let session = await signedIn();
     let registry = await findRegistry(args);
-    let org = await scopeDid(registry, scope);
-    let did = await personDid(person);
-    let held = required(await current(org, MEMBERS_TYPE, 'self'), `${scope} has no members record`);
-    let members = Members.fromValue(fromJson(held.value));
-    let before = await allEntries(session, registry, org, null, members.members, scope);
-    let entries = withoutPerson(before, did);
-    if (entries.length == before.length) {
-      throw new PublishError(`${person} is not a member of ${scope}`);
+    let account = await scopeDid(registry, scope);
+    let held = required(await current(account, SCOPE_MAINTAINERS_TYPE, 'self'), `${scope} has no maintainers record`);
+    let record = ScopeMaintainers.fromValue(fromJson(held.value));
+    await printMaintainers(record.maintainers, await visibleEntries(session, registry, account, null));
+    console.log(await scopeSettings(scope, account, record));
+    await saveIfRefreshed(session);
+  });
+}
+
+/**
+ * `zena pkg scope settings <scope> [--owner-threshold <n>]`: how many of
+ * the scope's owners must approve a change to its maintainers and policy,
+ * and to an organization's members and teams. Without it, prints it. A
+ * change to it is a change to the maintainers record, which the threshold
+ * it replaces must approve.
+ */
+export async function scopeSettingsCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await runCommand(async (): Future<void> => {
+    if (args.rest.length != 2) {
+      throw new PublishError('give the scope: zena pkg scope settings <scope> [--owner-threshold <n>]');
     }
-    let record = new Members(commitmentsOf(entries), members.ownerThreshold, members.adminThreshold);
+    let scope = args.rest[1];
+    let owners = countOption(args, 'owner-threshold', 1);
+    let session = await signedIn();
+    let registry = await findRegistry(args);
+    let account = await scopeDid(registry, scope);
+    let held = required(await current(account, SCOPE_MAINTAINERS_TYPE, 'self'), `${scope} has no maintainers record`);
+    let record = ScopeMaintainers.fromValue(fromJson(held.value));
+    if (owners < 0) {
+      console.log(await scopeSettings(scope, account, record));
+      await saveIfRefreshed(session);
+      return;
+    }
+    let changed = new ScopeMaintainers(record.maintainers, owners);
     let input = new JsonObject();
-    input['organization'] = org;
-    input['members'] = toJson(record.toValue());
+    input['scope'] = account;
+    input['maintainers'] = toJson(changed.toValue());
     input['entries'] = new JsonArray();
     input['swapRecord'] = held.cid;
-    if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, scope)) {
-      console.log(`Removed ${person} from ${scope}.`);
+    if (await write(session, registry, PUT_SCOPE_MAINTAINERS, input, `${scope}'s maintainers`, scope)) {
+      console.log(await scopeSettings(scope, account, changed));
     }
     await saveIfRefreshed(session);
   });
 }
 
 /**
- * `zena pkg scope settings <scope> [--owner-threshold <n>] [--admin-threshold <n>]`:
- * how many owners must approve a change to the scope's members, and how
- * many admins or owners a change to one of its teams. With neither, prints
- * them. A change to them is a change to the members record, which the
- * thresholds it replaces must approve.
+ * `zena pkg scope upgrade <scope> --yes`: makes the scope an organization,
+ * with its owners as its first members, so that it has members and teams.
+ * It keeps its DID, its handle and its packages, and its owners are the
+ * organization's. The change waits for the scope's owners, as a change to
+ * its maintainers does.
  */
-export async function scopeSettingsCommand(args: ParsedArgs, options: Options): Future<i32> {
+export async function scopeUpgradeCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
     if (args.rest.length != 2) {
-      throw new PublishError('give the scope: zena pkg scope settings <scope> [--owner-threshold <n>] [--admin-threshold <n>]');
+      throw new PublishError('give the scope: zena pkg scope upgrade <scope> --yes');
     }
     let scope = args.rest[1];
-    let owners = countOption(args, 'owner-threshold', 1);
-    let admins = countOption(args, 'admin-threshold', 1);
     let session = await signedIn();
     let registry = await findRegistry(args);
-    let org = await scopeDid(registry, scope);
-    let held = required(await current(org, MEMBERS_TYPE, 'self'), `${scope} has no members record`);
-    let members = Members.fromValue(fromJson(held.value));
-    if (owners < 0 && admins < 0) {
-      console.log(scopeSettings(scope, members));
-      await saveIfRefreshed(session);
-      return;
+    let account = await scopeDid(registry, scope);
+    if ((await current(account, MEMBERS_TYPE, 'self')) != null) {
+      throw new PublishError(`${scope} is an organization already`);
     }
-    let record = new Members(members.members, if (owners < 0) members.ownerThreshold else owners,
-        if (admins < 0) members.adminThreshold else admins);
+    if (!args.getFlag('yes')) {
+      throw new PublishError(
+          `Run again with --yes to make ${scope} an organization, with its owners as its first members. A scope stays an organization.`);
+    }
     let input = new JsonObject();
-    input['organization'] = org;
-    input['members'] = toJson(record.toValue());
-    input['entries'] = new JsonArray();
-    input['swapRecord'] = held.cid;
-    if (await write(session, registry, PUT_MEMBERS, input, `${scope}'s members`, scope)) {
-      console.log(scopeSettings(scope, record));
+    input['scope'] = account;
+    if (await write(session, registry, UPGRADE_SCOPE, input, `${scope}'s members`, scope)) {
+      console.log(`${scope} is an organization, with its owners as its members. Add others with zena pkg org add ${scope} <person>.`);
     }
     await saveIfRefreshed(session);
   });
@@ -149,13 +192,12 @@ export async function scopeSettingsCommand(args: ParsedArgs, options: Options): 
 /**
  * `zena pkg scope policy <scope> [flags]`: the scope's policy for its
  * packages: the least a release needs, which applies to every package in
- * it at once (`--minimum-threshold`, `--minimum-humans`); what a new
+ * it at once (`--minimum-threshold`, `--minimum-humans`); and what a new
  * package's maintainers record starts with (`--default-teams
- * <team>:<role>,...`, `--default-threshold`, `--default-owner-threshold`,
- * `--default-humans`); and the teams whose members may create packages
- * besides its admins (`--creators <team>,...`). A list given empty is
- * cleared. With no flags, prints it. A change to it waits for the members
- * record's owners, as a change to the members does.
+ * <org>/<team>:<role>,...`, `--default-threshold`,
+ * `--default-owner-threshold`, `--default-humans`). A list given empty is
+ * cleared. With no flags, prints it. A change to it waits for the scope's
+ * owners, as a change to its maintainers does.
  */
 export async function scopePolicyCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
@@ -165,8 +207,8 @@ export async function scopePolicyCommand(args: ParsedArgs, options: Options): Fu
     let scope = args.rest[1];
     let session = await signedIn();
     let registry = await findRegistry(args);
-    let org = await scopeDid(registry, scope);
-    let held = await current(org, POLICY_TYPE, 'self');
+    let account = await scopeDid(registry, scope);
+    let held = await current(account, POLICY_TYPE, 'self');
     let policy = if (held == null) new Policy() else Policy.fromValue(fromJson(held.value));
     let minimum = countOption(args, 'minimum-threshold', 1);
     let minimumHumans = countOption(args, 'minimum-humans', 0);
@@ -187,15 +229,12 @@ export async function scopePolicyCommand(args: ParsedArgs, options: Options): Fu
         let parts = item.split(':');
         let role = if (parts.length > 1) parts[1] else PUBLISHER;
         if (parts.length > 2 || (role != PUBLISHER && role != OWNER)) {
-          throw new PublishError(`'${item}' is not <team> or <team>:publisher or <team>:owner`);
+          throw new PublishError(`'${item}' is not <org>/<team>, <org>/<team>:publisher or <org>/<team>:owner`);
         }
-        teams.push(new TeamRole(parts[0], role));
+        let (org, team) = teamName(parts[0]);
+        teams.push(new TeamRole(await scopeDid(registry, org), team, role));
       }
       policy.defaultTeams = teams;
-    }
-    if (let (true, given) = args.getOption('creators')) {
-      changed = true;
-      policy.creators = listOption(given);
     }
     if (!changed) {
       console.log(describePolicy(scope, policy));
@@ -203,7 +242,7 @@ export async function scopePolicyCommand(args: ParsedArgs, options: Options): Fu
       return;
     }
     let input = new JsonObject();
-    input['organization'] = org;
+    input['scope'] = account;
     input['policy'] = toJson(policy.toValue());
     if (held != null) {
       input['swapRecord'] = held.cid;
@@ -232,98 +271,125 @@ export function describePolicy(scope: String, policy: Policy): String {
   let people = if (policy.minimumHumans == (0 as i64)) '' else `, ${policy.minimumHumans} of them from people`;
   var teams = '';
   for (let team in policy.defaultTeams) {
-    teams = `${teams} and the team ${team.team} as ${team.role}`;
+    teams = `${teams} and the team ${team.team} of ${team.org} as ${team.role}`;
   }
   let humans = if (policy.defaultHumans == (0 as i64)) '' else `, ${policy.defaultHumans} of them from people`;
-  var creators = 'Its admins create its packages';
-  if (policy.creators.length > 0) {
-    var names = '';
-    for (let team in policy.creators) {
-      names = if (names == '') team else `${names}, ${team}`;
-    }
-    creators = `Its admins, and the teams ${names}, create its packages`;
-  }
   return `Every release in ${scope} needs at least ${count(policy.minimumThreshold, "maintainer's attestation",
       "maintainers' attestations")}${people}.\nNew packages start maintained by their creator${teams}, with releases needing ${
-      policy.defaultThreshold}${humans}, and changes to the maintainers ${count(policy.defaultOwnerThreshold, "owner's", "owners'")}.\n${
-      creators}.`;
+      policy.defaultThreshold}${humans}, and changes to the maintainers ${count(policy.defaultOwnerThreshold, "owner's", "owners'")}.`;
 }
 
-function scopeSettings(scope: String, members: Members): String {
-  return `Changes to ${scope}'s members need ${count(members.ownerThreshold, 'owner')}, and changes to its teams ${
-      count(members.adminThreshold, 'admin or owner', 'admins or owners')}, or a team's own threshold of its maintainers.`;
+/** How many owners a change to the scope `scope`, the account `account`, needs, in words. */
+async function scopeSettings(scope: String, account: String, record: ScopeMaintainers): Future<String> {
+  let organization = (await current(account, MEMBERS_TYPE, 'self')) != null;
+  let also = if (organization) ", and so do changes to its members and teams, or a team's own threshold of its maintainers"
+      else '';
+  return `Changes to ${scope}'s maintainers and policy need ${count(record.ownerThreshold, 'owner')}${also}.`;
 }
 
-/** `zena pkg scope members <scope>`: the members the caller may see. */
-export async function scopeMembersCommand(args: ParsedArgs, options: Options): Future<i32> {
+/**
+ * `zena pkg org add|remove <org> <person>` and `zena pkg org members
+ * <org>`: an organization's members, who are the people its teams can
+ * have. Its scope's owners change them.
+ */
+export async function orgCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
-    if (args.rest.length != 2) {
-      throw new PublishError('give the scope: zena pkg scope members <scope>');
+    let usage = 'usage: zena pkg org add|remove <org> <handle or DID>, or zena pkg org members <org>';
+    let sub = if (args.rest.length > 0) args.rest[0] else '';
+    if (!((sub == 'members' && args.rest.length == 2) || ((sub == 'add' || sub == 'remove') && args.rest.length == 3))) {
+      throw new PublishError(usage);
     }
+    let org = args.rest[1];
     let session = await signedIn();
     let registry = await findRegistry(args);
-    let org = await scopeDid(registry, args.rest[1]);
-    required(await current(org, MEMBERS_TYPE, 'self'), `${args.rest[1]} has no members record`);
-    await printEntries(await visibleEntries(session, registry, org, null));
+    let account = await scopeDid(registry, org);
+    let held = required(await current(account, MEMBERS_TYPE, 'self'),
+        `${org} is not an organization; zena pkg scope upgrade ${org} makes it one`);
+    if (sub == 'members') {
+      await printEntries(await visibleEntries(session, registry, account, null, true));
+      await saveIfRefreshed(session);
+      return;
+    }
+    let members = Members.fromValue(fromJson(held.value));
+    let person = args.rest[2];
+    let did = await personDid(person);
+    let before = await allEntries(session, registry, account, null, true, members.members, org);
+    let entries = withoutPerson(before, did);
+    let fresh = new GrowableArray<MemberEntry>();
+    if (sub == 'add') {
+      let added = newEntry(did, MEMBER);
+      entries.push(added);
+      fresh.push(added);
+    } else if (entries.length == before.length) {
+      throw new PublishError(`${person} is not a member of ${org}`);
+    }
+    let input = new JsonObject();
+    input['organization'] = account;
+    input['members'] = toJson(new Members(commitmentsOf(entries)).toValue());
+    input['entries'] = entriesJson(fresh);
+    input['swapRecord'] = held.cid;
+    if (await write(session, registry, PUT_MEMBERS, input, `${org}'s members`, org)) {
+      console.log(if (sub == 'add') `Added ${person} to ${org}.` else `Removed ${person} from ${org}.`);
+    }
     await saveIfRefreshed(session);
   });
 }
 
 /**
- * `zena pkg team create|add|remove|delete|members <scope>/<team> ...`: an
+ * `zena pkg team create|add|remove|delete|members <org>/<team> ...`: an
  * organization's teams. A team is created empty, and its members must be
  * members of the organization.
  */
 export async function teamCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
-    let usage = 'zena pkg team create|delete|members <scope>/<team>, zena pkg team add|remove <scope>/<team> <handle or DID>, or zena pkg team settings <scope>/<team> [--threshold <n>]';
+    let usage = 'zena pkg team create|delete|members <org>/<team>, zena pkg team add|remove <org>/<team> <handle or DID>, or zena pkg team settings <org>/<team> [--threshold <n>]';
     if (args.rest.length < 2) {
       throw new PublishError(`give a subcommand and a team: ${usage}`);
     }
     let sub = args.rest[0];
-    let (scope, name) = teamName(args.rest[1]);
+    let (org, name) = teamName(args.rest[1]);
     let session = await signedIn();
     let registry = await findRegistry(args);
-    let org = await scopeDid(registry, scope);
-    let held = await current(org, TEAM_TYPE, name);
+    let account = await scopeDid(registry, org);
+    let held = await current(account, TEAM_TYPE, name);
     if (sub == 'create') {
       if (held != null) {
-        throw new PublishError(`${scope} already has the team ${name}`);
+        throw new PublishError(`${org} already has the team ${name}`);
       }
-      if (await putTeam(session, registry, scope, org, name, new Team([]), [], null)) {
-        console.log(`Created the team ${scope}/${name}. Add its members with zena pkg team add ${scope}/${name} <person>.`);
+      if (await putTeam(session, registry, org, account, name, new Team([]), [], null)) {
+        console.log(`Created the team ${org}/${name}. Add its members with zena pkg team add ${org}/${name} <person>.`);
       }
     } else {
       if (held == null) {
-        throw new PublishError(`${scope} has no team ${name}`);
+        throw new PublishError(`${org} has no team ${name}`);
       }
       let found = held;
       let team = Team.fromValue(fromJson(found.value));
       if (sub == 'delete') {
         let input = new JsonObject();
-        input['organization'] = org;
+        input['organization'] = account;
         input['name'] = name;
         input['swapRecord'] = found.cid;
         let client = await registryClient(session, registry, DELETE_TEAM);
         await client.procedure(DELETE_TEAM, input);
-        console.log(`Deleted the team ${scope}/${name}.`);
+        console.log(`Deleted the team ${org}/${name}.`);
       } else if (sub == 'members') {
-        await printEntries(await visibleEntries(session, registry, org, name));
+        await printEntries(await visibleEntries(session, registry, account, name));
       } else if (sub == 'settings' && args.rest.length == 2) {
         // How many of the team's maintainers must approve a change to it.
         let threshold = countOption(args, 'threshold', 1);
         if (threshold < 0) {
-          console.log(teamSettings(scope, name, team));
+          console.log(teamSettings(org, name, team));
         } else {
           let changed = new Team(team.members, threshold);
-          if (await putTeam(session, registry, scope, org, name, changed, [], found.cid)) {
-            console.log(teamSettings(scope, name, changed));
+          if (await putTeam(session, registry, org, account, name, changed, [], found.cid)) {
+            console.log(teamSettings(org, name, changed));
           }
         }
       } else if ((sub == 'add' || sub == 'remove') && args.rest.length == 3) {
         let person = args.rest[2];
         let did = await personDid(person);
-        let before = await allEntries(session, registry, org, name, team.members, `${scope}/${name}`);
+        let before = await allEntries(session, registry, account, name, false, team.members, `${org}/${name}`);
         let entries = withoutPerson(before, did);
         let fresh = new GrowableArray<MemberEntry>();
         if (sub == 'add') {
@@ -331,11 +397,11 @@ export async function teamCommand(args: ParsedArgs, options: Options): Future<i3
           entries.push(added);
           fresh.push(added);
         } else if (entries.length == before.length) {
-          throw new PublishError(`${person} is not on the team ${scope}/${name}`);
+          throw new PublishError(`${person} is not on the team ${org}/${name}`);
         }
-        if (await putTeam(session, registry, scope, org, name, new Team(commitmentsOf(entries), team.threshold), fresh,
+        if (await putTeam(session, registry, org, account, name, new Team(commitmentsOf(entries), team.threshold), fresh,
             found.cid)) {
-          console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${person} ${if (sub == 'add') 'to' else 'from'} ${scope}/${name}.`);
+          console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${person} ${if (sub == 'add') 'to' else 'from'} ${org}/${name}.`);
         }
       } else {
         throw new PublishError(usage);
@@ -348,13 +414,14 @@ export async function teamCommand(args: ParsedArgs, options: Options): Future<i3
 /**
  * `zena pkg owner add|remove|list`: a package's maintainers, for the package
  * in the current directory or the one `--package` names. A person is added
- * by commitment, so the record does not name them; `--team <scope>/<team>`
+ * by commitment, so the record does not name them; `--team <org>/<team>`
  * adds or removes a team, and `--automation` marks an automation account
  * (`zena pkg ci create`), which the registry requires of one, as a publisher.
+ * The owners of the package's scope can change it too.
  */
 export async function ownerCommand(args: ParsedArgs, options: Options): Future<i32> {
   return await runCommand(async (): Future<void> => {
-    let usage = 'zena pkg owner add|remove <handle or DID> [--role publisher|owner] [--automation], zena pkg owner add|remove --team <scope>/<team>, zena pkg owner list, or zena pkg owner settings [--threshold <n>] [--owner-threshold <n>] [--humans <n>]';
+    let usage = 'zena pkg owner add|remove <handle or DID> [--role publisher|owner] [--automation], zena pkg owner add|remove --team <org>/<team>, zena pkg owner list, or zena pkg owner settings [--threshold <n>] [--owner-threshold <n>] [--humans <n>]';
     if (args.rest.length == 0) {
       throw new PublishError(usage);
     }
@@ -368,17 +435,8 @@ export async function ownerCommand(args: ParsedArgs, options: Options): Future<i
     }
     let found = held;
     let record = Maintainers.fromValue(fromJson(found.value));
-    let commitments = new GrowableArray<Cid>();
-    for (let maintainer in record.maintainers) {
-      if (maintainer.commitment != null) {
-        commitments.push(maintainer.commitment as Cid);
-      }
-    }
     if (sub == 'list') {
-      let entries = await visibleEntries(session, registry, pkg, null);
-      for (let maintainer in record.maintainers) {
-        console.log(`${describeMaintainer(maintainer, entries)}  ${maintainer.role}`);
-      }
+      await printMaintainers(record.maintainers, await visibleEntries(session, registry, pkg, null));
       console.log(packageSettings(record));
       await saveIfRefreshed(session);
       return;
@@ -406,67 +464,104 @@ export async function ownerCommand(args: ParsedArgs, options: Options): Future<i
       await saveIfRefreshed(session);
       return;
     }
-    if (sub != 'add' && sub != 'remove') {
+    if ((sub != 'add' && sub != 'remove') || args.rest.length > 2) {
       throw new PublishError(usage);
     }
-    let entries = await allEntries(session, registry, pkg, null, commitments, pkg);
-    // Who the change is about: a team, or a person by DID.
-    var teamOrg: String | null = null;
-    var teamLabel: String | null = null;
-    var did: String | null = null;
-    var who = '';
-    if (let (true, given) = args.getOption('team')) {
-      let (scope, name) = teamName(given);
-      teamOrg = await scopeDid(registry, scope);
-      teamLabel = name;
-      who = `the team ${given}`;
-    } else if (args.rest.length == 2) {
-      did = await personDid(args.rest[1]);
-      who = args.rest[1];
-    } else {
-      throw new PublishError(usage);
-    }
-    let kept = new GrowableArray<Maintainer>();
-    for (let maintainer in record.maintainers) {
-      let isThem = if (teamOrg != null) maintainer.org == teamOrg && maintainer.team == teamLabel
-          else maintainerDid(maintainer, entries) == did;
-      if (!isThem) {
-        kept.push(maintainer);
-      }
-    }
-    let fresh = new GrowableArray<MemberEntry>();
-    if (sub == 'add') {
-      let role = roleOf(args, PUBLISHER, [PUBLISHER, OWNER]);
-      if (teamOrg != null) {
-        kept.push(new Maintainer(null, null, teamOrg, teamLabel, role));
-      } else {
-        let automation = args.getFlag('automation');
-        let added = new MemberEntry(did as String, role, getRandomBytes(32), automation);
-        fresh.push(added);
-        kept.push(new Maintainer(null, added.commitment(), null, null, role, automation));
-      }
-    } else if (kept.length == record.maintainers.length) {
-      throw new PublishError(`${who} does not maintain ${pkg}`);
-    }
-    if (kept.length == 0) {
-      throw new PublishError(`${pkg} would have no maintainers; add another first`);
-    }
-    let maintainers = new FixedArray<Maintainer>(kept.length, kept[0]);
-    for (var i = 0; i < kept.length; i += 1) {
-      maintainers[i] = kept[i];
-    }
-    let changed = new Maintainers(maintainers, record.threshold, record.ownerThreshold);
+    let entries = await allEntries(session, registry, pkg, null, false, commitmentsIn(record.maintainers), pkg);
+    let person = if (args.rest.length == 2) args.rest[1] else null;
+    let change = await changeMaintainers(registry, args, record.maintainers, entries, person, sub == 'add',
+        roleOf(args, PUBLISHER, [PUBLISHER, OWNER]), true, pkg, usage);
+    let changed = new Maintainers(change.maintainers, record.threshold, record.ownerThreshold);
     changed.humans = record.humans;
     let input = new JsonObject();
     input['package'] = pkg;
     input['maintainers'] = toJson(changed.toValue());
-    input['entries'] = entriesJson(fresh);
+    input['entries'] = entriesJson(change.fresh);
     input['swapRecord'] = found.cid;
     if (await write(session, registry, PUT_MAINTAINERS, input, `the maintainers of ${pkg}`, await approveAsOf(args, pkg))) {
-      console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${who} ${if (sub == 'add') 'to' else 'from'} the maintainers of ${pkg}.`);
+      console.log(`${if (sub == 'add') 'Added' else 'Removed'} ${change.who} ${if (sub == 'add') 'to' else 'from'} the maintainers of ${pkg}.`);
     }
     await saveIfRefreshed(session);
   });
+}
+
+/** A change to a maintainers record's list: whom it is about, the list after it, and the entries it adds. */
+final class MaintainerChange {
+  who: String;
+  maintainers: FixedArray<Maintainer>;
+  fresh: GrowableArray<MemberEntry>;
+
+  new(this.who, this.maintainers, this.fresh);
+}
+
+/**
+ * `maintainers`, a package's or a scope's, with the person `person`, or
+ * the team `--team` names, added in `role` when `adding`, or else taken
+ * out. `entries` are the entries behind the list's commitments, and `what`
+ * names its account. A person is added by commitment; `--automation` marks
+ * them as an automation account where `automation` allows one.
+ */
+async function changeMaintainers(registry: Registry, args: ParsedArgs, maintainers: FixedArray<Maintainer>,
+    entries: Array<MemberEntry>, person: String | null, adding: boolean, role: String, automation: boolean,
+    what: String, usage: String): Future<MaintainerChange> {
+  var teamOrg: String | null = null;
+  var teamLabel: String | null = null;
+  var did: String | null = null;
+  var who = '';
+  if (let (true, given) = args.getOption('team')) {
+    if (person != null) {
+      throw new PublishError(usage);
+    }
+    let (org, name) = teamName(given);
+    teamOrg = await scopeDid(registry, org);
+    teamLabel = name;
+    who = `the team ${given}`;
+  } else if (person != null) {
+    did = await personDid(person);
+    who = person;
+  } else {
+    throw new PublishError(usage);
+  }
+  let kept = new GrowableArray<Maintainer>();
+  for (let maintainer in maintainers) {
+    let isThem = if (teamOrg != null) maintainer.org == teamOrg && maintainer.team == teamLabel
+        else maintainerDid(maintainer, entries) == did;
+    if (!isThem) {
+      kept.push(maintainer);
+    }
+  }
+  let fresh = new GrowableArray<MemberEntry>();
+  if (adding) {
+    if (teamOrg != null) {
+      kept.push(new Maintainer(null, null, teamOrg, teamLabel, role));
+    } else {
+      let marked = automation && args.getFlag('automation');
+      let added = new MemberEntry(did as String, role, getRandomBytes(32), marked);
+      fresh.push(added);
+      kept.push(new Maintainer(null, added.commitment(), null, null, role, marked));
+    }
+  } else if (kept.length == maintainers.length) {
+    throw new PublishError(`${who} does not maintain ${what}`);
+  }
+  if (kept.length == 0) {
+    throw new PublishError(`${what} would have no maintainers; add another first`);
+  }
+  let list = new FixedArray<Maintainer>(kept.length, kept[0]);
+  for (var i = 0; i < kept.length; i += 1) {
+    list[i] = kept[i];
+  }
+  return new MaintainerChange(who, list, fresh);
+}
+
+/** The commitments among `maintainers`. */
+function commitmentsIn(maintainers: FixedArray<Maintainer>): GrowableArray<Cid> {
+  let commitments = new GrowableArray<Cid>();
+  for (let maintainer in maintainers) {
+    if (maintainer.commitment != null) {
+      commitments.push(maintainer.commitment as Cid);
+    }
+  }
+  return commitments;
 }
 
 /**
@@ -516,8 +611,8 @@ export function changeApprovals(answer: JsonObject): String {
   for (var i = 0; i < requirements.length; i += 1) {
     let requirement = requirements[i] as JsonObject;
     let role = requirement['role'] as String;
-    let who = if (role == 'admin') 'admins or owners of the organization'
-        else if (role == 'maintainer') "maintainers of the team" else 'owners';
+    let who = if (role == 'scope owner') "owners of the package's scope"
+        else if (role == 'maintainer') 'maintainers of the team' else 'owners';
     let part = `approved by ${(requirement['approvedBy'] as JsonArray).length} of the ${
         (requirement['threshold'] as Box<f64>).value as i32} ${who} it needs`;
     phrase = if (phrase == '') part else `${phrase}, or ${part}`;
@@ -525,22 +620,22 @@ export function changeApprovals(answer: JsonObject): String {
   return phrase;
 }
 
-function teamSettings(scope: String, name: String, team: Team): String {
-  return `Changes to the team ${scope}/${name} need ${count(team.threshold, 'of its maintainers', 'of its maintainers')
-      }, or the admins of ${scope}.`;
+function teamSettings(org: String, name: String, team: Team): String {
+  return `Changes to the team ${org}/${name} need ${count(team.threshold, 'of its maintainers', 'of its maintainers')
+      }, or the owners of ${org}.`;
 }
 
-async function putTeam(session: Session, registry: Registry, scope: String, org: String, name: String, team: Team,
+async function putTeam(session: Session, registry: Registry, org: String, account: String, name: String, team: Team,
     fresh: Array<MemberEntry>, swap: String | null): Future<boolean> {
   let input = new JsonObject();
-  input['organization'] = org;
+  input['organization'] = account;
   input['name'] = name;
   input['team'] = toJson(team.toValue());
   input['entries'] = entriesJson(fresh);
   if (swap != null) {
     input['swapRecord'] = swap;
   }
-  return await write(session, registry, PUT_TEAM, input, `the team ${scope}/${name}`, scope);
+  return await write(session, registry, PUT_TEAM, input, `the team ${org}/${name}`, org);
 }
 
 /** What a package's maintainers record asks of its releases and of changes to it. */
@@ -593,14 +688,6 @@ function countOption(args: ParsedArgs, name: String, least: i32): i64 {
   return -1 as i64;
 }
 
-/** The two arguments after the subcommand, or a `PublishError` showing `usage`. */
-function twoArguments(args: ParsedArgs, usage: String): (String, String) {
-  if (args.rest.length != 3) {
-    throw new PublishError(`usage: ${usage}`);
-  }
-  return (args.rest[1], args.rest[2]);
-}
-
 /** `--role`, which must be one of `allowed`, or `fallback`. */
 function roleOf(args: ParsedArgs, fallback: String, allowed: Array<String>): String {
   if (let (true, given) = args.getOption('role')) {
@@ -618,23 +705,23 @@ function roleOf(args: ParsedArgs, fallback: String, allowed: Array<String>): Str
   return fallback;
 }
 
-/** `<scope>/<team>`, split. */
+/** `<org>/<team>`, split. */
 function teamName(text: String): (String, String) {
   let parts = text.split('/');
   if (parts.length != 2 || parts[0] == '' || parts[1] == '') {
-    throw new PublishError(`'${text}' is not <scope>/<team>`);
+    throw new PublishError(`'${text}' is not <org>/<team>`);
   }
   return (parts[0], parts[1]);
 }
 
-/** The organization of `scope` on `host`. */
+/** The DID of the scope `scope` on `registry`. */
 export async function scopeDid(registry: Registry, scope: String): Future<String> {
   let handle = `${scope}.${registry.domain}`;
-  let org = await scopeOrganization(handle);
-  if (org == null) {
+  let did = await handleDid(handle);
+  if (did == null) {
     throw new PublishError(`${registry.origin} has no scope ${scope}`);
   }
-  return org;
+  return did;
 }
 
 /** A person's DID, from a DID or a handle. */
@@ -642,7 +729,7 @@ export async function personDid(person: String): Future<String> {
   if (person.startsWith('did:')) {
     return person;
   }
-  let did = await scopeOrganization(person);
+  let did = await handleDid(person);
   if (did == null) {
     throw new PublishError(`${person} does not resolve to a DID`);
   }
@@ -673,7 +760,7 @@ export async function namedPackage(registry: Registry, given: String): Future<St
     }
     handle = `${parts[1]}.${parts[0]}.${registry.domain}`;
   }
-  let did = await scopeOrganization(handle);
+  let did = await handleDid(handle);
   if (did == null) {
     throw new PublishError(`${given} does not resolve to a package`);
   }
@@ -719,9 +806,9 @@ function required(held: Held | null, missing: String): Held {
  * Changing a record needs them all, which only those who may change it
  * see from the registry.
  */
-async function allEntries(session: Session, registry: Registry, account: String, team: String | null, commitments: Array<Cid>,
-    what: String): Future<GrowableArray<MemberEntry>> {
-  let entries = await visibleEntries(session, registry, account, team);
+async function allEntries(session: Session, registry: Registry, account: String, team: String | null, members: boolean,
+    commitments: Array<Cid>, what: String): Future<GrowableArray<MemberEntry>> {
+  let entries = await visibleEntries(session, registry, account, team, members);
   if (entries.length < commitments.length) {
     throw new PublishError(
         `you can see ${entries.length} of the ${commitments.length} people in ${what}, so you cannot change it`);
@@ -729,14 +816,21 @@ async function allEntries(session: Session, registry: Registry, account: String,
   return entries;
 }
 
-/** The entries behind the record's commitments that the caller may see, from the registry. */
-export async function visibleEntries(session: Session, registry: Registry, account: String, team: String | null)
-    : Future<GrowableArray<MemberEntry>> {
-  let params: Array<(String, String)> = if (team != null) {
-    [('account', account), ('team', team)]
-  } else {
-    [('account', account)]
-  };
+/**
+ * The entries the caller may see, from the registry, behind the
+ * commitments of `account`'s maintainers record, or of an organization's
+ * members record with `members`, or of its team `team`.
+ */
+export async function visibleEntries(session: Session, registry: Registry, account: String, team: String | null,
+    members: boolean = false): Future<GrowableArray<MemberEntry>> {
+  let params = new GrowableArray<(String, String)>();
+  params.push(('account', account));
+  if (team != null) {
+    params.push(('team', team));
+  }
+  if (members) {
+    params.push(('members', 'true'));
+  }
   let client = await registryClient(session, registry, GET_ENTRIES);
   let answer = (await client.query(GET_ENTRIES, params)) as JsonObject;
   let list = answer['entries'] as JsonArray;
@@ -795,7 +889,7 @@ function maintainerDid(maintainer: Maintainer, entries: Array<MemberEntry>): Str
   return null;
 }
 
-/** A maintainer as `zena pkg owner list` shows them. */
+/** A maintainer as `zena pkg approve` shows them. */
 export function describeMaintainer(maintainer: Maintainer, entries: Array<MemberEntry>): String {
   if (maintainer.org != null) {
     return `the team ${maintainer.team as String} of ${maintainer.org as String}`;
@@ -803,25 +897,37 @@ export function describeMaintainer(maintainer: Maintainer, entries: Array<Member
   return maintainerDid(maintainer, entries) ?? `${(maintainer.commitment as Cid).toString()} (private)`;
 }
 
-/**
- * Prints each entry's DID, its handle when the handle resolves back to it,
- * and its role. A DID document can claim any handle, so a claim alone is
- * not shown.
- */
+/** Prints each maintainer, a person as `personLabel` names them, and their role. */
+async function printMaintainers(maintainers: FixedArray<Maintainer>, entries: Array<MemberEntry>): Future<void> {
+  for (let maintainer in maintainers) {
+    let did = if (maintainer.org == null) maintainerDid(maintainer, entries) else null;
+    let label = if (did != null) await personLabel(did) else describeMaintainer(maintainer, entries);
+    console.log(`${label}${if (maintainer.automation) ' (automation)' else ''}  ${maintainer.role}`);
+  }
+}
+
+/** Prints each entry, as `personLabel` names its person, and its role. */
 async function printEntries(entries: Array<MemberEntry>): Future<void> {
   if (entries.length == 0) {
     console.log('(none you can see)');
   }
   for (let entry in entries) {
-    var handle = '';
-    try {
-      let identity = await packageResolver().resolve(entry.did);
-      if (identity.handle != null) {
-        handle = ` (${identity.handle as String})`;
-      }
-    } catch (e) {
-      // A DID that does not resolve is still listed.
-    }
-    console.log(`${entry.did}${handle}  ${entry.role}`);
+    console.log(`${await personLabel(entry.did)}  ${entry.role}`);
   }
+}
+
+/**
+ * `did`, with its handle when the handle resolves back to it. A DID
+ * document can claim any handle, so a claim alone is not shown.
+ */
+async function personLabel(did: String): Future<String> {
+  try {
+    let identity = await packageResolver().resolve(did);
+    if (identity.handle != null) {
+      return `${did} (${identity.handle as String})`;
+    }
+  } catch (e) {
+    // A DID that does not resolve is still listed.
+  }
+  return did;
 }

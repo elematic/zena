@@ -2,86 +2,106 @@
 title: Scopes, Orgs & Teams
 ---
 
-Every scope on a registry (such as `acme` on `pkg.zena-lang.dev`) is an organization backed by its own AT Protocol account (`acme.pkg.zena-lang.dev`). Organizations group packages under a shared namespace, manage members and teams, and enforce security policies across their packages.
+Every package on a registry is in a scope, such as `acme` on `pkg.zena-lang.dev`. A scope is an AT Protocol account of its own (`acme.pkg.zena-lang.dev`), and its maintainers decide who creates packages in it. A scope can be upgraded to an organization, which also has members and teams. Other scopes can belong to an organization, which groups them with it.
 
-## Organization roles
+## Scope maintainers
 
-Each member of a scope has one of three roles:
+A scope's maintainers record names people, or teams, in one of two roles:
 
-| Role         | Permissions                                                                                                                                |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| **`owner`**  | Full control: add or remove owners, admins, and members; change owner thresholds and scope policies; create teams and packages             |
-| **`admin`**  | Manage members and teams; update the scope's profile (`displayName`, `description`, `website`); create packages and CI automation accounts |
-| **`member`** | Belong to the organization and its teams; can create packages when the scope's policy sets `packageCreators` to `member`                   |
+| Role            | Can                                                                                                                                                                                     |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`publisher`** | Create packages in the scope, starting as an owner of each                                                                                                                              |
+| **`owner`**     | Also change the scope's maintainers, policy and profile, create its CI automation accounts, upgrade it to an organization or put it in one, and change any of its packages' maintainers |
 
-### Managing scope members
+Whoever creates a scope is its first owner, and has no other standing in it: like any owner, they can later be removed. Publishing a release stays with each package's own maintainers.
 
 ```sh
-# Create a new scope (you become its initial owner)
-zena pkg scope create acme
+# Create a scope; you are its first owner
+zena pkg scope create acme --yes
 
-# Inspect a scope's profile, policies, and visible members
+# Its profile, how many owners and publishers it has, and its organization
 zena pkg scope info acme
-zena pkg scope members acme
 
-# Add or change a person's role in the scope
-zena pkg scope add acme bob.bsky.social --role admin
-zena pkg scope add acme carol.bsky.social --role member
+# Its maintainers, as far as you may see them
+zena pkg scope maintainers acme
 
-# Remove a member from the scope
-zena pkg scope remove acme carol.bsky.social
+# Add a person as a publisher (the default) or as an owner
+zena pkg scope add acme bob.bsky.social
+zena pkg scope add acme carol.bsky.social --role owner
+
+# Add a team, so that each of its members creates packages
+zena pkg scope add acme --team acme/core
+
+# Remove a person or a team
+zena pkg scope remove acme bob.bsky.social
 ```
 
-## Teams
+## Organizations
 
-Teams let an organization grant package publishing rights to a group of members and manage that group in one place.
-
-Each member of a team has one of two roles within the team:
-
-- **`maintainer`**: Can add or remove team members and view the team's private membership list.
-- **`member`**: Can publish and attest releases for any package that lists the team as a maintainer.
+An organization is a scope with **members**, the people its teams are made of, and **teams**. Its owners are its scope's owners, and they change its members and teams. Being a member gives no role by itself: a person acts on a scope or a package only through its maintainers record, as themselves or through a team.
 
 ```sh
-# Create a team inside acme
-zena pkg team create acme core
+# Upgrade the scope; its owners become its first members
+zena pkg scope upgrade acme --yes
 
-# Add members to the team
-zena pkg team add acme core bob.bsky.social --role maintainer
-zena pkg team add acme core carol.bsky.social --role member
+# Add and remove members, and list those you may see
+zena pkg org add acme dave.bsky.social
+zena pkg org remove acme dave.bsky.social
+zena pkg org members acme
+```
 
-# List team members or delete a team
-zena pkg team members acme core
-zena pkg team delete acme core
+### Teams
+
+A team is a named group of an organization's members, which any scope's or package's maintainers record can name in a role. Changing who is on a team changes it everywhere the team is named. Each member of a team has one of two roles in it:
+
+- **`maintainer`**: changes the team, as the organization's owners can.
+- **`member`**: acts in the role the team is given.
+
+```sh
+zena pkg team create acme/core
+zena pkg team add acme/core bob.bsky.social --role maintainer
+zena pkg team add acme/core carol.bsky.social
+zena pkg team members acme/core
+zena pkg team remove acme/core carol.bsky.social
+zena pkg team delete acme/core
+```
+
+### Scopes in an organization
+
+A scope belongs to an organization once the owners of both have approved it. Belonging groups the scope with the organization: the organization's page lists it. It gives the organization's people no role in the scope. Give a team a role in the scope's maintainers for that.
+
+```sh
+# Ask for acme-labs to join acme; acme's owners approve it with zena pkg approve acme-labs
+zena pkg scope join acme-labs acme
+
+# Take it out, as an owner of either side
+zena pkg scope leave acme-labs
 ```
 
 ## Package maintainers
 
-Each package has its own `dev.zena-lang.package.maintainers` record listing who can publish releases and who can change the package's maintainers. A maintainer entry can name either an individual person or an organization team:
+Each package has its own `dev.zena-lang.package.maintainers` record of who publishes it and who changes its maintainers. A maintainer is a person or an organization's team:
 
-| Role            | Permissions                                                                               |
-| --------------- | ----------------------------------------------------------------------------------------- |
-| **`owner`**     | Can publish and approve releases, retract versions, and add or remove package maintainers |
-| **`publisher`** | Can publish and approve releases and retract versions                                     |
+| Role            | Can                                                                |
+| --------------- | ------------------------------------------------------------------ |
+| **`publisher`** | Publish and approve releases, and retract versions                 |
+| **`owner`**     | Also change the package's maintainers, and its approval thresholds |
+
+The owners of the package's scope can change its maintainers too.
 
 ```sh
-# List a package's maintainers
-zena pkg owner list acme:router
-
-# Add an individual publisher or owner
-zena pkg owner add acme:router bob.bsky.social --role publisher
-zena pkg owner add acme:router dave.bsky.social --role owner
-
-# Grant a team publishing rights on a package
-zena pkg owner add acme:router acme:core --role publisher
-
-# Remove a maintainer
-zena pkg owner remove acme:router bob.bsky.social
+# In the package's directory, or with --package acme:router
+zena pkg owner list
+zena pkg owner add bob.bsky.social                # a publisher
+zena pkg owner add dave.bsky.social --role owner
+zena pkg owner add --team acme/core               # the team publishes it
+zena pkg owner remove bob.bsky.social
 ```
 
-## Private membership commitments
+## Private membership
 
-By default, organization members, team members, and package publishers are recorded in the public atproto repository as **cryptographic commitments** (`SHA-256(DID || role || 192-bit nonce)`) rather than plain DIDs:
+Maintainers, members and team members are recorded in the public repositories as **cryptographic commitments** to private entries, not as DIDs:
 
-- **Privacy before acting**: A visitor browsing `pkg.zena-lang.dev` or reading the organization's repository sees `"a private member"` until that person publishes or approves a release.
-- **Role-based visibility**: When signed in to `pkg.zena-lang.dev` or the CLI, you can see your own memberships, and organization owners/admins, team maintainers, and package owners can see the members of the records they administer.
-- **Public accountability when acting**: When a maintainer approves a release or a membership change, they write a signed attestation record in their own repository. The package page displays the approvers of each release.
+- **Private until acting**: a visitor to `pkg.zena-lang.dev`, or a reader of the repository, sees "a private member" until that person approves a release or a change.
+- **Seen by those who decide**: signed in to `pkg.zena-lang.dev` or to `zena`, you see your own entries; a scope's owners see every entry of the scope, its organization and its packages; a team's maintainers see the team's; and a package's owners see the package's.
+- **Accountable when acting**: an approval is a signed attestation record in the approver's own repository. A package's page shows who approved each release.

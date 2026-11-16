@@ -95,7 +95,8 @@ export let tests = suite('zena pkg publish', () => {
       isTrue(ghost.succeeded() && ghost.stdout.contains('Created the scope ghost.pkg.test'), described(ghost));
       let info = await lib.run(['pkg', 'scope', 'info', 'acme']);
       isTrue(info.succeeded() && info.stdout.contains('acme.pkg.test') && info.stdout.contains('DID: did:plc:') &&
-          info.stdout.contains('Members: 1'), described(info));
+          info.stdout.contains('Owners: 1') && !info.stdout.contains('Organization') &&
+          !info.stderr.contains('backtrace'), described(info));
       // A resolver that does not answer, as when ZENA_DNS_OVER_HTTPS still
       // names one that has stopped, is a failure to look the scope up, and
       // not a scope that is not there.
@@ -192,12 +193,12 @@ export let tests = suite('zena pkg publish', () => {
       isTrue(!(await read(scratch.at('uses/zena-package.json'))).contains('"did"'), 'no DID was written');
       await write(scratch.at('other/zena-package.json'), otherManifest);
 
-      // Alice attested the members records of the two scopes she made, acme
+      // Alice attested the maintainers records of the two scopes she made, acme
       // and ghost, and the three releases, in her own repository.
       let listed = await fetch(
           `${(addresses['plc'] as String).sliceBytes(0, (addresses['plc'] as String).length - 4)}/xrpc/com.atproto.repo.listRecords?repo=${ALICE}&collection=dev.zena-lang.package.attestation`);
       equal(((parseJson(await listed.text()) as JsonObject)['records'] as JsonArray).length, 5,
-          'attestations of two members records and three releases');
+          'attestations of two maintainers records and three releases');
       // A release records the language version it was published with: the
       // version of the compiler that published it.
       let released = await fetch(
