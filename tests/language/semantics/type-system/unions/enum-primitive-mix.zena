@@ -1,0 +1,37 @@
+// @mode: check
+// An integer-backed enum and a distinct type over a primitive are carried as
+// that primitive, so mixing them with references in a union is rejected just
+// as `i32 | null` is. String-backed enums and `Box<T>` remain valid in unions.
+
+import {Box} from 'zena:core';
+
+enum Level { Low, High }
+enum Mode { A = 'a', B = 'b' }
+distinct type Meters = i32;
+distinct type Flag = boolean;
+
+function nullable(l: Level | null) { return true; } // @error: cannot mix primitive types with reference types
+function optional(l: Level?) { return true; } // @error: cannot mix primitive types with reference types
+function withString(l: Level | String) { return true; } // @error: cannot mix primitive types with reference types
+function distinctNullable(m: Meters | null) { return true; } // @error: cannot mix primitive types with reference types
+function distinctFlag(f: Flag | String) { return true; } // @error: cannot mix primitive types with reference types
+function vectorNullable(v: v128 | null) { return true; } // @error: cannot mix primitive types with reference types
+
+function inferredIf(cond: boolean): void {
+  let _ = if (cond) { Level.Low } else { null }; // @error: cannot mix primitive types with reference types
+}
+
+function inferredReturn(cond: boolean) { // @error: cannot mix primitive types with reference types
+  if (cond) {
+    return Level.Low;
+  }
+  return null;
+}
+
+function stringEnum(m: Mode | null): boolean {
+  return m != null;
+}
+
+function boxedEnum(b: Box<Level>?): boolean {
+  return b != null;
+}

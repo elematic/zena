@@ -5,14 +5,14 @@ import {
   BoolLiteralType, BooleanType, ClassType, ErrorType, F64Type, HoleType,
   I32Type, InlineRecordType, InlineTupleType as InlineTupleT, InterfaceType, NeverType,
   NullType, NumLiteralType, StringLiteralType, TupleType as TupleT, Type,
-  TypeAliasType, UnionType as UnionT, UnknownType, VoidType, baseType,
+  TypeAliasType, UnionType as UnionT, UnknownType, V128Type, VoidType, baseType,
   integerLiteralMagnitude, isBigIntLiteralRaw, isIntegerType, isNumericType, isOwnershipWrapper,
   ownershipHandleInner, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { WellKnown } from '../well-known.zena';
 import { CheckerContext } from './context.zena';
-import { isAssignableTo, typesEqual, unconstrainedTypeParamOf } from './relations.zena';
+import { isAssignableTo, representationOf, typesEqual, unconstrainedTypeParamOf } from './relations.zena';
 
 /**
  * Check if an array of types already contains a type equal to target.
@@ -244,10 +244,15 @@ export function createUnionType(types: Array<Type>, ctx: CheckerContext | null =
       if (t is InlineTupleT) {
         hasInlineTuple = true;
       }
-      let baseName: String | null = if (isNumericType(t)) {
-        typeToString(baseType(t))
-      } else if (t is BooleanType || t is BoolLiteralType) {
+      // An enum or a distinct alias is carried as the type it wraps, so an
+      // integer enum is numeric here while a string enum is a reference.
+      let repr = representationOf(t);
+      let baseName: String | null = if (isNumericType(repr)) {
+        typeToString(baseType(repr))
+      } else if (repr is BooleanType || repr is BoolLiteralType) {
         "boolean"
+      } else if (repr is V128Type) {
+        "v128"
       } else {
         null
       };
