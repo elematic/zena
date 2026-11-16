@@ -128,29 +128,34 @@ function mergeHandleMembers(
 }
 
 /**
- * A class member of a union is absorbed by an interface member it is
- * assignable to: `HashMap<K, V> | Map<K, V>` is `Map<K, V>`. The two
- * arms of a `??`, an `if` or a `match` meet here when one is a map a
- * caller passed as the interface and the other a `new Map()`, which
- * is a `HashMap`; left as two members, the union has no member access
- * and no single representation. The arm that produced the class is
- * adapted to the interface where the join is typed (`adaptJoinedArm`).
+ * A class member of a union is absorbed by a superclass or interface
+ * member it is assignable to: `Circle | Shape` is `Shape`, and
+ * `HashMap<K, V> | Map<K, V>` is `Map<K, V>`. The arm that produced a
+ * class absorbed into an interface is adapted where the join is typed
+ * (`adaptJoinedArm` / `adaptToExpected`).
  */
-function foldClassesIntoInterfaces(members: GrowableArray<Type>, ctx: CheckerContext | null) {
+function foldClassesIntoSupertypes(members: GrowableArray<Type>, ctx: CheckerContext | null) {
   if (ctx == null || members.length < 2) { return members; }
-  var hasInterface = false;
   var hasClass = false;
+  var hasSuperCandidate = false;
+  var classCount = 0;
   for (let m in members) {
-    if (baseType(m) is InterfaceType) { hasInterface = true; }
-    if (baseType(m) is ClassType) { hasClass = true; }
+    let u = unwrapAliases(m);
+    if (u is InterfaceType) { hasSuperCandidate = true; }
+    if (u is ClassType) {
+      hasClass = true;
+      classCount += 1;
+    }
   }
-  if (!hasInterface || !hasClass) { return members; }
+  if (!hasClass || (!hasSuperCandidate && classCount < 2)) { return members; }
   let kept = new Array<Type>();
   for (let m in members) {
     var absorbed = false;
-    if (baseType(m) is ClassType) {
+    if (unwrapAliases(m) is ClassType) {
       for (let other in members) {
-        if (baseType(other) is InterfaceType && isAssignableTo(ctx, m, other)) {
+        let uOther = unwrapAliases(other);
+        if ((uOther is InterfaceType || uOther is ClassType) &&
+            !typesEqual(m, other) && isAssignableTo(ctx, m, other)) {
           absorbed = true;
         }
       }
@@ -205,7 +210,7 @@ export function createUnionType(types: Array<Type>, ctx: CheckerContext | null =
   }
 
   deduped = mergeHandleMembers(deduped, ctx, loc);
-  deduped = foldClassesIntoInterfaces(deduped, ctx);
+  deduped = foldClassesIntoSupertypes(deduped, ctx);
 
   if (deduped.length == 0) { return new NeverType(); }
   if (deduped.length == 1) { return deduped[0]; }

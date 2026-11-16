@@ -1,0 +1,50 @@
+// @mode: check
+// Block bodies that never complete normally infer `never` (or `Future<never>`),
+// while bodies with bare `return;` infer `void`, and partial value returns fail.
+
+import { Future } from 'zena:async';
+
+function alwaysThrows() {
+  throw new Error('x');
+}
+
+// `alwaysThrows` has inferred return type `never`, assignable anywhere.
+let n: never = alwaysThrows();
+
+let loopForever = () => {
+  while (true) {}
+};
+let checkLoop: () => never = loopForever;
+let loopAsInt: () => i32 = loopForever;
+
+let asyncThrows = async () => {
+  throw new Error('x');
+};
+let checkAsync: () => Future<never> = asyncThrows;
+let asyncContextual: () => Future<i32> = async () => {
+  throw new Error('x');
+};
+
+// A bare `return;` completes normally with `void`, even if another path throws.
+let bareReturnAndThrow = (c: boolean) => {
+  if (c) {
+    return;
+  }
+  throw new Error('x');
+};
+let okVoid: (c: boolean) => void = bareReturnAndThrow;
+let notNever: (c: boolean) => i32 = bareReturnAndThrow; // @error: Type mismatch
+
+// Mixing a value `return` with a bare `return;` or falling off the end is an error.
+let mixedBareReturn = (c: boolean) => {
+  if (c) {
+    return 1;
+  }
+  return; // @error: Missing return value
+};
+
+let fallsOffEnd = (c: boolean) => { // @error: must return a value
+  if (c) {
+    return 1;
+  }
+};

@@ -1,0 +1,82 @@
+// @mode: run
+// @result: 6
+// Functions and closures whose block bodies cannot complete normally infer
+// `never` (or `Future<never>` for `async`), and adapt to expected return types.
+
+function fail() {
+  throw new Error('fail');
+}
+
+async function failAsync() {
+  throw new Error('fail-async');
+}
+
+function takeInt(f: () => i32): i32 {
+  return f();
+}
+
+function takeString(f: () => String): String {
+  return f();
+}
+
+async function takeAsyncInt(f: () => Future<i32>): Future<i32> {
+  return await f();
+}
+
+async function withGenericAsync<T>(f: () => Future<T>): Future<T> {
+  return await f();
+}
+
+export async function main(): Future<i32> {
+  var score = 0;
+
+  // 1. Direct block-body closure that throws, passed where () => i32 is expected.
+  try {
+    takeInt(() => { throw new Error('boom'); });
+  } catch (e) {
+    if (e.message == 'boom') { score += 1; }
+  }
+
+  // 2. Standalone closure inferred as () => never, then adapted to () => String.
+  let standalone = () => { throw new Error('standalone'); };
+  let checkNever: () => never = standalone;
+  try {
+    takeString(checkNever);
+  } catch (e) {
+    if (e.message == 'standalone') { score += 1; }
+  }
+
+  // 3. Closure calling an inferred-never top-level function, and passing fail directly.
+  try {
+    takeInt(() => { fail(); });
+  } catch (e) {
+    if (e.message == 'fail') { score += 1; }
+  }
+  try {
+    takeInt(fail);
+  } catch (e) {
+    if (e.message == 'fail') { score += 1; }
+  }
+
+  // 4. Infinite-loop closure passed where () => i32 is expected (not called).
+  let loopFn: () => i32 = () => {
+    while (true) {}
+  };
+
+  // 5. Async block-body closure passed where () => Future<i32> is expected.
+  try {
+    await takeAsyncInt(async () => { throw new Error('async-boom'); });
+  } catch (e) {
+    if (e.message == 'async-boom') { score += 1; }
+  }
+
+  // 6. Standalone async function & generic call inferred as Future<never>, then awaited.
+  let checkAsyncNever: () => Future<never> = failAsync;
+  try {
+    let x: i32 = await withGenericAsync(async () => { throw new Error('gen-async'); });
+  } catch (e) {
+    if (e.message == 'gen-async') { score += 1; }
+  }
+
+  return score;
+}

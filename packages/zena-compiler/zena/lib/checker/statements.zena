@@ -213,18 +213,20 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
         );
         checkExpression(ctx, argument, null);
       } else if (argument != null) {
-        // By convention, if expectedReturn is VoidType, we are inferring the return type.
-        // We should not pass it down as expectedType since it will force if-expressions to void.
-        let isInferring = expectedReturn is VoidType;
-        let passedExpected = if (isInferring) { null } else { expectedReturn };
+        // When expectedReturn is VoidType (or we are inferring), do not pass it down
+        // as expectedType since it will force if-expressions to void.
+        let isInferring = ctx.inferringReturn;
+        let passedExpected = if (isInferring || expectedReturn is VoidType) { null } else { expectedReturn };
         let argType = checkExpression(ctx, argument, passedExpected);
         if (isTail) {
           checkTailReturnType(ctx, argType, expectedReturn, loc);
         }
-        if (expectedReturn != null) {
+        if (isInferring) {
+          ctx.addInferredReturnType(argType, argument, loc);
+        } else if (expectedReturn != null) {
           if (expectedReturn is VoidType) {
-            // No explicit return type - infer from return statements
-            ctx.addInferredReturnType(argType);
+            // Explicit void return type (or void method).
+            ctx.addInferredReturnType(argType, argument, loc);
           } else if (!isAssignableTo(ctx, argType, expectedReturn)) {
             // Async return-adoption (async.md §2): `return e` in an
             // annotated async body also accepts the declared Future<T>
@@ -258,11 +260,13 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
           }
         } else {
           // No expected return type at all (shouldn't happen in a function, but collect anyway)
-          ctx.addInferredReturnType(argType);
+          ctx.addInferredReturnType(argType, argument, loc);
         }
       } else {
-        // return; — function should return void.
-        if (expectedReturn != null) {
+        // return; — function completes normally with void.
+        if (ctx.inferringReturn) {
+          ctx.addInferredReturnType(new VoidType(), null, loc);
+        } else if (expectedReturn != null) {
           if (!(expectedReturn is VoidType)) {
             ctx.error(
               `Missing return value. Expected '${typeToString(expectedReturn)}'.`,
@@ -342,7 +346,7 @@ export function checkStatement(ctx: CheckerContext, stmt: Statement): void {
         if (expectedYield is VoidType) {
           // No yield type annotation — infer from yield statements.
           let argType = checkExpression(ctx, argument, null);
-          ctx.addInferredYieldType(argType);
+          ctx.addInferredYieldType(argType, argument);
         } else {
           let argType = checkExpression(ctx, argument, expectedYield);
           if (!isAssignableTo(ctx, argType, expectedYield)) {

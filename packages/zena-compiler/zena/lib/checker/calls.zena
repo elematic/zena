@@ -6,8 +6,8 @@ import {
 } from '../ast.zena';
 import {
   ClassType, ErrorType, FunctionType, InterfaceType, NullType, Type,
-  TypeParameterType, UnionType as UnionT, baseType, internFunctionType,
-  mentionsTypeParams, requiredParameterCount, typeToString
+  TypeParameterType, UnionType as UnionT, VoidType, baseType, internFunctionType,
+  mentionsTypeParams, requiredParameterCount, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { lineAt } from '../line-index.zena';
@@ -610,11 +610,32 @@ function checkCallExpressionInner(
             (!read && i < ft.parameters.length)) {
           argTypes.push(ft.parameters[i]);
         } else {
-          let expectedParamType = if (i < ft.parameters.length) {
+          var expectedParamType: Type | null = if (i < ft.parameters.length) {
             ft.parameters[i]
           } else {
             null
           };
+          if (ft.overloads != null && args[i] is FunctionExpression) {
+            let fe = args[i] as FunctionExpression;
+            if (expectedParamType == null || !(unwrapAliases(expectedParamType) is FunctionType)) {
+              for (let ov in ft.overloads as GrowableArray<FunctionType>) {
+                if (i < ov.parameters.length && unwrapAliases(ov.parameters[i]) is FunctionType) {
+                  expectedParamType = ov.parameters[i];
+                  break;
+                }
+              }
+            }
+            if (fe.isAsync && !fe.isGenerator && fe.returnType == null &&
+                expectedParamType != null) {
+              // Keep parameter contextualization while leaving the async body's
+              // return as `Future<never>` until overload selection picks a winner.
+              let uExp = unwrapAliases(expectedParamType);
+              if (uExp is FunctionType) {
+                expectedParamType = new FunctionType(
+                    uExp.parameters, new VoidType(), uExp.info, uExp.typeParameters);
+              }
+            }
+          }
           if (ft.overloads != null && isContextTypedNumber(args[i])) {
             // A numeric literal is typed against the overload that wins,
             // not the first one declared (issue #77): here it takes its
@@ -660,7 +681,7 @@ function checkCallExpressionInner(
           applicable =
               collectApplicableOverloads(ctx, candidates, args, argTypes, callerArgCount, true);
         }
-        let selIdx = selectMostSpecificIndex(ctx, applicable, args.length, call.loc);
+        let selIdx = selectMostSpecificIndex(ctx, applicable, args.length, call.loc, argTypes);
         if (selIdx >= 0) {
           bestMatch = applicable[selIdx];
         }

@@ -1,13 +1,15 @@
 import { growable } from 'zena:core';
-import { Expression, SourceLocation } from '../ast.zena';
+import { Expression, FunctionExpression, SourceLocation } from '../ast.zena';
 import {
-  ClassType, FunctionType, InterfaceType, Type, TypeParameterType,
-  UnionType as UnionT, instantiateFunctionType
+  ClassType, FunctionType, InterfaceType, NeverType, Type, TypeParameterType,
+  UnionType as UnionT, VoidType, instantiateFunctionType, isScopedType,
+  scopedInner, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { CheckerContext } from './context.zena';
 import { substituteTypeParams } from './generics.zena';
 import { argumentAdaptsToParameter } from './literals.zena';
+import { extractFutureValueType } from './protocols.zena';
 import { isAssignableTo, typesEqual } from './relations.zena';
 
 /**
@@ -66,6 +68,8 @@ export function collectApplicableOperatorOverloads(
       for (var i = 0; i < operandTypes.length; i += 1) {
         let param = resolvedCandidate.parameters[i];
         if (!isAssignableTo(ctx, operandTypes[i], param) &&
+            !(i < adaptableCount &&
+              asyncNeverClosureAdaptsTo(ctx, operands[i], operandTypes[i], param)) &&
             !(adaptLiterals && i < adaptableCount &&
               argumentAdaptsToParameter(operands[i], param))) {
           matchOk = false;
@@ -159,6 +163,102 @@ export function findMatchingOverload(
 }
 
 /**
+ * Whether `arg` is an unannotated `async` function literal whose body never
+ * returns a value (`Future<never>`), facing a parameter expecting `Future<V>`.
+ * `Future<T>` is nominal and invariant, so the pre-pass leaves the closure's
+ * return type as `Future<never>` (avoiding premature adoption of whichever
+ * overload was declared first) and checks parameter compatibility here;
+ * re-checking against the winning overload then adopts `Future<V>`.
+ */
+function asyncNeverClosureAdaptsTo(
+  ctx: CheckerContext,
+  arg: Expression,
+  argType: Type,
+  param: Type
+): boolean {
+  if (arg is FunctionExpression) {
+    if (!arg.isAsync || arg.isGenerator || arg.returnType != null) {
+      return false;
+    }
+    let uArg = unwrapAliases(argType);
+    if (uArg is FunctionType) {
+      let actualVal = extractFutureValueType(ctx, unwrapAliases(uArg.returnType));
+      if (actualVal == null || !(actualVal is NeverType)) {
+        return false;
+      }
+      let uParam = unwrapAliases(param);
+      if (uParam is FunctionType) {
+        var paramRet = unwrapAliases(uParam.returnType);
+        if (isScopedType(paramRet)) {
+          paramRet = scopedInner(paramRet) ?? paramRet;
+        }
+        if (extractFutureValueType(ctx, paramRet) == null) {
+          return false;
+        }
+        let adapted = new FunctionType(
+            uArg.parameters, uParam.returnType, uArg.info, uArg.typeParameters);
+        return isAssignableTo(ctx, adapted, param);
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Parameter-wise specificity for `atLeastAsSpecific`. Beyond direct
+ * assignability, a synchronous `never`-returning function argument is
+ * assignable to both `(P) => void` and `(P) => R` (non-void), which are
+ * otherwise disjoint in Zena (`() => R` is not assignable to `() => void`).
+ * Prefer `(P) => void` over `(P) => R` when `xParam`'s parameters and
+ * modifiers are at least as specific as `yParam`'s; two non-void returns
+ * (`() => i32` vs `() => String`) stay incomparable and report ambiguity.
+ */
+function parameterAtLeastAsSpecific(
+  ctx: CheckerContext,
+  xParam: Type,
+  yParam: Type,
+  argType: Type | null
+): boolean {
+  if (isAssignableTo(ctx, xParam, yParam)) {
+    return true;
+  }
+  if (argType == null) {
+    return false;
+  }
+  let uArg = unwrapAliases(argType);
+  if (uArg is FunctionType) {
+    let uArgRet = unwrapAliases(uArg.returnType);
+    if (uArgRet is NeverType) {
+      let uX = unwrapAliases(xParam);
+      let uY = unwrapAliases(yParam);
+      if (uX is FunctionType && uY is FunctionType &&
+          unwrapAliases(uX.returnType) is VoidType &&
+          !(unwrapAliases(uY.returnType) is VoidType)) {
+        let adaptedX = new FunctionType(
+            uX.parameters, new NeverType(), uX.info, uX.typeParameters);
+        return isAssignableTo(ctx, adaptedX, yParam);
+      }
+    }
+    let argFutVal = extractFutureValueType(ctx, uArgRet);
+    if (argFutVal != null && argFutVal is NeverType) {
+      let uX = unwrapAliases(xParam);
+      let uY = unwrapAliases(yParam);
+      if (uX is FunctionType && uY is FunctionType) {
+        let xFutVal = extractFutureValueType(ctx, unwrapAliases(uX.returnType));
+        let yFutVal = extractFutureValueType(ctx, unwrapAliases(uY.returnType));
+        if (xFutVal != null && xFutVal is NeverType &&
+            yFutVal != null && !(yFutVal is NeverType)) {
+          let adaptedX = new FunctionType(
+              uX.parameters, uY.returnType, uX.info, uX.typeParameters);
+          return isAssignableTo(ctx, adaptedX, yParam);
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Overload selection (member-lookup.md §5.1): X is at least as
  * specific as Y, over the call's first argCount parameters, when
  * every parameter of X is assignable to Y's corresponding parameter.
@@ -167,11 +267,13 @@ function atLeastAsSpecific(
   ctx: CheckerContext,
   x: FunctionType,
   y: FunctionType,
-  argCount: i32
+  argCount: i32,
+  argTypes: Array<Type> | null = null
 ): boolean {
   var i = 0;
   while (i < argCount && i < x.parameters.length && i < y.parameters.length) {
-    if (!isAssignableTo(ctx, x.parameters[i], y.parameters[i])) {
+    let argType = if (argTypes != null && i < argTypes.length) argTypes[i] else null;
+    if (!parameterAtLeastAsSpecific(ctx, x.parameters[i], y.parameters[i], argType)) {
       return false;
     }
     i += 1;
@@ -190,13 +292,14 @@ function atLeastAsSpecific(
 function pickMostSpecificOverload(
   ctx: CheckerContext,
   applicable: GrowableArray<FunctionType>,
-  argCount: i32
+  argCount: i32,
+  argTypes: Array<Type> | null = null
 ): (FunctionType, boolean) {
   var best = applicable[0];
   for (var i = 1; i < applicable.length; i += 1) {
     let c = applicable[i];
-    let cBeatsBest = atLeastAsSpecific(ctx, c, best, argCount);
-    let bestBeatsC = atLeastAsSpecific(ctx, best, c, argCount);
+    let cBeatsBest = atLeastAsSpecific(ctx, c, best, argCount, argTypes);
+    let bestBeatsC = atLeastAsSpecific(ctx, best, c, argCount, argTypes);
     if (cBeatsBest && !bestBeatsC) {
       best = c;
     } else if (cBeatsBest && bestBeatsC &&
@@ -206,7 +309,7 @@ function pickMostSpecificOverload(
     }
   }
   for (var i = 0; i < applicable.length; i += 1) {
-    if (!atLeastAsSpecific(ctx, best, applicable[i], argCount)) {
+    if (!atLeastAsSpecific(ctx, best, applicable[i], argCount, argTypes)) {
       return (applicable[0], true);
     }
   }
@@ -226,7 +329,8 @@ export function selectMostSpecificIndex(
   ctx: CheckerContext,
   applicableRes: GrowableArray<FunctionType>,
   argCount: i32,
-  loc: SourceLocation | null
+  loc: SourceLocation | null,
+  argTypes: Array<Type> | null = null
 ): i32 {
   if (applicableRes.length == 0) {
     return -1;
@@ -234,7 +338,7 @@ export function selectMostSpecificIndex(
   if (applicableRes.length == 1) {
     return 0;
   }
-  let (winner, ambiguous) = pickMostSpecificOverload(ctx, applicableRes, argCount);
+  let (winner, ambiguous) = pickMostSpecificOverload(ctx, applicableRes, argCount, argTypes);
   if (ambiguous) {
     ctx.error(
       "Ambiguous overload call: multiple overloads match and none is most specific. Cast an argument to select one.",
@@ -295,6 +399,8 @@ export function collectApplicableOverloads(
       for (var i = 0; i < args.length && i < expectedCount; i += 1) {
         let param = candidate.parameters[i];
         if (!isAssignableTo(ctx, argTypes[i], param) &&
+            !(i < callerArgCount &&
+              asyncNeverClosureAdaptsTo(ctx, args[i], argTypes[i], param)) &&
             !(adaptLiterals && i < callerArgCount &&
               argumentAdaptsToParameter(args[i], param))) {
           matchOk = false;

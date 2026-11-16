@@ -1,0 +1,86 @@
+// @mode: run
+// @result: 4
+// Overloaded sync `(Ctx) => void` vs async `(Ctx) => Future<void>` registration
+// with callbacks whose bodies always throw (in both declaration orders).
+
+import {Completer, Future, scheduleMicrotask} from 'zena:async';
+import {equal} from 'zena:assert';
+
+class Ctx {
+  label: String;
+  new(this.label: String);
+}
+
+function failNow(msg: String): never {
+  throw new Error(msg);
+}
+
+function nextTick(): Future<void> {
+  let done = new Completer<void>();
+  scheduleMicrotask(() => {
+    done.complete();
+  });
+  return done.future;
+}
+
+function runCase(name: String, fn: (c: Ctx) => void): Future<String> {
+  let done = new Completer<String>();
+  try {
+    fn(new Ctx(name));
+    done.complete(`sync-ok:${name}`);
+  } catch (e) {
+    done.complete(`sync-err:${name}:${e.message}`);
+  }
+  return done.future;
+}
+
+async function runCase(name: String, fn: (c: Ctx) => Future<void>): Future<String> {
+  try {
+    await fn(new Ctx(name));
+    return `async-ok:${name}`;
+  } catch (e) {
+    return `async-err:${name}:${e.message}`;
+  }
+}
+
+// Reversed overload declaration order.
+async function runCaseRev(name: String, fn: (c: Ctx) => Future<void>): Future<String> {
+  try {
+    await fn(new Ctx(name));
+    return `async-ok:${name}`;
+  } catch (e) {
+    return `async-err:${name}:${e.message}`;
+  }
+}
+
+function runCaseRev(name: String, fn: (c: Ctx) => void): Future<String> {
+  let done = new Completer<String>();
+  try {
+    fn(new Ctx(name));
+    done.complete(`sync-ok:${name}`);
+  } catch (e) {
+    done.complete(`sync-err:${name}:${e.message}`);
+  }
+  return done.future;
+}
+
+export async function main(): Future<i32> {
+  equal(await runCase('s1', (c) => {
+    failNow(c.label);
+  }), 'sync-err:s1:s1');
+
+  equal(await runCaseRev('s2', (c) => {
+    failNow(c.label);
+  }), 'sync-err:s2:s2');
+
+  equal(await runCase('a1', async (c) => {
+    await nextTick();
+    failNow(c.label);
+  }), 'async-err:a1:a1');
+
+  equal(await runCaseRev('a2', async (c) => {
+    failNow(c.label);
+  }), 'async-err:a2:a2');
+
+  return 4;
+}

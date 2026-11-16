@@ -1,0 +1,87 @@
+// @mode: check
+// Overload selection with `never`-returning synchronous and `async` callbacks.
+//
+// Between `(P) => void` and `(P) => R` (non-void, such as `Future<void>`), a
+// synchronous `never`-returning callback selects `(P) => void` regardless of
+// declaration order, while an unannotated `async` callback that never completes
+// normally selects `(P) => Future<V>`. Two non-void callback return types remain
+// ambiguous in both sync and async forms.
+
+import {Future} from 'zena:async';
+
+class Ctx {
+  name: String;
+  new(this.name: String);
+}
+
+function abort(): never {
+  throw new Error('abort');
+}
+
+// Declaration order 1: sync overload first, async overload second.
+function register(name: String, fn: (c: Ctx) => void): i32 {
+  return 1;
+}
+function register(name: String, fn: (c: Ctx) => Future<void>): String {
+  return 'async';
+}
+
+// Declaration order 2: async overload first, sync overload second.
+function registerRev(name: String, fn: (c: Ctx) => Future<void>): String {
+  return 'async';
+}
+function registerRev(name: String, fn: (c: Ctx) => void): i32 {
+  return 1;
+}
+
+let syncInline1: i32 = register('a', (c) => {
+  abort();
+});
+let syncInline2: i32 = registerRev('b', (c) => {
+  abort();
+});
+
+let failCb = (c: Ctx) => {
+  abort();
+};
+let syncVar1: i32 = register('c', failCb);
+let syncVar2: i32 = registerRev('d', failCb);
+
+let asyncInline1: String = register('e', async (c) => {
+  abort();
+});
+let asyncInline2: String = registerRev('f', async (c) => {
+  abort();
+});
+
+// Explicit cast still selects the non-void overload for a sync callback.
+let syncCast: String = register('g', ((c: Ctx) => {
+  abort();
+}) as ((c: Ctx) => Future<void>));
+
+// Two non-void callback return types have no preference and stay ambiguous.
+function computeSync(fn: () => i32): i32 {
+  return fn();
+}
+function computeSync(fn: () => String): String {
+  return fn();
+}
+
+let badSync = () => {
+  computeSync(() => { // @error: Ambiguous overload call
+    abort();
+  });
+};
+
+function computeAsync(fn: () => Future<i32>): i32 {
+  return 1;
+}
+function computeAsync(fn: () => Future<String>): String {
+  return 's';
+}
+
+let badAsync = () => {
+  computeAsync(async () => { // @error: Ambiguous overload call
+    abort();
+  });
+};

@@ -261,6 +261,10 @@ let greet = (name: String): String => {
 let getAnswer = () => 42;
 ```
 
+When the return type is omitted, an expression body infers the expression's
+type. A block body infers the union of its returned value types, `never` (or
+`Future<never>`) when no path can return normally, and `void` otherwise.
+
 ### Function Declarations
 
 A `function` declaration names a function at the top level of a library. It is
