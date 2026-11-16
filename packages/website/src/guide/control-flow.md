@@ -136,7 +136,7 @@ allocations.
 ```zena
 let maybeUser: Option<User> = findUser();
 
-if (let Some { value: user } = maybeUser) {
+if (let Some { value as user } = maybeUser) {
   print('Found user: ' + user.name);
 }
 ```

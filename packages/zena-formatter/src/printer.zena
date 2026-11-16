@@ -2240,6 +2240,21 @@ function printBindingProperty(bp: BindingProperty): Doc {
   match (bp.value) {
     case IdentifierPattern {name}: {
       if (name == bp.name.name) { return text(bp.name.name); }
+      if (name != '_') {
+        return concat(docs3(text(bp.name.name), text(' as '), text(name)));
+      }
+    }
+    case AssignmentPattern {left, right}: {
+      if (let IdentifierPattern {name} = left) {
+        let lhs = if (name == bp.name.name) {
+          text(bp.name.name)
+        } else if (name != '_') {
+          concat(docs3(text(bp.name.name), text(' as '), text(name)))
+        } else {
+          concat(docs3(text(bp.name.name), text(': '), text(name)))
+        };
+        return concat(docs3(lhs, text(' = '), printExpression(right)));
+      }
     }
     case AbsencePattern {}: {
       return concat(docs2(text('!'), text(bp.name.name)));
