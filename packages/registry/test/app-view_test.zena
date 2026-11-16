@@ -1207,6 +1207,64 @@ export let tests = suite('registry/app-view', () => {
     equal((await entriesSeen(fixture, ALICE, scopeDid, null, true)).length, 2);
   });
 
+  test('puts a scope in an organization once the owners of both attest it, and either side takes it out',
+      async (ctx) => {
+    let fixture = new Fixture();
+    // Alice owns the organization acme and the scope plain; Bob owns labs.
+    let (orgDid, membersCid) = await createOrganization(fixture, ALICE, 'acme');
+    let labs = ok(await createScope(fixture, BOB, 'labs'))['did'] as String;
+    let plain = ok(await createScope(fixture, ALICE, 'plain'))['did'] as String;
+    let join = async (caller: String, scope: String, org: String): Future<Response> =>
+        await fixture.call(caller, 'putScopeOrganization', `{"scope": "${scope}", "organization": "${org}"}`);
+    let leave = async (caller: String, scope: String): Future<Response> =>
+        await fixture.call(caller, 'putScopeOrganization', `{"scope": "${scope}"}`);
+
+    // Only an organization takes scopes, none takes itself, and an owner of
+    // one side asks.
+    equal(errorOf(await join(BOB, labs, plain)), 'InvalidRequest');
+    equal(errorOf(await join(ALICE, orgDid, labs)), 'InvalidRequest');
+    equal(errorOf(await join(ALICE, orgDid, orgDid)), 'InvalidRequest');
+    equal(errorOf(await join(BOB, plain, orgDid)), 'Forbidden');
+    equal(errorOf(await leave(BOB, labs)), 'NotInOrganization');
+
+    // Bob asks for labs; it waits for Alice, acme's owner, as well.
+    let held = ok(await join(BOB, labs, orgDid));
+    equal(held['state'] as String, 'pending');
+    let uri = held['uri'] as String;
+    let cid = held['cid'] as String;
+    equal(uri, `at://${labs}/dev.zena-lang.scope.organization/self`);
+    fixture.attest(BOB, uri, cid);
+    let waiting = ok(await completeChange(fixture, BOB, uri, cid));
+    equal(waiting['state'] as String, 'pending');
+    isTrue(waiting['all'] is Box<boolean>, 'every requirement must be met');
+    let requirements = waiting['requirements'] as JsonArray;
+    equal(requirements.length, 2);
+    equal((requirements[0] as JsonObject)['role'] as String, OWNER);
+    equal(approvedBy(requirements[0] as JsonObject), BOB);
+    equal((requirements[1] as JsonObject)['role'] as String, 'organization owner');
+    equal(approvedBy(requirements[1] as JsonObject), '');
+
+    // Alice, who has no role in labs, sees that change and approves it.
+    let pending = ok(await fixture.query(ALICE, 'getPendingChanges', `?account=${labs}`))['changes'] as JsonArray;
+    equal(pending.length, 1);
+    equal((pending[0] as JsonObject)['collection'] as String, 'dev.zena-lang.scope.organization');
+    fixture.attest(ALICE, uri, cid);
+    equal(ok(await completeChange(fixture, ALICE, uri, cid))['state'] as String, 'written');
+
+    // acme's page lists labs, and labs' page names acme. Belonging gives
+    // Alice no role in labs, and labs, in an organization, is none itself.
+    let acmePage = pageOf(await fixture.get('/scopes/acme'));
+    isTrue(acmePage.contains('<h2>Scopes</h2>') && acmePage.contains('href="/scopes/labs"'), acmePage);
+    isTrue(pageOf(await fixture.get('/scopes/labs')).contains('Part of the organization'), 'labs names acme');
+    equal(errorOf(await createPackage(fixture, ALICE, labs, 'router')), 'Forbidden');
+    equal(errorOf(await fixture.call(BOB, 'upgradeScope', `{"scope": "${labs}"}`)), 'InvalidRequest');
+
+    // Alice, for acme, takes labs out at once.
+    equal(ok(await leave(ALICE, labs))['state'] as String, 'deleted');
+    equal(errorOf(await leave(BOB, labs)), 'NotInOrganization');
+    isTrue(!pageOf(await fixture.get('/scopes/acme')).contains('href="/scopes/labs"'), 'acme no longer lists labs');
+  });
+
   test('gives a team a package, and takes it away with the team', async (ctx) => {
     let fixture = new Fixture();
     let (scopeDid, membersCid) = await createOrganization(fixture, ALICE, 'acme');

@@ -373,7 +373,8 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
 <person>`** and **`pkg scope maintainers`** change and show its owners
     and publishers; **`pkg scope upgrade <scope> --yes`** makes it an
     organization, whose members **`pkg org add|remove|members`** change and
-    show. **`pkg team create|add|remove|delete|members <org>/<team>`** and
+    show, and **`pkg scope join <scope> <org>`** and **`pkg scope leave`**
+    put a scope in an organization and take it out. **`pkg team create|add|remove|delete|members <org>/<team>`** and
     **`pkg owner add|remove|list`** change and show who belongs to a team
     and a package. **`pkg scope settings`**, **`pkg team settings`** and
     **`pkg owner settings`** show and change their thresholds, and **`pkg

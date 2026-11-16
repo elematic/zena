@@ -14,9 +14,10 @@ import {JsonArray, JsonObject} from 'zena:json';
 import {formatTimestamp} from 'zena:time';
 import {decodeCbor} from 'atproto/cbor';
 import {fromJson, toJson} from 'atproto/data';
+import {SCOPE_ORGANIZATION_TYPE} from 'package-manager/records';
 import {
   COMPLETE_CHANGE, DELETE_TEAM, GET_ENTRIES, GET_MEMBERSHIPS, GET_PENDING_CHANGES, PUT_MAINTAINERS, PUT_MEMBERS,
-  PUT_POLICY, PUT_SCOPE_MAINTAINERS, PUT_TEAM, UPGRADE_SCOPE, WITHDRAW_CHANGE
+  PUT_POLICY, PUT_SCOPE_MAINTAINERS, PUT_SCOPE_ORGANIZATION, PUT_TEAM, UPGRADE_SCOPE, WITHDRAW_CHANGE
 } from 'package-manager/registry-methods';
 import {ChangeTally, Created, Membership, PENDING_MICROS, AppView} from '../app-view.zena';
 import {fail, jsonBody, nowMicros, parseCid} from 'pds/xrpc/common';
@@ -58,6 +59,28 @@ export function memberRoutes(router: Router, appView: AppView): void {
       return null;
     }
     return heldJson(await appView.upgradeScope(caller, input['scope'] as String, nowMicros()));
+  });
+
+  registryProcedure(router, appView, PUT_SCOPE_ORGANIZATION, async (req, res, caller): Future<JsonObject | null> => {
+    let input = await jsonBody(req, res);
+    if (input == null) {
+      return null;
+    }
+    let organization = input['organization'];
+    if (!(input['scope'] is String) || (organization != null && !(organization is String))) {
+      fail(res, 400, 'InvalidRequest', 'scope is required, and organization must be a DID');
+      return null;
+    }
+    let scope = input['scope'] as String;
+    let held = await appView.putScopeOrganization(caller, scope,
+        if (organization is String) organization else null, swapOf(input), nowMicros());
+    if (held != null) {
+      return heldJson(held);
+    }
+    let answer = new JsonObject();
+    answer['uri'] = `at://${scope}/${SCOPE_ORGANIZATION_TYPE}/self`;
+    answer['state'] = 'deleted';
+    return answer;
   });
 
   registryProcedure(router, appView, PUT_MEMBERS, async (req, res, caller): Future<JsonObject | null> => {
@@ -236,6 +259,9 @@ function changeTallyJson(tally: ChangeTally): JsonObject {
   }
   let answer = new JsonObject();
   answer['requirements'] = requirements;
+  if (tally.all) {
+    answer['all'] = new Box<boolean>(true);
+  }
   return answer;
 }
 

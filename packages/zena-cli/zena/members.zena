@@ -1,8 +1,9 @@
 /**
  * Who belongs: `zena pkg scope add`, `remove`, `maintainers`, `settings`
- * and `upgrade` for a scope's maintainers, its owners and publishers;
- * `zena pkg org` for an organization's members, `zena pkg team` for its
- * teams, and `zena pkg owner` for a package's maintainers
+ * and `upgrade` for a scope's maintainers, its owners and publishers, and
+ * `join` and `leave` for the organization it belongs to; `zena pkg org`
+ * for an organization's members, `zena pkg team` for its teams, and
+ * `zena pkg owner` for a package's maintainers
  * (docs/design/package-manager.md, "Scopes" and "Adding and removing
  * people").
  *
@@ -31,7 +32,8 @@ import { Session } from 'atproto/session';
 import { XrpcClient } from 'atproto/xrpc';
 import {
   MAINTAINER, MAINTAINERS_TYPE, MEMBER, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, Members, OWNER,
-  POLICY_TYPE, PUBLISHER, Policy, SCOPE_MAINTAINERS_TYPE, ScopeMaintainers, TEAM_TYPE, Team, TeamRole
+  POLICY_TYPE, PUBLISHER, Policy, SCOPE_MAINTAINERS_TYPE, SCOPE_ORGANIZATION_TYPE, ScopeMaintainers, TEAM_TYPE,
+  Team, TeamRole
 } from 'package-manager/records';
 import { isScopedIdentifier } from 'package-manager/registry';
 import { DiskFiles, readWorkspace } from 'package-manager/workspace';
@@ -42,8 +44,8 @@ import {
 } from './publish.zena';
 import { REPO_GET_RECORD } from 'atproto/methods';
 import {
-  COMPLETE_CHANGE, DELETE_TEAM, GET_ENTRIES, PUT_MAINTAINERS, PUT_MEMBERS, PUT_POLICY, PUT_SCOPE_MAINTAINERS, PUT_TEAM,
-  UPGRADE_SCOPE
+  COMPLETE_CHANGE, DELETE_TEAM, GET_ENTRIES, PUT_MAINTAINERS, PUT_MEMBERS, PUT_POLICY, PUT_SCOPE_MAINTAINERS,
+  PUT_SCOPE_ORGANIZATION, PUT_TEAM, UPGRADE_SCOPE
 } from 'package-manager/registry-methods';
 
 /** A record in an account's repository, as it is now. */
@@ -184,6 +186,48 @@ export async function scopeUpgradeCommand(args: ParsedArgs, options: Options): F
     input['scope'] = account;
     if (await write(session, registry, UPGRADE_SCOPE, input, `${scope}'s members`, scope)) {
       console.log(`${scope} is an organization, with its owners as its members. Add others with zena pkg org add ${scope} <person>.`);
+    }
+    await saveIfRefreshed(session);
+  });
+}
+
+/**
+ * `zena pkg scope join <scope> <org>`: puts the scope in the organization
+ * `org`, once the owners of both have approved it; the caller is an owner
+ * of one. `zena pkg scope leave <scope>` takes it out at once, for an
+ * owner of either. Belonging groups the scope with the organization: it
+ * gives no one a role in it.
+ */
+export async function scopeOrganizationCommand(args: ParsedArgs, options: Options): Future<i32> {
+  return await runCommand(async (): Future<void> => {
+    let joining = args.rest[0] == 'join';
+    if (args.rest.length != (if (joining) 3 else 2)) {
+      throw new PublishError('usage: zena pkg scope join <scope> <org>, or zena pkg scope leave <scope>');
+    }
+    let scope = args.rest[1];
+    let session = await signedIn();
+    let registry = await findRegistry(args);
+    let account = await scopeDid(registry, scope);
+    let held = await current(account, SCOPE_ORGANIZATION_TYPE, 'self');
+    let input = new JsonObject();
+    input['scope'] = account;
+    if (held != null) {
+      input['swapRecord'] = held.cid;
+    }
+    if (!joining) {
+      if (held == null) {
+        throw new PublishError(`${scope} belongs to no organization`);
+      }
+      let client = await registryClient(session, registry, PUT_SCOPE_ORGANIZATION);
+      await client.procedure(PUT_SCOPE_ORGANIZATION, input);
+      console.log(`${scope} belongs to no organization now.`);
+      await saveIfRefreshed(session);
+      return;
+    }
+    let org = args.rest[2];
+    input['organization'] = await scopeDid(registry, org);
+    if (await write(session, registry, PUT_SCOPE_ORGANIZATION, input, `the organization of ${scope}`, scope)) {
+      console.log(`${scope} is part of the organization ${org}.`);
     }
     await saveIfRefreshed(session);
   });
@@ -603,19 +647,22 @@ export async function completeChange(session: Session, registry: Registry, uri: 
 /**
  * How far the attestations a `completeChange` or `getPendingChanges`
  * answer lists are from enough, as a phrase: each way the record before
- * it allows the change, any one of which is enough.
+ * it allows the change, any one of which is enough, or with `all`, every
+ * one of which is needed.
  */
 export function changeApprovals(answer: JsonObject): String {
   let requirements = answer['requirements'] as JsonArray;
+  let all = answer['all'] is Box<boolean>;
   var phrase = '';
   for (var i = 0; i < requirements.length; i += 1) {
     let requirement = requirements[i] as JsonObject;
     let role = requirement['role'] as String;
     let who = if (role == 'scope owner') "owners of the package's scope"
+        else if (role == 'organization owner') 'owners of the organization'
         else if (role == 'maintainer') 'maintainers of the team' else 'owners';
     let part = `approved by ${(requirement['approvedBy'] as JsonArray).length} of the ${
         (requirement['threshold'] as Box<f64>).value as i32} ${who} it needs`;
-    phrase = if (phrase == '') part else `${phrase}, or ${part}`;
+    phrase = if (phrase == '') part else `${phrase}, ${if (all) 'and' else 'or'} ${part}`;
   }
   return phrase;
 }

@@ -39,6 +39,7 @@ export let MAINTAINERS_TYPE = 'dev.zena-lang.package.maintainers';
 export let SCOPE_MAINTAINERS_TYPE = 'dev.zena-lang.scope.maintainers';
 export let POLICY_TYPE = 'dev.zena-lang.scope.policy';
 export let SCOPE_PROFILE_TYPE = 'dev.zena-lang.scope.profile';
+export let SCOPE_ORGANIZATION_TYPE = 'dev.zena-lang.scope.organization';
 export let MEMBERS_TYPE = 'dev.zena-lang.org.members';
 export let TEAM_TYPE = 'dev.zena-lang.org.team';
 export let ATTESTATION_TYPE = 'dev.zena-lang.package.attestation';
@@ -1021,6 +1022,34 @@ export final class ScopeProfile {
     putString(map, 'displayName', this.displayName);
     putString(map, 'description', this.description);
     putString(map, 'website', this.website);
+    return map;
+  }
+}
+
+/**
+ * The organization a scope belongs to, at record key `self`, by its DID.
+ * It counts once the owners of both the scope and the organization have
+ * attested it; belonging groups the scope with the organization's and
+ * gives no one a role in it.
+ */
+export final class ScopeOrganization {
+  organization: String;
+
+  new(this.organization);
+
+  static fromValue(value: Value): ScopeOrganization {
+    let what = 'scope organization record';
+    let map = recordMap(value, SCOPE_ORGANIZATION_TYPE, what);
+    let organization = requiredString(map, 'organization', what);
+    if (!isValidDid(organization)) {
+      throw new RecordError(`${what}: '${organization}' is not a DID`);
+    }
+    return new ScopeOrganization(organization);
+  }
+
+  toValue(): MapValue {
+    let map = typedMap(SCOPE_ORGANIZATION_TYPE);
+    map.entries['organization'] = new StringValue(this.organization);
     return map;
   }
 }

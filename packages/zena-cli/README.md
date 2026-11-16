@@ -203,6 +203,8 @@ zena-cli pkg scope maintainers acme
 zena-cli pkg scope upgrade acme --yes        # acme becomes an organization
 zena-cli pkg org add acme bob.example.com
 zena-cli pkg org members acme
+zena-cli pkg scope join acme-labs acme       # once acme's owners approve too
+zena-cli pkg scope leave acme-labs           # an owner of either side, at once
 zena-cli pkg team create acme/core
 zena-cli pkg team add acme/core bob.example.com --role maintainer   # member or maintainer
 zena-cli pkg scope add acme --team acme/core # the team's members create packages
