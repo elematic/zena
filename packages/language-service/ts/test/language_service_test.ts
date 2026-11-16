@@ -522,6 +522,11 @@ export let main = () => {
     assert.ok(formatted.includes('let x = 1;'), formatted);
   });
 
+  test('format returns source unchanged when syntax is invalid', () => {
+    const broken = 'let x = ;;;';
+    assert.strictEqual(service.format(broken), broken);
+  });
+
   test('an open document shadows the file reader until closed', async () => {
     const path = '/virtual/only.zena';
     virtualFiles.set(path, 'let x: i32 = "from disk";');

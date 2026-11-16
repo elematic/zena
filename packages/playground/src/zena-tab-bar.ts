@@ -8,6 +8,7 @@ import '@radica/ui/components/icon-button/icon-button.js';
 import '@radica/bootstrap-icons/icons/plus-lg.svg.js';
 import '@radica/bootstrap-icons/icons/layout-sidebar.svg.js';
 import '@radica/bootstrap-icons/icons/camera.svg.js';
+import '@radica/bootstrap-icons/icons/text-indent-left.svg.js';
 import '@radica/ui/components/dialog/dialog.js';
 import './zena-theme-selector.js';
 import {PlaygroundConnectedElement} from './connected-element.js';
@@ -215,6 +216,10 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
   @property({type: Boolean, attribute: 'show-theme-selector'})
   showThemeSelector = false;
 
+  /** Whether to show the format code button (opt-out). */
+  @property({type: Boolean, attribute: 'show-format-button'})
+  showFormatButton = true;
+
   /** Whether to show the export image button (opt-out). */
   @property({type: Boolean, attribute: 'show-export-button'})
   showExportButton = true;
@@ -291,6 +296,29 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
         }),
       );
     }
+  };
+
+  private get isMac(): boolean {
+    return (
+      typeof navigator !== 'undefined' &&
+      /Mac|iPod|iPhone|iPad/.test(
+        navigator.userAgent || navigator.platform || '',
+      )
+    );
+  }
+
+  private onFormatCode = (e: MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const activeFile = this.projectElement?.activeFile ?? 'main.zena';
+    void this.projectElement?.formatFile(activeFile);
+    this.dispatchEvent(
+      new CustomEvent('format-code', {
+        detail: {filename: activeFile},
+        bubbles: true,
+        composed: true,
+      }),
+    );
   };
 
   private onExportImage = (e: MouseEvent) => {
@@ -458,6 +486,24 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
 
         <div class="tabs-controls">
           <slot name="actions"></slot>
+          ${
+            this.showFormatButton
+              ? html`
+                  <rad-icon-button
+                    icon-name="text-indent-left"
+                    size="small"
+                    variant="text"
+                    ?disabled=${!(
+                      activeFile.endsWith('.zena') ||
+                      !/\.[a-z0-9]+$/i.test(activeFile)
+                    )}
+                    title="Format code (${this.isMac ? '⇧⌥F' : 'Shift+Alt+F'})"
+                    aria-label="Format code"
+                    @click=${this.onFormatCode}
+                  ></rad-icon-button>
+                `
+              : nothing
+          }
           ${
             this.showExportButton
               ? html`

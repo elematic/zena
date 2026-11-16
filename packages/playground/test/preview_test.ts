@@ -298,5 +298,11 @@ describe('ZenaProject preview support', () => {
     assert.equal(compiled[1], 0x61);
     assert.equal(compiled[2], 0x73);
     assert.equal(compiled[3], 0x6d);
+
+    // Verify formatting and syntax error resilience
+    const formatted = service.format('export   let main=()=>{return 1+2;};');
+    assert.ok(formatted.includes('export let main = () => {'), formatted);
+    const invalidSource = 'export let main = ;;;';
+    assert.equal(service.format(invalidSource), invalidSource);
   });
 });

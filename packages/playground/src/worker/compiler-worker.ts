@@ -23,6 +23,7 @@ import type {
   HoverRequest,
   CompletionsRequest,
   CompileRequest,
+  FormatRequest,
 } from '../types.js';
 
 /**
@@ -212,6 +213,24 @@ function compile(request: CompileRequest): void {
   });
 }
 
+function format(request: FormatRequest): void {
+  withService(request.id, async (service) => {
+    try {
+      post({
+        type: 'format',
+        id: request.id,
+        formatted: service.format(request.source),
+      });
+    } catch {
+      post({
+        type: 'format',
+        id: request.id,
+        formatted: request.source,
+      });
+    }
+  });
+}
+
 /**
  * Compiles a document and runs its `main()`, with `console.*` wired to the
  * playground's console pane.
@@ -298,6 +317,9 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       break;
     case 'compile':
       compile(request);
+      break;
+    case 'format':
+      format(request);
       break;
   }
 };

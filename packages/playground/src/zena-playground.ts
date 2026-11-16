@@ -15,6 +15,7 @@ import {
   type ExportCodeImageOptions,
 } from './zena-code-export.js';
 import '@radica/bootstrap-icons/icons/camera.svg.js';
+import '@radica/bootstrap-icons/icons/text-indent-left.svg.js';
 
 /**
  * An embeddable Zena playground IDE.
@@ -145,11 +146,18 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
       background: var(--zena-c-brand-1, #38bdf8);
     }
 
-    .editor-floating-export {
+    .editor-floating-actions {
       position: absolute;
       top: 10px;
       right: 10px;
       z-index: 10;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .editor-floating-action,
+    .editor-floating-export {
       width: 32px;
       height: 32px;
       display: inline-flex;
@@ -174,6 +182,7 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
       box-sizing: border-box;
     }
 
+    .editor-floating-action:hover,
     .editor-floating-export:hover {
       opacity: 1;
       color: var(--rad-neutral-text-normal, #f8fafc);
@@ -183,10 +192,12 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
       transform: scale(1.06);
     }
 
+    .editor-floating-action:active,
     .editor-floating-export:active {
       transform: scale(0.96);
     }
 
+    .editor-floating-action::part(button),
     .editor-floating-export::part(button) {
       width: 100%;
       height: 100%;
@@ -337,6 +348,10 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
   @property({type: Boolean, attribute: 'allow-unused-variables'})
   allowUnusedVariables = false;
 
+  /** Whether to show the code format button. Defaults to true. */
+  @property({type: Boolean, attribute: 'show-format-button'})
+  showFormatButton = true;
+
   /** Whether to show the code image export button. Defaults to true. */
   @property({type: Boolean, attribute: 'show-export-button'})
   showExportButton = true;
@@ -441,6 +456,16 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
   }
 
   /**
+   * Formats a `.zena` file in the project (defaults to the active file).
+   */
+  async formatFile(filename?: string): Promise<string | null> {
+    if (this.isUpdatePending) {
+      await this.updateComplete;
+    }
+    return (await this.effectiveProject?.formatFile(filename)) ?? null;
+  }
+
+  /**
    * Opens the Carbon-style code image export dialog.
    *
    * @param filename Optional filename to export. Defaults to the active file.
@@ -489,11 +514,30 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
     });
   }
 
+  private get isMac(): boolean {
+    return (
+      typeof navigator !== 'undefined' &&
+      /Mac|iPod|iPhone|iPad/.test(
+        navigator.userAgent || navigator.platform || '',
+      )
+    );
+  }
+
   private onKeyDown = (e: KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       e.stopPropagation();
       this.runProgram();
+    } else if (
+      e.shiftKey &&
+      e.altKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      (e.code === 'KeyF' || e.key === 'F' || e.key === 'f')
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      void this.formatFile();
     }
   };
 
@@ -610,9 +654,13 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
   override render() {
     const project = this.effectiveProject;
     const files = (project?.files ?? []).filter((f) => !f.hidden);
+    const activeFile = project?.activeFile ?? files[0]?.name ?? 'main.zena';
+    const isZena =
+      activeFile.endsWith('.zena') || !/\.[a-z0-9]+$/i.test(activeFile);
     const showTabs =
       this.tabs === 'always' || (this.tabs !== 'never' && files.length > 1);
     const isVertical = this.vertical || this.layout === 'vertical';
+    const formatShortcut = this.isMac ? '⇧⌥F' : 'Shift+Alt+F';
 
     return html`
       <div class="editor-pane" @keydown=${this.onKeyDown}>
@@ -623,6 +671,7 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
                   .project=${project}
                   .theme=${this.theme}
                   ?show-theme-selector=${this.showThemeSelector}
+                  ?show-format-button=${this.showFormatButton}
                   ?show-export-button=${this.showExportButton}
                   @theme-change=${this.onThemeChange}
                   @export-image=${this.onExportImageEvent}
@@ -631,17 +680,40 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
                   <slot name="actions" slot="actions"></slot>
                 </zena-tab-bar>
               `
-            : this.showExportButton
+            : (this.showFormatButton && isZena) || this.showExportButton
               ? html`
-                  <rad-icon-button
-                    class="editor-floating-export"
-                    icon-name="camera"
-                    size="small"
-                    variant="text"
-                    title="Export code image..."
-                    aria-label="Export code image"
-                    @click=${() => this.openExportDialog()}
-                  ></rad-icon-button>
+                  <div class="editor-floating-actions">
+                    ${
+                      this.showFormatButton && isZena
+                        ? html`
+                            <rad-icon-button
+                              class="editor-floating-action editor-floating-format"
+                              icon-name="text-indent-left"
+                              size="small"
+                              variant="text"
+                              title="Format code (${formatShortcut})"
+                              aria-label="Format code"
+                              @click=${() => void this.formatFile()}
+                            ></rad-icon-button>
+                          `
+                        : nothing
+                    }
+                    ${
+                      this.showExportButton
+                        ? html`
+                            <rad-icon-button
+                              class="editor-floating-action editor-floating-export"
+                              icon-name="camera"
+                              size="small"
+                              variant="text"
+                              title="Export code image..."
+                              aria-label="Export code image"
+                              @click=${() => this.openExportDialog()}
+                            ></rad-icon-button>
+                          `
+                        : nothing
+                    }
+                  </div>
                 `
               : nothing
         }

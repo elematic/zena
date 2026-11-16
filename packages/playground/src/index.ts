@@ -36,6 +36,8 @@ export type {
   ConsoleEntry,
   ConsoleLevel,
   Diagnostic,
+  FormatRequest,
+  FormatResponse,
   HoverInfo,
   PlaygroundStatus,
   ProjectManifest,
