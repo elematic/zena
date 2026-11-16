@@ -1734,7 +1734,7 @@ function printMethodChain(expr: CallExpression) {
       let memberExpr = callExpr.callee as MemberExpression;
 
       let dot = if (memberExpr.optional) { text('?.') } else { text('.') };
-      let prop = text(memberExpr.property.name);
+      let prop = printMemberProperty(memberExpr);
 
       // Build args doc
       let argParts = new Array<Doc>();
@@ -1800,10 +1800,18 @@ function printPostfixOperand(expr: Expression, beforeDot: boolean): Doc {
   return printOperand(expr, PREC_PRIMARY);
 }
 
+function printMemberProperty(expr: MemberExpression): Doc {
+  let symbolPath = expr.symbolPath;
+  if (expr.isSymbolAccess && symbolPath != null) {
+    return concat(docs3(text('['), printExpression(symbolPath), text(']')));
+  }
+  return text(expr.property.name);
+}
+
 function printMemberExpression(expr: MemberExpression): Doc {
   let parts = growable<Doc>([printPostfixOperand(expr.object, true)]);
   if (expr.optional) { parts.push(text('?.')); } else { parts.push(text('.')); }
-  parts.push(text(expr.property.name));
+  parts.push(printMemberProperty(expr));
   return concat(parts);
 }
 
