@@ -573,10 +573,10 @@ export let tests = suite('registry/service', () => {
     appViewService = service;
     isTrue(service.pds == null && service.sessions == null, 'no PDS of its own');
 
-    // The organization's account is on the PDS, managed by the App View,
+    // The scope's account is on the PDS, managed by the App View,
     // and its DID document names the PDS.
     let alice = 'did:plc:alicealicealicealicealic';
-    let created = await service.appView.createOrganization(alice, 'acme',
+    let created = await service.appView.createScope(alice, 'acme',
         [formatDidKey(publicKeyFor(KeyType.P256, hex.decode(KEY)))], 1792800000000000 as i64);
     let pds = (padstone as PdsService).pds;
     let account = await pds.storage.getAccount(created.did);
@@ -684,14 +684,14 @@ export let tests = suite('registry/service', () => {
 
     // Alice's token is checked with her key, read through from upstream.
     let seconds = now().seconds;
-    let method = 'dev.zena-lang.registry.createOrganization';
+    let method = 'dev.zena-lang.registry.createScope';
     let token = createServiceAuthToken(new ServiceAuthClaims(alice, 'did:web:pkg.test', seconds + 60, seconds,
         method, 'jti-1'), KeyType.P256, aliceKey);
     equal(await appView.authenticate(`Bearer ${token}`, method, seconds), alice);
 
-    // The organization the App View makes is recorded here, and served, and
+    // The scope the App View makes is recorded here, and served, and
     // never sent upstream.
-    let created = await appView.createOrganization(alice, 'acme',
+    let created = await appView.createScope(alice, 'acme',
         [formatDidKey(publicKeyFor(KeyType.P256, aliceKey))], 1792800000000000 as i64);
     let res = await get(service.app, `/plc/${created.did}`);
     equal(res.statusCode, 200);

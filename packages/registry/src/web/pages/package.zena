@@ -17,7 +17,7 @@ import {GrowableArray, join} from 'zena:core';
 import {isValidUtf8} from 'zena:encoding';
 import {HTMLPartial, Response, Router, TemplateValue, html, unsafeHTML} from 'zena:http';
 import {percentDecode} from 'zena:url';
-import {Dependency, Maintainer, Maintainers, RELEASE_TYPE, Release} from 'package-manager/records';
+import {Dependency, Maintainers, RELEASE_TYPE, Release} from 'package-manager/records';
 import {PackageDetail, AppView, Publication} from '../../app-view.zena';
 import {MAX_README_BYTES, ReleaseContents, ReleaseFile, fileUrl, rawUrl, renderMarkdown} from '../../release-contents.zena';
 import {Approvals} from '../approvals.zena';
@@ -25,7 +25,7 @@ import {page} from '../layout.zena';
 import {People} from '../people.zena';
 import {PageContext, contextOf} from '../session.zena';
 import {chip, count, each, externalLink, formatBytes, when} from '../partials/common.zena';
-import {Shown, describe, shownWith, visibleEntries} from '../partials/members.zena';
+import {Shown, addTeamScopes, maintainerList, shownWith, visibleEntries} from '../partials/members.zena';
 import {PendingRow, pendingOf, pendingTable} from '../partials/pending.zena';
 import {personLink} from '../partials/person.zena';
 import {notFound} from './not-found.zena';
@@ -162,15 +162,7 @@ async function packageView(context: PageContext, res: Response, appView: AppView
   }
   let shown = await shownWith(context, await visibleEntries(context, found.did, null), named);
   if (record != null) {
-    for (let maintainer in record.maintainers) {
-      let org = maintainer.org;
-      if (org != null) {
-        let account = await appView.accountOf(org);
-        if (account != null) {
-          shown.scopes[org] = account.scope;
-        }
-      }
-    }
+    await addTeamScopes(shown, record.maintainers);
   }
   // A maintainer sees the releases waiting for approval.
   var waiting: HTMLPartial | null = null;
@@ -319,7 +311,7 @@ function packageBody(detail: PackageDetail, release: Release | null, pinned: boo
         <section>
           <h3>Maintainers</h3>
           ${if (detail.maintainers == null) html`<p class="muted">No maintainers record.</p>`
-              else maintainerList(detail.maintainers as Maintainers, shown)}
+              else maintainerList((detail.maintainers as Maintainers).maintainers, shown)}
           ${when(version != null, () => html`
           <h4>Approved ${version as String}</h4>
           ${approvers(version as String, shown, approvedBy)}`)}
@@ -555,14 +547,6 @@ function range(dependency: Dependency): String {
 /** The same, as comparators: `>=2.1.0 <3.0.0-0`. */
 function rangeTitle(dependency: Dependency): String {
   return dependency.range.toString();
-}
-
-function maintainerList(record: Maintainers, shown: Shown): HTMLPartial {
-  return html`
-    <ul class="plain">${each(record.maintainers, (maintainer: Maintainer) => html`
-      <li>${describe(maintainer, shown)} ${chip(maintainer.role)}</li>`)}
-    </ul>
-  `;
 }
 
 /** How many maintainers approve a release, and how many owners a change of maintainers. */

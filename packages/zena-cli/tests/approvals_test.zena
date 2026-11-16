@@ -1,8 +1,8 @@
 /**
  * Approvals, from end to end, against `tests/fixtures/publish-stack.zena`:
- * Alice and Bob own a package and its scope, raise their thresholds, and
- * then neither publishes nor changes who belongs without the other's
- * approval (`zena pkg owner settings`, `zena pkg scope settings`, `zena pkg approve`).
+ * Alice and Bob own a scope and a package in it, raise their thresholds,
+ * and then neither publishes nor changes who belongs without the other's
+ * approval (`zena pkg scope settings`, `zena pkg owner settings`, `zena pkg approve`).
  */
 
 import {suite, test} from 'zena:test';
@@ -40,6 +40,13 @@ export let tests = suite('zena pkg approve', () => {
       let manifestAt = async (version: String) => await write(scratch.at('lib/zena-package.json'),
           `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "${version}"}\n`);
 
+      // The scope's owners can change the package's maintainers too, so Bob
+      // joins Alice as an owner of the scope, which then needs both.
+      isTrue((await alice.run(['pkg', 'scope', 'add', 'acme', BOB, '--role', 'owner'])).succeeded(), 'bob owns acme');
+      let scope = await alice.run(['pkg', 'scope', 'settings', 'acme', '--owner-threshold', '2']);
+      isTrue(scope.succeeded() && scope.stdout.contains("Changes to acme's maintainers and policy need 2 owners"),
+          described(scope));
+
       // Alice alone decides, until Bob is an owner and the package needs both.
       let settings = await alice.run(['pkg', 'owner', 'settings']);
       isTrue(settings.succeeded() && settings.stdout.contains("Releases need 1 maintainer's attestation") &&
@@ -71,26 +78,22 @@ export let tests = suite('zena pkg approve', () => {
       let release = await bob.run(['pkg', 'approve', 'acme:greet@1.1.0', '--yes']);
       isTrue(release.succeeded() && release.stdout.contains('Published acme:greet 1.1.0'), described(release));
 
-      // The scope: Bob joins as an owner, the members then need both
-      // owners, and adding Carol waits for Bob. Removing an owner would
+      // The scope: adding Carol waits for Bob. Removing an owner would
       // leave too few to approve anything, which the registry refuses.
-      isTrue((await alice.run(['pkg', 'scope', 'add', 'acme', BOB, '--role', 'owner'])).succeeded(), 'bob owns acme');
-      let scope = await alice.run(['pkg', 'scope', 'settings', 'acme', '--owner-threshold', '2']);
-      isTrue(scope.succeeded() && scope.stdout.contains("Changes to acme's members need 2 owners"), described(scope));
       let tooFew = await alice.run(['pkg', 'scope', 'remove', 'acme', BOB]);
-      isTrue(!tooFew.succeeded() && tooFew.stderr.contains('cannot meet the thresholds'), described(tooFew));
+      isTrue(!tooFew.succeeded() && tooFew.stderr.contains('too few for its owner threshold'), described(tooFew));
       let carol = 'did:plc:carolcarolcarolcarolcaro';
       let adding = await alice.run(['pkg', 'scope', 'add', 'acme', carol]);
-      isTrue(adding.succeeded() && adding.stdout.contains("The change to acme's members is waiting") &&
+      isTrue(adding.succeeded() && adding.stdout.contains("The change to acme's maintainers is waiting") &&
           !adding.stdout.contains('Added'), described(adding));
-      let notYet = await bob.run(['pkg', 'scope', 'members', 'acme']);
+      let notYet = await bob.run(['pkg', 'scope', 'maintainers', 'acme']);
       isTrue(notYet.succeeded() && !notYet.stdout.contains(carol), described(notYet));
       let change = await bob.run(['pkg', 'approve', 'acme']);
-      isTrue(change.succeeded() && change.stdout.contains(`+ ${carol} member`), described(change));
+      isTrue(change.succeeded() && change.stdout.contains(`+ ${carol} publisher`), described(change));
       let joined = await bob.run(['pkg', 'approve', 'acme', '--yes']);
-      isTrue(joined.succeeded() && joined.stdout.contains('Changed the members of acme'), described(joined));
-      let members = await bob.run(['pkg', 'scope', 'members', 'acme']);
-      isTrue(members.succeeded() && members.stdout.contains(`${carol}  member`), described(members));
+      isTrue(joined.succeeded() && joined.stdout.contains('Changed the maintainers of acme'), described(joined));
+      let maintainers = await bob.run(['pkg', 'scope', 'maintainers', 'acme']);
+      isTrue(maintainers.succeeded() && maintainers.stdout.contains(`${carol}  publisher`), described(maintainers));
 
       // The scope's policy, which waits for Bob too: every release in it
       // needs two approvals, and so a package one person would maintain
@@ -109,12 +112,6 @@ export let tests = suite('zena pkg approve', () => {
       await write(scratch.at('solo/solo.zena'), 'export let one = 1;\n');
       let solo = await personIn('alice', 'solo').run(['pkg', 'create', '--yes']);
       isTrue(!solo.succeeded() && solo.stderr.contains('asks 2 maintainers'), described(solo));
-
-      // A team's own threshold.
-      isTrue((await alice.run(['pkg', 'team', 'create', 'acme/core'])).succeeded(), 'the team');
-      let team = await alice.run(['pkg', 'team', 'settings', 'acme/core', '--threshold', '2']);
-      isTrue(team.succeeded() && team.stdout.contains('Changes to the team acme/core need 2 of its maintainers'),
-          described(team));
     } finally {
       await stopFakePds(stack);
       await scratch.remove();

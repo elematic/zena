@@ -27,9 +27,10 @@ the `zena` command. The design is in
      `publish.zena`, for `zena pkg publish` and `zena pkg create`, which
      call a registry's `dev.zena-lang.registry.*` methods with service-auth
      tokens from that session, `scope.zena`, for `zena pkg scope create` and
-     `zena pkg scope info`, and `members.zena`, for `zena pkg scope add`, `remove`
-     and `members`, `zena pkg team` and `zena pkg owner`, which change who belongs
-     through the registry's `put*` methods, `retract.zena`, for
+     `zena pkg scope info`, and `members.zena`, for `zena pkg scope add`,
+     `remove`, `maintainers`, `settings`, `policy` and `upgrade`,
+     `zena pkg org`, `zena pkg team` and `zena pkg owner`, which change who
+     belongs through the registry's `put*` methods, `retract.zena`, for
      `zena pkg retract`, `approve.zena`, for `zena pkg approve`, which attests a
      release waiting for its maintainers and asks the registry to complete
      it, `ci.zena`, for `zena pkg ci create`, `token` and `retire`, and

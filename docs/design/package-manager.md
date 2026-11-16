@@ -144,7 +144,7 @@ the section it links to.
 - A **scope** is an account on an App View that packages are created in.
   Its handle is the label its packages' handles share (`acme` in
   `router.acme.pkg.zena-lang.dev`). Its maintainers, people or teams, are
-  its **owners** and its **creators** ([Scopes](#scopes)).
+  its **owners** and its **publishers** ([Scopes](#scopes)).
 - An **organization** is a scope that also holds people and teams. Its
   **members** are the people its teams are made of, and its **teams** are
   groups of members that maintain scopes and packages together. Other
@@ -152,7 +152,7 @@ the section it links to.
 - A package's **maintainers** are the people, and teams, who may publish
   it, in the role of **publisher** or **owner**. The **maintainers
   record**, in the package's repository, lists them. A scope's maintainers
-  record does the same for its owners and creators, and an organization's
+  record does the same for its owners and publishers, and an organization's
   **members record** and its **team records** for its members and teams.
 - An **attestation** is a record that one person writes to their own
   repository, saying that they approve another record: a release, or a
@@ -249,7 +249,7 @@ organization's name is its own scope's. People get no scope of their own:
 a person is known by their own atproto handle, and has a scope only by
 creating one. No package has a name directly under the App View's domain,
 so no one can take a short name for a package. A package is created in a
-scope by the scope's owners and creators. Scope names on an App View are
+scope by the scope's owners and publishers. Scope names on an App View are
 first come, first served, so names can be taken only as scopes, and only
 on that App View's domain. The App View can give a scope another handle at
 any time, and takes back names under the policy in
@@ -1250,7 +1250,7 @@ handle is one label below the App View's domain (see
 [Names and scopes](#names-and-scopes)). Its repository has these records:
 
 - `dev.zena-lang.scope.maintainers`, at `self`: the scope's owners and
-  creators, people or teams, and its `ownerThreshold`, the number of owners
+  publishers, people or teams, and its `ownerThreshold`, the number of owners
   who must approve a change to the scope;
 - `dev.zena-lang.scope.policy`, at `self`: the scope's policy for its
   packages. Its minimums apply to every release in the scope at once: a
@@ -1276,14 +1276,16 @@ A scope's maintainers record is shaped like a package's:
     {
       "org": "did:plc:acmeacmeacmeacmeacmeacme",
       "team": "core",
-      "role": "creator"
+      "role": "publisher"
     }
   ],
   "ownerThreshold": 1
 }
 ```
 
-**Owners and creators.** A scope's **creators** create packages in it, and
+**Owners and publishers.** Whoever creates a scope is its first owner, and
+has no other standing in it: like any owner, they can later be removed. A
+scope's **publishers** create packages in it, and
 each package they create starts with them as an owner. Its **owners** can
 do that too, and also change the scope's maintainers, policy and profile,
 create its automation accounts, rename it, and put it in an organization
@@ -1313,7 +1315,7 @@ with `NotAllowed`. Admins change the list with `zena pkg admin allow` and
 `deny` (`putScopeCreator`) and see it with `zena pkg admin list`
 (`listScopeCreators`) and on `/admin`, at once, with no deploy. The list
 gates scopes only: inside a scope its owners decide who maintains it, so a
-creator or an automation account acts without being listed, and a
+publisher or an automation account acts without being listed, and a
 listed owner vouches for whoever they add. `describeRegistry` says which
 rule applies (`scopeCreation`). Taking an account off the list leaves the
 scopes it created.
@@ -1650,7 +1652,7 @@ What this guarantees, with the log running:
   the record before it, or a package's by its scope's owners, back to the
   records the package and its scope were created with.
 - Neither the App View nor the package's PDS alone can make a release count,
-  or make an account count as a maintainer, owner, creator or team member.
+  or make an account count as a maintainer, owner, publisher or team member.
 - A pending release or change is in no repository, so it cannot reach a
   client.
 
@@ -1702,7 +1704,7 @@ A package's repository has a maintainers record at record key `self`:
   is on a team changes it for every package and scope the team maintains.
 
 A scope's maintainers record is the same, with the roles owner and
-creator ([Scopes](#scopes)).
+publisher ([Scopes](#scopes)).
 
 **An organization** is a scope with two more kinds of record, which it gets
 when its owners upgrade it, with `zena pkg scope upgrade <scope>`
@@ -1749,7 +1751,7 @@ keys the scope's owners keep, if they keep any, rather than one person's.
 | ------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | a package's maintainers   | publisher  | attest releases, and retract them                                                                                                                                              |
 |                           | owner      | also attest changes to the maintainers record, and edit the profile, rename and move the package                                                                               |
-| a scope's maintainers     | creator    | create packages in the scope, starting as an owner of each                                                                                                                     |
+| a scope's maintainers     | publisher  | create packages in the scope, starting as an owner of each                                                                                                                     |
 |                           | owner      | also attest changes to the scope's maintainers, policy and organization, and to any of its packages' maintainers; write its profile; create its automation accounts; rename it |
 | an organization's members | member     | be put on its teams                                                                                                                                                            |
 | an organization           | owner      | the owners of its own scope: attest changes to its members and its teams, create and delete teams, and approve scopes joining it                                               |
@@ -1863,8 +1865,8 @@ through the App View:
 | `zena pkg owner remove <person>`                                             | the package's maintainers  | `putMaintainers`       |
 | `zena pkg owner settings --threshold <n> --owner-threshold <n> --humans <n>` | the package's maintainers  | `putMaintainers`       |
 
-The roles are those of [Roles](#roles): `creator` for a scope, `member`
-for a team and `publisher` for a package when `--role` is left out. The `settings` commands change a record's
+The roles are those of [Roles](#roles): `publisher` for a scope or a
+package and `member` for a team when `--role` is left out. The `settings` commands change a record's
 [thresholds](#thresholds) and keep its people; each flag left out keeps
 its value, and with none they print the thresholds. A change to a
 threshold is approved under the thresholds it replaces, so raising
@@ -2067,7 +2069,7 @@ once the attestations the previous record requires reach the log.
 | `upgradeScope`            | a scope's owners                                              | makes the scope an organization, with its owners as its members      |
 | `putScopeCreator`         | the App View's admins                                         | lists an account as one that may create scopes, or unlists it        |
 | `listScopeCreators`       | the App View's admins                                         | returns the accounts listed, with who listed each and when           |
-| `createPackage`           | a scope's creators and owners                                 | creates a package with its profile and maintainers record            |
+| `createPackage`           | a scope's publishers and owners                               | creates a package with its profile and maintainers record            |
 | `createAutomationAccount` | a scope's owners                                              | creates an account for CI and returns its token once                 |
 | `uploadArtifact`          | a package's maintainers                                       | stores an artifact, or one part of it, as a blob of the package      |
 | `publish`                 | a package's maintainers                                       | checks a release and holds it, refusing a version that is taken      |
@@ -2091,7 +2093,7 @@ once the attestations the previous record requires reach the log.
 | `completeChange`          | anyone with a role in the account                             | writes a held record once the record before it allows it             |
 | `getPendingChanges`       | anyone with a role in the account                             | returns the held records, with who has attested each                 |
 | `withdrawChange`          | its proposer, and those who see every entry behind the record | stops holding a record                                               |
-| `getEntries`              | owners, creators, members and team maintainers                | returns the private entries the caller may see                       |
+| `getEntries`              | owners, publishers, members and team maintainers              | returns the private entries the caller may see                       |
 
 The `put` methods take the CID the record must have now, as
 `com.atproto.repo.putRecord` does, so two owners editing at once do not

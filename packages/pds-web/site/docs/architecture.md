@@ -8,10 +8,10 @@ For the complete specification, see [`docs/design/package-manager.md`](https://g
 
 ## Packages and scopes as accounts
 
-Every package and every organization scope is an atproto account:
+Every package and every scope is an atproto account:
 
 - **Identity (`did:plc` or `did:web`)**: A package's permanent identifier is its DID. Its DID document specifies its public signing key and the URL of the Personal Data Server (PDS) that hosts its repository.
-- **Portability**: Because `zena-package.json` and `zena-lock.json` reference packages by DID, a package can change its handle, transfer to a new organization, or migrate to another PDS without breaking existing dependents.
+- **Portability**: Because `zena-package.json` and `zena-lock.json` reference packages by DID, a package can change its handle, transfer to a new scope, or migrate to another PDS without breaking existing dependents.
 - **Handles**: A package hosted on `pkg.zena-lang.dev` under scope `acme` receives the handle `<name>.acme.pkg.zena-lang.dev`, verified bidirectionally via DNS (`_atproto.<handle>` TXT record) and the account's DID document. Maintainers can also assign a domain they control as the package's handle.
 
 ## Repository records and lexicons
@@ -27,14 +27,16 @@ A package's metadata and releases are stored as DAG-CBOR records in its atproto 
 | `dev.zena-lang.package.retraction`  | `<version>` | Reason and timestamp marking a release as retracted                                                           |
 | `dev.zena-lang.package.maintainers` | `self`      | Maintainer entries (by DID, commitment, or team reference), release `threshold`, and `ownerThreshold`         |
 
-### Organization records (in a scope's repository)
+### Scope and organization records (in a scope's repository)
 
-| Collection NSID             | Record key    | Contents                                                                                                  |
-| --------------------------- | ------------- | --------------------------------------------------------------------------------------------------------- |
-| `dev.zena-lang.org.profile` | `self`        | Scope display name, description, and website                                                              |
-| `dev.zena-lang.org.members` | `self`        | Member commitments/DIDs (`owner`, `admin`, `member`) and `ownerThreshold`                                 |
-| `dev.zena-lang.org.team`    | `<team-name>` | Team member commitments/DIDs (`maintainer`, `member`) and approval `threshold`                            |
-| `dev.zena-lang.org.policy`  | `self`        | Scope-wide minimum and default thresholds (`minReleaseThreshold`, `minOwnerThreshold`, `packageCreators`) |
+| Collection NSID                    | Record key    | Contents                                                                                                   |
+| ---------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------- |
+| `dev.zena-lang.scope.maintainers`  | `self`        | Maintainer entries (by DID, commitment, or team reference) as `owner` or `publisher`, and `ownerThreshold` |
+| `dev.zena-lang.scope.policy`       | `self`        | Minimums for every release in the scope, and what a new package's maintainers record starts with           |
+| `dev.zena-lang.scope.profile`      | `self`        | Scope display name, description, and website                                                               |
+| `dev.zena-lang.scope.organization` | `self`        | The organization the scope belongs to, by DID                                                              |
+| `dev.zena-lang.org.members`        | `self`        | An organization's member commitments                                                                       |
+| `dev.zena-lang.org.team`           | `<team-name>` | A team's member commitments (`maintainer`, `member`) and approval `threshold`                              |
 
 ### Maintainer records (in a maintainer's own repository)
 
@@ -59,7 +61,7 @@ Because both the record proof and the blob hash are verified by the client, mirr
 `pkg.zena-lang.dev` runs `packages/registry`, the App View, written in Zena and compiled to WebAssembly, in one service with `packages/pds`, the AT Protocol PDS that keeps its accounts. Beside the PDS's standard `com.atproto.sync.*`, `com.atproto.repo.*`, and `com.atproto.server.*` endpoints, it implements the `dev.zena-lang.registry.*` XRPC methods:
 
 - Authenticates callers using atproto service-auth tokens (`Bearer` JWTs signed by the caller's own PDS signing key for a specific `lxm` method).
-- Creates organization accounts, package accounts, and CI automation accounts, registering their `did:plc` identities and DNS handle records.
+- Creates scope accounts, package accounts, and CI automation accounts, registering their `did:plc` identities and DNS handle records.
 - Validates uploaded source archives against the release record and verifies that all declared dependencies exist.
 - Holds releases and membership updates until the required number of maintainers have published `dev.zena-lang.package.attestation` records in their own repositories, then commits the record to the target repository.
 

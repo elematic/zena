@@ -1,6 +1,6 @@
 # registry
 
-The Zena package manager's App View, written in Zena: it mints package and organization DIDs, keeps their accounts on a PDS (`pds`), serves the `dev.zena-lang.registry.*` XRPC methods, and renders the package registry web pages.
+The Zena package manager's App View, written in Zena: it mints package and scope DIDs, keeps their accounts on a PDS (`pds`), serves the `dev.zena-lang.registry.*` XRPC methods, and renders the package registry web pages.
 
 It serves web pages, rendered on the server (`registry/web/routes`), beside its XRPC routes (`registry/xrpc/routes`): a visitor browses the App View's scopes and packages there, and a person signs in with atproto OAuth to see their own. For that, the App View serves the pages' OAuth client metadata at `/oauth/client-metadata.json`, resolves handles (`com.atproto.identity.resolveHandle`), and trades a service-auth token for a web session cookie (`dev.zena-lang.registry.createWebSession`). The DIDs in `APP_VIEW_ADMIN_DIDS` are the App View's admins, who sign in as anyone does and see every account it holds, at `/admin`, and every private entry. `APP_VIEW_WEB_DIR` names the build of the pages' stylesheet and script, which it serves at `/assets/`.
 

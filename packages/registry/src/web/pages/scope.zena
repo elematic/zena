@@ -1,14 +1,18 @@
-/** A scope's page: its profile, its packages, and its organization's members and teams. */
+/**
+ * A scope's page: its profile, its packages, its owners and publishers, and,
+ * for an organization, its members and teams.
+ */
 
 import {GrowableArray} from 'zena:core';
 import {Router, TemplateValue, html} from 'zena:http';
 import {percentDecode} from 'zena:url';
+import {ScopeMaintainers} from 'package-manager/records';
 import {AppView, ScopeDetail} from '../../app-view.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
 import {contextOf} from '../session.zena';
-import {externalLink, when} from '../partials/common.zena';
-import {members, shownWith, visibleEntries} from '../partials/members.zena';
+import {count, externalLink, when} from '../partials/common.zena';
+import {addTeamScopes, maintainerList, members, shownWith, visibleEntries} from '../partials/members.zena';
 import {packageList} from '../partials/packages.zena';
 import {notFound} from './not-found.zena';
 
@@ -24,20 +28,38 @@ export function scopePage(router: Router, appView: AppView, people: People): voi
     }
     let found = scope;
     let packages = await appView.listPackages(name);
-    // The entries the viewer may see, of the members and of every team,
-    // in one map: each commitment is a different hash.
+    let organization = found.organization;
+    // The entries the viewer may see, of the maintainers, the members and
+    // every team, in one map: each commitment is a different hash.
     let entries = await visibleEntries(context, found.did, null);
+    if (organization) {
+      for (let memberEntry in await visibleEntries(context, found.did, null, true)) {
+        entries[memberEntry.key] = memberEntry.value;
+      }
+    }
     for (let named in found.teams) {
       for (let teamEntry in await visibleEntries(context, found.did, named.name)) {
         entries[teamEntry.key] = teamEntry.value;
       }
     }
-    let shown = await shownWith(context, entries, []);
+    let named = new GrowableArray<String>();
+    let maintainers = found.maintainers;
+    if (maintainers != null) {
+      for (let maintainer in maintainers.maintainers) {
+        if (maintainer.did != null) {
+          named.push(maintainer.did as String);
+        }
+      }
+    }
+    let shown = await shownWith(context, entries, named);
+    if (maintainers != null) {
+      await addTeamScopes(shown, maintainers.maintainers);
+    }
     let teams = new GrowableArray<TemplateValue>();
-    for (let named in found.teams) {
+    for (let team in found.teams) {
       teams.push(html`
-        <h3 class="mono">${named.name}</h3>
-        ${members(named.team.members, shown, 'No members.')}`);
+        <h3 class="mono">${team.name}</h3>
+        ${members(team.team.members, shown, 'No members.')}`);
     }
     let profile = found.profile;
     let displayName = profile?.displayName;
@@ -51,6 +73,7 @@ export function scopePage(router: Router, appView: AppView, people: People): voi
         ${when(description != null, () => html`<p>${description as String}</p>`)}
         <div class="meta mono muted">
           <span>${found.handle}</span><span>${found.did}</span>
+          ${when(organization, () => html`<span>organization</span>`)}
           ${externalLink(website, 'Website')}
         </div>
       </div>
@@ -59,10 +82,26 @@ export function scopePage(router: Router, appView: AppView, people: People): voi
         ${packageList(packages, 'This scope has no packages yet.')}
       </section>
       <section>
-        <h2>Members</h2>
-        ${members(found.members, shown, 'No members record.')}
+        <h2>Maintainers</h2>
+        ${if (maintainers == null) html`<p class="muted">No maintainers record.</p>` else html`
+          ${maintainerList(maintainers.maintainers, shown)}
+          <p>${ownerPolicy(maintainers)}</p>`}
       </section>
+      ${when(organization, () => html`
+      <section>
+        <h2>Members</h2>
+        ${members(found.members, shown, 'No members.')}
+      </section>`)}
       ${when(teams.length > 0, () => html`<section><h2>Teams</h2>${teams}</section>`)}
     `);
   });
+}
+
+/** How many owners a change to the scope needs. */
+function ownerPolicy(record: ScopeMaintainers): TemplateValue {
+  return html`
+    Owners change the scope and every package's maintainers. A change counts once
+    ${count(record.ownerThreshold as i32, 'owner')} ${if (record.ownerThreshold == 1 as i64) 'approves' else 'approve'}
+    it. Publishers create packages, and start as owners of each.
+  `;
 }

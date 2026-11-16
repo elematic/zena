@@ -17,7 +17,8 @@ import {URLSearchParams} from 'zena:url';
 import {Cid} from 'atproto/cid';
 import {compareKeys} from 'atproto/mst';
 import {
-  MEMBERS_TYPE, MAINTAINERS_TYPE, POLICY_TYPE, RELEASE_TYPE, RETRACTION_TYPE, SCOPE_PROFILE_TYPE, TEAM_TYPE
+  MEMBERS_TYPE, MAINTAINERS_TYPE, POLICY_TYPE, RELEASE_TYPE, RETRACTION_TYPE, SCOPE_MAINTAINERS_TYPE,
+  SCOPE_PROFILE_TYPE, TEAM_TYPE
 } from 'package-manager/records';
 import {AccountKind} from 'pds/storage';
 import {
@@ -33,10 +34,10 @@ import {People, Person} from '../people.zena';
 /** How many events one page of `/admin/log` shows. */
 let LOG_PAGE_SIZE = 50;
 
-/** One scope's accounts: its organization, its packages and its automation accounts. */
+/** One scope's accounts: the scope's own, its packages and its automation accounts. */
 final class ScopeAccounts {
   scope: String;
-  var org: AppViewAccount | null = null;
+  var account: AppViewAccount | null = null;
   packages = new GrowableArray<AppViewAccount>();
   automation = new GrowableArray<AppViewAccount>();
 
@@ -85,8 +86,8 @@ export function adminPage(router: Router, appView: AppView, people: People): voi
         ${adminNav('accounts')}
         <p class="muted">
           ${count(scopes.length, 'scope')}, ${count(packages, 'package')} and
-          ${count(automation, 'automation account')}. A scope's page names its members and teams, and a
-          package's its maintainers.
+          ${count(automation, 'automation account')}. A scope's page names its maintainers, an
+          organization's members and teams, and a package's page its maintainers.
         </p>
       </div>
       ${if (scopes.length == 0) html`<p class="muted">The App View holds nothing yet.</p>` else table(scopes)}
@@ -311,11 +312,14 @@ function outcomeChip(outcome: String): HTMLPartial {
 
 function operationSummary(event: ActivityEvent): String {
   let method = event.method;
-  if (method == 'createOrganization') {
+  if (method == 'createScope') {
     return 'Create scope';
   }
-  if (method == 'createScope') {
-    return 'Create scope (operator)';
+  if (method == 'upgradeScope') {
+    return 'Propose upgrading scope to organization';
+  }
+  if (method == 'putScopeMaintainers') {
+    return 'Propose scope maintainers';
   }
   if (method == 'createPackage') {
     return 'Create package';
@@ -345,7 +349,7 @@ function operationSummary(event: ActivityEvent): String {
     return if (event.rkey != null) `Retract ${event.rkey as String}` else 'Retract release';
   }
   if (method == 'putMembers') {
-    return 'Propose scope members';
+    return 'Propose organization members';
   }
   if (method == 'putTeam') {
     return if (event.rkey != null) `Propose team ${event.rkey as String}` else 'Propose team';
@@ -378,6 +382,9 @@ function operationSummary(event: ActivityEvent): String {
 }
 
 function collectionNoun(collection: String | null, rkey: String | null): String {
+  if (collection == SCOPE_MAINTAINERS_TYPE) {
+    return 'scope maintainers';
+  }
   if (collection == MEMBERS_TYPE) {
     return 'members';
   }
@@ -430,7 +437,7 @@ function targetCell(context: PageContext, event: ActivityEvent, named: HashMap<S
     return html`<a href="/scopes/${scope}">${scope}</a> / <span class="mono">${event.rkey as String}</span>${
         when(account != null, () => html`<div class="mono muted small">${account as String}</div>`)}`;
   }
-  if (accountKind == 'organization' && scope != null) {
+  if (accountKind == 'scope' && scope != null) {
     return html`<a href="/scopes/${scope}">${scope}</a>${
         when(account != null, () => html`<div class="mono muted small">${account as String}</div>`)}`;
   }
@@ -577,7 +584,7 @@ function table(scopes: Array<ScopeAccounts>): HTMLPartial {
         <tr>
           <td>
             <a href="/scopes/${scope.scope}">${scope.scope}</a>
-            ${when(scope.org != null, () => html`<div class="mono muted">${(scope.org as AppViewAccount).did}</div>`)}
+            ${when(scope.account != null, () => html`<div class="mono muted">${(scope.account as AppViewAccount).did}</div>`)}
           </td>
           <td>${accounts(scope.packages, true)}</td>
           <td>${accounts(scope.automation, false)}</td>
@@ -614,8 +621,8 @@ function byScope(accounts: Array<AppViewAccount>): Array<ScopeAccounts> {
       scope = made;
     }
     let held = scope;
-    if (account.kind == AccountKind.Organization) {
-      held.org = account;
+    if (account.kind == AccountKind.Scope) {
+      held.account = account;
     } else if (account.kind == AccountKind.Automation) {
       held.automation.push(account);
     } else {

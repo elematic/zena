@@ -36,8 +36,8 @@ import { loginCommand, logoutCommand } from './login.zena';
 import { DEFAULT_REGISTRY, packageCreateCommand, publishCommand } from './publish.zena';
 import { scopeCreateCommand, scopeInfoCommand, scopeProfileCommand } from './scope.zena';
 import {
-  ownerCommand, scopeAddCommand, scopeMembersCommand, scopePolicyCommand, scopeRemoveCommand, scopeSettingsCommand,
-  teamCommand
+  orgCommand, ownerCommand, scopeAddCommand, scopeMaintainersCommand, scopePolicyCommand, scopeRemoveCommand,
+  scopeSettingsCommand, scopeUpgradeCommand, teamCommand
 } from './members.zena';
 import { approveCommand } from './approve.zena';
 import { retractCommand } from './retract.zena';
@@ -287,28 +287,34 @@ function describe() {
             },
           },
           'scope' => {
-            help: 'scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope> | profile <scope>',
+            help: 'scope create <name> | info <scope> | maintainers <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope> | profile <scope> | upgrade <scope>',
             options: {
               'help' => help,
               'registry' => {help: REGISTRY_HELP},
-              'yes' => {type: OptionType.Flag, help: 'Create it'},
-              'role' => {help: 'With add: member (the default), admin or owner'},
-              'owner-threshold' => {help: "With settings: how many owners must approve a change to the scope's members"},
-              'admin-threshold' => {help: "With settings: how many admins or owners must approve a change to one of its teams"},
+              'yes' => {type: OptionType.Flag, help: 'With create and upgrade: do it'},
+              'role' => {help: 'With add: publisher (the default) or owner'},
+              'team' => {help: 'With add and remove: a team, <org>/<team>, in place of a person'},
+              'owner-threshold' => {help: "With settings: how many owners must approve a change to the scope"},
               'minimum-threshold' => {help: 'With policy: the fewest approvals a release of any package in the scope needs'},
               'minimum-humans' => {help: "With policy: the fewest of a release's approvals that must come from people"},
-              'default-teams' => {help: 'With policy: the teams new packages start maintained by, as <team>:<role>,...'},
+              'default-teams' => {help: 'With policy: the teams new packages start maintained by, as <org>/<team>:<role>,...'},
               'default-threshold' => {help: 'With policy: the release threshold new packages start with'},
               'default-owner-threshold' => {help: 'With policy: the owner threshold new packages start with'},
               'default-humans' => {help: 'With policy: the humans new packages start with'},
-              'creators' => {help: 'With policy: the teams whose members may create packages, as <team>,...'},
               'name' => {help: "With profile: the scope's display name (empty clears it)"},
               'description' => {help: 'With profile: what the scope is (empty clears it)'},
               'website' => {help: "With profile: the scope's website, an http: or https: URL (empty clears it)"},
             },
           },
+          'org' => {
+            help: "org add|remove <org> <person> | members <org>: an organization's members, who its teams can have",
+            options: {
+              'help' => help,
+              'registry' => {help: REGISTRY_HELP},
+            },
+          },
           'team' => {
-            help: 'team create|delete|members|settings <scope>/<team> | add|remove <scope>/<team> <person>',
+            help: 'team create|delete|members|settings <org>/<team> | add|remove <org>/<team> <person>',
             options: {
               'help' => help,
               'registry' => {help: REGISTRY_HELP},
@@ -317,12 +323,12 @@ function describe() {
             },
           },
           'owner' => {
-            help: "owner add|remove <person> | add|remove --team <scope>/<team> | list | settings: a package's maintainers",
+            help: "owner add|remove <person> | add|remove --team <org>/<team> | list | settings: a package's maintainers",
             options: {
               'help' => help,
               'registry' => {help: REGISTRY_HELP},
               'role' => {help: 'With add: publisher (the default) or owner'},
-              'team' => {help: 'A team, <scope>/<team>, in place of a person'},
+              'team' => {help: 'A team, <org>/<team>, in place of a person'},
               'package' => {help: 'The package, by DID, handle or scope:name (default: the one you are in)'},
               'automation' => {type: OptionType.Flag, help: 'With add: the person is an automation account, from zena pkg ci create'},
               'threshold' => {help: 'With settings: how many maintainers must approve a release'},
@@ -530,8 +536,11 @@ async function pkgCommand(pkg: ArgParser, args: ParsedArgs, options: Options): F
     if (sub.rest.length > 0 && sub.rest[0] == 'info') {
       return await scopeInfoCommand(sub, options);
     }
-    if (sub.rest.length > 0 && sub.rest[0] == 'members') {
-      return await scopeMembersCommand(sub, options);
+    if (sub.rest.length > 0 && sub.rest[0] == 'maintainers') {
+      return await scopeMaintainersCommand(sub, options);
+    }
+    if (sub.rest.length > 0 && sub.rest[0] == 'upgrade') {
+      return await scopeUpgradeCommand(sub, options);
     }
     if (sub.rest.length > 0 && sub.rest[0] == 'add') {
       return await scopeAddCommand(sub, options);
@@ -548,8 +557,11 @@ async function pkgCommand(pkg: ArgParser, args: ParsedArgs, options: Options): F
     if (sub.rest.length > 0 && sub.rest[0] == 'profile') {
       return await scopeProfileCommand(sub, options);
     }
-    console.error('Error: zena pkg scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope> | profile <scope>');
+    console.error('Error: zena pkg scope create <name> | info <scope> | maintainers <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope> | profile <scope> | upgrade <scope>');
     return 2;
+  }
+  if (name == 'org') {
+    return await orgCommand(sub, options);
   }
   if (name == 'team') {
     return await teamCommand(sub, options);

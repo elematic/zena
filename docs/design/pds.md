@@ -61,9 +61,9 @@ in `pds/sessions`, served only with `PDS_PASSWORD_SESSIONS=1`, since
 padstone's accounts are all managed and have no password; account
 passwords, `createAppPassword` and the other writes wait for ordinary
 accounts. Of the App View (milestone 6), it
-has account kinds that confine package, organization and automation
+has account kinds that confine package, scope and automation
 accounts to `dev.zena-lang.*` records, and the methods
-`createOrganization`, `createPackage` (which signs and submits each new
+`createScope`, `createPackage` (which signs and submits each new
 account's `did:plc` genesis operation), `uploadArtifact`, `publish`,
 `retract`, and those that change members, teams and maintainers, each
 checked with a service-auth token and the caller's role, and

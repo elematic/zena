@@ -24,9 +24,10 @@ import {packSource} from 'package-manager/archive';
 import {verifyRecordProof} from 'atproto/repo';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto/service-auth';
 import {
-  ADMIN, ATTESTATION_TYPE, Artifact, Attestation, Dependency, MAINTAINER, MAINTAINERS_TYPE, MEMBER, Maintainer,
+  ATTESTATION_TYPE, Artifact, Attestation, Dependency, MAINTAINER, MAINTAINERS_TYPE, MEMBER, Maintainer,
   MEMBERS_TYPE, Maintainers, Members, OWNER, PROFILE_TYPE, PUBLISHER, Profile,
-  Policy, RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SOURCE, TEAM_TYPE, Team, TeamRole
+  Policy, RELEASE_TYPE, RETRACTION_TYPE, Release, Retraction, SCOPE_MAINTAINERS_TYPE, SOURCE, ScopeMaintainers,
+  TEAM_TYPE, Team, TeamRole
 } from 'package-manager/records';
 import {Range, Version} from 'zena-lang:semver';
 import {MINIMUM_CLIENT_VERSION, RECOMMENDED_CLIENT_VERSION} from 'registry/clients';
@@ -324,9 +325,9 @@ final class StaleAppViewStore implements AppViewStore {
   async putAccount(account: AppViewAccount): Future<void> { await this.#inner.putAccount(account); }
   async account(did: String): Future<AppViewAccount | null> { return await this.#inner.account(did); }
   async accounts(): Future<Array<AppViewAccount>> { return await this.#inner.accounts(); }
-  async scopeOwner(scope: String): Future<String | null> { return null; }
-  async claimScope(scope: String, org: String): Future<boolean> { return await this.#inner.claimScope(scope, org); }
-  async releaseScope(scope: String, org: String): Future<void> { await this.#inner.releaseScope(scope, org); }
+  async scopeAccount(scope: String): Future<String | null> { return null; }
+  async claimScope(scope: String, did: String): Future<boolean> { return await this.#inner.claimScope(scope, did); }
+  async releaseScope(scope: String, did: String): Future<void> { await this.#inner.releaseScope(scope, did); }
   async nameInScope(scope: String, name: String): Future<String | null> { return null; }
   async claimName(scope: String, name: String, did: String): Future<boolean> {
     return await this.#inner.claimName(scope, name, did);
@@ -421,21 +422,44 @@ function errorOf(res: Response) {
 
 let RECOVERY = formatDidKey(new SigningKey(KeyType.P256, ALICE_KEY).publicKey());
 
-async function createOrganization(fixture: Fixture, caller: String, name: String): Future<Response> {
-  return await fixture.call(caller, 'createOrganization', `{"name": "${name}", "recoveryKeys": ["${RECOVERY}"]}`);
+async function createScope(fixture: Fixture, caller: String, name: String): Future<Response> {
+  return await fixture.call(caller, 'createScope', `{"name": "${name}", "recoveryKeys": ["${RECOVERY}"]}`);
 }
 
-async function createPackage(fixture: Fixture, caller: String, org: String, name: String): Future<Response> {
+async function createPackage(fixture: Fixture, caller: String, scope: String, name: String): Future<Response> {
   let profile = stringify(toJson(new Profile(name).toValue()));
   let maintainers = stringify(toJson(new Maintainers([Maintainer.ofDid(ALICE, OWNER)]).toValue()));
   return await fixture.call(caller, 'createPackage',
-      `{"organization": "${org}", "recoveryKeys": ["${RECOVERY}"], "profile": ${profile}, "maintainers": ${maintainers}}`);
+      `{"scope": "${scope}", "recoveryKeys": ["${RECOVERY}"], "profile": ${profile}, "maintainers": ${maintainers}}`);
 }
 
-/** `caller`'s view of the entries behind `account`'s members, team or maintainers. */
-async function entriesSeen(fixture: Fixture, caller: String, account: String, team: String | null = null)
-    : Future<Array<MemberEntry>> {
-  let query = if (team == null) `?account=${account}` else `?account=${account}&team=${team}`;
+/**
+ * Creates the scope `name` as `caller` and upgrades it to an organization,
+ * with `caller` as its only owner and member. Returns the scope's DID, and
+ * the CID of its members record.
+ */
+async function createOrganization(fixture: Fixture, caller: String, name: String): Future<(String, String)> {
+  let did = ok(await createScope(fixture, caller, name))['did'] as String;
+  let upgraded = ok(await approved(fixture, caller, await fixture.call(caller, 'upgradeScope', `{"scope": "${did}"}`)));
+  equal(upgraded['state'] as String, 'written');
+  return (did, upgraded['cid'] as String);
+}
+
+/** The CID of the scope `scope`'s maintainers record as it is now. */
+async function scopeMaintainersCid(fixture: Fixture, scope: String): Future<String> {
+  return ((await fixture.pds.storage.store(scope).getRecord(SCOPE_MAINTAINERS_TYPE, 'self')) as Cid).toString();
+}
+
+/**
+ * `caller`'s view of the entries behind `account`'s maintainers, an
+ * organization's members with `members`, or its team `team`.
+ */
+async function entriesSeen(fixture: Fixture, caller: String, account: String, team: String | null = null,
+    members: boolean = false): Future<Array<MemberEntry>> {
+  var query = if (team == null) `?account=${account}` else `?account=${account}&team=${team}`;
+  if (members) {
+    query = `${query}&members=true`;
+  }
   let list = ok(await fixture.query(caller, 'getEntries', query))['entries'] as JsonArray;
   let entries = new GrowableArray<MemberEntry>();
   for (var i = 0; i < list.length; i += 1) {
@@ -450,14 +474,14 @@ async function entriesSeen(fixture: Fixture, caller: String, account: String, te
  * router's DID.
  */
 async function seedBrowsable(fixture: Fixture): Future<String> {
-  let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-  ok(await createOrganization(fixture, BOB, 'zeta'));
+  let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+  ok(await createScope(fixture, BOB, 'zeta'));
   let profile = stringify(toJson(new Profile('router', 'Routes requests', 'MIT').toValue()));
   let maintainers = stringify(toJson(new Maintainers([Maintainer.ofDid(ALICE, OWNER)]).toValue()));
   let router = ok(await fixture.call(ALICE, 'createPackage',
-      `{"organization": "${orgDid}", "profile": ${profile}, "maintainers": ${maintainers}}`))['did'] as String;
-  ok(await createPackage(fixture, ALICE, orgDid, 'parser'));
-  ok(await fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`));
+      `{"scope": "${scopeDid}", "profile": ${profile}, "maintainers": ${maintainers}}`))['did'] as String;
+  ok(await createPackage(fixture, ALICE, scopeDid, 'parser'));
+  ok(await fixture.call(ALICE, 'createAutomationAccount', `{"scope": "${scopeDid}", "name": "ci"}`));
   for (let version in ['1.0.0', '1.1.0']) {
     await release(fixture, ALICE, router, version, await upload(fixture, router, archiveOf(router, version)));
   }
@@ -502,16 +526,44 @@ function swapJson(swap: String | null) {
 
 /** `putMembers` as `caller`: a members record committing to `members`, sending `sent`, then `approved`. */
 async function putMembers(fixture: Fixture, caller: String, org: String, members: Array<MemberEntry>,
-    sent: Array<MemberEntry>, swap: String | null, ownerThreshold: i64 = 1 as i64): Future<Response> {
-  return await approved(fixture, caller, await proposeMembers(fixture, caller, org, members, sent, swap, ownerThreshold));
+    sent: Array<MemberEntry>, swap: String | null): Future<Response> {
+  return await approved(fixture, caller, await proposeMembers(fixture, caller, org, members, sent, swap));
 }
 
 /** `putMembers` as `caller`, which only holds the change. */
 async function proposeMembers(fixture: Fixture, caller: String, org: String, members: Array<MemberEntry>,
-    sent: Array<MemberEntry>, swap: String | null, ownerThreshold: i64 = 1 as i64): Future<Response> {
-  let record = stringify(toJson(new Members(commitmentsOf(members), ownerThreshold).toValue()));
+    sent: Array<MemberEntry>, swap: String | null): Future<Response> {
+  let record = stringify(toJson(new Members(commitmentsOf(members)).toValue()));
   return await fixture.call(caller, 'putMembers',
       `{"organization": "${org}", "members": ${record}, "entries": ${entriesJson(sent)}${swapJson(swap)}}`);
+}
+
+/**
+ * `putScopeMaintainers` as `caller`: a maintainers record committing to
+ * `maintainers`, in their roles, and naming `others`, sending `sent`, then
+ * `approved`.
+ */
+async function putScopeMaintainers(fixture: Fixture, caller: String, scope: String, maintainers: Array<MemberEntry>,
+    sent: Array<MemberEntry>, swap: String | null, ownerThreshold: i64 = 1 as i64,
+    others: Array<Maintainer> = []): Future<Response> {
+  return await approved(fixture, caller,
+      await proposeScopeMaintainers(fixture, caller, scope, maintainers, sent, swap, ownerThreshold, others));
+}
+
+/** `putScopeMaintainers` as `caller`, which only holds the change. */
+async function proposeScopeMaintainers(fixture: Fixture, caller: String, scope: String,
+    maintainers: Array<MemberEntry>, sent: Array<MemberEntry>, swap: String | null, ownerThreshold: i64 = 1 as i64,
+    others: Array<Maintainer> = []): Future<Response> {
+  let list = new FixedArray<Maintainer>(maintainers.length + others.length, Maintainer.ofDid('', ''));
+  for (var i = 0; i < maintainers.length; i += 1) {
+    list[i] = new Maintainer(null, maintainers[i].commitment(), null, null, maintainers[i].role);
+  }
+  for (var i = 0; i < others.length; i += 1) {
+    list[maintainers.length + i] = others[i];
+  }
+  let record = stringify(toJson(new ScopeMaintainers(list, ownerThreshold).toValue()));
+  return await fixture.call(caller, 'putScopeMaintainers',
+      `{"scope": "${scope}", "maintainers": ${record}, "entries": ${entriesJson(sent)}${swapJson(swap)}}`);
 }
 
 /** `putTeam` as `caller`: `org`'s team `name`, committing to `members`, sending them all, then `approved`. */
@@ -630,33 +682,39 @@ function releaseJson(version: String, blob: BlobRef, publishedWith: String | nul
 }
 
 export let tests = suite('registry/app-view', () => {
-  test('creates an organization and a package, and publishes a release a client verifies', async (ctx) => {
+  test('creates a scope and a package, and publishes a release a client verifies', async (ctx) => {
     let fixture = new Fixture();
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
-    equal(org['handle'] as String, 'acme.pkg.test');
-    // The App View sent the organization's genesis operation, which makes
+    let scope = ok(await createScope(fixture, ALICE, 'acme'));
+    let scopeDid = scope['did'] as String;
+    equal(scope['handle'] as String, 'acme.pkg.test');
+    // Its maintainers record names Alice, privately, as its only owner.
+    equal((scope['maintainers'] as JsonObject)['uri'] as String, `at://${scopeDid}/${SCOPE_MAINTAINERS_TYPE}/self`);
+    let owners = await entriesSeen(fixture, ALICE, scopeDid);
+    equal(owners.length, 1);
+    equal(owners[0].did, ALICE);
+    equal(owners[0].role, OWNER);
+    // The App View sent the scope's genesis operation, which makes
     // its DID, with Alice's recovery key ranked above the App View's key.
     // It is the DID's only operation: it names the signing key the PDS
     // reserved and holds for the account, the PDS, and the App View as
     // `zena_registry`.
-    let orgOperation = fixture.genesisOf(orgDid);
-    equal(fixture.submitted[orgDid].length, 1);
-    equal(didOfGenesis(orgOperation), orgDid);
-    equal(orgOperation.rotationKeys[0], RECOVERY);
-    equal(orgOperation.rotationKeys.length, 2);
-    equal(orgOperation.alsoKnownAs[0], 'at://acme.pkg.test');
-    let orgKey = (await ((await fixture.pds.storage.getAccount(orgDid)) as Account).signingKey()).publicKey();
-    equal(orgOperation.verificationMethods['atproto'], formatDidKey(orgKey));
-    equal(orgOperation.services['atproto_pds'].endpoint, 'https://pkg.test');
-    equal(orgOperation.services['zena_registry'].kind, 'ZenaRegistry');
-    equal(orgOperation.services['zena_registry'].endpoint, 'https://pkg.test');
+    let scopeOperation = fixture.genesisOf(scopeDid);
+    equal(fixture.submitted[scopeDid].length, 1);
+    equal(didOfGenesis(scopeOperation), scopeDid);
+    equal(scopeOperation.rotationKeys[0], RECOVERY);
+    equal(scopeOperation.rotationKeys.length, 2);
+    equal(scopeOperation.alsoKnownAs[0], 'at://acme.pkg.test');
+    let scopeKey = (await ((await fixture.pds.storage.getAccount(scopeDid)) as Account).signingKey()).publicKey();
+    equal(scopeOperation.verificationMethods['atproto'], formatDidKey(scopeKey));
+    equal(scopeOperation.services['atproto_pds'].endpoint, 'https://pkg.test');
+    equal(scopeOperation.services['zena_registry'].kind, 'ZenaRegistry');
+    equal(scopeOperation.services['zena_registry'].endpoint, 'https://pkg.test');
 
-    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkg = ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     let pkgDid = pkg['did'] as String;
     equal(pkg['handle'] as String, 'router.acme.pkg.test');
     // Both handles resolve, by the TXT records the App View wrote.
-    equal(fixture.records.lookup('acme.pkg.test') as String, orgDid);
+    equal(fixture.records.lookup('acme.pkg.test') as String, scopeDid);
     equal(fixture.records.lookup('router.acme.pkg.test') as String, pkgDid);
     equal(((pkg['maintainers'] as JsonObject)['uri'] as String),
         `at://${pkgDid}/dev.zena-lang.package.maintainers/self`);
@@ -693,8 +751,8 @@ export let tests = suite('registry/app-view', () => {
 
   test('holds a release out of the repository until its maintainers attest it', async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let pkgDid = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let pkgDid = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     let blob = await upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
     let body = `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`;
     let held = ok(await fixture.call(ALICE, 'publish', body));
@@ -749,8 +807,8 @@ export let tests = suite('registry/app-view', () => {
 
   test('waits for the threshold of maintainers, and for people', async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let pkg = ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     let pkgDid = pkg['did'] as String;
     let robot = 'did:plc:robotrobotrobotrobotrobo';
     var maintainers = new Maintainers([Maintainer.ofDid(ALICE, OWNER), Maintainer.ofDid(BOB, PUBLISHER),
@@ -802,8 +860,8 @@ export let tests = suite('registry/app-view', () => {
 
   test('frees a version its release was withdrawn from, or waited too long at', async (ctx): Future<void> => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let pkg = ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     let pkgDid = pkg['did'] as String;
     ok(await putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
         Maintainer.ofDid(BOB, PUBLISHER)]), [], (pkg['maintainers'] as JsonObject)['cid'] as String));
@@ -847,19 +905,19 @@ export let tests = suite('registry/app-view', () => {
   test('holds an account alone when its owners give no recovery keys', async (ctx) => {
     let fixture = new Fixture();
     let appView = (fixture.appView as AppView).config.rotationKey.publicKey();
-    let org = ok(await fixture.call(ALICE, 'createOrganization', '{"name": "acme"}'));
-    let operation = fixture.genesisOf(org['did'] as String);
+    let scope = ok(await fixture.call(ALICE, 'createScope', '{"name": "acme"}'));
+    let operation = fixture.genesisOf(scope['did'] as String);
     equal(operation.rotationKeys.length, 1);
     equal(operation.rotationKeys[0], formatDidKey(appView));
-    let none = ok(await fixture.call(ALICE, 'createOrganization', '{"name": "acme2", "recoveryKeys": []}'));
+    let none = ok(await fixture.call(ALICE, 'createScope', '{"name": "acme2", "recoveryKeys": []}'));
     equal(fixture.genesisOf(none['did'] as String).rotationKeys.length, 1);
 
     // The App View keeps three of PLC's five rotation keys for the
     // operator's two offline keys and its online one (#597).
     let three = `"${RECOVERY}", "${RECOVERY}", "${RECOVERY}"`;
-    equal(errorOf(await fixture.call(ALICE, 'createOrganization', `{"name": "acme3", "recoveryKeys": [${three}]}`)),
+    equal(errorOf(await fixture.call(ALICE, 'createScope', `{"name": "acme3", "recoveryKeys": [${three}]}`)),
         'InvalidRequest');
-    equal(errorOf(await fixture.call(ALICE, 'createOrganization', '{"name": "acme3", "recoveryKeys": "no"}')),
+    equal(errorOf(await fixture.call(ALICE, 'createScope', '{"name": "acme3", "recoveryKeys": "no"}')),
         'InvalidRequest');
   });
 
@@ -869,8 +927,8 @@ export let tests = suite('registry/app-view', () => {
     let offline = new SigningKey(KeyType.Secp256k1, filled(201)).publicKey();
     let spare = new SigningKey(KeyType.Secp256k1, filled(202)).publicKey();
     appView.config.offlineRotationKeys = [offline, spare];
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let operation = fixture.genesisOf(org['did'] as String);
+    let scope = ok(await createScope(fixture, ALICE, 'acme'));
+    let operation = fixture.genesisOf(scope['did'] as String);
     equal(operation.rotationKeys.length, 4);
     equal(operation.rotationKeys[0], RECOVERY);
     equal(operation.rotationKeys[1], formatDidKey(offline));
@@ -880,9 +938,9 @@ export let tests = suite('registry/app-view', () => {
     isTrue(operation.isSignedBy(appView.config.rotationKey.publicKey()), 'signed by the online key');
     // Three recovery keys and the App View's three would pass PLC's five.
     let three = `"${RECOVERY}", "${RECOVERY}", "${RECOVERY}"`;
-    equal(errorOf(await fixture.call(ALICE, 'createOrganization', `{"name": "acme2", "recoveryKeys": [${three}]}`)),
+    equal(errorOf(await fixture.call(ALICE, 'createScope', `{"name": "acme2", "recoveryKeys": [${three}]}`)),
         'InvalidRequest');
-    ok(await fixture.call(ALICE, 'createOrganization', `{"name": "acme2", "recoveryKeys": ["${RECOVERY}", "${RECOVERY}"]}`));
+    ok(await fixture.call(ALICE, 'createScope', `{"name": "acme2", "recoveryKeys": ["${RECOVERY}", "${RECOVERY}"]}`));
   });
 
   test('replaces every account\'s online key with an operation an offline key signs', async (ctx) => {
@@ -892,8 +950,8 @@ export let tests = suite('registry/app-view', () => {
     let spare = new SigningKey(KeyType.Secp256k1, filled(202));
     appView.config.offlineRotationKeys = [offline.publicKey(), spare.publicKey()];
     let old = formatDidKey(appView.config.rotationKey.publicKey());
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    ok(await createPackage(fixture, ALICE, org, 'widget'));
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    ok(await createPackage(fixture, ALICE, scopeDid, 'widget'));
     let online = new SigningKey(KeyType.Secp256k1, filled(203)).publicKey();
     let submitted = fixture.submitted;
     let operations = async (did: String): Future<Array<PlcOperation>> => submitted[did];
@@ -937,10 +995,10 @@ export let tests = suite('registry/app-view', () => {
   test('leaves an account the offline key cannot sign for, and says what failed', async (ctx) => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;
-    let before = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let before = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
     let offline = new SigningKey(KeyType.Secp256k1, filled(201));
     appView.config.offlineRotationKeys = [offline.publicKey()];
-    let after = ok(await createOrganization(fixture, ALICE, 'acme2'))['did'] as String;
+    let after = ok(await createScope(fixture, ALICE, 'acme2'))['did'] as String;
     let online = new SigningKey(KeyType.Secp256k1, filled(203)).publicKey();
     let submitted = fixture.submitted;
     let operations = async (did: String): Future<Array<PlcOperation>> => submitted[did];
@@ -976,7 +1034,7 @@ export let tests = suite('registry/app-view', () => {
     let clean = await appView.checkStore();
     equal(join(clean.problems, '\n'), '');
     equal(clean.accounts, 5);
-    equal(clean.organizations, 2);
+    equal(clean.scopes, 2);
     equal(clean.packages, 2);
     equal(clean.automation, 1);
     equal(clean.releases, 2);
@@ -1005,8 +1063,8 @@ export let tests = suite('registry/app-view', () => {
   test('lets the operator create a reserved scope, which no caller can', async (ctx): Future<void> => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;
-    equal(errorOf(await createOrganization(fixture, ALICE, 'zena')), 'NameTaken');
-    equal(errorOf(await createOrganization(fixture, ALICE, 'zena-lang')), 'NameTaken');
+    equal(errorOf(await createScope(fixture, ALICE, 'zena')), 'NameTaken');
+    equal(errorOf(await createScope(fixture, ALICE, 'zena-lang')), 'NameTaken');
     let created = await appView.createScopeAsOperator(ALICE, 'zena-lang', [], 0 as i64);
     equal(created.handle, 'zena-lang.pkg.test');
     equal(fixture.genesisOf(created.did).rotationKeys.length, 1);
@@ -1022,89 +1080,176 @@ export let tests = suite('registry/app-view', () => {
     equal(taken, 'NameTaken');
   });
 
-  test('changes an organization\'s members, and a role ends with the record that gave it', async (ctx) => {
+  test("changes a scope's maintainers, and a role ends with the record that gave it", async (ctx) => {
     let fixture = new Fixture();
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
-    var swap = (org['members'] as JsonObject)['cid'] as String;
+    let scope = ok(await createScope(fixture, ALICE, 'acme'));
+    let scopeDid = scope['did'] as String;
+    var swap = (scope['maintainers'] as JsonObject)['cid'] as String;
     // Alice's own entry, which the App View made, is all she needs to keep.
-    let alice = await entriesSeen(fixture, ALICE, orgDid);
+    let alice = await entriesSeen(fixture, ALICE, scopeDid);
     equal(alice.length, 1);
     equal(alice[0].role, OWNER);
-    let bob = new MemberEntry(BOB, ADMIN, filled(150));
+    let bob = new MemberEntry(BOB, PUBLISHER, filled(150));
 
-    // Only an owner changes the members.
-    equal(errorOf(await putMembers(fixture, BOB, orgDid, [alice[0], bob], [bob], swap)), 'Forbidden');
-    // Each entry is behind a commitment, each commitment has an entry, and
-    // the record keeps owners enough for its thresholds.
-    equal(errorOf(await putMembers(fixture, ALICE, orgDid, [alice[0]], [bob], swap)), 'InvalidRequest');
-    equal(errorOf(await putMembers(fixture, ALICE, orgDid, [alice[0], bob], [], swap)), 'InvalidRequest');
-    equal(errorOf(await putMembers(fixture, ALICE, orgDid, [bob], [bob], swap)), 'InvalidRequest');
-    equal(errorOf(await putMembers(fixture, ALICE, orgDid, [alice[0], bob], [bob], swap, 2 as i64)), 'InvalidRequest');
-    let pope = new MemberEntry(BOB, 'pope', filled(151));
-    equal(errorOf(await putMembers(fixture, ALICE, orgDid, [alice[0], pope], [pope], swap)), 'InvalidRequest');
-    equal(errorOf(await putMembers(fixture, ALICE, orgDid, [alice[0], bob], [bob], 'bafyreinotacid')), 'InvalidRequest');
+    // Only an owner changes the maintainers.
+    equal(errorOf(await putScopeMaintainers(fixture, BOB, scopeDid, [alice[0], bob], [bob], swap)), 'Forbidden');
+    // Each entry is behind a commitment, each commitment has an entry, the
+    // roles are a scope's, and the record keeps owners enough for its
+    // threshold.
+    equal(errorOf(await putScopeMaintainers(fixture, ALICE, scopeDid, [alice[0]], [bob], swap)), 'InvalidRequest');
+    equal(errorOf(await putScopeMaintainers(fixture, ALICE, scopeDid, [alice[0], bob], [], swap)), 'InvalidRequest');
+    equal(errorOf(await putScopeMaintainers(fixture, ALICE, scopeDid, [bob], [bob], swap)), 'InvalidRequest');
+    equal(errorOf(await putScopeMaintainers(fixture, ALICE, scopeDid, [alice[0], bob], [bob], swap, 2 as i64)),
+        'InvalidRequest');
+    let member = new MemberEntry(BOB, MEMBER, filled(151));
+    equal(errorOf(await putScopeMaintainers(fixture, ALICE, scopeDid, [alice[0], member], [member], swap)),
+        'InvalidRequest');
+    equal(errorOf(await putScopeMaintainers(fixture, ALICE, scopeDid, [alice[0], bob], [bob], 'bafyreinotacid')),
+        'InvalidRequest');
 
-    let added = ok(await putMembers(fixture, ALICE, orgDid, [alice[0], bob], [bob], swap));
+    let added = ok(await putScopeMaintainers(fixture, ALICE, scopeDid, [alice[0], bob], [bob], swap));
     // A second change made from the same record is refused.
-    equal(errorOf(await putMembers(fixture, ALICE, orgDid, [alice[0]], [], swap)), 'InvalidSwap');
+    equal(errorOf(await putScopeMaintainers(fixture, ALICE, scopeDid, [alice[0]], [], swap)), 'InvalidSwap');
     swap = added['cid'] as String;
 
-    // Bob, an admin now, creates packages, sees every entry, and sees no
-    // more than his own once he is removed.
-    ok(await createPackage(fixture, BOB, orgDid, 'router'));
-    equal((await entriesSeen(fixture, BOB, orgDid)).length, 2);
-    ok(await putMembers(fixture, ALICE, orgDid, [alice[0]], [], swap));
-    equal(errorOf(await createPackage(fixture, BOB, orgDid, 'parser')), 'Forbidden');
-    equal((await entriesSeen(fixture, BOB, orgDid)).length, 0);
-    equal((await entriesSeen(fixture, ALICE, orgDid)).length, 1);
+    // Bob, a publisher now, creates packages, sees only his own entry and
+    // changes nothing of the scope; he can do none of it once he is removed.
+    ok(await createPackage(fixture, BOB, scopeDid, 'router'));
+    equal((await entriesSeen(fixture, BOB, scopeDid)).length, 1);
+    equal(errorOf(await putScopeMaintainers(fixture, BOB, scopeDid, [alice[0]], [], swap)), 'Forbidden');
+    equal(errorOf(await fixture.call(BOB, 'createAutomationAccount', `{"scope": "${scopeDid}", "name": "ci"}`)),
+        'Forbidden');
+    ok(await putScopeMaintainers(fixture, ALICE, scopeDid, [alice[0]], [], swap));
+    equal(errorOf(await createPackage(fixture, BOB, scopeDid, 'parser')), 'Forbidden');
+    equal((await entriesSeen(fixture, BOB, scopeDid)).length, 0);
+    equal((await entriesSeen(fixture, ALICE, scopeDid)).length, 1);
+  });
+
+  test("lets a scope's owners change any of its packages' maintainers", async (ctx) => {
+    let fixture = new Fixture();
+    let scope = ok(await createScope(fixture, ALICE, 'acme'));
+    let scopeDid = scope['did'] as String;
+    let alice = (await entriesSeen(fixture, ALICE, scopeDid))[0];
+    let bob = new MemberEntry(BOB, PUBLISHER, filled(152));
+    ok(await putScopeMaintainers(fixture, ALICE, scopeDid, [alice, bob], [bob],
+        (scope['maintainers'] as JsonObject)['cid'] as String));
+    // Bob creates a package that names him alone.
+    let profile = stringify(toJson(new Profile('router').toValue()));
+    let bobs = stringify(toJson(new Maintainers([Maintainer.ofDid(BOB, OWNER)]).toValue()));
+    let pkg = ok(await fixture.call(BOB, 'createPackage',
+        `{"scope": "${scopeDid}", "profile": ${profile}, "maintainers": ${bobs}}`));
+    let pkgDid = pkg['did'] as String;
+
+    // Alice, an owner of the scope, changes it, and her attestation alone
+    // writes the change: the scope's owners can approve one in place of the
+    // package's.
+    let written = ok(await putMaintainers(fixture, ALICE, pkgDid,
+        new Maintainers([Maintainer.ofDid(BOB, OWNER), Maintainer.ofDid(ALICE, PUBLISHER)]), [],
+        (pkg['maintainers'] as JsonObject)['cid'] as String));
+    equal(written['state'] as String, 'written');
+    let requirements = written['requirements'] as JsonArray;
+    equal(requirements.length, 2);
+    equal((requirements[0] as JsonObject)['role'] as String, OWNER);
+    equal(approvedBy(requirements[0] as JsonObject), '');
+    equal((requirements[1] as JsonObject)['role'] as String, 'scope owner');
+    equal(approvedBy(requirements[1] as JsonObject), ALICE);
+    // A publisher changes no package of the scope that does not name him.
+    let alicePackage = ok(await createPackage(fixture, ALICE, scopeDid, 'parser'));
+    equal(errorOf(await putMaintainers(fixture, BOB, alicePackage['did'] as String,
+        new Maintainers([Maintainer.ofDid(BOB, OWNER)]), [], (alicePackage['maintainers'] as JsonObject)['cid'] as String)),
+        'Forbidden');
+  });
+
+  test('upgrades a scope to an organization, whose members its owners change', async (ctx) => {
+    let fixture = new Fixture();
+    let scope = ok(await createScope(fixture, ALICE, 'acme'));
+    let scopeDid = scope['did'] as String;
+    let carol = 'did:plc:carolcarolcarolcarolcaro';
+    // Carol is an owner too, and Dave creates packages, both privately.
+    let aliceOwner = (await entriesSeen(fixture, ALICE, scopeDid))[0];
+    let carolOwner = new MemberEntry(carol, OWNER, filled(156));
+    let davePublisher = new MemberEntry('did:plc:davedavedavedavedavedave', PUBLISHER, filled(155));
+    ok(await putScopeMaintainers(fixture, ALICE, scopeDid, [aliceOwner, carolOwner, davePublisher],
+        [carolOwner, davePublisher], (scope['maintainers'] as JsonObject)['cid'] as String));
+    let bobMember = new MemberEntry(BOB, MEMBER, filled(153));
+    let upgrade = `{"scope": "${scopeDid}"}`;
+    // A scope has no members until it is an organization.
+    equal(errorOf(await putMembers(fixture, ALICE, scopeDid, [bobMember], [bobMember], null)), 'InvalidRequest');
+    equal(errorOf(await putTeam(fixture, ALICE, scopeDid, 'core', [], null)), 'InvalidRequest');
+    // Only an owner upgrades it, and only once.
+    equal(errorOf(await fixture.call(BOB, 'upgradeScope', upgrade)), 'Forbidden');
+    let upgraded = ok(await approved(fixture, ALICE, await fixture.call(ALICE, 'upgradeScope', upgrade)));
+    equal(upgraded['state'] as String, 'written');
+    equal(upgraded['uri'] as String, `at://${scopeDid}/${MEMBERS_TYPE}/self`);
+    equal(errorOf(await fixture.call(ALICE, 'upgradeScope', upgrade)), 'AlreadyAnOrganization');
+    // Its owners are its first members, and owners still; Dave, a publisher,
+    // is no member.
+    let members = await entriesSeen(fixture, ALICE, scopeDid, null, true);
+    equal(members.length, 2);
+    equal(`${members[0].did} ${members[0].role} ${members[1].did} ${members[1].role}`,
+        if (members[0].did == ALICE) `${ALICE} member ${carol} member` else `${carol} member ${ALICE} member`);
+    let alice = if (members[0].did == ALICE) members[0] else members[1];
+    let carolMember = if (members[0].did == ALICE) members[1] else members[0];
+    equal((await entriesSeen(fixture, ALICE, scopeDid))[0].role, OWNER);
+    let swap = upgraded['cid'] as String;
+
+    // Only an owner changes the members, each in the role of member.
+    equal(errorOf(await putMembers(fixture, BOB, scopeDid, [alice, carolMember, bobMember], [bobMember], swap)),
+        'Forbidden');
+    let bobOwner = new MemberEntry(BOB, OWNER, filled(154));
+    equal(errorOf(await putMembers(fixture, ALICE, scopeDid, [alice, bobOwner], [bobOwner], swap)), 'InvalidRequest');
+    equal(errorOf(await putMembers(fixture, ALICE, scopeDid, [alice, bobMember], [], swap)), 'InvalidRequest');
+    ok(await putMembers(fixture, ALICE, scopeDid, [alice, bobMember], [bobMember], swap));
+    // A member is no maintainer: Bob creates no package, and sees his own
+    // entry only.
+    equal(errorOf(await createPackage(fixture, BOB, scopeDid, 'router')), 'Forbidden');
+    equal((await entriesSeen(fixture, BOB, scopeDid, null, true)).length, 1);
+    equal((await entriesSeen(fixture, ALICE, scopeDid, null, true)).length, 2);
   });
 
   test('gives a team a package, and takes it away with the team', async (ctx) => {
     let fixture = new Fixture();
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
-    let alice = await entriesSeen(fixture, ALICE, orgDid);
+    let (scopeDid, membersCid) = await createOrganization(fixture, ALICE, 'acme');
+    let alice = await entriesSeen(fixture, ALICE, scopeDid, null, true);
     let bobMember = new MemberEntry(BOB, MEMBER, filled(160));
-    ok(await putMembers(fixture, ALICE, orgDid, [alice[0], bobMember], [bobMember],
-        (org['members'] as JsonObject)['cid'] as String));
-    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    ok(await putMembers(fixture, ALICE, scopeDid, [alice[0], bobMember], [bobMember], membersCid));
+    let pkg = ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     let pkgDid = pkg['did'] as String;
     var pkgSwap = (pkg['maintainers'] as JsonObject)['cid'] as String;
 
-    // A member makes no team; an admin does, of members only.
+    // A member makes no team; an owner of the scope does, of members only.
     let bob = new MemberEntry(BOB, MAINTAINER, filled(161));
-    equal(errorOf(await putTeam(fixture, BOB, orgDid, 'core', [bob], null)), 'Forbidden');
+    equal(errorOf(await putTeam(fixture, BOB, scopeDid, 'core', [bob], null)), 'Forbidden');
     let stranger = new MemberEntry('did:plc:strangerstrangerstranger', MEMBER, filled(162));
-    equal(errorOf(await putTeam(fixture, ALICE, orgDid, 'core', [bob, stranger], null)), 'InvalidRequest');
-    equal(errorOf(await putTeam(fixture, ALICE, orgDid, 'Core', [bob], null)), 'InvalidRequest');
-    var teamSwap = ok(await putTeam(fixture, ALICE, orgDid, 'core', [bob], null))['cid'] as String;
+    equal(errorOf(await putTeam(fixture, ALICE, scopeDid, 'core', [bob, stranger], null)), 'InvalidRequest');
+    equal(errorOf(await putTeam(fixture, ALICE, scopeDid, 'Core', [bob], null)), 'InvalidRequest');
+    var teamSwap = ok(await putTeam(fixture, ALICE, scopeDid, 'core', [bob], null))['cid'] as String;
     // The team's maintainer changes it after.
-    teamSwap = ok(await putTeam(fixture, BOB, orgDid, 'core', [bob], teamSwap))['cid'] as String;
-    equal((await entriesSeen(fixture, BOB, orgDid, 'core')).length, 1);
+    teamSwap = ok(await putTeam(fixture, BOB, scopeDid, 'core', [bob], teamSwap))['cid'] as String;
+    equal((await entriesSeen(fixture, BOB, scopeDid, 'core')).length, 1);
 
     // Bob publishes to the package through the team, and is no owner of it.
     equal(errorOf(await upload(fixture, BOB, pkgDid)), 'Forbidden');
     let withTeam = new Maintainers([Maintainer.ofDid(ALICE, OWNER),
-        new Maintainer(null, null, orgDid, 'core', PUBLISHER)]);
+        new Maintainer(null, null, scopeDid, 'core', PUBLISHER)]);
     let missingTeam = new Maintainers([Maintainer.ofDid(ALICE, OWNER),
-        new Maintainer(null, null, orgDid, 'nobody', PUBLISHER)]);
+        new Maintainer(null, null, scopeDid, 'nobody', PUBLISHER)]);
     equal(errorOf(await putMaintainers(fixture, ALICE, pkgDid, missingTeam, [], pkgSwap)), 'TeamNotFound');
     pkgSwap = ok(await putMaintainers(fixture, ALICE, pkgDid, withTeam, [], pkgSwap))['cid'] as String;
     ok(await upload(fixture, BOB, pkgDid));
     equal(errorOf(await putMaintainers(fixture, BOB, pkgDid, withTeam, [], pkgSwap)), 'Forbidden');
 
-    // Only an admin deletes the team, and with it Bob's part in the package.
-    equal(errorOf(await fixture.call(BOB, 'deleteTeam', `{"organization": "${orgDid}", "name": "core"}`)), 'Forbidden');
-    ok(await fixture.call(ALICE, 'deleteTeam', `{"organization": "${orgDid}", "name": "core", "swapRecord": "${teamSwap}"}`));
+    // Only an owner deletes the team, and with it Bob's part in the package.
+    equal(errorOf(await fixture.call(BOB, 'deleteTeam', `{"organization": "${scopeDid}", "name": "core"}`)), 'Forbidden');
+    ok(await fixture.call(ALICE, 'deleteTeam', `{"organization": "${scopeDid}", "name": "core", "swapRecord": "${teamSwap}"}`));
     equal(errorOf(await upload(fixture, BOB, pkgDid)), 'Forbidden');
-    equal(errorOf(await fixture.call(ALICE, 'deleteTeam', `{"organization": "${orgDid}", "name": "core"}`)), 'TeamNotFound');
+    equal(errorOf(await fixture.call(ALICE, 'deleteTeam', `{"organization": "${scopeDid}", "name": "core"}`)), 'TeamNotFound');
   });
 
   test('changes a package\'s maintainers, with private entries in the roles they give', async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let pkg = ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     let pkgDid = pkg['did'] as String;
     var swap = (pkg['maintainers'] as JsonObject)['cid'] as String;
     let bob = new MemberEntry(BOB, OWNER, filled(170));
@@ -1130,23 +1275,24 @@ export let tests = suite('registry/app-view', () => {
     ok(await upload(fixture, BOB, pkgDid));
   });
 
-  test('holds a change to the members until enough owners of the record before it attest it', async (ctx) => {
+  test("holds a change to a scope's maintainers until enough owners of the record before it attest it",
+      async (ctx) => {
     let fixture = new Fixture();
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
-    let alice = (await entriesSeen(fixture, ALICE, orgDid))[0];
+    let scope = ok(await createScope(fixture, ALICE, 'acme'));
+    let scopeDid = scope['did'] as String;
+    let alice = (await entriesSeen(fixture, ALICE, scopeDid))[0];
     let bob = new MemberEntry(BOB, OWNER, filled(190));
     // Alice alone owns acme, so her attestation makes Bob an owner, and the
     // new record asks for two owners from then on.
-    let swap = ok(await putMembers(fixture, ALICE, orgDid, [alice, bob], [bob],
-        (org['members'] as JsonObject)['cid'] as String, 2 as i64))['cid'] as String;
+    let swap = ok(await putScopeMaintainers(fixture, ALICE, scopeDid, [alice, bob], [bob],
+        (scope['maintainers'] as JsonObject)['cid'] as String, 2 as i64))['cid'] as String;
 
     // Alice removes Bob: the change waits, and Bob is an owner until it is written.
-    let held = ok(await proposeMembers(fixture, ALICE, orgDid, [alice], [], swap));
+    let held = ok(await proposeScopeMaintainers(fixture, ALICE, scopeDid, [alice], [], swap));
     equal(held['state'] as String, 'pending');
     let uri = held['uri'] as String;
     let cid = held['cid'] as String;
-    equal(uri, `at://${orgDid}/dev.zena-lang.org.members/self`);
+    equal(uri, `at://${scopeDid}/dev.zena-lang.scope.maintainers/self`);
     fixture.attest(ALICE, uri, cid);
     let waiting = ok(await completeChange(fixture, ALICE, uri, cid));
     equal(waiting['state'] as String, 'pending');
@@ -1154,12 +1300,12 @@ export let tests = suite('registry/app-view', () => {
     equal(requirement['role'] as String, OWNER);
     equal((requirement['threshold'] as Box<f64>).value as i32, 2);
     equal(approvedBy(requirement), ALICE);
-    isTrue(((await fixture.pds.storage.store(orgDid).getRecord(MEMBERS_TYPE, 'self')) as Cid).toString() == swap,
-        'the record is unchanged');
-    equal((await entriesSeen(fixture, BOB, orgDid)).length, 2);
+    let unchanged = await scopeMaintainersCid(fixture, scopeDid);
+    isTrue(unchanged == swap, 'the record is unchanged');
+    equal((await entriesSeen(fixture, BOB, scopeDid)).length, 2);
 
     // Bob sees the change, with the entries the new record commits to.
-    let pending = ok(await fixture.query(BOB, 'getPendingChanges', `?account=${orgDid}`))['changes'] as JsonArray;
+    let pending = ok(await fixture.query(BOB, 'getPendingChanges', `?account=${scopeDid}`))['changes'] as JsonArray;
     equal(pending.length, 1);
     let change = pending[0] as JsonObject;
     equal(change['uri'] as String, uri);
@@ -1173,10 +1319,10 @@ export let tests = suite('registry/app-view', () => {
 
     // A later change to the record takes its place, and Alice's attestation
     // of the first counts for nothing toward it.
-    let carol = new MemberEntry('did:plc:carolcarolcarolcarolcaro', MEMBER, filled(191));
-    let later = ok(await proposeMembers(fixture, ALICE, orgDid, [alice, carol], [carol], swap));
+    let carol = new MemberEntry('did:plc:carolcarolcarolcarolcaro', PUBLISHER, filled(191));
+    let later = ok(await proposeScopeMaintainers(fixture, ALICE, scopeDid, [alice, carol], [carol], swap));
     let laterCid = later['cid'] as String;
-    let replaced = ok(await fixture.query(ALICE, 'getPendingChanges', `?account=${orgDid}`))['changes'] as JsonArray;
+    let replaced = ok(await fixture.query(ALICE, 'getPendingChanges', `?account=${scopeDid}`))['changes'] as JsonArray;
     equal(replaced.length, 1);
     equal((replaced[0] as JsonObject)['cid'] as String, laterCid);
     equal(approvedBy(((ok(await completeChange(fixture, ALICE, uri, laterCid))['requirements'] as JsonArray)[0])
@@ -1188,58 +1334,65 @@ export let tests = suite('registry/app-view', () => {
     let written = ok(await completeChange(fixture, BOB, uri, laterCid));
     equal(written['state'] as String, 'written');
     equal(approvedBy((written['requirements'] as JsonArray)[0] as JsonObject), `${ALICE} ${BOB}`);
-    equal(((await fixture.pds.storage.store(orgDid).getRecord(MEMBERS_TYPE, 'self')) as Cid).toString(), laterCid);
-    // Bob is no member now; completing again answers as written.
-    equal(errorOf(await fixture.query(BOB, 'getPendingChanges', `?account=${orgDid}`)), 'Forbidden');
+    equal(await scopeMaintainersCid(fixture, scopeDid), laterCid);
+    // Bob is no maintainer now; completing again answers as written.
+    equal(errorOf(await fixture.query(BOB, 'getPendingChanges', `?account=${scopeDid}`)), 'Forbidden');
     equal(ok(await completeChange(fixture, ALICE, uri, laterCid))['state'] as String, 'written');
     equal(errorOf(await completeChange(fixture, ALICE, uri, cid)), 'ChangeNotFound');
   });
 
-  test('lets a team\'s maintainers, or enough admins, change a team', async (ctx) => {
+  test("lets a team's maintainers, or enough of its organization's owners, change a team", async (ctx) => {
     let fixture = new Fixture();
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
-    let alice = (await entriesSeen(fixture, ALICE, orgDid))[0];
-    let bobMember = new MemberEntry(BOB, ADMIN, filled(200));
-    let members = stringify(toJson(new Members(commitmentsOf([alice, bobMember]), 1 as i64, 2 as i64).toValue()));
-    let put = await fixture.call(ALICE, 'putMembers', `{"organization": "${orgDid}", "members": ${members}, "entries": ${
-        entriesJson([bobMember])}, "swapRecord": "${(org['members'] as JsonObject)['cid'] as String}"}`);
-    isTrue(ok(await approved(fixture, ALICE, put))['state'] as String == 'written', 'Bob is an admin');
+    let (scopeDid, membersCid) = await createOrganization(fixture, ALICE, 'acme');
+    let aliceMember = (await entriesSeen(fixture, ALICE, scopeDid, null, true))[0];
+    let bobMember = new MemberEntry(BOB, MEMBER, filled(200));
+    let membersSwap = ok(await putMembers(fixture, ALICE, scopeDid, [aliceMember, bobMember], [bobMember], membersCid))
+        ['cid'] as String;
+    let aliceOwner = (await entriesSeen(fixture, ALICE, scopeDid))[0];
+    let bobOwner = new MemberEntry(BOB, OWNER, filled(204));
+    let scopeSwap = await scopeMaintainersCid(fixture, scopeDid);
+    isTrue(ok(await putScopeMaintainers(fixture, ALICE, scopeDid, [aliceOwner, bobOwner], [bobOwner],
+        scopeSwap, 2 as i64))['state'] as String == 'written', 'Bob is an owner');
 
-    // A new team needs two admins now.
+    // A new team needs two owners now.
     let bob = new MemberEntry(BOB, MAINTAINER, filled(201));
-    let created = ok(await putTeam(fixture, ALICE, orgDid, 'core', [bob], null));
+    let created = ok(await putTeam(fixture, ALICE, scopeDid, 'core', [bob], null));
     equal(created['state'] as String, 'pending');
     let uri = created['uri'] as String;
     let requirements = created['requirements'] as JsonArray;
     equal(requirements.length, 1);
-    equal(((requirements[0] as JsonObject)['role'] as String), ADMIN);
-    isTrue((await fixture.pds.storage.store(orgDid).getRecord(TEAM_TYPE, 'core')) == null, 'no team yet');
+    equal(((requirements[0] as JsonObject)['role'] as String), OWNER);
+    isTrue((await fixture.pds.storage.store(scopeDid).getRecord(TEAM_TYPE, 'core')) == null, 'no team yet');
     fixture.attest(BOB, uri, created['cid'] as String);
     var teamSwap = ok(await completeChange(fixture, BOB, uri, created['cid'] as String))['cid'] as String;
 
     // Bob, the team's maintainer, changes it alone: its threshold is 1.
+    // Carol joins the organization first, which both owners attest.
     let carol = new MemberEntry('did:plc:carolcarolcarolcarolcaro', MEMBER, filled(202));
     let carolMember = new MemberEntry('did:plc:carolcarolcarolcarolcaro', MEMBER, filled(203));
-    let swap = (await fixture.pds.storage.store(orgDid).getRecord(MEMBERS_TYPE, 'self')) as Cid;
-    ok(await putMembers(fixture, ALICE, orgDid, [alice, bobMember, carolMember], [carolMember], swap.toString(),
-        1 as i64));
-    let byMaintainer = ok(await putTeam(fixture, BOB, orgDid, 'core', [bob, carol], teamSwap));
+    let joined = ok(await proposeMembers(fixture, ALICE, scopeDid, [aliceMember, bobMember, carolMember],
+        [carolMember], membersSwap));
+    fixture.attest(ALICE, joined['uri'] as String, joined['cid'] as String);
+    fixture.attest(BOB, joined['uri'] as String, joined['cid'] as String);
+    equal(ok(await completeChange(fixture, BOB, joined['uri'] as String, joined['cid'] as String))['state'] as String,
+        'written');
+    let byMaintainer = ok(await putTeam(fixture, BOB, scopeDid, 'core', [bob, carol], teamSwap));
     equal(byMaintainer['state'] as String, 'written');
     teamSwap = byMaintainer['cid'] as String;
 
     // A change held to a team deleted since is dropped when completed.
-    let held = ok(await proposeTeam(fixture, BOB, orgDid, 'core', [bob], teamSwap));
+    let held = ok(await proposeTeam(fixture, BOB, scopeDid, 'core', [bob], teamSwap));
     fixture.attest(BOB, held['uri'] as String, held['cid'] as String);
-    ok(await fixture.call(ALICE, 'deleteTeam', `{"organization": "${orgDid}", "name": "core"}`));
+    ok(await fixture.call(ALICE, 'deleteTeam', `{"organization": "${scopeDid}", "name": "core"}`));
     equal(errorOf(await completeChange(fixture, BOB, held['uri'] as String, held['cid'] as String)), 'InvalidSwap');
     equal(errorOf(await completeChange(fixture, BOB, held['uri'] as String, held['cid'] as String)), 'ChangeNotFound');
   });
 
   test('holds a change of maintainers until enough owners attest it, and lets it be withdrawn', async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    // Bob owns the scope; the package names Alice alone.
+    let scopeDid = ok(await createScope(fixture, BOB, 'acme'))['did'] as String;
+    let pkg = ok(await createPackage(fixture, BOB, scopeDid, 'router'));
     let pkgDid = pkg['did'] as String;
     let robot = 'did:plc:robotrobotrobotrobotrobo';
     let two = new Maintainers([Maintainer.ofDid(ALICE, OWNER), Maintainer.ofDid(BOB, OWNER),
@@ -1275,33 +1428,31 @@ export let tests = suite('registry/app-view', () => {
     equal(errorOf(await completeChange(fixture, ALICE, uri, cid)), 'ChangeNotFound');
   });
 
-  test('applies a scope\'s policy to its packages at once, and lets its creator teams create them', async (ctx) => {
+  test("applies a scope's policy to its packages at once, and lets a team that is its publisher create them",
+      async (ctx) => {
     let fixture = new Fixture();
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
-    let alice = (await entriesSeen(fixture, ALICE, orgDid))[0];
+    let (scopeDid, membersCid) = await createOrganization(fixture, ALICE, 'acme');
+    let aliceMember = (await entriesSeen(fixture, ALICE, scopeDid, null, true))[0];
     let bobMember = new MemberEntry(BOB, MEMBER, filled(210));
-    ok(await putMembers(fixture, ALICE, orgDid, [alice, bobMember], [bobMember], (org['members'] as JsonObject)['cid'] as String));
+    ok(await putMembers(fixture, ALICE, scopeDid, [aliceMember, bobMember], [bobMember], membersCid));
     let bob = new MemberEntry(BOB, MEMBER, filled(211));
-    ok(await putTeam(fixture, ALICE, orgDid, 'core', [bob], null));
-    let pkgDid = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    ok(await putTeam(fixture, ALICE, scopeDid, 'core', [bob], null));
+    let pkgDid = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     let policyCall = async (caller: String, policy: Policy): Future<Response> => await approved(fixture, caller,
-        await fixture.call(caller, 'putPolicy', `{"organization": "${orgDid}", "policy": ${stringify(toJson(policy.toValue()))}}`));
+        await fixture.call(caller, 'putPolicy', `{"scope": "${scopeDid}", "policy": ${stringify(toJson(policy.toValue()))}}`));
 
     // Only an owner sets it; its teams must exist, and its defaults meet its minimums.
     let strict = new Policy();
     strict.minimumThreshold = 2 as i64;
     strict.defaultThreshold = 2 as i64;
-    strict.defaultTeams = [new TeamRole('core', PUBLISHER)];
-    strict.creators = ['core'];
+    strict.defaultTeams = [new TeamRole(scopeDid, 'core', PUBLISHER)];
     equal(errorOf(await policyCall(BOB, strict)), 'Forbidden');
     let missing = new Policy();
-    missing.creators = ['nobody'];
+    missing.defaultTeams = [new TeamRole(scopeDid, 'nobody', PUBLISHER)];
     equal(errorOf(await policyCall(ALICE, missing)), 'TeamNotFound');
     let lax = new Policy();
     lax.minimumThreshold = 2 as i64;
     equal(errorOf(await policyCall(ALICE, lax)), 'InvalidRequest');
-    equal(errorOf(await createPackage(fixture, BOB, orgDid, 'parser')), 'Forbidden');
     let set = ok(await policyCall(ALICE, strict));
     equal(set['state'] as String, 'written');
 
@@ -1321,25 +1472,32 @@ export let tests = suite('registry/app-view', () => {
     fixture.attest(BOB, held['uri'] as String, held['cid'] as String);
     equal((await complete(fixture, BOB, pkgDid, '1.0.0'))['state'] as String, 'published');
 
-    // Bob, on the creator team, creates a package; one maintainer alone
-    // could not approve its releases, so it is created with the team.
-    equal(errorOf(await createPackage(fixture, BOB, orgDid, 'parser')), 'InvalidRequest');
+    // Bob, on no team the scope names, creates no package; the scope's
+    // maintainers then name his team as a publisher.
+    equal(errorOf(await createPackage(fixture, BOB, scopeDid, 'parser')), 'Forbidden');
+    let aliceOwner = (await entriesSeen(fixture, ALICE, scopeDid))[0];
+    let scopeSwap = await scopeMaintainersCid(fixture, scopeDid);
+    ok(await putScopeMaintainers(fixture, ALICE, scopeDid, [aliceOwner], [], scopeSwap, 1 as i64,
+        [new Maintainer(null, null, scopeDid, 'core', PUBLISHER)]));
+    // One maintainer alone could not approve its releases, so it is created
+    // with the team.
+    equal(errorOf(await createPackage(fixture, BOB, scopeDid, 'parser')), 'InvalidRequest');
     let profile = stringify(toJson(new Profile('parser').toValue()));
     let withTeam = stringify(toJson(new Maintainers([Maintainer.ofDid(BOB, OWNER),
-        new Maintainer(null, null, orgDid, 'core', PUBLISHER)], 2 as i64).toValue()));
-    ok(await fixture.call(BOB, 'createPackage', `{"organization": "${orgDid}", "recoveryKeys": ["${RECOVERY}"], "profile": ${
+        new Maintainer(null, null, scopeDid, 'core', PUBLISHER)], 2 as i64).toValue()));
+    ok(await fixture.call(BOB, 'createPackage', `{"scope": "${scopeDid}", "recoveryKeys": ["${RECOVERY}"], "profile": ${
         profile}, "maintainers": ${withTeam}}`));
   });
 
   test('creates an automation account that publishes with a token the App View issues, as a publisher only', async (ctx) => {
     let fixture = new Fixture();
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
-    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let scope = ok(await createScope(fixture, ALICE, 'acme'));
+    let scopeDid = scope['did'] as String;
+    let pkg = ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     let pkgDid = pkg['did'] as String;
     var swap = (pkg['maintainers'] as JsonObject)['cid'] as String;
 
-    let body = `{"organization": "${orgDid}", "name": "ci"}`;
+    let body = `{"scope": "${scopeDid}", "name": "ci"}`;
     equal(errorOf(await fixture.call(BOB, 'createAutomationAccount', body)), 'Forbidden');
     let bot = ok(await fixture.call(ALICE, 'createAutomationAccount', body));
     let botDid = bot['did'] as String;
@@ -1353,7 +1511,7 @@ export let tests = suite('registry/app-view', () => {
     isTrue(token.startsWith('zena_ci_'), token);
     // Its name is taken in the scope, as a package's would be.
     equal(errorOf(await fixture.call(ALICE, 'createAutomationAccount', body)), 'NameTaken');
-    equal(errorOf(await createPackage(fixture, ALICE, orgDid, 'ci')), 'NameTaken');
+    equal(errorOf(await createPackage(fixture, ALICE, scopeDid, 'ci')), 'NameTaken');
 
     // CI calls the App View's methods with the token, as the account.
     let withToken = async (name: String, input: String | FixedArray<u8>, query: String, contentType: String, given: String): Future<Response> =>
@@ -1391,7 +1549,7 @@ export let tests = suite('registry/app-view', () => {
     fixture.attest(ALICE, uri, cid.toString());
     equal((await complete(fixture, ALICE, pkgDid, '1.0.0'))['state'] as String, 'published');
 
-    // An admin of its organization replaces its token, and the old one
+    // An owner of its scope replaces its token, and the old one
     // stops working.
     let account = `{"account": "${botDid}"}`;
     equal(errorOf(await fixture.call(BOB, 'issueAutomationToken', account)), 'Forbidden');
@@ -1404,11 +1562,11 @@ export let tests = suite('registry/app-view', () => {
 
   test('retires an automation account no package names, whose token then stops working', async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let pkg = ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     let pkgDid = pkg['did'] as String;
     var swap = (pkg['maintainers'] as JsonObject)['cid'] as String;
-    let bot = ok(await fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`));
+    let bot = ok(await fixture.call(ALICE, 'createAutomationAccount', `{"scope": "${scopeDid}", "name": "ci"}`));
     let botDid = bot['did'] as String;
     let token = bot['token'] as String;
     let account = `{"account": "${botDid}"}`;
@@ -1426,7 +1584,7 @@ export let tests = suite('registry/app-view', () => {
     equal(errorOf(named), 'AccountInUse');
     isTrue((json(named)['message'] as String).contains('router.acme.pkg.test'), json(named)['message'] as String);
 
-    // Once its owners take it out, an admin retires it.
+    // Once its owners take it out, an owner of its scope retires it.
     swap = ok(await putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER)]), [],
         swap))['cid'] as String;
     ok(await fixture.call(ALICE, 'retireAutomationAccount', account));
@@ -1437,7 +1595,7 @@ export let tests = suite('registry/app-view', () => {
     ok(await fixture.call(ALICE, 'retireAutomationAccount', account));
     isTrue((await fixture.pds.storage.getAccount(botDid)) != null, 'its account stays');
     equal(fixture.records.lookup('ci.acme.pkg.test') as String, botDid);
-    equal(errorOf(await fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`)),
+    equal(errorOf(await fixture.call(ALICE, 'createAutomationAccount', `{"scope": "${scopeDid}", "name": "ci"}`)),
         'NameTaken');
   });
 
@@ -1479,7 +1637,7 @@ export let tests = suite('registry/app-view', () => {
     equal(storage.reads, 0);
     let scopes = ok(await fixture.get('/xrpc/dev.zena-lang.registry.listScopes'))['scopes'] as JsonArray;
     equal(((scopes[0] as JsonObject)['packages'] as Box<f64>).value as i32, 2);
-    // The organizations come from the App View's own record of its accounts.
+    // The scopes come from the App View's own record of its accounts.
     equal(storage.reads, 0);
   });
 
@@ -1506,27 +1664,28 @@ export let tests = suite('registry/app-view', () => {
         as Write], 0 as i64);
     let bobs = async (): Future<boolean> => pageOf(await fixture.get(`/people/${BOB}`)).contains('href="/packages/router.acme.pkg.test"');
     isTrue(!(await bobs()), 'not yet indexed');
-    // The two organizations and the two packages.
+    // The two scopes and the two packages.
     equal(await (fixture.appView as AppView).syncIndexes(), 4);
     equal(await listed(), 'Routes everything');
     isTrue(await bobs(), "router on Bob's page");
   });
 
-  test('lets a scope\'s admins say how it presents itself, which its page shows', async (ctx) => {
+  test("lets a scope's owners say how it presents itself, which its page shows", async (ctx) => {
     let fixture = new Fixture();
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
-    let alice = (await entriesSeen(fixture, ALICE, orgDid))[0];
-    let bob = new MemberEntry(BOB, MEMBER, filled(220));
-    ok(await putMembers(fixture, ALICE, orgDid, [alice, bob], [bob], (org['members'] as JsonObject)['cid'] as String));
+    let scope = ok(await createScope(fixture, ALICE, 'acme'));
+    let scopeDid = scope['did'] as String;
+    let alice = (await entriesSeen(fixture, ALICE, scopeDid))[0];
+    let bob = new MemberEntry(BOB, PUBLISHER, filled(220));
+    ok(await putScopeMaintainers(fixture, ALICE, scopeDid, [alice, bob], [bob],
+        (scope['maintainers'] as JsonObject)['cid'] as String));
     let put = async (caller: String, profile: String): Future<Response> => await fixture.call(caller, 'putScopeProfile',
-        `{"organization": "${orgDid}", "profile": {"$type": "dev.zena-lang.org.profile", ${profile}}}`);
+        `{"scope": "${scopeDid}", "profile": {"$type": "dev.zena-lang.scope.profile", ${profile}}}`);
     let wanted = '"displayName": "Acme Corp", "description": "Routers & more", "website": "https://acme.example/"';
-    // Bob, a member, is no admin; a website must be a web address.
+    // Bob, a publisher, is no owner; a website must be a web address.
     equal(errorOf(await put(BOB, wanted)), 'Forbidden');
     equal(errorOf(await put(ALICE, '"website": "javascript:alert(1)"')), 'InvalidRequest');
     let written = ok(await put(ALICE, wanted));
-    equal(written['uri'] as String, `at://${orgDid}/dev.zena-lang.org.profile/self`);
+    equal(written['uri'] as String, `at://${scopeDid}/dev.zena-lang.scope.profile/self`);
 
     let page = pageOf(await fixture.get('/scopes/acme'));
     isTrue(page.contains('<strong>Acme Corp</strong>') && page.contains('Routers &amp; more') &&
@@ -1536,14 +1695,14 @@ export let tests = suite('registry/app-view', () => {
 
   test('links a package\'s homepage and source only when they are web addresses', async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
     let planted = new Profile('router', null, null, 'javascript:alert(document.cookie)', 'https://example.com/router');
     let maintainers = stringify(toJson(new Maintainers([Maintainer.ofDid(ALICE, OWNER)]).toValue()));
     // The App View refuses such a profile.
-    equal(errorOf(await fixture.call(ALICE, 'createPackage', `{"organization": "${orgDid}", "profile": ${
+    equal(errorOf(await fixture.call(ALICE, 'createPackage', `{"scope": "${scopeDid}", "profile": ${
         stringify(toJson(planted.toValue()))}, "maintainers": ${maintainers}}`)), 'InvalidRequest');
     // One written some other way still shows no such link.
-    let pkgDid = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let pkgDid = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     let account = (await fixture.pds.storage.getAccount(pkgDid)) as Account;
     let current = (await fixture.pds.storage.store(pkgDid).getRecord(PROFILE_TYPE, 'self')) as Cid;
     await fixture.pds.repositoryOf(account).applyWrites([new UpdateRecord(PROFILE_TYPE, 'self', planted.toValue(),
@@ -1555,8 +1714,8 @@ export let tests = suite('registry/app-view', () => {
 
   test('stores only artifact types, and serves blobs so that none runs on the App View\'s origin', async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let pkgDid = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let pkgDid = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     let page = '<script>fetch("/me")</script>';
     for (let type in ['text/html', 'image/svg+xml', 'application/javascript']) {
       equal(errorOf(await fixture.call(ALICE, 'uploadArtifact', page, `?package=${pkgDid}`, type)), 'InvalidRequest', type);
@@ -1580,8 +1739,8 @@ export let tests = suite('registry/app-view', () => {
     equal(session.statusCode, 413);
     equal(errorOf(session), 'PayloadTooLarge');
     // An artifact may be as large as the App View stores, and no larger.
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let pkgDid = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let pkgDid = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     (fixture.appView as AppView).config.releaseBytes = 1000 as i64;
     let over = await fixture.call(ALICE, 'uploadArtifact', new FixedArray<u8>(2000, 1 as u8), `?package=${pkgDid}`,
         'application/octet-stream');
@@ -1594,8 +1753,8 @@ export let tests = suite('registry/app-view', () => {
   test('keeps releases, packages and scopes within their storage, which the operator can raise', async (ctx) => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     // Room for one archive in a release, two in a package, and three in the scope.
     let size = archiveOf(router, '1.0.0').length as i64;
     appView.config.releaseBytes = size;
@@ -1631,24 +1790,24 @@ export let tests = suite('registry/app-view', () => {
 
     // A scope holds at most scopeBytes, over the releases of all its
     // packages and the ones held of the package at hand.
-    let cli = ok(await createPackage(fixture, ALICE, orgDid, 'cli'))['did'] as String;
+    let cli = ok(await createPackage(fixture, ALICE, scopeDid, 'cli'))['did'] as String;
     let cliArchive = (version: String) => archiveOf(cli, version,
         `{"name": "cli", "did": "${cli}", "description": "A package for tests", "license": "MIT", "version": "${version}"}`);
     await release(fixture, ALICE, cli, '1.0.0', await upload(fixture, cli, cliArchive('1.0.0')));
     let full = await fixture.call(ALICE, 'uploadArtifact', cliArchive('1.0.1'), `?package=${cli}`,
         'application/vnd.ipld.car');
     equal(errorOf(full), 'QuotaExceeded');
-    await appView.setLimit(orgDid, Limit.ScopeBytes, some(10 * size));
+    await appView.setLimit(scopeDid, Limit.ScopeBytes, some(10 * size));
     await release(fixture, ALICE, cli, '1.0.1', await upload(fixture, cli, cliArchive('1.0.1')));
 
     // A package, or every package of a scope, may be allowed larger releases.
-    let json = ok(await createPackage(fixture, ALICE, orgDid, 'json'))['did'] as String;
+    let json = ok(await createPackage(fixture, ALICE, scopeDid, 'json'))['did'] as String;
     let uploadLarge = () => fixture.call(ALICE, 'uploadArtifact', new FixedArray<u8>((size + 1) as i32, 1 as u8),
         `?package=${json}`, 'application/vnd.ipld.car');
-    await appView.setLimit(orgDid, Limit.ReleaseBytes, some(2 * size));
+    await appView.setLimit(scopeDid, Limit.ReleaseBytes, some(2 * size));
     ok(await uploadLarge());
     // Back to the default.
-    await appView.setLimit(orgDid, Limit.ReleaseBytes, none);
+    await appView.setLimit(scopeDid, Limit.ReleaseBytes, none);
     equal(errorOf(await uploadLarge()), 'TooLarge');
     await appView.setLimit(json, Limit.ReleaseBytes, some(2 * size));
     ok(await uploadLarge());
@@ -1670,29 +1829,29 @@ export let tests = suite('registry/app-view', () => {
     // A person creates one scope a day, and two in all.
     config.scopeCreations = 1;
     config.scopes = 2;
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let again = await createOrganization(fixture, ALICE, 'beta');
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let again = await createScope(fixture, ALICE, 'beta');
     equal(again.statusCode, 429);
     equal(errorOf(again), 'RateLimitExceeded');
     let tomorrow = nowMicros() + DAY_MICROS;
-    await appView.createOrganization(ALICE, 'beta', [], tomorrow);
-    equal(await refusal(() => appView.createOrganization(ALICE, 'gamma', [], tomorrow + DAY_MICROS)), 'QuotaExceeded');
+    await appView.createScope(ALICE, 'beta', [], tomorrow);
+    equal(await refusal(() => appView.createScope(ALICE, 'gamma', [], tomorrow + DAY_MICROS)), 'QuotaExceeded');
     // Bob's count is his own, and the operator creates scopes uncounted.
-    ok(await createOrganization(fixture, BOB, 'bobs'));
+    ok(await createScope(fixture, BOB, 'bobs'));
     await appView.createScopeAsOperator(ALICE, 'delta', [], nowMicros());
     await appView.setLimit(ALICE, Limit.Scopes, some(3 as i64));
-    await appView.createOrganization(ALICE, 'gamma', [], tomorrow + DAY_MICROS);
+    await appView.createScope(ALICE, 'gamma', [], tomorrow + DAY_MICROS);
 
     // A scope creates two packages a day, and three in all.
     config.packageCreations = 2;
     config.packages = 3;
-    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
-    ok(await createPackage(fixture, ALICE, orgDid, 'cli'));
-    equal(errorOf(await createPackage(fixture, ALICE, orgDid, 'json')), 'RateLimitExceeded');
+    let router = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
+    ok(await createPackage(fixture, ALICE, scopeDid, 'cli'));
+    equal(errorOf(await createPackage(fixture, ALICE, scopeDid, 'json')), 'RateLimitExceeded');
     // Raising the day's count leaves the count in all as it was.
-    await appView.setLimit(orgDid, Limit.PackageCreations, some(10 as i64));
-    ok(await createPackage(fixture, ALICE, orgDid, 'json'));
-    equal(errorOf(await createPackage(fixture, ALICE, orgDid, 'yaml')), 'QuotaExceeded');
+    await appView.setLimit(scopeDid, Limit.PackageCreations, some(10 as i64));
+    ok(await createPackage(fixture, ALICE, scopeDid, 'json'));
+    equal(errorOf(await createPackage(fixture, ALICE, scopeDid, 'yaml')), 'QuotaExceeded');
 
     // So far today Alice has made four actions, all in acme, which has had three.
     config.packageActions = 2;
@@ -1709,7 +1868,7 @@ export let tests = suite('registry/app-view', () => {
     ok(await upload(fixture, ALICE, router));
     let scopeFull = await upload(fixture, ALICE, router);
     isTrue((json(scopeFull)['message'] as String).contains('scopeActions'), json(scopeFull)['message'] as String);
-    await appView.setLimit(orgDid, Limit.ScopeActions, some(100 as i64));
+    await appView.setLimit(scopeDid, Limit.ScopeActions, some(100 as i64));
     ok(await upload(fixture, ALICE, router));
     let userFull = await upload(fixture, ALICE, router);
     isTrue((json(userFull)['message'] as String).contains('userActions'), json(userFull)['message'] as String);
@@ -1731,10 +1890,10 @@ export let tests = suite('registry/app-view', () => {
   test('lists the packages with a release, the one whose repository changed last first', async (ctx) => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
-    let cli = ok(await createPackage(fixture, ALICE, orgDid, 'cli'))['did'] as String;
-    ok(await createPackage(fixture, ALICE, orgDid, 'parser'));
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
+    let cli = ok(await createPackage(fixture, ALICE, scopeDid, 'cli'))['did'] as String;
+    ok(await createPackage(fixture, ALICE, scopeDid, 'parser'));
     let cliArchive = (version: String) => archiveOf(cli, version,
         `{"name": "cli", "did": "${cli}", "description": "A package for tests", "license": "MIT", "version": "${version}"}`);
     let handles = async (count: i32) => {
@@ -1756,8 +1915,8 @@ export let tests = suite('registry/app-view', () => {
 
   test("shows a package's README, and a page for each version with its files", async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     let withReadme = (version: String, readme: String) => {
       let files: HashMap<String, FixedArray<u8>> = {
         'zena-package.json' => `{"name": "router", "did": "${router}", "description": "A package for tests", "license": "MIT", "version": "${version}"}`
@@ -1872,8 +2031,8 @@ export let tests = suite('registry/app-view', () => {
   test("keeps a release's contents when it is published, and its pages show them from there", async (ctx) => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     let archive = archiveOf(router, '1.0.0');
     await release(fixture, ALICE, router, '1.0.0', await upload(fixture, router, archive));
     let kept = (await appView.derived.read(router, '1.0.0')) as ReleaseContents;
@@ -1890,8 +2049,8 @@ export let tests = suite('registry/app-view', () => {
   test('derives the contents of a release again when they are missing or from another archive', async (ctx) => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     // Releases written straight to the repository, as before the App View
     // kept contents: nothing is kept for them.
     let account = (await fixture.pds.storage.accountByHandle('router.acme.pkg.test')) as Account;
@@ -1925,8 +2084,8 @@ export let tests = suite('registry/app-view', () => {
   test("serves a file by reading its span of the archive, checked against the file's CID", async (ctx) => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     for (let version in ['1.0.0', '1.0.1']) {
       await release(fixture, ALICE, router, version, await upload(fixture, router, archiveOf(router, version)));
     }
@@ -1945,8 +2104,8 @@ export let tests = suite('registry/app-view', () => {
 
   test('links to a README too large to render', async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     let archive = packSource({
       'zena-package.json' => `{"name": "router", "did": "${router}", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}`
         .toBytes(),
@@ -2016,24 +2175,31 @@ export let tests = suite('registry/app-view', () => {
 
   test("lists a caller's memberships, a team's packages included", async (ctx) => {
     let fixture = new Fixture();
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
-    let alice = await entriesSeen(fixture, ALICE, orgDid);
-    let bobAdmin = new MemberEntry(BOB, ADMIN, filled(190));
-    ok(await putMembers(fixture, ALICE, orgDid, [alice[0], bobAdmin], [bobAdmin], (org['members'] as JsonObject)['cid'] as String));
-    ok(await putTeam(fixture, ALICE, orgDid, 'core', [new MemberEntry(BOB, MAINTAINER, filled(191))], null));
-    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let (scopeDid, membersCid) = await createOrganization(fixture, ALICE, 'acme');
+    let aliceMember = (await entriesSeen(fixture, ALICE, scopeDid, null, true))[0];
+    let bobMember = new MemberEntry(BOB, MEMBER, filled(190));
+    ok(await putMembers(fixture, ALICE, scopeDid, [aliceMember, bobMember], [bobMember], membersCid));
+    let aliceOwner = (await entriesSeen(fixture, ALICE, scopeDid))[0];
+    let bobPublisher = new MemberEntry(BOB, PUBLISHER, filled(192));
+    ok(await putScopeMaintainers(fixture, ALICE, scopeDid, [aliceOwner, bobPublisher], [bobPublisher],
+        await scopeMaintainersCid(fixture, scopeDid)));
+    ok(await putTeam(fixture, ALICE, scopeDid, 'core', [new MemberEntry(BOB, MAINTAINER, filled(191))], null));
+    let pkg = ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     let pkgDid = pkg['did'] as String;
     ok(await putMaintainers(fixture, ALICE, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
-        new Maintainer(null, null, orgDid, 'core', PUBLISHER)]), [], (pkg['maintainers'] as JsonObject)['cid'] as String));
-    ok(await createPackage(fixture, ALICE, orgDid, 'parser'));
+        new Maintainer(null, null, scopeDid, 'core', PUBLISHER)]), [], (pkg['maintainers'] as JsonObject)['cid'] as String));
+    ok(await createPackage(fixture, ALICE, scopeDid, 'parser'));
 
     let bob = ok(await fixture.query(BOB, 'getMemberships', ''));
     equal(bob['did'] as String, BOB);
+    let scopes = bob['scopes'] as JsonArray;
+    equal(scopes.length, 1);
+    equal((scopes[0] as JsonObject)['name'] as String, 'acme');
+    equal((scopes[0] as JsonObject)['role'] as String, 'publisher');
     let orgs = bob['orgs'] as JsonArray;
     equal(orgs.length, 1);
     equal((orgs[0] as JsonObject)['name'] as String, 'acme');
-    equal((orgs[0] as JsonObject)['role'] as String, 'admin');
+    equal((orgs[0] as JsonObject)['role'] as String, 'member');
     let teams = bob['teams'] as JsonArray;
     equal(teams.length, 1);
     equal((teams[0] as JsonObject)['name'] as String, 'core');
@@ -2044,7 +2210,8 @@ export let tests = suite('registry/app-view', () => {
     equal((packages[0] as JsonObject)['handle'] as String, 'router.acme.pkg.test');
     equal((packages[0] as JsonObject)['role'] as String, 'publisher');
     let mine = ok(await fixture.query(ALICE, 'getMemberships', ''));
-    equal(((mine['orgs'] as JsonArray)[0] as JsonObject)['role'] as String, 'owner');
+    equal(((mine['scopes'] as JsonArray)[0] as JsonObject)['role'] as String, 'owner');
+    equal(((mine['orgs'] as JsonArray)[0] as JsonObject)['role'] as String, 'member');
     equal((mine['teams'] as JsonArray).length, 0);
     equal((mine['packages'] as JsonArray).length, 2);
     // Without a token, nothing.
@@ -2053,9 +2220,9 @@ export let tests = suite('registry/app-view', () => {
 
   test('resolves handles, and describes the web app as an OAuth client', async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
     let resolved = ok(await fixture.get('/xrpc/com.atproto.identity.resolveHandle?handle=ACME.pkg.test'));
-    equal(resolved['did'] as String, orgDid);
+    equal(resolved['did'] as String, scopeDid);
     equal(errorOf(await fixture.get('/xrpc/com.atproto.identity.resolveHandle?handle=nobody.example.com')), 'HandleNotFound');
     let metadata = ok(await fixture.get('/oauth/client-metadata.json'));
     equal(metadata['client_id'] as String, 'https://pkg.test/oauth/client-metadata.json');
@@ -2068,16 +2235,15 @@ export let tests = suite('registry/app-view', () => {
   test('reads only the accounts that mention a caller, for their memberships and their page', async (ctx) => {
     let storage = new CountingStorage();
     let fixture = new Fixture(new MemoryAppViewStore(), storage);
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
-    let alice = await entriesSeen(fixture, ALICE, orgDid);
-    let bobAdmin = new MemberEntry(BOB, ADMIN, filled(190));
-    ok(await putMembers(fixture, ALICE, orgDid, [alice[0], bobAdmin], [bobAdmin], (org['members'] as JsonObject)['cid'] as String));
-    ok(await putTeam(fixture, ALICE, orgDid, 'core', [new MemberEntry(BOB, MAINTAINER, filled(191))], null));
-    let router = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let (scopeDid, membersCid) = await createOrganization(fixture, ALICE, 'acme');
+    let alice = await entriesSeen(fixture, ALICE, scopeDid, null, true);
+    let bobMember = new MemberEntry(BOB, MEMBER, filled(190));
+    ok(await putMembers(fixture, ALICE, scopeDid, [alice[0], bobMember], [bobMember], membersCid));
+    ok(await putTeam(fixture, ALICE, scopeDid, 'core', [new MemberEntry(BOB, MAINTAINER, filled(191))], null));
+    let router = ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     ok(await putMaintainers(fixture, ALICE, router['did'] as String, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
-        new Maintainer(null, null, orgDid, 'core', PUBLISHER)]), [], (router['maintainers'] as JsonObject)['cid'] as String));
-    let parser = ok(await createPackage(fixture, ALICE, orgDid, 'parser'));
+        new Maintainer(null, null, scopeDid, 'core', PUBLISHER)]), [], (router['maintainers'] as JsonObject)['cid'] as String));
+    let parser = ok(await createPackage(fixture, ALICE, scopeDid, 'parser'));
     ok(await putMaintainers(fixture, ALICE, parser['did'] as String, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
         Maintainer.ofDid(BOB, PUBLISHER)]), [], (parser['maintainers'] as JsonObject)['cid'] as String));
 
@@ -2093,7 +2259,7 @@ export let tests = suite('registry/app-view', () => {
     isTrue(page.contains('href="/packages/parser.acme.pkg.test"'), page);
 
     // Another scope, with packages, that names Bob nowhere.
-    let zeta = ok(await createOrganization(fixture, ALICE, 'zeta'))['did'] as String;
+    let zeta = ok(await createScope(fixture, ALICE, 'zeta'))['did'] as String;
     for (let name in ['one', 'two', 'three']) {
       ok(await createPackage(fixture, ALICE, zeta, name));
     }
@@ -2132,8 +2298,8 @@ export let tests = suite('registry/app-view', () => {
 
   test('keeps the language version a release was published with, and refuses one that is not a version', async (ctx) => {
     let fixture = new Fixture();
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let router = ok(await createPackage(fixture, ALICE, org, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     let blob = await upload(fixture, router, archiveOf(router, '1.0.0'));
     let good = releaseJson('1.0.0', blob, '0.1.0');
     let bad = join(good.split('"0.1.0"'), '"soon"');
@@ -2156,8 +2322,8 @@ export let tests = suite('registry/app-view', () => {
   test('keeps which clients published and completed each release, and shows them to admins', async (ctx) => {
     let fixture = new Fixture();
     let appView = fixture.appView as AppView;
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let router = ok(await createPackage(fixture, ALICE, org, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let router = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     let blob = await upload(fixture, router, archiveOf(router, '1.0.0'));
     let publishing = 'zena/0.1.0 (linux-x86_64) zena-compiler/0.1.0 package-manager/0.1.0';
     let approving = 'zena/0.2.0 (macos-aarch64) zena-compiler/0.2.0 package-manager/0.2.0';
@@ -2294,9 +2460,8 @@ export let tests = suite('registry/app-view', () => {
   test("names private members to those who may see them, and shows the App View's admins everything", async (ctx) => {
     let fixture = new Fixture();
     let carol = 'did:plc:carolcarolcarolcarolcaro';
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
-    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    let (scopeDid, membersCid) = await createOrganization(fixture, ALICE, 'acme');
+    let pkg = ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     let pkgDid = pkg['did'] as String;
     // A publisher, and a team member, only those allowed may see.
     let publisher = new MemberEntry(carol, PUBLISHER, filled(192));
@@ -2304,10 +2469,10 @@ export let tests = suite('registry/app-view', () => {
         new Maintainer(null, publisher.commitment(), null, null, PUBLISHER)]), [publisher],
         (pkg['maintainers'] as JsonObject)['cid'] as String));
     let carolMember = new MemberEntry(carol, MEMBER, filled(194));
-    ok(await putMembers(fixture, ALICE, orgDid, [(await entriesSeen(fixture, ALICE, orgDid))[0], carolMember], [carolMember],
-        (org['members'] as JsonObject)['cid'] as String));
-    ok(await putTeam(fixture, ALICE, orgDid, 'core', [new MemberEntry(carol, MAINTAINER, filled(193))], null));
-    let bot = ok(await fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`));
+    ok(await putMembers(fixture, ALICE, scopeDid, [(await entriesSeen(fixture, ALICE, scopeDid, null, true))[0],
+        carolMember], [carolMember], membersCid));
+    ok(await putTeam(fixture, ALICE, scopeDid, 'core', [new MemberEntry(carol, MAINTAINER, filled(193))], null));
+    let bot = ok(await fixture.call(ALICE, 'createAutomationAccount', `{"scope": "${scopeDid}", "name": "ci"}`));
 
     // A visitor, and Bob, who belongs to none of it, see members as private.
     let visitor = pageOf(await fixture.get('/scopes/acme'));
@@ -2320,7 +2485,7 @@ export let tests = suite('registry/app-view', () => {
     equal((await fixture.get('/admin', bob)).statusCode, 403, 'admin, to Bob');
     isTrue(!pageOf(await fixture.get('/', bob)).contains('href="/admin"'), 'no admin link for Bob');
 
-    // Alice, an owner of acme, sees its members and teams.
+    // Alice, an owner of acme, sees its maintainers, members and teams.
     let alice = await webCookie(fixture, ALICE);
     let asAlice = pageOf(await fixture.get('/scopes/acme', alice));
     isTrue(asAlice.contains(ALICE) && asAlice.contains(carol) && asAlice.contains('>maintainer<'), asAlice);
@@ -2331,7 +2496,7 @@ export let tests = suite('registry/app-view', () => {
     let admin = await fixture.get('/admin', bob);
     equal(admin.statusCode, 200, 'admin');
     let adminHtml = pageOf(admin);
-    for (let expected in ['href="/scopes/acme"', orgDid, 'href="/packages/router.acme.pkg.test"', pkgDid,
+    for (let expected in ['href="/scopes/acme"', scopeDid, 'href="/packages/router.acme.pkg.test"', pkgDid,
         bot['did'] as String, '1 scope', '1 package', '1 automation account']) {
       isTrue(adminHtml.contains(expected), `${expected} in /admin`);
     }
@@ -2350,7 +2515,7 @@ export let tests = suite('registry/app-view', () => {
     equal(json(await fixture.get(describe))['scopeCreation'] as String, 'anyone');
     appView.config.scopeCreation = ScopeCreation.Listed;
     equal(json(await fixture.get(describe))['scopeCreation'] as String, 'listed');
-    equal(errorOf(await createOrganization(fixture, ALICE, 'acme')), 'NotAllowed');
+    equal(errorOf(await createScope(fixture, ALICE, 'acme')), 'NotAllowed');
 
     // Only an admin lists anyone, or sees who is listed.
     let listAlice = `{"did": "${ALICE}", "allowed": true}`;
@@ -2358,7 +2523,7 @@ export let tests = suite('registry/app-view', () => {
     equal(errorOf(await fixture.query(ALICE, 'listScopeCreators', '')), 'Forbidden');
     appView.config.admins.add(BOB);
     // An admin creates scopes without being listed.
-    ok(await createOrganization(fixture, BOB, 'bobs'));
+    ok(await createScope(fixture, BOB, 'bobs'));
     ok(await fixture.call(BOB, 'putScopeCreator', listAlice));
     let listed = ok(await fixture.query(BOB, 'listScopeCreators', ''))['creators'] as JsonArray;
     equal(listed.length, 1);
@@ -2366,12 +2531,12 @@ export let tests = suite('registry/app-view', () => {
     equal(entry['did'] as String, ALICE);
     equal(entry['addedBy'] as String, BOB);
     isTrue((entry['addedAt'] as String).endsWith('Z'), entry['addedAt'] as String);
-    ok(await createOrganization(fixture, ALICE, 'acme'));
+    ok(await createScope(fixture, ALICE, 'acme'));
     let admin = pageOf(await fixture.get('/admin', await webCookie(fixture, BOB)));
     isTrue(admin.contains('Who may create scopes') && admin.contains(ALICE), admin);
 
     ok(await fixture.call(BOB, 'putScopeCreator', `{"did": "${ALICE}", "allowed": false}`));
-    equal(errorOf(await createOrganization(fixture, ALICE, 'other')), 'NotAllowed');
+    equal(errorOf(await createScope(fixture, ALICE, 'other')), 'NotAllowed');
     equal((ok(await fixture.query(BOB, 'listScopeCreators', ''))['creators'] as JsonArray).length, 0);
     equal(errorOf(await fixture.call(BOB, 'putScopeCreator', '{"did": "alice", "allowed": true}')), 'InvalidRequest');
     equal(errorOf(await fixture.call(BOB, 'putScopeCreator', `{"did": "${ALICE}"}`)), 'InvalidRequest');
@@ -2396,19 +2561,19 @@ export let tests = suite('registry/app-view', () => {
     equal(described['recommendedClientVersion'] as String, '0.3.0');
 
     fixture.userAgent = 'zena/0.1.9 (linux-x86_64)';
-    equal(errorOf(await createOrganization(fixture, ALICE, 'acme')), 'UpgradeRequired');
+    equal(errorOf(await createScope(fixture, ALICE, 'acme')), 'UpgradeRequired');
     // A deprecated zena still works: zena itself warns its user.
     fixture.userAgent = 'zena/0.2.0 (linux-x86_64)';
-    ok(await createOrganization(fixture, ALICE, 'acme'));
+    ok(await createScope(fixture, ALICE, 'acme'));
     // A client that names no zena version, such as the site's script, is not judged.
     fixture.userAgent = 'Mozilla/5.0';
-    ok(await createOrganization(fixture, BOB, 'other'));
+    ok(await createScope(fixture, BOB, 'other'));
     fixture.userAgent = null;
-    ok(await createOrganization(fixture, BOB, 'third'));
+    ok(await createScope(fixture, BOB, 'third'));
 
     equal(logged.length, 4);
     let refused = logged[0];
-    equal(refused.method, 'dev.zena-lang.registry.createOrganization');
+    equal(refused.method, 'dev.zena-lang.registry.createScope');
     isTrue(refused.caller == null, 'refused before it named a caller');
     equal(refused.client as String, 'zena/0.1.9 (linux-x86_64)');
     equal(refused.status, 400);
@@ -2425,26 +2590,26 @@ export let tests = suite('registry/app-view', () => {
   test('refuses calls without a valid, unused token for the method', async (ctx) => {
     let fixture = new Fixture();
     let body = `{"name": "acme", "recoveryKeys": ["${RECOVERY}"]}`;
-    equal(errorOf(await fixture.call(null, 'createOrganization', body)), 'AuthenticationRequired');
+    equal(errorOf(await fixture.call(null, 'createScope', body)), 'AuthenticationRequired');
     let wrongMethod = `Bearer ${fixture.token(ALICE, 'dev.zena-lang.registry.publish')}`;
-    equal(errorOf(await fixture.call(null, 'createOrganization', body, '', 'application/json', wrongMethod)),
+    equal(errorOf(await fixture.call(null, 'createScope', body, '', 'application/json', wrongMethod)),
         'InvalidToken');
-    let once = `Bearer ${fixture.token(ALICE, 'dev.zena-lang.registry.createOrganization')}`;
-    ok(await fixture.call(null, 'createOrganization', body, '', 'application/json', once));
-    equal(errorOf(await fixture.call(null, 'createOrganization',
+    let once = `Bearer ${fixture.token(ALICE, 'dev.zena-lang.registry.createScope')}`;
+    ok(await fixture.call(null, 'createScope', body, '', 'application/json', once));
+    equal(errorOf(await fixture.call(null, 'createScope',
         `{"name": "other", "recoveryKeys": ["${RECOVERY}"]}`, '', 'application/json', once)), 'InvalidToken');
   });
 
   test('refuses names that are taken and callers without the role', async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    equal(errorOf(await createOrganization(fixture, BOB, 'acme')), 'NameTaken');
-    equal(errorOf(await createOrganization(fixture, BOB, 'www')), 'NameTaken');
-    equal(errorOf(await createOrganization(fixture, BOB, 'Not-A-Name')), 'NameTaken');
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    equal(errorOf(await createScope(fixture, BOB, 'acme')), 'NameTaken');
+    equal(errorOf(await createScope(fixture, BOB, 'www')), 'NameTaken');
+    equal(errorOf(await createScope(fixture, BOB, 'Not-A-Name')), 'NameTaken');
     // Bob is not an admin of acme.
-    equal(errorOf(await createPackage(fixture, BOB, orgDid, 'router')), 'Forbidden');
-    let pkgDid = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
-    equal(errorOf(await createPackage(fixture, ALICE, orgDid, 'router')), 'NameTaken');
+    equal(errorOf(await createPackage(fixture, BOB, scopeDid, 'router')), 'Forbidden');
+    let pkgDid = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
+    equal(errorOf(await createPackage(fixture, ALICE, scopeDid, 'router')), 'NameTaken');
 
     // Bob does not maintain router.
     equal(errorOf(await fixture.call(BOB, 'uploadArtifact', 'bytes', `?package=${pkgDid}`, 'text/plain')), 'Forbidden');
@@ -2480,8 +2645,8 @@ export let tests = suite('registry/app-view', () => {
   test('creates and publishes over a PDS it reaches by XRPC, with its own tokens', async (ctx): Future<void> => {
     let fixture = new Fixture(new MemoryAppViewStore(), new MemoryStorage(), true);
     try {
-      let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-      let pkgDid = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+      let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+      let pkgDid = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
       let blob = await upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
       await release(fixture, ALICE, pkgDid, '1.0.0', blob);
       // The PDS made the account for the App View, whose DID document names
@@ -2500,36 +2665,36 @@ export let tests = suite('registry/app-view', () => {
 
   test('takes a name only once, however the lookups race', async (ctx) => {
     let fixture = new Fixture(new StaleAppViewStore());
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    equal(errorOf(await createOrganization(fixture, BOB, 'acme')), 'NameTaken');
-    ok(await createPackage(fixture, ALICE, orgDid, 'router'));
-    equal(errorOf(await createPackage(fixture, ALICE, orgDid, 'router')), 'NameTaken');
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    equal(errorOf(await createScope(fixture, BOB, 'acme')), 'NameTaken');
+    ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
+    equal(errorOf(await createPackage(fixture, ALICE, scopeDid, 'router')), 'NameTaken');
     // Only the accounts that got their names were sent to the directory,
     // and have records.
     equal(fixture.submitted.size, 2);
-    equal(fixture.records.lookup('acme.pkg.test') as String, orgDid);
+    equal(fixture.records.lookup('acme.pkg.test') as String, scopeDid);
   });
 
   test('gives a name back when its account cannot be made', async (ctx) => {
     let fixture = new Fixture();
     fixture.plcDown = true;
-    equal((await createOrganization(fixture, ALICE, 'acme')).statusCode, 500);
+    equal((await createScope(fixture, ALICE, 'acme')).statusCode, 500);
     isTrue(fixture.records.lookup('acme.pkg.test') == null, 'no record for an account not made');
     fixture.plcDown = false;
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
     fixture.plcDown = true;
-    equal((await createPackage(fixture, ALICE, orgDid, 'router')).statusCode, 500);
+    equal((await createPackage(fixture, ALICE, scopeDid, 'router')).statusCode, 500);
     isTrue(fixture.records.lookup('router.acme.pkg.test') == null, 'no record for an account not made');
     fixture.plcDown = false;
-    let pkgDid = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let pkgDid = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     equal(fixture.records.lookup('router.acme.pkg.test') as String, pkgDid);
   });
 
   test('writes every handle record again from its store', async (ctx) => {
     let store = new MemoryAppViewStore();
     let fixture = new Fixture(store);
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let pkgDid = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let pkgDid = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     // The records are lost, and a name was claimed for an account that was
     // never made, as a crash between the two would leave it.
     await fixture.records.remove('acme.pkg.test');
@@ -2537,15 +2702,15 @@ export let tests = suite('registry/app-view', () => {
     await store.claimName('acme', 'ghost', 'did:plc:ghostghostghostghostghos');
 
     equal(await (fixture.appView as AppView).syncHandles(), 2);
-    equal(fixture.records.lookup('acme.pkg.test') as String, orgDid);
+    equal(fixture.records.lookup('acme.pkg.test') as String, scopeDid);
     equal(fixture.records.lookup('router.acme.pkg.test') as String, pkgDid);
     isTrue(fixture.records.lookup('ghost.acme.pkg.test') == null, 'no record for an account that does not exist');
   });
 
   test('refuses a release that does not agree with its archive, or depends on what is not there', async (ctx) => {
     let fixture = new Fixture();
-    let orgDid = ok(await createOrganization(fixture, ALICE, 'acme'))['did'] as String;
-    let pkgDid = ok(await createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let scopeDid = ok(await createScope(fixture, ALICE, 'acme'))['did'] as String;
+    let pkgDid = ok(await createPackage(fixture, ALICE, scopeDid, 'router'))['did'] as String;
     let publish = async (version: String, blob: BlobRef): Future<Response> => await fixture.call(ALICE, 'publish',
         `{"package": "${pkgDid}", "release": ${releaseJson(version, blob)}}`);
     let refusal = (res: Response) => {
@@ -2607,7 +2772,7 @@ export let tests = suite('registry/app-view', () => {
     equal((await fixture.get('/admin/log', await webCookie(fixture, BOB))).statusCode, 403, 'non-admin');
 
     // Refused calls go to CallLog and write nothing to the activity store.
-    equal(errorOf(await createOrganization(fixture, BOB, 'bobs')), 'NotAllowed');
+    equal(errorOf(await createScope(fixture, BOB, 'bobs')), 'NotAllowed');
     equal(errorOf(await fixture.call(BOB, 'putScopeCreator', `{"did": "${BOB}", "allowed": true}`)), 'Forbidden');
     equal((await appView.listActivity(ALICE, new ActivityQuery())).length, 0);
     var refusedCalls = 0;
@@ -2619,32 +2784,31 @@ export let tests = suite('registry/app-view', () => {
     equal(refusedCalls, 2);
     ok(await fixture.call(ALICE, 'putScopeCreator', `{"did": "${BOB}", "allowed": true}`));
 
-    // Scope, operator scope, team, scope profile, automation, package, release, retraction and limits.
-    let org = ok(await createOrganization(fixture, ALICE, 'acme'));
-    let orgDid = org['did'] as String;
+    // Scope, organization, operator scope, team, scope profile, automation, package, release, retraction and
+    // limits.
+    let (scopeDid, membersCid) = await createOrganization(fixture, ALICE, 'acme');
     await appView.createScopeAsOperator(ALICE, 'zena', [], 1793000000000000 as i64);
-    await appView.setLimit(orgDid, Limit.Packages, some(2500 as i64), 1793000000000001 as i64);
+    await appView.setLimit(scopeDid, Limit.Packages, some(2500 as i64), 1793000000000001 as i64);
 
     ok(await fixture.call(ALICE, 'putScopeProfile',
-        `{"organization": "${orgDid}", "profile": {"$type": "dev.zena-lang.org.profile", "displayName": "Acme"}}`));
+        `{"scope": "${scopeDid}", "profile": {"$type": "dev.zena-lang.scope.profile", "displayName": "Acme"}}`));
     let bobMember = new MemberEntry(BOB, MEMBER, filled(221));
-    ok(await putMembers(fixture, ALICE, orgDid,
-        [(await entriesSeen(fixture, ALICE, orgDid))[0], bobMember], [bobMember],
-        (org['members'] as JsonObject)['cid'] as String));
+    ok(await putMembers(fixture, ALICE, scopeDid,
+        [(await entriesSeen(fixture, ALICE, scopeDid, null, true))[0], bobMember], [bobMember], membersCid));
 
-    ok(await putTeam(fixture, ALICE, orgDid, 'core', [new MemberEntry(BOB, MAINTAINER, filled(222))], null));
-    let proposedOps = ok(await proposeTeam(fixture, ALICE, orgDid, 'ops',
+    ok(await putTeam(fixture, ALICE, scopeDid, 'core', [new MemberEntry(BOB, MAINTAINER, filled(222))], null));
+    let proposedOps = ok(await proposeTeam(fixture, ALICE, scopeDid, 'ops',
         [new MemberEntry(BOB, MAINTAINER, filled(223))], null));
     ok(await fixture.call(ALICE, 'withdrawChange', `{"uri": "${proposedOps['uri'] as String}"}`));
-    equal(errorOf(await fixture.call(BOB, 'deleteTeam', `{"organization": "${orgDid}", "name": "core"}`)), 'Forbidden');
-    ok(await fixture.call(ALICE, 'deleteTeam', `{"organization": "${orgDid}", "name": "core"}`));
+    equal(errorOf(await fixture.call(BOB, 'deleteTeam', `{"organization": "${scopeDid}", "name": "core"}`)), 'Forbidden');
+    ok(await fixture.call(ALICE, 'deleteTeam', `{"organization": "${scopeDid}", "name": "core"}`));
 
-    let bot = ok(await fixture.call(ALICE, 'createAutomationAccount', `{"organization": "${orgDid}", "name": "ci"}`));
+    let bot = ok(await fixture.call(ALICE, 'createAutomationAccount', `{"scope": "${scopeDid}", "name": "ci"}`));
     let botDid = bot['did'] as String;
     ok(await fixture.call(ALICE, 'issueAutomationToken', `{"account": "${botDid}"}`));
 
-    equal(errorOf(await createPackage(fixture, BOB, orgDid, 'router')), 'Forbidden');
-    let pkg = ok(await createPackage(fixture, ALICE, orgDid, 'router'));
+    equal(errorOf(await createPackage(fixture, BOB, scopeDid, 'router')), 'Forbidden');
+    let pkg = ok(await createPackage(fixture, ALICE, scopeDid, 'router'));
     let pkgDid = pkg['did'] as String;
     equal(errorOf(await fixture.call(BOB, 'uploadArtifact', 'x', `?package=${pkgDid}`, 'application/vnd.ipld.car')),
         'Forbidden');
@@ -2689,6 +2853,8 @@ export let tests = suite('registry/app-view', () => {
       'Operations log',
       'href="/packages/router.acme.pkg.test"',
       'href="/scopes/acme"',
+      'Propose upgrading scope to organization',
+      'Propose organization members',
       'ci.acme.pkg.test',
       'broken edge',
       'packages=2500',
@@ -2706,7 +2872,7 @@ export let tests = suite('registry/app-view', () => {
 
     // Filter by actor=operator.
     let operatorHtml = pageOf(await fixture.get('/admin/log?actor=operator', adminCookie));
-    isTrue(operatorHtml.contains('Create scope (operator)') && operatorHtml.contains('packages=2500') &&
+    isTrue(operatorHtml.contains('Create scope') && operatorHtml.contains('packages=2500') &&
         !operatorHtml.contains('broken edge'), operatorHtml);
   });
 });

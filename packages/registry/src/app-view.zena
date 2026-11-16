@@ -6,11 +6,11 @@
  * Every call comes from a maintainer's own account, with a service-auth
  * token their PDS signed for this App View and the one method called. The App View
  * checks the token, and the caller's role in the records it holds, and then
- * acts for the package or organization account, which no one signs in as.
+ * acts for the scope or package account, which no one signs in as.
  *
- * This implements creating organizations and packages, uploading artifacts,
- * publishing releases, and changing who belongs: an organization's
- * members, its teams, and a package's maintainers, with the private
+ * This implements creating scopes and packages, uploading artifacts,
+ * publishing releases, and changing who belongs: a scope's maintainers, an
+ * organization's members and teams, and a package's maintainers, with the private
  * entries behind their commitments ("Private membership"). A role is read
  * from the record as it is now: an entry the current record no longer
  * commits to gives nothing. The limits on how many accounts a scope
@@ -46,7 +46,6 @@ import {ArchiveError} from 'package-manager/archive';
 import {Version} from 'zena-lang:semver';
 import {MINIMUM_CLIENT_VERSION, RECOMMENDED_CLIENT_VERSION, zenaVersionOf} from './clients.zena';
 import {
-  ADMIN,
   ATTESTATION_TYPE,
   Attestation,
   attestationKey,
@@ -54,13 +53,16 @@ import {
   MEMBER,
   MEMBERS_TYPE,
   MAINTAINERS_TYPE,
+  Maintainer,
   Maintainers,
   MemberEntry,
   Members,
   OWNER,
   POLICY_TYPE,
   Policy,
+  SCOPE_MAINTAINERS_TYPE,
   SCOPE_PROFILE_TYPE,
+  ScopeMaintainers,
   ScopeProfile,
   TEAM_TYPE,
   Team,
@@ -96,6 +98,9 @@ import {isValidDid} from 'atproto/syntax';
  * the online key and `MAX_RECOVERY_KEYS`, they fill PLC's five.
  */
 export let MAX_OFFLINE_ROTATION_KEYS = 2;
+
+/** The role a requirement names when a scope's owners approve a change to one of its packages' maintainers. */
+export let SCOPE_OWNER = 'scope owner';
 
 /** The most recovery keys an account's genesis operation ranks above the App View's keys. */
 let MAX_RECOVERY_KEYS = 2;
@@ -142,15 +147,15 @@ export class AppViewError extends Error {
  * adds to is full, and raising one limit leaves the others as they are.
  */
 export enum Limit {
-  /** The bytes of one release's artifacts, set on a package or its organization. */
+  /** The bytes of one release's artifacts, set on a package or its scope. */
   ReleaseBytes,
-  /** The bytes of a package's releases, held ones included, set on a package or its organization. */
+  /** The bytes of a package's releases, held ones included, set on a package or its scope. */
   PackageBytes,
-  /** The bytes of the releases of a scope's packages, set on its organization. */
+  /** The bytes of the releases of a scope's packages, set on the scope. */
   ScopeBytes,
-  /** Actions on a package in a day, set on a package or its organization. */
+  /** Actions on a package in a day, set on a package or its scope. */
   PackageActions,
-  /** Actions on a scope, its organization and its packages in a day, set on its organization. */
+  /** Actions on a scope and its packages in a day, set on the scope. */
   ScopeActions,
   /** Actions by one caller in a day, set on the caller. */
   UserActions,
@@ -158,9 +163,9 @@ export enum Limit {
   ScopeCreations,
   /** Scopes one person creates in all, set on the person. */
   Scopes,
-  /** Packages and automation accounts a scope creates in a day, set on its organization. */
+  /** Packages and automation accounts a scope creates in a day, set on the scope. */
   PackageCreations,
-  /** Packages and automation accounts a scope creates in all, set on its organization. */
+  /** Packages and automation accounts a scope creates in all, set on the scope. */
   Packages
 }
 
@@ -188,10 +193,10 @@ export function limitName(limit: Limit): String {
 
 /** What a limit is set on (`limitSetOn`). */
 export enum LimitSubject {
-  /** A package, or an organization for all of its packages. */
+  /** A package, or a scope for all of its packages. */
   Package,
-  /** An organization. */
-  Organization,
+  /** A scope. */
+  Scope,
   /** A person or an automation account that calls the App View. */
   Caller
 }
@@ -202,10 +207,10 @@ export function limitSetOn(limit: Limit): LimitSubject {
     case Limit.ReleaseBytes: LimitSubject.Package
     case Limit.PackageBytes: LimitSubject.Package
     case Limit.PackageActions: LimitSubject.Package
-    case Limit.ScopeBytes: LimitSubject.Organization
-    case Limit.ScopeActions: LimitSubject.Organization
-    case Limit.PackageCreations: LimitSubject.Organization
-    case Limit.Packages: LimitSubject.Organization
+    case Limit.ScopeBytes: LimitSubject.Scope
+    case Limit.ScopeActions: LimitSubject.Scope
+    case Limit.PackageCreations: LimitSubject.Scope
+    case Limit.Packages: LimitSubject.Scope
     case Limit.UserActions: LimitSubject.Caller
     case Limit.ScopeCreations: LimitSubject.Caller
     case Limit.Scopes: LimitSubject.Caller
@@ -286,19 +291,19 @@ export interface AppViewStore {
   account(did: String): Future<AppViewAccount | null>;
   /** Every account the App View made. */
   accounts(): Future<Array<AppViewAccount>>;
-  /** The organization whose scope is `scope`, or null. */
-  scopeOwner(scope: String): Future<String | null>;
-  /** Gives `scope` to `org` unless it has an owner. Returns whether it did. */
-  claimScope(scope: String, org: String): Future<boolean>;
-  /** Takes `scope` back from `org`, whose account could not be made. */
-  releaseScope(scope: String, org: String): Future<void>;
+  /** The account of the scope `scope`, by DID, or null. */
+  scopeAccount(scope: String): Future<String | null>;
+  /** Gives `scope` to the account `did` unless another holds it. Returns whether it did. */
+  claimScope(scope: String, did: String): Future<boolean>;
+  /** Takes `scope` back from the account `did`, which could not be made. */
+  releaseScope(scope: String, did: String): Future<void>;
   /** The account named `name` in `scope`, or null. */
   nameInScope(scope: String, name: String): Future<String | null>;
   /** Gives `name` in `scope` to `did` unless it is taken. Returns whether it did. */
   claimName(scope: String, name: String, did: String): Future<boolean>;
   /** Takes `name` in `scope` back from `did`, whose account could not be made. */
   releaseName(scope: String, name: String, did: String): Future<void>;
-  /** Every scope, and its organization. */
+  /** Every scope, and its account. */
   allScopes(): Future<Array<ClaimedScope>>;
   /** Every name in every scope, and the account it is given to. */
   allNames(): Future<Array<ClaimedName>>;
@@ -595,10 +600,11 @@ export final class Publication {
 }
 
 /**
- * A change to an organization's members record or one of its teams, or to
- * a package's maintainers record, held back until the record before it
- * allows it: until enough of the roles that record names have attested
- * the new one (`putMembers`, `putTeam`, `putMaintainers`,
+ * A change to a scope's maintainers or policy record, an organization's
+ * members record or one of its teams, or a package's maintainers record,
+ * held back until the records before it allow it: until enough of the
+ * roles they name have attested the new one (`putScopeMaintainers`,
+ * `putPolicy`, `upgradeScope`, `putMembers`, `putTeam`, `putMaintainers`,
  * `completeChange`). Until then the record before it decides every role.
  */
 export final class PendingChange {
@@ -618,12 +624,12 @@ export final class PendingChange {
   new(this.collection, this.rkey, this.record, this.cid, this.base, this.proposer, this.heldAt);
 }
 
-/** A scope and the organization it belongs to. */
+/** A scope's name, and its account's DID. */
 export final class ClaimedScope {
   scope: String;
-  org: String;
+  did: String;
 
-  new(this.scope, this.org);
+  new(this.scope, this.did);
 }
 
 /** A name in a scope and the account it is given to. */
@@ -855,8 +861,8 @@ export final class AppView {
    * Keeps the indexes after `writes` to `account`'s repository made the
    * commit `head`: the summary of a package whose profile, releases or
    * retractions changed, which `listPackages` lists, and which people and
-   * teams an organization's members and teams, or a package's
-   * maintainers, mention, which `getMemberships` and `publicRolesOf`
+   * teams a scope's maintainers, an organization's members and teams, or a
+   * package's maintainers, mention, which `getMemberships` and `publicRolesOf`
    * start from. The commit stands whatever happens here, so an index that
    * cannot be written is left until the next commit, or `syncIndexes`.
    */
@@ -872,8 +878,9 @@ export final class AppView {
       if (account.kind == AccountKind.Package) {
         shown = shown || collection == PROFILE_TYPE || collection == RELEASE_TYPE || collection == RETRACTION_TYPE;
         mentions = mentions || collection == MAINTAINERS_TYPE;
-      } else if (account.kind == AccountKind.Organization) {
-        mentions = mentions || collection == MEMBERS_TYPE || collection == TEAM_TYPE;
+      } else if (account.kind == AccountKind.Scope) {
+        mentions = mentions || collection == SCOPE_MAINTAINERS_TYPE || collection == MEMBERS_TYPE ||
+            collection == TEAM_TYPE;
       }
     }
     try {
@@ -898,16 +905,18 @@ export final class AppView {
     for (let entry in await this.#store.entries(account.did)) {
       subjects.add(entry.did);
     }
-    if (account.kind == AccountKind.Package) {
-      let record = await this.#current(account.did, MAINTAINERS_TYPE, 'self');
-      if (record != null) {
-        for (let maintainer in Maintainers.fromValue(record.value).maintainers) {
-          if (maintainer.did != null) {
-            subjects.add(maintainer.did as String);
-          }
-          if (maintainer.org != null && maintainer.team != null) {
-            subjects.add(`${maintainer.org as String} ${maintainer.team as String}`);
-          }
+    let collection = if (account.kind == AccountKind.Package) MAINTAINERS_TYPE
+        else if (account.kind == AccountKind.Scope) SCOPE_MAINTAINERS_TYPE else '';
+    let record = if (collection != '') await this.#current(account.did, collection, 'self') else null;
+    if (record != null) {
+      let maintainers = if (collection == SCOPE_MAINTAINERS_TYPE) ScopeMaintainers.fromValue(record.value).maintainers
+          else Maintainers.fromValue(record.value).maintainers;
+      for (let maintainer in maintainers) {
+        if (maintainer.did != null) {
+          subjects.add(maintainer.did as String);
+        }
+        if (maintainer.org != null && maintainer.team != null) {
+          subjects.add(`${maintainer.org as String} ${maintainer.team as String}`);
         }
       }
     }
@@ -960,7 +969,7 @@ export final class AppView {
 
   /**
    * Writes the App View's indexes again, each package's summary and the
-   * mentions of every organization and package, from the repositories as
+   * mentions of every scope and package, from the repositories as
    * they are now, and returns how many accounts it indexed: for accounts
    * a server before the indexes made, or a commit whose indexes were not
    * written.
@@ -968,7 +977,7 @@ export final class AppView {
   async syncIndexes(): Future<i32> {
     var written = 0;
     for (let account in await this.#store.accounts()) {
-      if (account.kind == AccountKind.Organization) {
+      if (account.kind == AccountKind.Scope) {
         await this.#store.addMentions(account.did, await this.#subjectsOf(account));
         written += 1;
       } else if (account.kind == AccountKind.Package) {
@@ -989,7 +998,7 @@ export final class AppView {
    * Reads what the App View and its PDS keep of every account, and changes
    * nothing, as after a restore of their database (`main.zena`'s
    * `check-store`, `deploy/restore-drill.sh`): that its name leads back to
-   * it, that its repository has a commit, that a scope has its members
+   * it, that its repository has a commit, that a scope has its maintainers
    * record, and that a package has its profile and maintainers, its
    * releases read, and the PDS has every blob they name. Runs `extra` on
    * each account too, which throws for a problem. Returns what it checked,
@@ -1002,7 +1011,7 @@ export final class AppView {
       let did = account.did;
       let label = `${account.handle} (${did})`;
       try {
-        let named = if (account.kind == AccountKind.Organization) await this.#store.scopeOwner(account.scope)
+        let named = if (account.kind == AccountKind.Scope) await this.#store.scopeAccount(account.scope)
             else await this.#store.nameInScope(account.scope, account.name);
         if (named != did) {
           check.problems.push(`${label}: its name leads to ${named ?? 'no account'}`);
@@ -1011,10 +1020,10 @@ export final class AppView {
           check.problems.push(`${label}: its repository has no commit`);
           continue;
         }
-        if (account.kind == AccountKind.Organization) {
-          check.organizations += 1;
-          if ((await this.#current(did, MEMBERS_TYPE, 'self')) == null) {
-            check.problems.push(`${label}: it has no members record`);
+        if (account.kind == AccountKind.Scope) {
+          check.scopes += 1;
+          if ((await this.#current(did, SCOPE_MAINTAINERS_TYPE, 'self')) == null) {
+            check.problems.push(`${label}: it has no maintainers record`);
           }
         } else if (account.kind == AccountKind.Package) {
           check.packages += 1;
@@ -1080,13 +1089,13 @@ export final class AppView {
   }
 
   /**
-   * `createOrganization`: a scope named `name`, owned by `caller` alone.
+   * `createScope`: a scope named `name`, owned by `caller` alone.
    * `recoveryKeys`, which may be none, are `did:key`s, ranked above the
    * App View's rotation key. The scope's handle record is written last, so the
-   * handle resolves only to an organization that is whole. A reserved name
-   * is refused: only the operator takes one (`createScopeAsOperator`).
+   * handle resolves only to a scope that is whole. A reserved name is
+   * refused: only the operator takes one (`createScopeAsOperator`).
    */
-  async createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
+  async createScope(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
       : Future<Created> {
     if (!(await this.mayCreateScopes(caller))) {
       throw new AppViewError(403, 'NotAllowed',
@@ -1095,30 +1104,32 @@ export final class AppView {
     if (this.config.reservedScopes.has(name)) {
       throw new AppViewError(400, 'NameTaken', `'${name}' cannot be a scope`);
     }
-    return await this.#createOrganization(caller, caller, 'createOrganization', null, name, recoveryKeys, nowMicros,
-        true);
+    return await this.#createScope(caller, caller, 'createScope', null, name, recoveryKeys, nowMicros, true);
   }
 
   /**
    * A scope named `name`, owned by `owner` alone, created by the App View's
-   * operator: as `createOrganization`, but a reserved name may be taken.
+   * operator: as `createScope`, but a reserved name may be taken.
    * No XRPC method reaches it; `main.zena -- create-scope` calls it with
    * the server's own configuration (package-manager.md, "Scopes"). It
    * counts against none of the owner's limits.
    */
   async createScopeAsOperator(owner: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
       : Future<Created> {
-    return await this.#createOrganization(owner, 'operator', 'createScope', owner, name, recoveryKeys, nowMicros,
-        false);
+    return await this.#createScope(owner, 'operator', 'createScope', owner, name, recoveryKeys, nowMicros, false);
   }
 
-  /** The scope `name`, owned by `caller`, which with `counted` counts as `caller`'s action and creation. */
-  async #createOrganization(caller: String, actor: String, method: String, detail: String | null, name: String,
+  /**
+   * The scope `name`, with a maintainers record naming `caller` as its only
+   * owner, by a private entry; with `counted`, it counts as `caller`'s
+   * action and creation.
+   */
+  async #createScope(caller: String, actor: String, method: String, detail: String | null, name: String,
       recoveryKeys: Array<String>, nowMicros: i64, counted: boolean): Future<Created> {
     if (!isValidScopeName(name)) {
       throw new AppViewError(400, 'NameTaken', `'${name}' cannot be a scope`);
     }
-    if ((await this.#store.scopeOwner(name)) != null) {
+    if ((await this.#store.scopeAccount(name)) != null) {
       throw new AppViewError(400, 'NameTaken', `the scope '${name}' exists`);
     }
     let recovery = parseRecoveryKeys(recoveryKeys);
@@ -1132,47 +1143,48 @@ export final class AppView {
       throw new AppViewError(400, 'NameTaken', `the scope '${name}' exists`);
     }
     let store = this.#store;
-    let account = await this.#createAccount(prepared, new AppViewAccount(did, handle, AccountKind.Organization, name, name),
+    let account = await this.#createAccount(prepared, new AppViewAccount(did, handle, AccountKind.Scope, name, name),
         async (): Future<void> => { await store.releaseScope(name, did); });
     let owner = new MemberEntry(caller, OWNER, this.#random(32));
     await this.#store.addEntries(account.did, [owner]);
-    let members = new Members(new FixedArray<Cid>(1, owner.commitment()));
-    let cid = await this.#write(account, MEMBERS_TYPE, 'self', members.toValue());
+    let maintainers = new ScopeMaintainers(new FixedArray<Maintainer>(1,
+        new Maintainer(null, owner.commitment(), null, null, OWNER)));
+    let cid = await this.#write(account, SCOPE_MAINTAINERS_TYPE, 'self', maintainers.toValue());
     await this.#records.set(handle, account.did);
     let event = this.#eventOnAccount(nowMicros, actor, method, ACTIVITY_SCOPE, OUTCOME_WRITTEN, account);
-    event.collection = MEMBERS_TYPE;
+    event.collection = SCOPE_MAINTAINERS_TYPE;
     event.rkey = 'self';
     event.after = cid;
     event.detail = detail;
     await this.#recordActivity(event);
-    return new Created(account.did, handle, `at://${account.did}/${MEMBERS_TYPE}/self`, cid);
+    return new Created(account.did, handle, `at://${account.did}/${SCOPE_MAINTAINERS_TYPE}/self`, cid);
   }
 
   /**
-   * `createAutomationAccount`: an account named `name` in `org`'s scope,
+   * `createAutomationAccount`: an account named `name` in the scope `scope`,
    * for CI to publish as, with a token, which is returned and never shown
-   * again. The caller must be an owner or admin of `org`. The account is a
+   * again. The caller must be an owner of the scope. The account is a
    * maintainer of nothing until a package's owners add it, marked
    * `automation`. It is a managed account like the others, which no one
    * signs in to: CI calls the App View's methods with its token, and the
    * App View writes its attestations of what it publishes
    * (package-manager.md, "Publishing a release"). Its name is taken in the
    * scope as a package's would be. It has no recovery keys: the App View
-   * holds it, as it holds the organization.
+   * holds it, as it holds the scope.
    */
-  async createAutomationAccount(caller: String, org: String, name: String, nowMicros: i64): Future<Automation> {
-    let organization = await this.#account(org, AccountKind.Organization, 'an organization');
-    if (!isAdmin(await this.#orgRole(org, caller))) {
-      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
+  async createAutomationAccount(caller: String, scopeDid: String, name: String, nowMicros: i64): Future<Automation> {
+    let scopeAccount = await this.#account(scopeDid, AccountKind.Scope, 'a scope');
+    if ((await this.#scopeRole(scopeDid, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${scopeDid}`);
     }
     if (!isValidPackageName(name)) {
       throw new AppViewError(400, 'InvalidRequest', `'${name}' cannot name an account`);
     }
-    let scope = organization.scope;
+    let scope = scopeAccount.scope;
     if ((await this.#store.nameInScope(scope, name)) != null) {
       throw new AppViewError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
     }
-    await this.#countAction(caller, organization, nowMicros, true);
+    await this.#countAction(caller, scopeAccount, nowMicros, true);
     let handle = `${name}.${scope}.${this.config.domain}`;
     let prepared = await this.#prepareAccount(handle, new GrowableArray<PublicKey>());
     let did = prepared.did;
@@ -1193,8 +1205,8 @@ export final class AppView {
   /**
    * `issueAutomationToken`: a new token for the automation account
    * `account`, which is returned and never shown again, in place of the
-   * one it had, which stops working. The caller must be an owner or admin
-   * of its organization.
+   * one it had, which stops working. The caller must be an owner of its
+   * scope.
    */
   async issueAutomationToken(caller: String, account: String, nowMicros: i64): Future<String> {
     let held = await this.#administeredAutomation(caller, account);
@@ -1210,11 +1222,10 @@ export final class AppView {
 
   /**
    * `retireAutomationAccount`: stops the automation account `account`
-   * publishing, for CI an organization no longer runs, or a token that
+   * publishing, for CI a scope no longer runs, or a token that
    * leaked: its token stops working, and it is given no other. Its
    * repository and its name stay, since the attestations in it count toward
-   * the releases it published. The caller must be an owner or admin of its
-   * organization. Refused while a package's maintainers name it, by DID,
+   * the releases it published. The caller must be an owner of its scope. Refused while a package's maintainers name it, by DID,
    * entry or team, naming the packages, so that their owners take it out
    * first. Retiring one that was retired changes nothing.
    */
@@ -1233,7 +1244,7 @@ export final class AppView {
       }
       if (holder.kind == AccountKind.Package) {
         candidates.add(holder.did);
-      } else if (holder.kind == AccountKind.Organization) {
+      } else if (holder.kind == AccountKind.Scope) {
         for (let team in await this.#pds.listRecords(holder.did, TEAM_TYPE)) {
           for (let pkg in await this.#store.mentionsOf(`${holder.did} ${team.rkey}`)) {
             candidates.add(pkg);
@@ -1262,17 +1273,16 @@ export final class AppView {
 
   /**
    * The automation account `account`, which this App View holds, when
-   * `caller` is an owner or admin of its organization. Throws
-   * `AppViewError` otherwise.
+   * `caller` is an owner of its scope. Throws `AppViewError` otherwise.
    */
   async #administeredAutomation(caller: String, account: String): Future<AppViewAccount> {
     let held = await this.#store.account(account);
     if (held == null || held.kind != AccountKind.Automation) {
       throw new AppViewError(400, 'InvalidRequest', `${account} is not an automation account on this App View`);
     }
-    let org = await this.#store.scopeOwner(held.scope);
-    if (org == null || !isAdmin(await this.#orgRole(org, caller))) {
-      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${held.scope}`);
+    let scope = await this.#store.scopeAccount(held.scope);
+    if (scope == null || (await this.#scopeRole(scope, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${held.scope}`);
     }
     return held;
   }
@@ -1285,23 +1295,24 @@ export final class AppView {
   }
 
   /**
-   * `createPackage`: a package in `org`'s scope, named by its profile, with
-   * its maintainers record. The caller must be an owner or admin of `org`.
-   * As with an organization, its handle record is written last.
+   * `createPackage`: a package in the scope `scopeDid`, named by its
+   * profile, with its maintainers record. The caller must be an owner or a
+   * publisher of the scope. As with a scope, its handle record is written
+   * last.
    */
-  async createPackage(caller: String, org: String, recoveryKeys: Array<String>, profileValue: Value,
+  async createPackage(caller: String, scopeDid: String, recoveryKeys: Array<String>, profileValue: Value,
       maintainersValue: Value, entryValues: Array<Value>, nowMicros: i64): Future<Created> {
-    let organization = await this.#store.account(org);
-    if (organization == null || organization.kind != AccountKind.Organization) {
-      throw new AppViewError(400, 'InvalidRequest', `${org} is not an organization on this App View`);
+    let scopeAccount = await this.#store.account(scopeDid);
+    if (scopeAccount == null || scopeAccount.kind != AccountKind.Scope) {
+      throw new AppViewError(400, 'InvalidRequest', `${scopeDid} is not a scope on this App View`);
     }
-    let policy = await this.#policy(org);
-    if (!isAdmin(await this.#orgRole(org, caller)) && !(await this.#isCreator(org, policy, caller))) {
-      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}, or on a team its policy lets create packages`);
+    if ((await this.#scopeRole(scopeDid, caller)) == null) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner or a publisher of ${scopeDid}`);
     }
+    let policy = await this.#policy(scopeDid);
     let profile = readRecord(() => Profile.fromValue(profileValue, true));
     let maintainers = readRecord(() => Maintainers.fromValue(maintainersValue));
-    meetsPolicy(maintainers, policy, org);
+    meetsPolicy(maintainers, policy, scopeDid);
     let committed = new HashSet<String>();
     for (let maintainer in maintainers.maintainers) {
       let commitment = maintainer.commitment;
@@ -1317,12 +1328,12 @@ export final class AppView {
       }
       entries.push(entry);
     }
-    let scope = organization.scope;
+    let scope = scopeAccount.scope;
     if ((await this.#store.nameInScope(scope, profile.name)) != null) {
       throw new AppViewError(400, 'NameTaken', `the scope '${scope}' has '${profile.name}'`);
     }
     let recovery = parseRecoveryKeys(recoveryKeys);
-    await this.#countAction(caller, organization, nowMicros, true);
+    await this.#countAction(caller, scopeAccount, nowMicros, true);
     let handle = `${profile.name}.${scope}.${this.config.domain}`;
     let prepared = await this.#prepareAccount(handle, recovery);
     let did = prepared.did;
@@ -1357,8 +1368,8 @@ export final class AppView {
   async syncHandles(): Future<i32> {
     var written = 0;
     for (let claimed in await this.#store.allScopes()) {
-      if ((await this.#store.account(claimed.org)) != null) {
-        await this.#records.set(`${claimed.scope}.${this.config.domain}`, claimed.org);
+      if ((await this.#store.account(claimed.did)) != null) {
+        await this.#records.set(`${claimed.scope}.${this.config.domain}`, claimed.did);
         written += 1;
       }
     }
@@ -1687,13 +1698,13 @@ export final class AppView {
 
   /**
    * The storage limits of the package `account`. For each, the operator's
-   * setting on the package wins, then the one on its organization, then
-   * the App View's default; the scope's is set on the organization alone.
+   * setting on the package wins, then the one on its scope, then the App
+   * View's default; the scope's own is set on the scope alone.
    */
   async #storageLimits(account: AppViewAccount): Future<StorageLimits> {
     let own = await this.#store.limits(account.did);
-    let org = await this.#store.scopeOwner(account.scope);
-    let scoped = if (org == null) new Limits() else await this.#store.limits(org);
+    let scopeDid = await this.#store.scopeAccount(account.scope);
+    let scoped = if (scopeDid == null) new Limits() else await this.#store.limits(scopeDid);
     let config = this.config;
     return new StorageLimits(
         own.valueOr(Limit.ReleaseBytes, scoped.valueOr(Limit.ReleaseBytes, config.releaseBytes)),
@@ -1737,9 +1748,9 @@ export final class AppView {
   }
 
   /**
-   * Counts one action by `caller` on `account`, a package, an organization
-   * or an automation account: a day's actions on the package, on its scope
-   * and by the caller. With `creating`, `account` is the organization a
+   * Counts one action by `caller` on `account`, a package, a scope or an
+   * automation account: a day's actions on the package, on its scope and
+   * by the caller. With `creating`, `account` is the scope a
    * package or an automation account is created in, and the scope's
    * creations count too. Refuses the action when one of the counts is full.
    */
@@ -1747,20 +1758,21 @@ export final class AppView {
       : Future<void> {
     let config = this.config;
     let day = dayOf(nowMicros);
-    let org = if (account.kind == AccountKind.Organization) account.did else await this.#store.scopeOwner(account.scope);
-    let scoped = if (org == null) new Limits() else await this.#store.limits(org);
+    let scopeDid = if (account.kind == AccountKind.Scope) account.did else await this.#store.scopeAccount(account.scope);
+    let scoped = if (scopeDid == null) new Limits() else await this.#store.limits(scopeDid);
     let counts = new GrowableArray<Count>();
     if (account.kind == AccountKind.Package) {
       let own = await this.#store.limits(account.did);
       counts.push(new Count(account.did, Limit.PackageActions, day,
           own.valueOr(Limit.PackageActions, scoped.valueOr(Limit.PackageActions, config.packageActions))));
     }
-    if (org != null) {
-      counts.push(new Count(org, Limit.ScopeActions, day, scoped.valueOr(Limit.ScopeActions, config.scopeActions)));
+    if (scopeDid != null) {
+      counts.push(new Count(scopeDid, Limit.ScopeActions, day,
+          scoped.valueOr(Limit.ScopeActions, config.scopeActions)));
       if (creating) {
-        counts.push(new Count(org, Limit.PackageCreations, day,
+        counts.push(new Count(scopeDid, Limit.PackageCreations, day,
             scoped.valueOr(Limit.PackageCreations, config.packageCreations)));
-        counts.push(new Count(org, Limit.Packages, ALL_TIME, scoped.valueOr(Limit.Packages, config.packages)));
+        counts.push(new Count(scopeDid, Limit.Packages, ALL_TIME, scoped.valueOr(Limit.Packages, config.packages)));
       }
     }
     await this.#countCaller(caller, counts, nowMicros, false);
@@ -1817,14 +1829,14 @@ export final class AppView {
     let subject = limitSetOn(limit);
     let fits = match (subject) {
       case LimitSubject.Package: account != null
-          && (account.kind == AccountKind.Package || account.kind == AccountKind.Organization)
-      case LimitSubject.Organization: account != null && account.kind == AccountKind.Organization
+          && (account.kind == AccountKind.Package || account.kind == AccountKind.Scope)
+      case LimitSubject.Scope: account != null && account.kind == AccountKind.Scope
       case LimitSubject.Caller: isValidDid(did) && (account == null || account.kind == AccountKind.Automation)
     };
     if (!fits) {
       let what = match (subject) {
-        case LimitSubject.Package: 'a package or an organization the App View holds'
-        case LimitSubject.Organization: 'an organization the App View holds'
+        case LimitSubject.Package: 'a package or a scope the App View holds'
+        case LimitSubject.Scope: 'a scope the App View holds'
         case LimitSubject.Caller: 'a person or an automation account'
       };
       throw new AppViewError(400, 'InvalidRequest', `${limitName(limit)} is set on ${what}, which ${did} is not`);
@@ -1868,9 +1880,9 @@ export final class AppView {
     var policy = new Policy();
     let held = await this.#store.account(pkg);
     if (held != null) {
-      let org = await this.#scopeOrganization(held);
-      if (org != null) {
-        policy = await this.#policy(org);
+      let scope = await this.#scopeOf(held);
+      if (scope != null) {
+        policy = await this.#policy(scope);
       }
     }
     tally.threshold = if (policy.minimumThreshold > record.threshold) policy.minimumThreshold else record.threshold;
@@ -1951,7 +1963,7 @@ export final class AppView {
   }
 
   /**
-   * `listScopes`: every scope whose organization exists, by name, with how
+   * `listScopes`: every scope whose account exists, by name, with how
    * many packages each has, from the packages' summaries. Public: scope
    * names are in DNS anyway.
    */
@@ -1966,67 +1978,74 @@ export final class AppView {
     }
     let scopes = new GrowableArray<ScopeSummary>();
     for (let claimed in await this.#store.allScopes()) {
-      let account = await this.#store.account(claimed.org);
-      if (account == null || account.kind != AccountKind.Organization) {
+      let account = await this.#store.account(claimed.did);
+      if (account == null || account.kind != AccountKind.Scope) {
         continue;
       }
       var packages = 0;
       if (let (true, count) = counts.get(claimed.scope)) {
         packages = count;
       }
-      scopes.push(new ScopeSummary(claimed.scope, claimed.org, account.handle, packages));
+      scopes.push(new ScopeSummary(claimed.scope, claimed.did, account.handle, packages));
     }
     scopes.sort((a, b) => compareKeys(a.name, b.name));
     return scopes;
   }
 
   /**
-   * `getMemberships`: the organizations, teams and packages on this App View
-   * that `caller` has a role in, each with the role, as the records stand
-   * now. A package `caller` maintains through a team is listed with the
-   * team's role. Only the accounts noted as mentioning `caller`, or a team
-   * of theirs, are read.
+   * `getMemberships`: the scopes, organizations, teams and packages on this
+   * App View that `caller` has a role in, each with the role, as the
+   * records stand now. A scope or package `caller` maintains through a team
+   * is listed with the team's role. Only the accounts noted as mentioning
+   * `caller`, or a team of theirs, are read.
    */
   async getMemberships(caller: String): Future<Memberships> {
     let memberships = new Memberships();
+    let scopes = new HashSet<String>();
     let packages = new HashSet<String>();
-    for (let did in await this.#store.mentionsOf(caller)) {
+    let note = async (did: String): Future<void> => {
       let account = await this.#store.account(did);
-      if (account == null) {
-        continue;
-      }
-      if (account.kind == AccountKind.Package) {
+      if (account != null && account.kind == AccountKind.Package) {
         packages.add(did);
-        continue;
+      } else if (account != null && account.kind == AccountKind.Scope) {
+        scopes.add(did);
       }
-      if (account.kind != AccountKind.Organization) {
+    };
+    for (let did in await this.#store.mentionsOf(caller)) {
+      await note(did);
+      let account = await this.#store.account(did);
+      if (account == null || account.kind != AccountKind.Scope) {
         continue;
       }
       let scope = account.scope;
-      let role = await this.#orgRole(did, caller);
-      if (role != null) {
-        memberships.orgs.push(new Membership(did, account.handle, scope, scope, role));
+      if (await this.#isMember(did, caller)) {
+        memberships.orgs.push(new Membership(did, account.handle, scope, scope, MEMBER));
       }
       for (let team in await this.#pds.listRecords(did, TEAM_TYPE)) {
         let teamRole = await this.#teamRole(did, team.rkey, caller);
         if (teamRole != null) {
           memberships.teams.push(new Membership(did, account.handle, scope, team.rkey, teamRole));
-          for (let pkg in await this.#store.mentionsOf(`${did} ${team.rkey}`)) {
-            packages.add(pkg);
+          for (let mentioning in await this.#store.mentionsOf(`${did} ${team.rkey}`)) {
+            await note(mentioning);
           }
         }
       }
     }
+    for (let did in scopes) {
+      let held = await this.#store.account(did);
+      let role = await this.#scopeRole(did, caller);
+      if (held != null && role != null) {
+        memberships.scopes.push(new Membership(did, held.handle, held.scope, held.scope, role));
+      }
+    }
     for (let did in packages) {
       let pkg = await this.#store.account(did);
-      if (pkg == null || pkg.kind != AccountKind.Package) {
-        continue;
-      }
       let role = await this.#packageRole(did, caller);
-      if (role != null) {
+      if (pkg != null && role != null) {
         memberships.packages.push(new Membership(did, pkg.handle, pkg.scope, pkg.name, role));
       }
     }
+    sortByName(memberships.scopes);
     sortByName(memberships.orgs);
     sortByName(memberships.teams);
     sortByName(memberships.packages);
@@ -2135,7 +2154,7 @@ export final class AppView {
   }
 
   /**
-   * Every account the App View made, with its kind: organizations, packages
+   * Every account the App View made, with its kind: scopes, packages
    * and automation accounts. Admins only.
    */
   async listAccounts(caller: String): Future<Array<AppViewAccount>> {
@@ -2247,7 +2266,7 @@ export final class AppView {
       return null;
     }
     let labels = handle.sliceBytes(0, handle.length - suffix.length).split('.');
-    let did = if (labels.length == 1) await this.#store.scopeOwner(labels[0])
+    let did = if (labels.length == 1) await this.#store.scopeAccount(labels[0])
         else if (labels.length == 2) await this.#store.nameInScope(labels[1], labels[0])
         else null;
     return if (did != null) await this.#store.account(did) else null;
@@ -2338,18 +2357,18 @@ export final class AppView {
   }
 
   /**
-   * The scope `name`, as its page shows it: its organization, the
-   * commitments of its members record, and its teams, by name; or null
-   * when no organization holds it. Public, as the records are; the entries
+   * The scope `name`, as its page shows it: its account, its maintainers,
+   * and for an organization, the commitments of its members record and its
+   * teams, by name; or null when no account holds it. Public, as the records are; the entries
    * behind the commitments come from `getEntries`.
    */
   async getScope(name: String): Future<ScopeDetail | null> {
-    let org = await this.#store.scopeOwner(name);
-    if (org == null) {
+    let scopeDid = await this.#store.scopeAccount(name);
+    if (scopeDid == null) {
       return null;
     }
-    let account = await this.#store.account(org);
-    if (account == null || account.kind != AccountKind.Organization) {
+    let account = await this.#store.account(scopeDid);
+    if (account == null || account.kind != AccountKind.Scope) {
       return null;
     }
     let detail = new ScopeDetail(name, account.did, account.handle);
@@ -2357,8 +2376,10 @@ export final class AppView {
     if (profile != null) {
       detail.profile = ScopeProfile.fromValue(profile.value);
     }
+    detail.maintainers = await this.#scopeMaintainers(account.did);
     let members = await this.#current(account.did, MEMBERS_TYPE, 'self');
     if (members != null) {
+      detail.organization = true;
       detail.members = Members.fromValue(members.value).members;
     }
     for (let team in await this.#pds.listRecords(account.did, TEAM_TYPE)) {
@@ -2574,36 +2595,54 @@ export final class AppView {
   }
 
   /**
-   * `putMembers`: replaces `org`'s members record. The caller must be an
-   * owner of `org`. Every commitment needs an entry, given now or kept from
-   * before, and the record must leave the organization owners enough to
-   * meet its thresholds, so that it can still be changed.
+   * `upgradeScope`: makes the scope `scopeDid` an organization, by asking
+   * for its first members record, listing the scope's owners, which they
+   * approve as they do its other changes. The caller must be an owner of
+   * the scope, which keeps its DID, handle and packages.
+   */
+  async upgradeScope(caller: String, scopeDid: String, nowMicros: i64): Future<Created> {
+    let account = await this.#account(scopeDid, AccountKind.Scope, 'a scope');
+    if ((await this.#scopeRole(scopeDid, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${scopeDid}`);
+    }
+    if (await this.#isOrganization(scopeDid)) {
+      throw new AppViewError(400, 'AlreadyAnOrganization', `${scopeDid} is an organization already`);
+    }
+    await this.#countAction(caller, account, nowMicros);
+    // The caller is an owner, so the scope has a maintainers record.
+    let maintainers = ((await this.#scopeMaintainers(scopeDid)) as ScopeMaintainers).maintainers;
+    let listed = new HashSet<String>();
+    let entries = new GrowableArray<MemberEntry>();
+    for (let owner in await this.#ownersIn(scopeDid, maintainers)) {
+      if (!listed.has(owner)) {
+        listed.add(owner);
+        entries.push(new MemberEntry(owner, MEMBER, this.#random(32)));
+      }
+    }
+    await this.#store.addEntries(scopeDid, entries);
+    let members = new Members(commitmentsTo(entries));
+    return await this.#propose(caller, 'upgradeScope', account, MEMBERS_TYPE, 'self', members.toValue(), null,
+        nowMicros);
+  }
+
+  /**
+   * `putMembers`: replaces the members record of the organization `org`.
+   * The caller must be an owner of its scope. Every commitment needs an
+   * entry, in the role `member`, given now or kept from before.
    */
   async putMembers(caller: String, org: String, membersValue: Value, entryValues: Array<Value>,
       swapRecord: String | null, nowMicros: i64): Future<Created> {
-    let account = await this.#account(org, AccountKind.Organization, 'an organization');
-    if ((await this.#orgRole(org, caller)) != OWNER) {
+    let account = await this.#organization(org);
+    if ((await this.#scopeRole(org, caller)) != OWNER) {
       throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${org}`);
     }
     await this.#countAction(caller, account, nowMicros);
     let members = readRecord(() => Members.fromValue(membersValue));
     let entries = await this.#entriesBehind(org, members.members, entryValues);
-    var owners = 0;
-    var admins = 0;
     for (let entry in entries.all) {
-      if (entry.role != OWNER && entry.role != ADMIN && entry.role != MEMBER) {
-        throw new AppViewError(400, 'InvalidRequest', `'${entry.role}' is not a role in an organization`);
+      if (entry.role != MEMBER) {
+        throw new AppViewError(400, 'InvalidRequest', `'${entry.role}' is not the role of an organization's member`);
       }
-      if (entry.role == OWNER) {
-        owners += 1;
-      }
-      if (isAdmin(entry.role)) {
-        admins += 1;
-      }
-    }
-    if ((owners as i64) < members.ownerThreshold || (admins as i64) < members.adminThreshold) {
-      throw new AppViewError(400, 'InvalidRequest',
-          `${owners} owners and ${admins} admins or owners cannot meet the thresholds of ${members.ownerThreshold} and ${members.adminThreshold}`);
     }
     await this.#store.addEntries(org, entries.fresh);
     return await this.#propose(caller, 'putMembers', account, MEMBERS_TYPE, 'self', asMap(membersValue), swapRecord,
@@ -2611,20 +2650,20 @@ export final class AppView {
   }
 
   /**
-   * `putTeam`: creates or replaces `org`'s team `name`. The caller must be
-   * an owner or admin of `org`, or a maintainer of the team as it is. Its
-   * members must be members of `org`.
+   * `putTeam`: creates or replaces the organization `org`'s team `name`.
+   * The caller must be an owner of its scope, or a maintainer of the team
+   * as it is. Its members must be members of `org`.
    */
   async putTeam(caller: String, org: String, name: String, teamValue: Value, entryValues: Array<Value>,
       swapRecord: String | null, nowMicros: i64): Future<Created> {
     if (!isValidPackageName(name)) {
       throw new AppViewError(400, 'InvalidRequest', `'${name}' cannot name a team`);
     }
-    let account = await this.#account(org, AccountKind.Organization, 'an organization');
+    let account = await this.#organization(org);
     let existing = await this.#current(org, TEAM_TYPE, name);
-    if (!isAdmin(await this.#orgRole(org, caller)) &&
+    if ((await this.#scopeRole(org, caller)) != OWNER &&
         (existing == null || (await this.#teamRole(org, name, caller)) != MAINTAINER)) {
-      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org} or a maintainer of its team ${name}`);
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${org} or a maintainer of its team ${name}`);
     }
     await this.#countAction(caller, account, nowMicros);
     let team = readRecord(() => Team.fromValue(teamValue));
@@ -2646,30 +2685,22 @@ export final class AppView {
   }
 
   /**
-   * `putPolicy`: asks for a new policy for the packages in `org`'s scope
-   * (`Policy`), which the members record's owners must approve, as they do
-   * a change to the members. The caller must be an owner of `org`. Its
-   * teams must exist, and its defaults must ask no less than its minimums.
+   * `putPolicy`: asks for a new policy for the packages in the scope
+   * `scopeDid` (`Policy`), which the scope's owners must approve, as they
+   * do a change to its maintainers. The caller must be an owner of the
+   * scope. Its teams must exist, and its defaults must ask no less than its
+   * minimums.
    */
-  async putPolicy(caller: String, org: String, policyValue: Value, swapRecord: String | null, nowMicros: i64)
+  async putPolicy(caller: String, scopeDid: String, policyValue: Value, swapRecord: String | null, nowMicros: i64)
       : Future<Created> {
-    let account = await this.#account(org, AccountKind.Organization, 'an organization');
-    if ((await this.#orgRole(org, caller)) != OWNER) {
-      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${org}`);
+    let account = await this.#account(scopeDid, AccountKind.Scope, 'a scope');
+    if ((await this.#scopeRole(scopeDid, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${scopeDid}`);
     }
     await this.#countAction(caller, account, nowMicros);
     let policy = readRecord(() => Policy.fromValue(policyValue));
-    let teams = new GrowableArray<String>();
     for (let team in policy.defaultTeams) {
-      teams.push(team.team);
-    }
-    for (let team in policy.creators) {
-      teams.push(team);
-    }
-    for (let team in teams) {
-      if ((await this.#current(org, TEAM_TYPE, team)) == null) {
-        throw new AppViewError(400, 'TeamNotFound', `${org} has no team ${team}`);
-      }
+      await this.#requireTeam(team.org, team.team);
     }
     if (policy.defaultThreshold < policy.minimumThreshold || policy.defaultHumans < policy.minimumHumans) {
       throw new AppViewError(400, 'InvalidRequest', 'the policy\'s defaults ask less than its minimums');
@@ -2679,15 +2710,15 @@ export final class AppView {
   }
 
   /**
-   * `putScopeProfile`: writes how `org` presents its scope (`ScopeProfile`),
-   * at once: it decides no one's role. The caller must be an admin or
-   * owner of `org`.
+   * `putScopeProfile`: writes how the scope `scopeDid` presents itself
+   * (`ScopeProfile`), at once: it decides no one's role. The caller must be
+   * an owner of the scope.
    */
-  async putScopeProfile(caller: String, org: String, profileValue: Value, swapRecord: String | null,
+  async putScopeProfile(caller: String, scopeDid: String, profileValue: Value, swapRecord: String | null,
       nowMicros: i64): Future<Created> {
-    let account = await this.#account(org, AccountKind.Organization, 'an organization');
-    if (!isAdmin(await this.#orgRole(org, caller))) {
-      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
+    let account = await this.#account(scopeDid, AccountKind.Scope, 'a scope');
+    if ((await this.#scopeRole(scopeDid, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${scopeDid}`);
     }
     await this.#countAction(caller, account, nowMicros);
     readRecord(() => ScopeProfile.fromValue(profileValue));
@@ -2695,37 +2726,49 @@ export final class AppView {
         'self', asMap(profileValue), swapRecord);
   }
 
-  /** `org`'s policy for the packages in its scope, as it is now, or the one that asks nothing more. */
-  async #policy(org: String): Future<Policy> {
-    let current = await this.#current(org, POLICY_TYPE, 'self');
+  /** The scope `scopeDid`'s policy for its packages, as it is now, or the one that asks nothing more. */
+  async #policy(scopeDid: String): Future<Policy> {
+    let current = await this.#current(scopeDid, POLICY_TYPE, 'self');
     return if (current != null) Policy.fromValue(current.value) else new Policy();
   }
 
-  /** Whether `caller` is on a team `policy` lets create packages in `org`'s scope. */
-  async #isCreator(org: String, policy: Policy, caller: String): Future<boolean> {
-    for (let team in policy.creators) {
-      if ((await this.#teamRole(org, team, caller)) != null) {
-        return true;
-      }
-    }
-    return false;
+  /** The scope the package `account` is in, by DID, or null for an account that is not a package. */
+  async #scopeOf(account: AppViewAccount): Future<String | null> {
+    return if (account.kind == AccountKind.Package) await this.#store.scopeAccount(account.scope) else null;
   }
 
-  /** The organization whose scope the package `account` is in, or null. */
-  async #scopeOrganization(account: AppViewAccount): Future<String | null> {
-    return if (account.kind == AccountKind.Package) await this.#store.scopeOwner(account.scope) else null;
+  /** The organization `org`, a scope this App View holds with a members record. Throws `AppViewError` otherwise. */
+  async #organization(org: String): Future<AppViewAccount> {
+    let account = await this.#account(org, AccountKind.Scope, 'a scope');
+    if (!(await this.#isOrganization(org))) {
+      throw new AppViewError(400, 'InvalidRequest', `${org} is not an organization: upgrade the scope first`);
+    }
+    return account;
+  }
+
+  /** Whether the scope `did` is an organization: whether it has a members record. */
+  async #isOrganization(did: String): Future<boolean> {
+    return (await this.#current(did, MEMBERS_TYPE, 'self')) != null;
+  }
+
+  /** Throws unless the organization `org` has the team `team`. */
+  async #requireTeam(org: String, team: String): Future<void> {
+    await this.#organization(org);
+    if ((await this.#current(org, TEAM_TYPE, team)) == null) {
+      throw new AppViewError(400, 'TeamNotFound', `${org} has no team ${team}`);
+    }
   }
 
   /**
-   * `deleteTeam`: deletes `org`'s team `name`. The caller must be an owner
-   * or admin of `org`. Packages the team maintained keep their other
-   * maintainers.
+   * `deleteTeam`: deletes the organization `org`'s team `name`. The caller
+   * must be an owner of its scope. Scopes and packages the team maintained
+   * keep their other maintainers.
    */
   async deleteTeam(caller: String, org: String, name: String, swapRecord: String | null, nowMicros: i64)
       : Future<void> {
-    let account = await this.#account(org, AccountKind.Organization, 'an organization');
-    if (!isAdmin(await this.#orgRole(org, caller))) {
-      throw new AppViewError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
+    let account = await this.#organization(org);
+    if ((await this.#scopeRole(org, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${org}`);
     }
     await this.#countAction(caller, account, nowMicros);
     let existing = await this.#current(org, TEAM_TYPE, name);
@@ -2742,32 +2785,102 @@ export final class AppView {
 
   /**
    * `putMaintainers`: replaces `pkg`'s maintainers record. The caller must
-   * be an owner of `pkg`. Each commitment needs an entry in the role the
-   * record gives it, each team must exist, and the record must name enough
-   * owners for its owner threshold, and enough maintainers for its release
-   * threshold.
+   * be an owner of `pkg`, or of its scope. Each commitment needs an entry in
+   * the role the record gives it, each team must exist, and the record must
+   * name enough owners for its owner threshold, and enough maintainers for
+   * its release threshold.
    */
   async putMaintainers(caller: String, pkg: String, maintainersValue: Value, entryValues: Array<Value>,
       swapRecord: String | null, nowMicros: i64): Future<Created> {
     let account = await this.#account(pkg, AccountKind.Package, 'a package');
-    if ((await this.#packageRole(pkg, caller)) != OWNER) {
-      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${pkg}`);
+    if ((await this.#packageRole(pkg, caller)) != OWNER && !(await this.#ownsScopeOf(account, caller))) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${pkg} or of its scope`);
     }
     await this.#countAction(caller, account, nowMicros);
     let maintainers = readRecord(() => Maintainers.fromValue(maintainersValue));
-    let commitments = new GrowableArray<Cid>();
-    for (let maintainer in maintainers.maintainers) {
-      let commitment = maintainer.commitment;
-      if (commitment != null) {
-        commitments.push(commitment);
-      }
-    }
-    let entries = await this.#entriesBehind(pkg, commitments, entryValues);
+    let entries = await this.#maintainerEntries(pkg, maintainers.maintainers, entryValues);
     var owners = 0;
     // People who could attest; a team could have any number.
     var people = 0;
     var teams = false;
     for (let maintainer in maintainers.maintainers) {
+      if (maintainer.role == OWNER) {
+        owners += 1;
+      }
+      if (maintainer.org != null) {
+        teams = true;
+      } else if (!maintainer.automation) {
+        people += 1;
+      }
+    }
+    if ((owners as i64) < maintainers.ownerThreshold || (maintainers.maintainers.length as i64) < maintainers.threshold) {
+      throw new AppViewError(400, 'InvalidRequest',
+          `${owners} owners of ${maintainers.maintainers.length} maintainers cannot meet the thresholds of ${maintainers.ownerThreshold} and ${maintainers.threshold}`);
+    }
+    if (!teams && (people as i64) < maintainers.humans) {
+      throw new AppViewError(400, 'InvalidRequest',
+          `${people} people among the maintainers cannot meet humans: ${maintainers.humans}`);
+    }
+    let scope = await this.#scopeOf(account);
+    if (scope != null) {
+      meetsPolicy(maintainers, await this.#policy(scope), scope);
+    }
+    await this.#store.addEntries(pkg, entries.fresh);
+    return await this.#propose(caller, 'putMaintainers', account, MAINTAINERS_TYPE, 'self', asMap(maintainersValue),
+        swapRecord, nowMicros);
+  }
+
+  /**
+   * `putScopeMaintainers`: replaces the maintainers record of the scope
+   * `scopeDid`: its owners and publishers. The caller must be an owner of the
+   * scope. Each commitment needs an entry in the role the record gives it,
+   * each team must exist, no automation account may be in it, and the
+   * record must name enough owners for its owner threshold.
+   */
+  async putScopeMaintainers(caller: String, scopeDid: String, maintainersValue: Value, entryValues: Array<Value>,
+      swapRecord: String | null, nowMicros: i64): Future<Created> {
+    let account = await this.#account(scopeDid, AccountKind.Scope, 'a scope');
+    if ((await this.#scopeRole(scopeDid, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${scopeDid}`);
+    }
+    await this.#countAction(caller, account, nowMicros);
+    let maintainers = readRecord(() => ScopeMaintainers.fromValue(maintainersValue));
+    let entries = await this.#maintainerEntries(scopeDid, maintainers.maintainers, entryValues);
+    var owners = 0;
+    for (let maintainer in maintainers.maintainers) {
+      if (maintainer.automation) {
+        throw new AppViewError(400, 'InvalidRequest', 'an automation account maintains no scope');
+      }
+      if (maintainer.role == OWNER) {
+        owners += 1;
+      }
+    }
+    if ((owners as i64) < maintainers.ownerThreshold) {
+      throw new AppViewError(400, 'InvalidRequest', `the record names ${owners} ${if (owners == 1) 'owner' else 'owners'
+          }, too few for its owner threshold of ${maintainers.ownerThreshold}`);
+    }
+    await this.#store.addEntries(scopeDid, entries.fresh);
+    return await this.#propose(caller, 'putScopeMaintainers', account, SCOPE_MAINTAINERS_TYPE, 'self',
+        asMap(maintainersValue), swapRecord, nowMicros);
+  }
+
+  /**
+   * The entries behind the commitments of `maintainers`, a package's or a
+   * scope's, checked: each entry in the role the record gives it, each team
+   * existing, and each automation account this App View holds marked as one
+   * and in no owner's role.
+   */
+  async #maintainerEntries(account: String, maintainers: FixedArray<Maintainer>, entryValues: Array<Value>)
+      : Future<EntriesBehind> {
+    let commitments = new GrowableArray<Cid>();
+    for (let maintainer in maintainers) {
+      let commitment = maintainer.commitment;
+      if (commitment != null) {
+        commitments.push(commitment);
+      }
+    }
+    let entries = await this.#entriesBehind(account, commitments, entryValues);
+    for (let maintainer in maintainers) {
       let commitment = maintainer.commitment;
       if (commitment != null) {
         let entry = entries.byCommitment[commitment.toString()];
@@ -2777,19 +2890,7 @@ export final class AppView {
         }
       }
       if (maintainer.org != null) {
-        let org = maintainer.org as String;
-        await this.#account(org, AccountKind.Organization, 'an organization');
-        if ((await this.#current(org, TEAM_TYPE, maintainer.team as String)) == null) {
-          throw new AppViewError(400, 'TeamNotFound', `${org} has no team ${maintainer.team as String}`);
-        }
-      }
-      if (maintainer.role == OWNER) {
-        owners += 1;
-      }
-      if (maintainer.org != null) {
-        teams = true;
-      } else if (!maintainer.automation) {
-        people += 1;
+        await this.#requireTeam(maintainer.org as String, maintainer.team as String);
       }
       // A bot is marked as one, in the record and its entry, so that the
       // log can count it only together with a person.
@@ -2810,21 +2911,7 @@ export final class AppView {
         }
       }
     }
-    if ((owners as i64) < maintainers.ownerThreshold || (maintainers.maintainers.length as i64) < maintainers.threshold) {
-      throw new AppViewError(400, 'InvalidRequest',
-          `${owners} owners of ${maintainers.maintainers.length} maintainers cannot meet the thresholds of ${maintainers.ownerThreshold} and ${maintainers.threshold}`);
-    }
-    if (!teams && (people as i64) < maintainers.humans) {
-      throw new AppViewError(400, 'InvalidRequest',
-          `${people} people among the maintainers cannot meet humans: ${maintainers.humans}`);
-    }
-    let org = await this.#scopeOrganization(account);
-    if (org != null) {
-      meetsPolicy(maintainers, await this.#policy(org), org);
-    }
-    await this.#store.addEntries(pkg, entries.fresh);
-    return await this.#propose(caller, 'putMaintainers', account, MAINTAINERS_TYPE, 'self', asMap(maintainersValue),
-        swapRecord, nowMicros);
+    return entries;
   }
 
   /**
@@ -2909,8 +2996,8 @@ export final class AppView {
    */
   async pendingChanges(caller: String, account: String, nowMicros: i64): Future<Array<WaitingChange>> {
     let held = await this.#store.account(account);
-    if (held == null || (held.kind != AccountKind.Organization && held.kind != AccountKind.Package)) {
-      throw new AppViewError(400, 'InvalidRequest', `${account} is not an organization or package on this App View`);
+    if (held == null || (held.kind != AccountKind.Scope && held.kind != AccountKind.Package)) {
+      throw new AppViewError(400, 'InvalidRequest', `${account} is not a scope or package on this App View`);
     }
     let found = held;
     let waiting = new GrowableArray<WaitingChange>();
@@ -2927,7 +3014,7 @@ export final class AppView {
       }
       let uri = `at://${account}/${change.collection}/${change.rkey}`;
       let entry = new WaitingChange(change, uri, await this.#changeTally(target, change, uri));
-      let seesAll = await this.#seesAll(caller, found,
+      let seesAll = await this.#seesAll(caller, found, change.collection,
           if (change.collection == TEAM_TYPE) change.rkey else null);
       for (let member in await this.#committed(account, commitmentsIn(change.collection,
           decodeCbor(change.record)))) {
@@ -2946,8 +3033,7 @@ export final class AppView {
   /**
    * `withdrawChange`: stops holding the change to the record at `uri`. The
    * one who asked for it may, and anyone who sees every entry behind the
-   * record: an organization's owners and admins, a team's maintainers, a
-   * package's owners.
+   * record: a scope's owners, a team's maintainers, a package's owners.
    */
   async withdrawChange(caller: String, uri: String, nowMicros: i64): Future<void> {
     let target = await this.#changeTarget(uri);
@@ -2957,7 +3043,7 @@ export final class AppView {
       throw new AppViewError(400, 'ChangeNotFound', `no change to ${uri} is waiting for approval`);
     }
     let change = held;
-    if (change.proposer != caller && !(await this.#seesAll(caller, target.account,
+    if (change.proposer != caller && !(await this.#seesAll(caller, target.account, target.collection,
         if (target.collection == TEAM_TYPE) target.rkey else null))) {
       throw new AppViewError(403, 'Forbidden', `${caller} neither asked for the change to ${uri} nor can approve it`);
     }
@@ -2971,7 +3057,7 @@ export final class AppView {
     await this.#recordActivity(event);
   }
 
-  /** The record of members, a team or maintainers `uri` names, on this App View. */
+  /** The record `uri` names, of a scope's or a package's that changes are held for, on this App View. */
   async #changeTarget(uri: String): Future<ChangeTarget> {
     let parts = if (uri.startsWith('at://')) uri.sliceBytes(5, uri.length).split('/') else new FixedArray<String>(0, '');
     if (parts.length != 3) {
@@ -2982,21 +3068,29 @@ export final class AppView {
     if (collection == MAINTAINERS_TYPE && rkey == 'self') {
       return new ChangeTarget(await this.#account(parts[0], AccountKind.Package, 'a package'), collection, rkey);
     }
-    if (((collection == MEMBERS_TYPE || collection == POLICY_TYPE) && rkey == 'self') || collection == TEAM_TYPE) {
-      return new ChangeTarget(await this.#account(parts[0], AccountKind.Organization, 'an organization'), collection,
-          rkey);
+    if (((collection == SCOPE_MAINTAINERS_TYPE || collection == POLICY_TYPE || collection == MEMBERS_TYPE) &&
+        rkey == 'self') || collection == TEAM_TYPE) {
+      return new ChangeTarget(await this.#account(parts[0], AccountKind.Scope, 'a scope'), collection, rkey);
     }
-    throw new AppViewError(400, 'InvalidRequest', `${uri} is not a members, team or maintainers record`);
+    throw new AppViewError(400, 'InvalidRequest', `${uri} is not a maintainers, policy, members or team record`);
   }
 
-  /** Throws unless `caller` has a role in the account `target` is a record of. */
+  /**
+   * Throws unless `caller` has a role in the account `target` is a record
+   * of: in a scope's maintainers, or as a member of an organization; in a
+   * package's maintainers, or as an owner of its scope.
+   */
   async #requireRole(caller: String, target: ChangeTarget): Future<void> {
-    let did = target.account.did;
-    let role = if (target.account.kind == AccountKind.Organization) await this.#orgRole(did, caller)
-        else await this.#packageRole(did, caller);
-    if (role == null) {
-      throw new AppViewError(403, 'Forbidden', `${caller} has no role in ${did}`);
+    let account = target.account;
+    let did = account.did;
+    if (account.kind == AccountKind.Scope) {
+      if ((await this.#scopeRole(did, caller)) != null || (await this.#isMember(did, caller))) {
+        return;
+      }
+    } else if ((await this.#packageRole(did, caller)) != null || (await this.#ownsScopeOf(account, caller))) {
+      return;
     }
+    throw new AppViewError(403, 'Forbidden', `${caller} has no role in ${did}`);
   }
 
   /** The change held to `target`, unless there is none or it has expired. */
@@ -3014,19 +3108,20 @@ export final class AppView {
   }
 
   /**
-   * Whether the record `target` names, as it is now, allows `change`, which
-   * would replace it: whether enough of the roles it gives have attested
-   * the new record at `uri`.
+   * Whether the records as they are now allow `change`, which would replace
+   * the record `target` names: whether enough of the roles they give have
+   * attested the new record at `uri`.
    *
-   * - An organization's members record: its `ownerThreshold` of owners.
+   * - A scope's maintainers, policy or members record: the scope
+   *   maintainers record's `ownerThreshold` of owners.
    * - A team: its `threshold` of the team's maintainers, or the
-   *   organization's `adminThreshold` of admins and owners; a new team, the
-   *   admins alone.
-   * - A package's maintainers record: its `ownerThreshold` of owners, each
-   *   listed by DID, by commitment, or as a member of a team in the owner
-   *   role.
+   *   organization's scope's `ownerThreshold` of owners; a new team, the
+   *   owners alone.
+   * - A package's maintainers record: its `ownerThreshold` of owners, or
+   *   its scope's `ownerThreshold` of the scope's owners.
    *
-   * Only people count: automation chooses no one's roles.
+   * An owner is listed by DID, by commitment, or as a member of a team in
+   * the owner role. Only people count: automation chooses no one's roles.
    */
   async #changeTally(target: ChangeTarget, change: PendingChange, uri: String): Future<ChangeTally> {
     let tally = new ChangeTally();
@@ -3036,41 +3131,20 @@ export final class AppView {
       let current = await this.#current(did, MAINTAINERS_TYPE, 'self');
       if (current != null) {
         let record = Maintainers.fromValue(current.value);
-        let owners = new GrowableArray<String>();
-        let entries = await this.#committed(did, await this.#commitmentsOf(did, MAINTAINERS_TYPE, 'self'));
-        for (let maintainer in record.maintainers) {
-          if (maintainer.role != OWNER || maintainer.automation) {
-            continue;
-          }
-          if (maintainer.did != null) {
-            owners.push(maintainer.did as String);
-          } else if (maintainer.commitment != null) {
-            for (let entry in entries) {
-              if (entry.commitment().equals(maintainer.commitment as Cid) && !entry.automation) {
-                owners.push(entry.did);
-              }
-            }
-          } else {
-            let org = maintainer.org as String;
-            for (let entry in await this.#committed(org, await this.#commitmentsOf(org, TEAM_TYPE,
-                maintainer.team as String))) {
-              if (!entry.automation) {
-                owners.push(entry.did);
-              }
-            }
-          }
-        }
-        tally.requirements.push(await this.#requirement(OWNER, record.ownerThreshold, owners, uri, change.cid, rkey));
+        tally.requirements.push(await this.#requirement(OWNER, record.ownerThreshold,
+            await this.#ownersIn(did, record.maintainers), uri, change.cid, rkey));
+      }
+      let scope = await this.#scopeOf(target.account);
+      let scopeRecord = if (scope != null) await this.#scopeMaintainers(scope) else null;
+      if (scope != null && scopeRecord != null) {
+        tally.requirements.push(await this.#requirement(SCOPE_OWNER, scopeRecord.ownerThreshold,
+            await this.#ownersIn(scope, scopeRecord.maintainers), uri, change.cid, rkey));
       }
     } else {
-      let members = await this.#current(did, MEMBERS_TYPE, 'self');
-      let record = if (members != null) Members.fromValue(members.value) else null;
-      // TODO(#713): the annotation is only for the compiler.
-      let entries: Array<MemberEntry> = if (record != null) await this.#committed(did, record.members) else [];
-      // The members record's owners decide its members and the scope's policy.
-      if ((target.collection == MEMBERS_TYPE || target.collection == POLICY_TYPE) && record != null) {
-        tally.requirements.push(await this.#requirement(OWNER, record.ownerThreshold,
-            await this.#peopleIn(entries, (role) => role == OWNER), uri, change.cid, rkey));
+      let scopeRecord = await this.#scopeMaintainers(did);
+      if (scopeRecord != null) {
+        tally.requirements.push(await this.#requirement(OWNER, scopeRecord.ownerThreshold,
+            await this.#ownersIn(did, scopeRecord.maintainers), uri, change.cid, rkey));
       }
       if (target.collection == TEAM_TYPE) {
         let team = await this.#current(did, TEAM_TYPE, target.rkey);
@@ -3080,10 +3154,6 @@ export final class AppView {
               await this.#peopleIn(await this.#committed(did, current.members), (role) => role == MAINTAINER),
               uri, change.cid, rkey));
         }
-        if (record != null) {
-          tally.requirements.push(await this.#requirement(ADMIN, record.adminThreshold,
-              await this.#peopleIn(entries, (role) => isAdmin(role)), uri, change.cid, rkey));
-        }
       }
     }
     for (let requirement in tally.requirements) {
@@ -3092,6 +3162,45 @@ export final class AppView {
       }
     }
     return tally;
+  }
+
+  /**
+   * The people in the owner role among `maintainers`, the maintainers
+   * record of the scope or package `did`: listed by DID, by a commitment
+   * whose entry `did` keeps, or as members of a team, but for automation.
+   */
+  async #ownersIn(did: String, maintainers: FixedArray<Maintainer>): Future<Array<String>> {
+    let commitments = new GrowableArray<Cid>();
+    for (let maintainer in maintainers) {
+      if (maintainer.commitment != null) {
+        commitments.push(maintainer.commitment as Cid);
+      }
+    }
+    let entries = await this.#committed(did, commitments);
+    let owners = new GrowableArray<String>();
+    for (let maintainer in maintainers) {
+      if (maintainer.role != OWNER || maintainer.automation) {
+        continue;
+      }
+      if (maintainer.did != null) {
+        owners.push(maintainer.did as String);
+      } else if (maintainer.commitment != null) {
+        for (let entry in entries) {
+          if (entry.commitment().equals(maintainer.commitment as Cid) && !entry.automation) {
+            owners.push(entry.did);
+          }
+        }
+      } else {
+        let org = maintainer.org as String;
+        for (let entry in await this.#committed(org, await this.#commitmentsOf(org, TEAM_TYPE,
+            maintainer.team as String))) {
+          if (!entry.automation) {
+            owners.push(entry.did);
+          }
+        }
+      }
+    }
+    return owners;
   }
 
   /** The DIDs of `entries` in a role `matches` takes, but for automation. */
@@ -3140,34 +3249,35 @@ export final class AppView {
 
   /**
    * `getEntries`: the entries behind `account`'s commitments that `caller`
-   * may see. For an organization, those of its members record, or of its
-   * team `team`; for a package, those of its maintainers record. Its owners
-   * and admins see every entry of an organization, its teams and its
+   * may see. For a scope, those of its maintainers record, or with
+   * `members`, of its organization's members record, or of its team `team`;
+   * for a package, those of its maintainers record. A scope's owners see
+   * every entry of the scope, its organization's members and teams, and its
    * packages; a team's maintainers, the team's; a package's owners, the
    * package's; and everyone else, their own.
    */
-  async getEntries(caller: String, account: String, team: String | null): Future<Array<MemberEntry>> {
+  async getEntries(caller: String, account: String, team: String | null, members: boolean = false)
+      : Future<Array<MemberEntry>> {
     let held = await this.#store.account(account);
-    if (held == null || (held.kind != AccountKind.Organization && held.kind != AccountKind.Package)) {
-      throw new AppViewError(400, 'InvalidRequest', `${account} is not an organization or package on this App View`);
+    if (held == null || (held.kind != AccountKind.Scope && held.kind != AccountKind.Package)) {
+      throw new AppViewError(400, 'InvalidRequest', `${account} is not a scope or package on this App View`);
     }
-    var commitments: Array<Cid> = [];
-    if (held.kind == AccountKind.Organization) {
-      if (team == null) {
-        commitments = await this.#commitmentsOf(account, MEMBERS_TYPE, 'self');
-      } else {
-        let name = team;
-        if ((await this.#current(account, TEAM_TYPE, name)) == null) {
-          throw new AppViewError(400, 'TeamNotFound', `${account} has no team ${name}`);
-        }
-        commitments = await this.#commitmentsOf(account, TEAM_TYPE, name);
+    var collection = MAINTAINERS_TYPE;
+    var rkey = 'self';
+    if (held.kind == AccountKind.Scope) {
+      collection = SCOPE_MAINTAINERS_TYPE;
+      if (team != null) {
+        await this.#requireTeam(account, team);
+        collection = TEAM_TYPE;
+        rkey = team;
+      } else if (members) {
+        await this.#organization(account);
+        collection = MEMBERS_TYPE;
       }
-    } else {
-      commitments = await this.#commitmentsOf(account, MAINTAINERS_TYPE, 'self');
     }
-    let seesAll = await this.#seesAll(caller, held, team);
+    let seesAll = await this.#seesAll(caller, held, collection, team);
     let visible = new GrowableArray<MemberEntry>();
-    for (let entry in await this.#committed(account, commitments)) {
+    for (let entry in await this.#committed(account, await this.#commitmentsOf(account, collection, rkey))) {
       if (seesAll || entry.did == caller) {
         visible.push(entry);
       }
@@ -3176,29 +3286,29 @@ export final class AppView {
   }
 
   /**
-   * Whether `caller` sees every entry behind the commitments of `account`,
-   * an organization or a package: of the members record, or of the team
-   * `team`, or of the maintainers record. An organization's owners and
-   * admins do, and its team's maintainers for the team; a package's owners,
-   * and the admins of its scope's organization; and the App View's admins, as
-   * its operator could read the entries anyway.
+   * Whether `caller` sees every entry behind the commitments of `account`'s
+   * record in `collection`: a scope's maintainers, members or team `team`,
+   * or a package's maintainers. A scope's owners do, for every record of
+   * the scope and its packages; a team's maintainers, for the team; a
+   * package's owners, for the package; and the App View's admins, as its
+   * operator could read the entries anyway.
    */
-  async #seesAll(caller: String, account: AppViewAccount, team: String | null): Future<boolean> {
+  async #seesAll(caller: String, account: AppViewAccount, collection: String, team: String | null)
+      : Future<boolean> {
     if (this.isAppViewAdmin(caller)) {
       return true;
     }
     let did = account.did;
-    if (account.kind == AccountKind.Organization) {
-      if (isAdmin(await this.#orgRole(did, caller))) {
+    if (account.kind == AccountKind.Scope) {
+      if ((await this.#scopeRole(did, caller)) == OWNER) {
         return true;
       }
-      return team != null && (await this.#teamRole(did, team, caller)) == MAINTAINER;
+      return collection == TEAM_TYPE && team != null && (await this.#teamRole(did, team, caller)) == MAINTAINER;
     }
     if ((await this.#packageRole(did, caller)) == OWNER) {
       return true;
     }
-    let org = await this.#scopeOrganization(account);
-    return org != null && isAdmin(await this.#orgRole(org, caller));
+    return await this.#ownsScopeOf(account, caller);
   }
 
   /** The account `did`, which must be of `kind`, described as `what` when it is not. */
@@ -3215,7 +3325,7 @@ export final class AppView {
     return await this.#pds.getRecord(did, collection, rkey);
   }
 
-  /** The commitments the members or team record at `collection/rkey` lists now; none without one. */
+  /** The commitments the maintainers, members or team record at `collection/rkey` lists now; none without one. */
   async #commitmentsOf(did: String, collection: String, rkey: String): Future<Array<Cid>> {
     let record = await this.#current(did, collection, rkey);
     if (record == null) {
@@ -3242,9 +3352,15 @@ export final class AppView {
     return found;
   }
 
-  /** `caller`'s role in `org`'s members record as it is now, or null. */
-  async #orgRole(org: String, caller: String): Future<String | null> {
-    return bestRole(await this.#committed(org, await this.#commitmentsOf(org, MEMBERS_TYPE, 'self')), caller);
+  /** The scope `scopeDid`'s maintainers record as it is now, or null. */
+  async #scopeMaintainers(scopeDid: String): Future<ScopeMaintainers | null> {
+    let record = await this.#current(scopeDid, SCOPE_MAINTAINERS_TYPE, 'self');
+    return if (record != null) ScopeMaintainers.fromValue(record.value) else null;
+  }
+
+  /** Whether `caller` is a member of the organization `org` as its members record is now. */
+  async #isMember(org: String, caller: String): Future<boolean> {
+    return bestRole(await this.#committed(org, await this.#commitmentsOf(org, MEMBERS_TYPE, 'self')), caller) != null;
   }
 
   /** `caller`'s role in `org`'s team `team` as it is now, or null. */
@@ -3252,25 +3368,43 @@ export final class AppView {
     return bestRole(await this.#committed(org, await this.#commitmentsOf(org, TEAM_TYPE, team)), caller);
   }
 
-  /**
-   * `caller`'s role in `pkg`'s maintainers record as it is now, `owner` or
-   * `publisher`, or null: listed by DID, by a commitment whose entry names
-   * them, or as a member of a team the record names, in the team's role.
-   */
+  /** `caller`'s role in the scope `scopeDid`'s maintainers record as it is now, `owner` or `publisher`, or null. */
+  async #scopeRole(scopeDid: String, caller: String): Future<String | null> {
+    return await this.#maintainerRole(scopeDid, SCOPE_MAINTAINERS_TYPE, caller);
+  }
+
+  /** `caller`'s role in `pkg`'s maintainers record as it is now, `owner` or `publisher`, or null. */
   async #packageRole(pkg: String, caller: String): Future<String | null> {
-    let record = await this.#current(pkg, MAINTAINERS_TYPE, 'self');
+    return await this.#maintainerRole(pkg, MAINTAINERS_TYPE, caller);
+  }
+
+  /** Whether `caller` is an owner of the scope the package `account` is in. */
+  async #ownsScopeOf(account: AppViewAccount, caller: String): Future<boolean> {
+    let scope = await this.#scopeOf(account);
+    return scope != null && (await this.#scopeRole(scope, caller)) == OWNER;
+  }
+
+  /**
+   * `caller`'s role in the maintainers record of `did`, a package's or a
+   * scope's (`collection`), as it is now, or null: listed by DID, by a
+   * commitment whose entry names them, or as a member of a team the record
+   * names, in the team's role. An owner's role wins over the other.
+   */
+  async #maintainerRole(did: String, collection: String, caller: String): Future<String | null> {
+    let record = await this.#current(did, collection, 'self');
     if (record == null) {
       return null;
     }
-    let maintainers = Maintainers.fromValue(record.value);
+    let maintainers = if (collection == SCOPE_MAINTAINERS_TYPE) ScopeMaintainers.fromValue(record.value).maintainers
+        else Maintainers.fromValue(record.value).maintainers;
     let mine = new HashSet<String>();
-    for (let entry in await this.#store.entries(pkg)) {
+    for (let entry in await this.#store.entries(did)) {
       if (entry.did == caller) {
         mine.add(entry.commitment().toString());
       }
     }
     var found: String | null = null;
-    for (let maintainer in maintainers.maintainers) {
+    for (let maintainer in maintainers) {
       let commitment = maintainer.commitment;
       var matches = (maintainer.did != null && maintainer.did as String == caller) ||
           (commitment != null && mine.has(commitment.toString()));
@@ -3361,11 +3495,11 @@ function changeActivityKind(collection: String): String {
 
 /**
  * Throws unless `maintainers` could meet the release thresholds `policy`,
- * the policy of `org`'s scope, sets: as many maintainers as the larger
+ * the policy of the scope `scope`, sets: as many maintainers as the larger
  * threshold, and as many people as the larger `humans`. A team could have
  * any number.
  */
-function meetsPolicy(maintainers: Maintainers, policy: Policy, org: String): void {
+function meetsPolicy(maintainers: Maintainers, policy: Policy, scope: String): void {
   var people = 0;
   var teams = false;
   for (let maintainer in maintainers.maintainers) {
@@ -3380,14 +3514,32 @@ function meetsPolicy(maintainers: Maintainers, policy: Policy, org: String): voi
   }
   if ((maintainers.maintainers.length as i64) < policy.minimumThreshold || (people as i64) < policy.minimumHumans) {
     throw new AppViewError(400, 'InvalidRequest',
-        `the policy of ${org}'s scope asks ${policy.minimumThreshold} maintainers to approve each release, ${policy.minimumHumans} of them people, and ${maintainers.maintainers.length} maintainers, ${people} of them people, cannot`);
+        `the policy of the scope ${scope} asks ${policy.minimumThreshold} maintainers to approve each release, ${policy.minimumHumans} of them people, and ${maintainers.maintainers.length} maintainers, ${people} of them people, cannot`);
   }
 }
 
-/** The commitments the members, team or maintainers record `value`, of `collection`, lists. */
+/** The commitments to `entries`, in order. */
+function commitmentsTo(entries: Array<MemberEntry>): FixedArray<Cid> {
+  let commitments = new FixedArray<Cid>(entries.length, Cid.forBlob(new FixedArray<u8>(0, 0 as u8)));
+  for (var i = 0; i < entries.length; i += 1) {
+    commitments[i] = entries[i].commitment();
+  }
+  return commitments;
+}
+
+/** The commitments the maintainers, members or team record `value`, of `collection`, lists. */
 function commitmentsIn(collection: String, value: Value): Array<Cid> {
   if (collection == POLICY_TYPE) {
     return [];
+  }
+  if (collection == SCOPE_MAINTAINERS_TYPE) {
+    let commitments = new GrowableArray<Cid>();
+    for (let maintainer in ScopeMaintainers.fromValue(value).maintainers) {
+      if (maintainer.commitment != null) {
+        commitments.push(maintainer.commitment as Cid);
+      }
+    }
+    return commitments;
   }
   if (collection == MEMBERS_TYPE) {
     return Members.fromValue(value).members;
@@ -3464,19 +3616,19 @@ export final class AppViewAccount {
   handle: String;
   kind: AccountKind;
   scope: String;
-  /** The scope, for an organization; else the name in the scope. */
+  /** The scope's name, for a scope; else the account's name in the scope. */
   name: String;
 
   new(this.did, this.handle, this.kind, this.scope, this.name);
 }
 
-/** One account `getMemberships` found a role in: an organization, a team of one, or a package. */
+/** One account `getMemberships` found a role in: a scope, an organization, a team of one, or a package. */
 export final class Membership {
-  /** The organization's or the package's DID; a team's organization's. */
+  /** The scope's or the package's DID; a team's organization's. */
   did: String;
   handle: String;
   scope: String;
-  /** The scope, the team's name, or the package's name. */
+  /** The scope's or organization's name, the team's name, or the package's name. */
   name: String;
   role: String;
 
@@ -3490,6 +3642,9 @@ function sortByName(memberships: GrowableArray<Membership>): void {
 
 /** What `getMemberships` finds. */
 export final class Memberships {
+  /** Scopes `caller` is an owner or a publisher of. */
+  scopes = new GrowableArray<Membership>();
+  /** Organizations `caller` is a member of. */
   orgs = new GrowableArray<Membership>();
   teams = new GrowableArray<Membership>();
   packages = new GrowableArray<Membership>();
@@ -3546,14 +3701,18 @@ final class StorageLimits {
 /** A scope, as `getScope` reads it. */
 export final class ScopeDetail {
   name: String;
-  /** Its organization's DID and handle. */
+  /** The scope's DID and handle. */
   did: String;
   handle: String;
-  /** How the organization presents its scope, when it says. */
+  /** How the scope presents itself, when it says. */
   var profile: ScopeProfile | null = null;
-  /** The commitments of the organization's members record. */
+  /** Its owners and publishers. */
+  var maintainers: ScopeMaintainers | null = null;
+  /** Whether the scope is an organization: whether it has a members record. */
+  var organization = false;
+  /** For an organization, the commitments of its members record; else none. */
   var members: FixedArray<Cid> = [];
-  /** By name, as the records list them. */
+  /** An organization's teams, by name, as the records list them. */
   teams = new GrowableArray<NamedTeam>();
 
   new(this.name, this.did, this.handle);
@@ -3654,7 +3813,7 @@ export final class Rekey {
 /** What `AppView.checkStore` read, and what it found that is not as it should be. */
 export final class StoreCheck {
   var accounts = 0;
-  var organizations = 0;
+  var scopes = 0;
   var packages = 0;
   var automation = 0;
   var releases = 0;
@@ -3693,17 +3852,12 @@ function bestRole(entries: Array<MemberEntry>, caller: String): String | null {
   var found: String | null = null;
   for (let entry in entries) {
     if (entry.did == caller) {
-      if (found == null || entry.role == OWNER || (found != OWNER && (entry.role == ADMIN || entry.role == MAINTAINER))) {
+      if (found == null || entry.role == OWNER || (found != OWNER && entry.role == MAINTAINER)) {
         found = entry.role;
       }
     }
   }
   return found;
-}
-
-/** Whether `role` is an organization's owner or admin. */
-function isAdmin(role: String | null): boolean {
-  return role == OWNER || role == ADMIN;
 }
 
 /** `swapRecord` as a CID, or null; one that is not a CID is refused. */

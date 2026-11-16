@@ -30,7 +30,7 @@ Separate accounts can represent:
 
 - **Packages and scopes** — In Zena's
   [package manager and registry](/projects/package-manager/)
-  (`packages/registry`), publishing scopes (organizations), individual packages,
+  (`packages/registry`), publishing scopes, individual packages,
   and CI release bots are distinct accounts hosted on the PDS, each publishing
   signed release records into its own repository.
 - **Collaborative documents and workspaces** — A document, project board, wiki

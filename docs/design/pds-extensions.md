@@ -56,11 +56,11 @@ use.
 
 | What                                                                                                                                     | Where today                                                                               | Specific to packages                                                                          |
 | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| The `dev.zena-lang.registry.*` methods: `createOrganization`, `createPackage`, `uploadArtifact`, `publish`                               | `app-view.zena` (`AppView`), routes in `server.zena` (`registryRoutes`)                   | yes                                                                                           |
+| The `dev.zena-lang.registry.*` methods: `createScope`, `createPackage`, `uploadArtifact`, `publish`                                      | `app-view.zena` (`AppView`), routes in `server.zena` (`registryRoutes`)                   | yes                                                                                           |
 | `com.atproto.server.describeServer` with the App View's DID and handle domain                                                            | `server.zena`                                                                             | no: the core PDS answers it, with values from configuration                                   |
 | The App View's own DID document at `/.well-known/did.json`                                                                               | `server.zena`                                                                             | no                                                                                            |
 | Checking service-auth tokens addressed to the App View, with replay protection                                                           | `AppView.authenticate`, using `atproto/service-auth`                                      | no: any extension with methods of its own needs it                                            |
-| Account kinds (package, organization, automation), each allowed only some collections                                                    | `AccountKind` and `Account.allows` in `storage.zena`, checked in `Repository.applyWrites` | the kinds are; refusing writes by a policy is not                                             |
+| Account kinds (package, scope, automation), each allowed only some collections                                                           | `AccountKind` and `Account.allows` in `storage.zena`, checked in `Repository.applyWrites` | the kinds are; refusing writes by a policy is not                                             |
 | Creating an account with a new `did:plc`, whose genesis operation ranks the maintainers' recovery keys above the App View's rotation key | `AppView.#prepareAccount`, `#createAccount`                                               | partly: creating accounts with `did:plc`s is core; the recovery-key ranking is the App View's |
 | Scope and package names, claimed once each                                                                                               | `AppViewStore.claimScope`, `claimName` and their Firestore implementation                 | yes                                                                                           |
 | Private membership entries behind the commitments in members and maintainers records, and the role checks that read them                 | `AppViewStore.entries`, `AppView.#hasRole`, `#maintainedPackage`                          | yes                                                                                           |
@@ -207,7 +207,7 @@ The core writes the new handle's DNS record, so the App View does
 not need its own `registry/handles` calls. Taking a name in a scope stays the
 App View's: it claims the name in its storage before asking for the
 account, and releases it if the core fails to create one, as
-`AppView.createOrganization` does today.
+`AppView.createScope` does today.
 
 ### Extension storage
 

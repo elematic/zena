@@ -32,14 +32,15 @@ package manager models every entity as an AT Protocol account:
   local import alias (such as `acme:router`).
 - **Scopes and organizations** — Human-readable package names always sit inside
   a scope—either under a registry domain (`router.acme.pkg.zena-lang.dev`) or
-  under a domain controlled by the maintainers (`router.pkg.acme.com`). Each
-  scope is owned by an organization account that manages members, roles, and
-  scope-wide security policies.
+  under a domain controlled by the maintainers (`router.pkg.acme.com`). A scope
+  is an account of its own, whose owners and publishers create its packages,
+  and whose owners set scope-wide security policies. A scope can be upgraded to an
+  organization, which has members and teams.
 - **Teams and private membership** — Organizations group members into teams
-  (`owners`, `admins`, `publishers`) that maintain packages together. Membership
-  records store salted cryptographic commitments so role checks and approvals
-  are publicly verifiable without exposing an organization's full member list
-  before someone acts.
+  that maintain scopes and packages together. Membership records store salted
+  cryptographic commitments so role checks and approvals are publicly
+  verifiable without exposing an organization's full member list before
+  someone acts.
 
 ## Permission delegation and release publishing
 
@@ -48,7 +49,7 @@ nobody holds a shared password or long-lived publishing key for a package:
 
 - **Personal sign-in with delegated roles** — Maintainers sign in with their own
   AT Protocol accounts (`zena pkg login`), and the registry verifies their
-  delegated permissions on the target organization, team, or package.
+  delegated permissions on the target scope, organization, team, or package.
 - **Threshold approvals** — Packages and scopes can require `M`-of-`N`
   maintainer approvals—including a minimum number of human approvals—before a
   release or governance change takes effect. Each maintainer writes a signed
@@ -63,7 +64,7 @@ nobody holds a shared password or long-lived publishing key for a package:
   fetch so caches and mirrors need no special trust:
 
 ```sh
-# Create an organization scope and publish a release
+# Create a scope and publish a release
 zena pkg scope create acme
 zena pkg publish --scope acme
 
@@ -78,8 +79,8 @@ In AT Protocol architecture, an **App View** indexes records from repositories
 and serves domain-specific APIs and web views. `packages/registry` implements
 the package manager's App View in Zena:
 
-- **Account and release coordination** — Creates and manages package,
-  organization, and automation accounts on a [PDS](/projects/pds/), validates
+- **Account and release coordination** — Creates and manages package, scope
+  and automation accounts on a [PDS](/projects/pds/), validates
   maintainer attestations and threshold rules, and writes approved release
   records and deterministic source archives.
 - **Indexing, search, and web UI** — Indexes scopes, package profiles, version

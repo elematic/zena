@@ -28,15 +28,15 @@ let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
 export function appViewStoreConformance(make: () => AppViewStore): void {
   test('gives each scope and name to one account', async (ctx) => {
     let store = make();
-    isNull(await store.scopeOwner('acme'));
+    isNull(await store.scopeAccount('acme'));
     isTrue(await store.claimScope('acme', ALICE), 'claimed');
     isTrue(!await store.claimScope('acme', BOB), 'taken');
-    equal((await store.scopeOwner('acme')) as String, ALICE);
+    equal((await store.scopeAccount('acme')) as String, ALICE);
     // Only its owner gives it back.
     await store.releaseScope('acme', BOB);
-    equal((await store.scopeOwner('acme')) as String, ALICE);
+    equal((await store.scopeAccount('acme')) as String, ALICE);
     await store.releaseScope('acme', ALICE);
-    isNull(await store.scopeOwner('acme'));
+    isNull(await store.scopeAccount('acme'));
     isTrue(await store.claimScope('acme', BOB), 'claimed again');
 
     isNull(await store.nameInScope('acme', 'router'));
@@ -75,11 +75,11 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     let store = make();
     isNull(await store.account(ALICE));
     equal((await store.accounts()).length, 0);
-    await store.putAccount(new AppViewAccount(ALICE, 'acme.pkg.test', AccountKind.Organization, 'acme', 'acme'));
+    await store.putAccount(new AppViewAccount(ALICE, 'acme.pkg.test', AccountKind.Scope, 'acme', 'acme'));
     await store.putAccount(new AppViewAccount(BOB, 'ci.acme.pkg.test', AccountKind.Automation, 'acme', 'ci'));
     let org = (await store.account(ALICE)) as AppViewAccount;
     equal(org.handle, 'acme.pkg.test');
-    equal(org.kind, AccountKind.Organization);
+    equal(org.kind, AccountKind.Scope);
     equal(org.scope, 'acme');
     equal(org.name, 'acme');
     let bot = (await store.account(BOB)) as AppViewAccount;
@@ -168,7 +168,7 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     await store.releaseName('acme', 'gone', ALICE);
     var scopes = '';
     for (let claimed in await store.allScopes()) {
-      scopes = `${scopes}${claimed.scope}=${if (claimed.org == ALICE) 'alice' else 'bob'};`;
+      scopes = `${scopes}${claimed.scope}=${if (claimed.did == ALICE) 'alice' else 'bob'};`;
     }
     isTrue(scopes == 'acme=alice;other=bob;' || scopes == 'other=bob;acme=alice;', scopes);
     let names = await store.allNames();
@@ -365,16 +365,16 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     equal((await store.activity(new ActivityQuery())).length, 0);
     let cidA = Cid.forDagCbor(new FixedArray<u8>(1, 11 as u8));
     let cidB = Cid.forDagCbor(new FixedArray<u8>(1, 12 as u8));
-    let orgDid = 'did:plc:orgorgorgorgorgorgorgorgo';
+    let scopeDid = 'did:plc:scopescopescopescopescop';
     let pkgDid = 'did:plc:pkgpkgpkgpkgpkgpkgpkgpkgp';
 
-    let e1 = new ActivityEvent(activityEventId(1000 as i64, 0, 'aabbccdd'), 1000 as i64, ALICE, 'createOrganization',
+    let e1 = new ActivityEvent(activityEventId(1000 as i64, 0, 'aabbccdd'), 1000 as i64, ALICE, 'createScope',
         ACTIVITY_SCOPE, OUTCOME_WRITTEN);
     e1.scope = 'acme';
-    e1.account = orgDid;
-    e1.accountKind = 'organization';
+    e1.account = scopeDid;
+    e1.accountKind = 'scope';
     e1.handle = 'acme.pkg.test';
-    e1.collection = 'dev.zena-lang.package.members';
+    e1.collection = 'dev.zena-lang.scope.maintainers';
     e1.rkey = 'self';
     e1.after = cidA;
 
@@ -382,10 +382,10 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     let e2 = new ActivityEvent(activityEventId(2000 as i64, 1, 'aabbccdd'), 2000 as i64, ALICE, 'putTeam',
         ACTIVITY_TEAM, OUTCOME_HELD);
     e2.scope = 'acme';
-    e2.account = orgDid;
-    e2.accountKind = 'organization';
+    e2.account = scopeDid;
+    e2.accountKind = 'scope';
     e2.handle = 'acme.pkg.test';
-    e2.collection = 'dev.zena-lang.package.team';
+    e2.collection = 'dev.zena-lang.org.team';
     e2.rkey = 'core';
     e2.before = cidA;
     e2.after = cidB;
@@ -422,10 +422,10 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     isNull(all[0].before);
     isNull(all[0].after);
     equal(all[2].scope as String, 'acme');
-    equal(all[2].account as String, orgDid);
-    equal(all[2].accountKind as String, 'organization');
+    equal(all[2].account as String, scopeDid);
+    equal(all[2].accountKind as String, 'scope');
     equal(all[2].handle as String, 'acme.pkg.test');
-    equal(all[2].collection as String, 'dev.zena-lang.package.team');
+    equal(all[2].collection as String, 'dev.zena-lang.org.team');
     equal(all[2].rkey as String, 'core');
     isTrue((all[2].before as Cid).equals(cidA), 'before cid');
     isTrue((all[2].after as Cid).equals(cidB), 'after cid');
@@ -442,7 +442,7 @@ export function appViewStoreConformance(make: () => AppViewStore): void {
     equal(bobEvents[0].id, e3.id);
 
     let byAccount = new ActivityQuery();
-    byAccount.account = orgDid;
+    byAccount.account = scopeDid;
     equal((await store.activity(byAccount)).length, 2);
 
     let byKind = new ActivityQuery();

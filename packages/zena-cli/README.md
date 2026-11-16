@@ -159,7 +159,7 @@ zena-cli pkg publish                       # after raising "version"
 zena-cli pkg retract 1.4.1 --reason "Routes with a trailing slash matched the wrong handler"
 ```
 
-To publish from CI, a scope's admin creates an automation account, and a
+To publish from CI, a scope's owner creates an automation account, and a
 package's owner adds it as a publisher. CI keeps the account's token as
 the secret `ZENA_REGISTRY_TOKEN`, and runs `zena pkg publish`, signed in to
 nothing:
@@ -183,38 +183,45 @@ zena-cli pkg approve acme:router@1.5.0 --yes   # approves it
 lockfiles pin it keep using it, and `zena pkg add` and `zena pkg update` skip it.
 Any maintainer may retract a release.
 
-A scope's owners change who belongs to it, and a package's owners who
-maintains it. Each change asks the registry for the new record, attests it in
-your own repository, and asks the registry to write it. The registry writes it
-once the record before it allows it: with thresholds of 1, at once, and
-otherwise once enough of its owners, admins or team maintainers have
-approved it with `zena pkg approve <scope>` or `zena pkg approve <package>`. Who
-belongs stays private: records list commitments, and the registry shows the
-entries behind them only to those who may see them.
+A scope's maintainers are its owners and publishers. Publishers create
+packages in it, and start as owners of each; owners also change the scope, its policy
+and every package's maintainers in it. A scope upgraded to an organization
+has members, and teams of them, which any maintainers record can name. A
+package's owners change who maintains it. Each change asks the registry for
+the new record, attests it in your own repository, and asks the registry to
+write it. The registry writes it once the record before it allows it: with
+thresholds of 1, at once, and otherwise once enough of its owners or team
+maintainers have approved it with `zena pkg approve <scope>` or
+`zena pkg approve <package>`. Who belongs stays private: records list
+commitments, and the registry shows the entries behind them only to those
+who may see them.
 
 ```bash
-zena-cli pkg scope add acme bob.example.com --role admin   # member, admin or owner
+zena-cli pkg scope add acme bob.example.com --role owner   # publisher or owner
 zena-cli pkg scope remove acme bob.example.com
-zena-cli pkg scope members acme
+zena-cli pkg scope maintainers acme
+zena-cli pkg scope upgrade acme --yes        # acme becomes an organization
+zena-cli pkg org add acme bob.example.com
+zena-cli pkg org members acme
 zena-cli pkg team create acme/core
 zena-cli pkg team add acme/core bob.example.com --role maintainer   # member or maintainer
+zena-cli pkg scope add acme --team acme/core # the team's members create packages
 zena-cli pkg owner add --team acme/core      # in a package: the team publishes it
 zena-cli pkg owner add carol.example.com --role owner   # publisher or owner
 zena-cli pkg owner list
 
 zena-cli pkg owner settings --threshold 2 --humans 1   # releases need 2 approvals, 1 of them a person's
 zena-cli pkg owner settings --owner-threshold 2        # changes to the maintainers need 2 owners
-zena-cli pkg scope settings acme --owner-threshold 2 --admin-threshold 2
+zena-cli pkg scope settings acme --owner-threshold 2
 zena-cli pkg team settings acme/core --threshold 2
-zena-cli pkg scope policy acme --minimum-threshold 2 --default-teams core:publisher --default-threshold 2 --creators core
+zena-cli pkg scope policy acme --minimum-threshold 2 --default-teams acme/core:publisher --default-threshold 2
 zena-cli pkg scope profile acme --name "Acme Corp" --website https://acme.example
 ```
 
 The `settings` commands change thresholds, and with no flags print them.
 `zena pkg scope policy` sets the scope's policy for its packages: minimums
-every release in the scope needs at once, the teams and thresholds new
-packages start with, and the teams whose members may create packages
-besides its admins. `zena pkg scope profile` sets how the scope presents
+every release in the scope needs at once, and the teams and thresholds new
+packages start with. `zena pkg scope profile` sets how the scope presents
 itself on the registry's pages.
 A change to a threshold is approved under the thresholds it replaces: one
 owner raises `--owner-threshold` from 1 to 2, and lowering it again needs

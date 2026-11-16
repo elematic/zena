@@ -370,13 +370,15 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   - **`pkg scope create <name> [--yes]`**, **`pkg scope info <scope>`**:
     Create a scope on a registry, with you as its owner, or describe one.
     Publishing never creates a scope. **`pkg scope add|remove <scope>
-<person>`**, **`pkg scope members`**, **`pkg team
-create|add|remove|delete|members`** and **`pkg owner add|remove|list`**
-    change and show who belongs to a scope, a team and a package. **`pkg
-scope settings`**, **`pkg team settings`** and **`pkg owner settings`**
-    show and change their thresholds, and **`pkg scope policy`** the
-    minimums, defaults and creators of a scope's packages. **`pkg scope
-profile`** sets a scope's display name, description and website.
+<person>`** and **`pkg scope maintainers`** change and show its owners
+    and publishers; **`pkg scope upgrade <scope> --yes`** makes it an
+    organization, whose members **`pkg org add|remove|members`** change and
+    show. **`pkg team create|add|remove|delete|members <org>/<team>`** and
+    **`pkg owner add|remove|list`** change and show who belongs to a team
+    and a package. **`pkg scope settings`**, **`pkg team settings`** and
+    **`pkg owner settings`** show and change their thresholds, and **`pkg
+scope policy`** the minimums and defaults of a scope's packages. **`pkg
+scope profile`** sets a scope's display name, description and website.
 - **`doc <path> [-o <out.json>]`**: Extract a package's public API as JSON.
 - **`bench <suite.json> [-o <out.json>]`**: Run a benchmark suite.
 - **`lsp`**: Run the Zena language server over stdin/stdout.

@@ -1,8 +1,8 @@
 /**
- * The App View methods that make accounts, an organization for a scope, a
- * package, and an automation account for CI, and retire the last; that
- * set how a scope presents itself; and the public lists of the scopes and
- * packages a visitor browses.
+ * The App View methods that make accounts, a scope, a package, and an
+ * automation account for CI, and retire the last; that set how a scope
+ * presents itself; and the public lists of the scopes and packages a
+ * visitor browses.
  */
 
 import {Future} from 'zena:async';
@@ -11,7 +11,7 @@ import {JsonArray, JsonObject} from 'zena:json';
 import {fromJson} from 'atproto/data';
 import {xrpcPath} from 'atproto/methods';
 import {
-  CREATE_AUTOMATION_ACCOUNT, CREATE_ORGANIZATION, CREATE_PACKAGE, ISSUE_AUTOMATION_TOKEN, LIST_PACKAGES, LIST_SCOPES,
+  CREATE_AUTOMATION_ACCOUNT, CREATE_PACKAGE, CREATE_SCOPE, ISSUE_AUTOMATION_TOKEN, LIST_PACKAGES, LIST_SCOPES,
   PUT_SCOPE_PROFILE, RETIRE_AUTOMATION_ACCOUNT
 } from 'package-manager/registry-methods';
 import {Created, AppView} from '../app-view.zena';
@@ -20,7 +20,7 @@ import {entriesOf, registryProcedure, writtenJson} from './common.zena';
 
 /** Adds the methods that make accounts, and the lists of scopes and packages, to `router`. */
 export function accountRoutes(router: Router, appView: AppView): void {
-  registryProcedure(router, appView, CREATE_ORGANIZATION, async (req, res, caller): Future<JsonObject | null> => {
+  registryProcedure(router, appView, CREATE_SCOPE, async (req, res, caller): Future<JsonObject | null> => {
     let input = await jsonBody(req, res);
     if (input == null) {
       return null;
@@ -30,9 +30,8 @@ export function accountRoutes(router: Router, appView: AppView): void {
       fail(res, 400, 'InvalidRequest', 'name is required, and recoveryKeys must be a list of strings');
       return null;
     }
-    let created = await appView.createOrganization(caller, input['name'] as String, keys,
-        nowMicros());
-    return createdJson(created, 'members');
+    let created = await appView.createScope(caller, input['name'] as String, keys, nowMicros());
+    return createdJson(created, 'maintainers');
   });
 
   registryProcedure(router, appView, CREATE_PACKAGE, async (req, res, caller): Future<JsonObject | null> => {
@@ -41,13 +40,12 @@ export function accountRoutes(router: Router, appView: AppView): void {
       return null;
     }
     let keys = recoveryKeys(input);
-    if (!(input['organization'] is String) || keys == null || input['profile'] == null ||
-        input['maintainers'] == null) {
+    if (!(input['scope'] is String) || keys == null || input['profile'] == null || input['maintainers'] == null) {
       fail(res, 400, 'InvalidRequest',
-          'organization, profile and maintainers are required, and recoveryKeys must be a list of strings');
+          'scope, profile and maintainers are required, and recoveryKeys must be a list of strings');
       return null;
     }
-    let created = await appView.createPackage(caller, input['organization'] as String,
+    let created = await appView.createPackage(caller, input['scope'] as String,
         keys, fromJson(input['profile']), fromJson(input['maintainers']),
         entriesOf(input), nowMicros());
     return createdJson(created, 'maintainers');
@@ -58,11 +56,11 @@ export function accountRoutes(router: Router, appView: AppView): void {
     if (input == null) {
       return null;
     }
-    if (!(input['organization'] is String) || !(input['name'] is String)) {
-      fail(res, 400, 'InvalidRequest', 'organization and name are required');
+    if (!(input['scope'] is String) || !(input['name'] is String)) {
+      fail(res, 400, 'InvalidRequest', 'scope and name are required');
       return null;
     }
-    let made = await appView.createAutomationAccount(caller, input['organization'] as String, input['name'] as String,
+    let made = await appView.createAutomationAccount(caller, input['scope'] as String, input['name'] as String,
         nowMicros());
     let answer = new JsonObject();
     answer['did'] = made.did;
@@ -103,12 +101,12 @@ export function accountRoutes(router: Router, appView: AppView): void {
     if (input == null) {
       return null;
     }
-    if (!(input['organization'] is String) || input['profile'] == null) {
-      fail(res, 400, 'InvalidRequest', 'organization and profile are required');
+    if (!(input['scope'] is String) || input['profile'] == null) {
+      fail(res, 400, 'InvalidRequest', 'scope and profile are required');
       return null;
     }
     let swap = input['swapRecord'];
-    return writtenJson(await appView.putScopeProfile(caller, input['organization'] as String, fromJson(input['profile']),
+    return writtenJson(await appView.putScopeProfile(caller, input['scope'] as String, fromJson(input['profile']),
         if (swap is String) swap else null, nowMicros()));
   });
 
