@@ -441,13 +441,41 @@ readable end so the host releases what it never sent.
 
 `split()` exists so several holders can await one result. With a
 restricted value each of them would receive it, so at a restricted `T`
-a `FutureClaim` is single-holder: `split()` is unavailable. At an owner,
-releasing the claim releases the last claim, which cancels the work, and
-its future is dropped like any other: if a value arrives anyway, the
-releasing waiter releases it. At a must-consume `T` the claim's future
-must be awaited, so the claim cannot be released early. How a single
-holder awaits it, and what "unavailable" means for `split()`, are open
-(#873).
+a `FutureClaim` has one holder (#873):
+
+- **The claim is a resource** (`resource class FutureClaim<scoped T>`),
+  at every `T`. Each handle is an owner, so dropping one releases its
+  claim, and the last release cancels the work, as `release()` and
+  `using` do. A handle cannot be aliased, only split, which is the
+  counting the claim always assumed (cancellation.md, "Consumer
+  interest").
+- **The holder takes the future.** `future` is a getter over a `var`
+  slot, so at a restricted `T` reading it takes it, as a read of
+  `Future`'s own value does, and at a first-class `T` it copies.
+  Consuming the claim to get the future would not do: releasing the
+  claim would cancel the work about to be awaited.
+- **`split()` throws at a restricted `T`.** Its body can copy the
+  future only inside `if (isFirstClass<T>())`, and the other branch
+  throws, a backstop like the second-consumer check. A compile error at
+  the call needs `static requires (isFirstClass<T>())` and a prover for
+  it (contracts.md), which `then`'s check by name could use too.
+- **A future nobody took goes with the last claim.** The claim's
+  dispose stores null over its future, which releases it at an owner
+  (§"Replacing a value"): a value that arrives anyway is released.
+- **Must-consume `T` does not arise.** `spawn`'s body is a
+  `() => Future<A>` with no parameters, so it cannot derive a borrow or
+  a scoped value; an explicit `spawn<Scoped<…>>` would make a claim the
+  existing must-consume rules cover.
+
+`FutureClaim.spawn` runs its body as the one member of a `TaskGroup`,
+so `TaskGroup.spawn` takes `scoped T` too. The group watches each
+member without consuming it: `Future`'s `[watch]` registers a waiter
+that claims nothing, and the group's waiter reads only `[failure]`,
+through a second reference (`shareReference`), never the value. The
+caller is the member future's one consumer. `TaskGroup.spawn` returns
+what its callback produced, which the derivation rule allows, since a
+callback whose result can be second-class is a source (ownership.md,
+"Derived borrows").
 
 ## The class half of `scoped T`
 
@@ -611,8 +639,9 @@ scope after it (ownership.md, "Implicit drop").
      `DeferredFuture` holding an owner). The loop variable of a `for await`
      (or a `for`-`in` over an iterator) is a candidate of the loop body,
      released at the end of each iteration unless the body moves it
-     (`lowerBranchStmt` in `lowerForInIteratorLoop`).
-   - Next: `FutureClaim`.
+     (`lowerBranchStmt` in `lowerForInIteratorLoop`). `FutureClaim` and
+     `TaskGroup.spawn` at an owner (#873, §"FutureClaim") finish the
+     stage.
 5. **WIT.** Tuple members as `Own`; the manual disposal in `zena:http`,
    `zena:fetch` and the protobuf transports removed. Done together with
    the `wasi:http` switch above.

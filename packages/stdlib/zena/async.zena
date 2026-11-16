@@ -24,13 +24,21 @@
  * ```
  */
 
-import { Disposable } from './core/ownership.zena';
+import { Disposable, Own, isFirstClass } from './core/ownership.zena';
 import { Waiter, scheduleTask } from './async/executor.zena';
 import {
-  subscribe, result, tryComplete, tryFail,
+  subscribe, watch, failure, result, tryComplete, tryFail,
   cancelComplete,
   settledState, FutureState, Completer,
 } from './async/future.zena';
+
+/**
+ * A second reference to a future, which move checking does not track:
+ * a group's view of a member's future, for reading how it ended
+ * (GroupWaiter). The caller stays the future's one consumer.
+ */
+@intrinsic('share_reference')
+declare function shareReference<scoped T>(value: T): T;
 
 export {
   Waiter, scheduleTask,
@@ -261,25 +269,19 @@ export function checkCancellation(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * The task a group subscribes to each future it watches: when the
- * future settles, `run` reads whether it failed and reports that to
- * the group. It reads `state` before touching the result, because
- * reading a cancelled future's result raises on the cancellation
- * channel — and the group needs to record that outcome, not unwind.
+ * The task a group watches each member's future with: when the future
+ * settles, `run` reports whether it failed. It watches rather than
+ * subscribes, and reads the failure rather than the result, so it is
+ * never a consumer: a future of an owner keeps the caller as its one
+ * consumer, and a cancelled future's result, which raises, is not read.
+ * `future` is a second reference (shareReference) for that read alone.
  */
-class GroupWaiter<T> implements Waiter {
+class GroupWaiter<scoped T> implements Waiter {
   group: TaskGroup;
   future: Future<T>;
   new(this.group, this.future);
   run(): void {
-    let f = this.future;
-    var err: Error | null = null;
-    if (f.[settledState]() == FutureState.Rejected) {
-      if (let (false, _, e) = f.[result]()) {
-        err = e;
-      }
-    }
-    this.group.[childSettled](err);
+    this.group.[childSettled](this.future.[failure]());
   }
 }
 
@@ -346,7 +348,7 @@ export class TaskGroup {
    * future — anyone may await it — and the group watches it either
    * way.
    */
-  spawn<T>(body: () => Future<T>): Future<T> {
+  spawn<scoped T>(body: () => Future<T>): Future<T> {
     this.#outstanding += 1;
     let prev = current;
     current = this.#scope;
@@ -357,7 +359,7 @@ export class TaskGroup {
       current = prev;
     }
     let f = fut as Future<T>;
-    f.[subscribe](new GroupWaiter<T>(this, f));
+    f.[watch](new GroupWaiter<T>(this, shareReference(f)));
     return f;
   }
 
@@ -521,28 +523,33 @@ class Interest implements Waiter {
  * A future plus a counted claim on the work producing it. Work
  * spawned on behalf of several consumers should keep running while
  * any of them still wants the result and stop when none does; holding
- * an `FutureClaim` is declaring that want. Releasing the handle —
- * `using`, `:dispose`, or an explicit `release()` — gives the claim
- * up, and when the last claim is gone the work's scope is cancelled,
- * one queue turn later.
+ * a `FutureClaim` is declaring that want. A claim is a resource:
+ * dropping it, `using` it or calling `release()` gives the claim up,
+ * and when the last claim is gone the work's scope is cancelled, one
+ * queue turn later.
  *
  * Sharing is an explicit `split()`: the count goes up before the
  * second handle exists, so claims never pass through zero during a
  * handoff. Releasing is per-handle and idempotent.
  *
- * The bare `future` stays an ordinary value. Holding it confers
- * awaiting and nothing else: if every claim is released, a bystander
- * mid-await gets the cancellation raise at its checkpoint. Awaiting
- * without holding a claim is awaiting at the claim holders' pleasure
- * — which is the honest version of the contract, and why nothing on
- * `Future` itself can cancel.
+ * At a first-class `T` the `future` stays an ordinary value. Holding it
+ * confers awaiting and nothing else: if every claim is released, a
+ * bystander mid-await gets the cancellation raise at its checkpoint.
+ * Awaiting without holding a claim is awaiting at the claim holders'
+ * pleasure, which is the honest version of the contract, and why
+ * nothing on `Future` itself can cancel.
+ *
+ * At an owner or a borrow (owner-futures.md, "FutureClaim") a claim has
+ * one holder: reading `future` takes it, so it is awaited once, and
+ * `split()` throws. A future nobody took goes with the last claim, so a
+ * value that arrives anyway is released.
  */
-export class FutureClaim<T> implements Disposable {
-  future: Future<T>;
+export resource class FutureClaim<scoped T> {
+  var #future: Future<T> | null;
   #interest: Interest;
   var #released: boolean = false;
 
-  new(this.future, interest: Interest) : #interest = interest;
+  new(future: Future<T>, interest: Interest) : #future = future, #interest = interest;
 
   /**
    * Starts `body` as owned work: the call runs as the one member of a
@@ -552,10 +559,20 @@ export class FutureClaim<T> implements Disposable {
    * caller's cancellation runs the spawn inside a member of
    * `TaskGroup.detached()`.
    */
-  static spawn<A>(body: () => Future<A>): FutureClaim<A> {
+  static spawn<scoped A>(body: () => Future<A>): Own<FutureClaim<A>> {
     let group = new TaskGroup();
     let fut = group.spawn(body);
     return new FutureClaim<A>(fut, new Interest(group));
+  }
+
+  /**
+   * The future of the work's result. At a restricted `T` reading it
+   * takes it, so the claim's one holder awaits it once.
+   */
+  future: Future<T> {
+    get {
+      return this.#future as Future<T>;
+    }
   }
 
   /** Whether this handle still holds its claim. */
@@ -567,14 +584,18 @@ export class FutureClaim<T> implements Disposable {
 
   /**
    * A second claim on the same work. Throws if this handle was
-   * already released — a released handle has nothing to share.
+   * already released, since a released handle has nothing to share,
+   * and at a restricted `T`, whose result has one holder.
    */
-  split(): FutureClaim<T> {
+  split(): Own<FutureClaim<T>> {
     if (this.#released) {
       throw new Error('FutureClaim was already released');
     }
-    this.#interest.count += 1;
-    return new FutureClaim<T>(this.future, this.#interest);
+    if (isFirstClass<T>()) {
+      this.#interest.count += 1;
+      return new FutureClaim<T>(this.#future as Future<T>, this.#interest);
+    }
+    throw new Error('A claim on work whose result holds an owner or a borrow has one holder');
   }
 
   /**
@@ -589,7 +610,10 @@ export class FutureClaim<T> implements Disposable {
     this.#interest.release();
   }
 
-  [Disposable.dispose](): void {
+  [Disposable.dispose](this: Own<this>): void {
     this.release();
+    // A future nobody took is dropped with its claim: the store releases
+    // it at an owner, and its value with it when that arrives.
+    this.#future = null;
   }
 }

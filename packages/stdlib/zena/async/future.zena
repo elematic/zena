@@ -80,6 +80,8 @@ export declare type Awaited<T>;
  */
 export symbol result;
 export symbol subscribe;
+export symbol watch;
+export symbol failure;
 export symbol settledState;
 export symbol valueOrThrow;
 /**
@@ -294,6 +296,41 @@ export class Future<scoped T> {
     }
     let list = growable<Waiter>([w, t]);
     this.#waiters = list;
+  }
+
+  /**
+   * Registers a watcher: `t.run()` runs once this future settles, as
+   * for `[subscribe]`, but nothing is claimed, so a future of an owner
+   * keeps its one consumer. A watcher reads how the future ended
+   * (`[failure]`) and never its value. What a `TaskGroup` watches its
+   * members with. The registration is `[subscribe]`'s, repeated rather
+   * than shared, so a program that only awaits gets no extra function.
+   */
+  [watch](t: Waiter): void {
+    if (!(this.#state == FutureState.Pending)) {
+      scheduleTask(t);
+      return;
+    }
+    let w = this.#waiters;
+    if (w == null) {
+      this.#waiters = t;
+      return;
+    }
+    if (w is GrowableArray<Waiter>) {
+      w.push(t);
+      return;
+    }
+    let list = growable<Waiter>([w, t]);
+    this.#waiters = list;
+  }
+
+  /**
+   * The error a settled future failed with, or null when it resolved
+   * or was cancelled. A watcher's read (`[watch]`): it leaves the value
+   * alone.
+   */
+  [failure](): Error | null {
+    return if (this.#state == FutureState.Rejected) this.#error else null;
   }
 
   /**

@@ -84,12 +84,23 @@ export let tests = suite('FutureClaim', () => {
     h.release();
     var msg = '';
     try {
-      h.split();
+      let second = h.split();
     } catch (e) {
       msg = e.message;
     }
     equal(msg, 'FutureClaim was already released');
     drainMicrotasks();
+  });
+
+  test('dropping the only claim cancels the work', (ctx) => {
+    let gate = new Completer<i32>();
+    var f: Future<i32> | null = null;
+    {
+      let h = FutureClaim.spawn(() => doubled(gate.future));
+      f = h.future;
+    }
+    drainMicrotasks();
+    assertCancelled(f);
   });
 
   test('`using` releases the claim at the end of the block', (ctx) => {
@@ -105,15 +116,13 @@ export let tests = suite('FutureClaim', () => {
     assertCancelled((f));
   });
 
-  test('enclosing cancellation still reaches owned work', (ctx) => {
+  test('enclosing cancellation still reaches owned work', async (ctx) => {
     let gate = new Completer<i32>();
     let outer = new TaskGroup();
-    var h: FutureClaim<i32> | null = null;
-    outer.spawn(() => {
-      h = FutureClaim.spawn(() => doubled(gate.future));
-      return Future.of(0);
-    });
-    let handle = h as FutureClaim<i32>;
+    // The claim is made inside the outer group, and comes back as the
+    // member's result.
+    let made = outer.spawn(() => Future.of(FutureClaim.spawn(() => doubled(gate.future))));
+    let handle = await made;
     outer.cancel();
     drainMicrotasks();
     // The claim was never released; the ancestor cancelled anyway.
@@ -126,12 +135,9 @@ export let tests = suite('FutureClaim', () => {
     let gate = new Completer<i32>();
     let outer = new TaskGroup();
     let shared = TaskGroup.detached();
-    var h: FutureClaim<i32> | null = null;
-    outer.spawn(() => shared.spawn(() => {
-      h = FutureClaim.spawn(() => doubled(gate.future));
-      return Future.of(0);
-    }));
-    let handle = h as FutureClaim<i32>;
+    let made = outer.spawn(() => shared.spawn(
+        () => Future.of(FutureClaim.spawn(() => doubled(gate.future)))));
+    let handle = await made;
     outer.cancel();
     drainMicrotasks();
     isFalse(handle.future.isCompleted);
