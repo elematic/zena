@@ -66,3 +66,11 @@ first. When a pull request closes an item there, tick its box.
   `Storage.takeReservedKey`, never with a read and then a write.
 - The emulator run is `npm run test:emulator -w @zena-lang/pds`. It is not
   part of `npm test`, so run it after changing `pds/firestore`.
+
+## The operations document
+
+The registry's operations document, in the operator's private deploy
+repository, describes padstone too: its settings, its keys, its Firestore
+and Cloud Storage layout, and its account kinds. A change to any of them
+needs the document changed, as `packages/registry/CONTEXT.md`, "The
+operations document", says.

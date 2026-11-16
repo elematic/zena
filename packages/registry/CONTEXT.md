@@ -69,3 +69,17 @@ When a pull request closes an item there, tick its box.
 - The emulator run is `npm run test:emulator -w @zena-lang/registry`. It
   is not part of `npm test`, so run it after changing `registry/firestore`
   or `registry/service`.
+
+## The operations document
+
+The operator keeps the registry's operations document, `docs/operations.md`,
+in the private deploy repository that `ZENA_DEPLOY_SETTINGS` names. It tells
+whoever runs the registry what each part is, and how to deploy, check and
+recover it, without reading this code. A change here that alters what it
+says needs it changed too: a deploy script (`deploy/`) or what it creates, a
+setting or variable, an operator command (`deploy/operator.sh`,
+`src/main.zena`), a limit or its default, a Firestore path or document's
+fields, a record, method or account kind, or a step of a procedure, such as
+resetting staging. Say in the pull request what the document needs. Whoever
+can reach that repository changes it there, in a pull request that merges
+once the change here is merged.

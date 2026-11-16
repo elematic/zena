@@ -21,6 +21,8 @@ lexicons/              AT Protocol lexicons (dev.zena-lang.*)
 
 `test/lexicons_test.zena` checks that each file is named by its NSID, that its references resolve, and that the permission set covers every App View method.
 
+A new or renamed record or method changes the registry's operations document, which lists the record names and says which records each account holds; `packages/registry/CONTEXT.md`, "The operations document", says how to change it.
+
 ## Running Tests
 
 From the repository root:
