@@ -28,7 +28,7 @@ the `zena` command. The design is in
      call a registry's `dev.zena-lang.registry.*` methods with service-auth
      tokens from that session, `scope.zena`, for `zena pkg scope create` and
      `zena pkg scope info`, and `members.zena`, for `zena pkg scope add`,
-     `remove`, `maintainers`, `settings`, `policy` and `upgrade`,
+     `remove`, `maintainers`, `settings`, `policy`, `upgrade`, `join` and `leave`,
      `zena pkg org`, `zena pkg team` and `zena pkg owner`, which change who
      belongs through the registry's `put*` methods, `retract.zena`, for
      `zena pkg retract`, `approve.zena`, for `zena pkg approve`, which attests a

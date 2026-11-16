@@ -23,6 +23,7 @@ import {
   Policy,
   SCOPE_PROFILE_TYPE,
   ScopeMaintainers,
+  ScopeOrganization,
   ScopeProfile,
   TeamRole,
   PROFILE_TYPE,
@@ -494,6 +495,28 @@ export let tests = suite('package-manager/records', () => {
       }
     }
     equal(refused, 4);
+  });
+
+  test("reads a scope's organization record, which names the organization by DID", (ctx) => {
+    let json = '{"$type": "dev.zena-lang.scope.organization", "organization": "did:plc:acmeacmeacmeacmeacmeacme"}';
+    let record = ScopeOrganization.fromValue(value(json));
+    equal(record.organization, 'did:plc:acmeacmeacmeacmeacmeacme');
+    jsonEqual(toJson(record.toValue()), parseJson(json));
+    var refused = 0;
+    for (let bad in [
+      '{"$type": "dev.zena-lang.scope.organization", "organization": "acme"}',
+      '{"$type": "dev.zena-lang.scope.organization"}',
+      '{"$type": "dev.zena-lang.scope.policy", "organization": "did:plc:acmeacmeacmeacmeacmeacme"}',
+    ]) {
+      try {
+        ScopeOrganization.fromValue(value(bad));
+      } catch (e) {
+        if (e is RecordError) {
+          refused += 1;
+        }
+      }
+    }
+    equal(refused, 3);
   });
 
   test('reads members and team records, which list commitments', (ctx) => {

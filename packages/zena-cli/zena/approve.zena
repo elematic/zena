@@ -8,11 +8,12 @@
  *   maintainers attest it. The command shows the release, who published
  *   it, its dependencies, and who has approved it so far.
  * - `zena pkg approve <scope>` or `zena pkg approve <package>`: the changes
- *   waiting to a scope's maintainers and policy, an organization's members
- *   and teams, or a package's maintainers, which the registry holds until
- *   enough owners or team maintainers of the record before each attest it.
- *   The command shows who each change adds and removes, and the thresholds
- *   it changes.
+ *   waiting to a scope's maintainers, policy and organization, an
+ *   organization's members and teams, or a package's maintainers, which
+ *   the registry holds until enough owners or team maintainers of the
+ *   record before each attest it, and for a scope joining an organization,
+ *   the organization's owners too. The command shows who each change adds
+ *   and removes, and the thresholds it changes.
  *
  * With `--yes` it writes the attestations to the caller's own repository
  * and asks the registry to complete each, as `zena pkg publish` and `zena pkg scope
@@ -28,7 +29,8 @@ import { Cid } from 'atproto/cid';
 import { fromJson } from 'atproto/data';
 import {
   MAINTAINERS_TYPE, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, POLICY_TYPE, Policy, Release,
-  SCOPE_MAINTAINERS_TYPE, ScopeMaintainers, TEAM_TYPE, Team, parsePackageVersion
+  SCOPE_MAINTAINERS_TYPE, SCOPE_ORGANIZATION_TYPE, ScopeMaintainers, ScopeOrganization, TEAM_TYPE, Team,
+  parsePackageVersion
 } from 'package-manager/records';
 import { Options } from './env.zena';
 import {
@@ -177,6 +179,9 @@ function whatChanges(change: JsonObject, given: String): String {
   if (collection == SCOPE_MAINTAINERS_TYPE) {
     return `the maintainers of ${given}`;
   }
+  if (collection == SCOPE_ORGANIZATION_TYPE) {
+    return `the organization of ${given}`;
+  }
   if (collection == MEMBERS_TYPE) {
     return `the members of ${given}`;
   }
@@ -227,6 +232,9 @@ async function describeChange(session: Session, registry: Registry, account: Str
       printThreshold('ownerThreshold', previous.ownerThreshold, next.ownerThreshold);
       printThreshold('humans', previous.humans, next.humans);
     }
+  } else if (collection == SCOPE_ORGANIZATION_TYPE) {
+    let was = if (held == null) 'none' else ScopeOrganization.fromValue(fromJson(held.value)).organization;
+    console.log(`  organization: ${was} → ${ScopeOrganization.fromValue(record).organization}`);
   } else if (collection == SCOPE_MAINTAINERS_TYPE) {
     let next = ScopeMaintainers.fromValue(record);
     let previous = if (held == null) null else ScopeMaintainers.fromValue(fromJson(held.value));

@@ -61,8 +61,10 @@ import {
   POLICY_TYPE,
   Policy,
   SCOPE_MAINTAINERS_TYPE,
+  SCOPE_ORGANIZATION_TYPE,
   SCOPE_PROFILE_TYPE,
   ScopeMaintainers,
+  ScopeOrganization,
   ScopeProfile,
   TEAM_TYPE,
   Team,
@@ -101,6 +103,9 @@ export let MAX_OFFLINE_ROTATION_KEYS = 2;
 
 /** The role a requirement names when a scope's owners approve a change to one of its packages' maintainers. */
 export let SCOPE_OWNER = 'scope owner';
+
+/** The role a requirement names when an organization's owners approve a scope joining it. */
+export let ORGANIZATION_OWNER = 'organization owner';
 
 /** The most recovery keys an account's genesis operation ranks above the App View's keys. */
 let MAX_RECOVERY_KEYS = 2;
@@ -863,8 +868,10 @@ export final class AppView {
    * retractions changed, which `listPackages` lists, and which people and
    * teams a scope's maintainers, an organization's members and teams, or a
    * package's maintainers, mention, which `getMemberships` and `publicRolesOf`
-   * start from. The commit stands whatever happens here, so an index that
-   * cannot be written is left until the next commit, or `syncIndexes`.
+   * start from, and which organization a scope belongs to, which
+   * `getScope` lists the organization's scopes from. The commit stands
+   * whatever happens here, so an index that cannot be written is left until
+   * the next commit, or `syncIndexes`.
    */
   async #index(account: AppViewAccount, head: Head, writes: Array<Write>): Future<void> {
     var shown = false;
@@ -880,7 +887,7 @@ export final class AppView {
         mentions = mentions || collection == MAINTAINERS_TYPE;
       } else if (account.kind == AccountKind.Scope) {
         mentions = mentions || collection == SCOPE_MAINTAINERS_TYPE || collection == MEMBERS_TYPE ||
-            collection == TEAM_TYPE;
+            collection == TEAM_TYPE || collection == SCOPE_ORGANIZATION_TYPE;
       }
     }
     try {
@@ -898,7 +905,8 @@ export final class AppView {
   /**
    * Everyone and every team `account`'s records may give a role: each
    * person its entries name, and a package's maintainers named by DID,
-   * and its teams, as `<org DID> <team>`.
+   * and its teams, as `<org DID> <team>`; and for a scope in an
+   * organization, the organization (`organizationSubject`).
    */
   async #subjectsOf(account: AppViewAccount): Future<Array<String>> {
     let subjects = new HashSet<String>();
@@ -918,6 +926,12 @@ export final class AppView {
         if (maintainer.org != null && maintainer.team != null) {
           subjects.add(`${maintainer.org as String} ${maintainer.team as String}`);
         }
+      }
+    }
+    if (account.kind == AccountKind.Scope) {
+      let organization = await this.#current(account.did, SCOPE_ORGANIZATION_TYPE, 'self');
+      if (organization != null) {
+        subjects.add(organizationSubject(ScopeOrganization.fromValue(organization.value).organization));
       }
     }
     let out = new GrowableArray<String>();
@@ -2358,9 +2372,10 @@ export final class AppView {
 
   /**
    * The scope `name`, as its page shows it: its account, its maintainers,
-   * and for an organization, the commitments of its members record and its
-   * teams, by name; or null when no account holds it. Public, as the records are; the entries
-   * behind the commitments come from `getEntries`.
+   * the organization it belongs to, and for an organization, the
+   * commitments of its members record, its teams, by name, and the scopes
+   * that belong to it; or null when no account holds it. Public, as the
+   * records are; the entries behind the commitments come from `getEntries`.
    */
   async getScope(name: String): Future<ScopeDetail | null> {
     let scopeDid = await this.#store.scopeAccount(name);
@@ -2384,6 +2399,22 @@ export final class AppView {
     }
     for (let team in await this.#pds.listRecords(account.did, TEAM_TYPE)) {
       detail.teams.push(new NamedTeam(team.rkey, Team.fromValue(team.value)));
+    }
+    let organization = await this.#organizationNamed(account.did, null);
+    if (organization != null) {
+      detail.belongsTo = await this.#store.account(organization);
+    }
+    if (detail.organization) {
+      // The index never forgets a mention, so each scope's record says
+      // whether it belongs here still.
+      for (let mentioning in await this.#store.mentionsOf(organizationSubject(account.did))) {
+        let scope = await this.#store.account(mentioning);
+        if (scope != null && scope.kind == AccountKind.Scope &&
+            (await this.#organizationNamed(mentioning, null)) == account.did) {
+          detail.scopes.push(scope);
+        }
+      }
+      detail.scopes.sort((a, b) => compareKeys(a.scope, b.scope));
     }
     return detail;
   }
@@ -2608,6 +2639,10 @@ export final class AppView {
     if (await this.#isOrganization(scopeDid)) {
       throw new AppViewError(400, 'AlreadyAnOrganization', `${scopeDid} is an organization already`);
     }
+    // An organization's own scope belongs to no other.
+    if ((await this.#current(scopeDid, SCOPE_ORGANIZATION_TYPE, 'self')) != null) {
+      throw new AppViewError(400, 'InvalidRequest', `${scopeDid} belongs to an organization: leave it first`);
+    }
     await this.#countAction(caller, account, nowMicros);
     // The caller is an owner, so the scope has a maintainers record.
     let maintainers = ((await this.#scopeMaintainers(scopeDid)) as ScopeMaintainers).maintainers;
@@ -2784,6 +2819,53 @@ export final class AppView {
   }
 
   /**
+   * `putScopeOrganization`: with `org`, asks for the scope `scopeDid`'s
+   * organization record naming the organization `org`, which waits until
+   * the owners of both have attested it (`#changeTally`); the caller must be
+   * an owner of one of them. An organization's own scope belongs to no
+   * other. Without `org`, deletes the record at once, for an owner of the
+   * scope or of the organization it names, and answers null: leaving gives
+   * no one a role.
+   */
+  async putScopeOrganization(caller: String, scopeDid: String, org: String | null, swapRecord: String | null,
+      nowMicros: i64): Future<Created | null> {
+    let account = await this.#account(scopeDid, AccountKind.Scope, 'a scope');
+    if (org == null) {
+      let current = await this.#current(scopeDid, SCOPE_ORGANIZATION_TYPE, 'self');
+      if (current == null) {
+        throw new AppViewError(400, 'NotInOrganization', `${scopeDid} belongs to no organization`);
+      }
+      let named = ScopeOrganization.fromValue(current.value).organization;
+      if ((await this.#scopeRole(scopeDid, caller)) != OWNER && (await this.#scopeRole(named, caller)) != OWNER) {
+        throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${scopeDid} or of ${named}`);
+      }
+      await this.#countAction(caller, account, nowMicros);
+      await this.#commit(account, [new DeleteRecord(SCOPE_ORGANIZATION_TYPE, 'self', swapCid(swapRecord)) as Write]);
+      let event = this.#eventOnAccount(nowMicros, caller, 'putScopeOrganization', ACTIVITY_SCOPE, OUTCOME_WRITTEN,
+          account);
+      event.collection = SCOPE_ORGANIZATION_TYPE;
+      event.rkey = 'self';
+      event.before = current.cid;
+      await this.#recordActivity(event);
+      return null;
+    }
+    let organization = org;
+    if (organization == scopeDid) {
+      throw new AppViewError(400, 'InvalidRequest', `${scopeDid} cannot belong to itself`);
+    }
+    await this.#organization(organization);
+    if (await this.#isOrganization(scopeDid)) {
+      throw new AppViewError(400, 'InvalidRequest', `${scopeDid} is an organization, which belongs to no other`);
+    }
+    if ((await this.#scopeRole(scopeDid, caller)) != OWNER && (await this.#scopeRole(organization, caller)) != OWNER) {
+      throw new AppViewError(403, 'Forbidden', `${caller} is not an owner of ${scopeDid} or of ${organization}`);
+    }
+    await this.#countAction(caller, account, nowMicros);
+    return await this.#propose(caller, 'putScopeOrganization', account, SCOPE_ORGANIZATION_TYPE, 'self',
+        new ScopeOrganization(organization).toValue(), swapRecord, nowMicros);
+  }
+
+  /**
    * `putMaintainers`: replaces `pkg`'s maintainers record. The caller must
    * be an owner of `pkg`, or of its scope. Each commitment needs an entry in
    * the role the record gives it, each team must exist, and the record must
@@ -2953,10 +3035,10 @@ export final class AppView {
    */
   async completeChange(caller: String, uri: String, cid: Cid | null, nowMicros: i64): Future<ChangeCompletion> {
     let target = await this.#changeTarget(uri);
-    await this.#requireRole(caller, target);
+    let held = await this.#heldChange(target, nowMicros);
+    await this.#requireRole(caller, target, held);
     let did = target.account.did;
     let current = (await this.#current(did, target.collection, target.rkey))?.cid;
-    let held = await this.#heldChange(target, nowMicros);
     if (held == null) {
       if (cid != null && current != null && current.equals(cid)) {
         return new ChangeCompletion(uri, cid, true, new ChangeTally());
@@ -3001,12 +3083,13 @@ export final class AppView {
     }
     let found = held;
     let waiting = new GrowableArray<WaitingChange>();
-    var checked = false;
+    // An owner of an organization a scope asks to join, who has no role in
+    // the scope, sees that change alone.
+    let inAccount = await this.#hasRole(caller, new ChangeTarget(found, '', ''), null);
     for (let change in await this.#store.heldChanges(account)) {
       let target = new ChangeTarget(found, change.collection, change.rkey);
-      if (!checked) {
-        await this.#requireRole(caller, target);
-        checked = true;
+      if (!inAccount && !(await this.#hasRole(caller, target, change))) {
+        continue;
       }
       if (nowMicros - change.heldAt > PENDING_MICROS) {
         await this.#store.dropChange(account, change.collection, change.rkey, change.cid);
@@ -3024,8 +3107,8 @@ export final class AppView {
       }
       waiting.push(entry);
     }
-    if (!checked) {
-      await this.#requireRole(caller, new ChangeTarget(found, '', ''));
+    if (!inAccount && waiting.length == 0) {
+      throw new AppViewError(403, 'Forbidden', `${caller} has no role in ${account}`);
     }
     return waiting;
   }
@@ -3037,13 +3120,20 @@ export final class AppView {
    */
   async withdrawChange(caller: String, uri: String, nowMicros: i64): Future<void> {
     let target = await this.#changeTarget(uri);
-    await this.#requireRole(caller, target);
     let held = await this.#heldChange(target, nowMicros);
+    await this.#requireRole(caller, target, held);
     if (held == null) {
       throw new AppViewError(400, 'ChangeNotFound', `no change to ${uri} is waiting for approval`);
     }
     let change = held;
-    if (change.proposer != caller && !(await this.#seesAll(caller, target.account, target.collection,
+    // Either side's owners may withdraw a scope's asking to join an organization.
+    var joining = false;
+    if (target.collection == SCOPE_ORGANIZATION_TYPE) {
+      let org = await this.#organizationNamed(target.account.did, change);
+      joining = (await this.#scopeRole(target.account.did, caller)) == OWNER ||
+          (org != null && (await this.#scopeRole(org, caller)) == OWNER);
+    }
+    if (change.proposer != caller && !joining && !(await this.#seesAll(caller, target.account, target.collection,
         if (target.collection == TEAM_TYPE) target.rkey else null))) {
       throw new AppViewError(403, 'Forbidden', `${caller} neither asked for the change to ${uri} nor can approve it`);
     }
@@ -3068,29 +3158,51 @@ export final class AppView {
     if (collection == MAINTAINERS_TYPE && rkey == 'self') {
       return new ChangeTarget(await this.#account(parts[0], AccountKind.Package, 'a package'), collection, rkey);
     }
-    if (((collection == SCOPE_MAINTAINERS_TYPE || collection == POLICY_TYPE || collection == MEMBERS_TYPE) &&
-        rkey == 'self') || collection == TEAM_TYPE) {
+    if (((collection == SCOPE_MAINTAINERS_TYPE || collection == POLICY_TYPE || collection == MEMBERS_TYPE ||
+        collection == SCOPE_ORGANIZATION_TYPE) && rkey == 'self') || collection == TEAM_TYPE) {
       return new ChangeTarget(await this.#account(parts[0], AccountKind.Scope, 'a scope'), collection, rkey);
     }
-    throw new AppViewError(400, 'InvalidRequest', `${uri} is not a maintainers, policy, members or team record`);
+    throw new AppViewError(400, 'InvalidRequest',
+        `${uri} is not a maintainers, policy, organization, members or team record`);
+  }
+
+  /** Throws unless `caller` has a role in the account `target` is a record of (`#hasRole`). */
+  async #requireRole(caller: String, target: ChangeTarget, change: PendingChange | null = null): Future<void> {
+    if (!(await this.#hasRole(caller, target, change))) {
+      throw new AppViewError(403, 'Forbidden', `${caller} has no role in ${target.account.did}`);
+    }
   }
 
   /**
-   * Throws unless `caller` has a role in the account `target` is a record
-   * of: in a scope's maintainers, or as a member of an organization; in a
-   * package's maintainers, or as an owner of its scope.
+   * Whether `caller` has a role in the account `target` is a record of: in
+   * a scope's maintainers, or as a member of an organization; in a
+   * package's maintainers, or as an owner of its scope. For a scope's
+   * organization record, an owner of the organization that `change`, or
+   * else the record as it is, names has one too.
    */
-  async #requireRole(caller: String, target: ChangeTarget): Future<void> {
+  async #hasRole(caller: String, target: ChangeTarget, change: PendingChange | null): Future<boolean> {
     let account = target.account;
     let did = account.did;
-    if (account.kind == AccountKind.Scope) {
-      if ((await this.#scopeRole(did, caller)) != null || (await this.#isMember(did, caller))) {
-        return;
-      }
-    } else if ((await this.#packageRole(did, caller)) != null || (await this.#ownsScopeOf(account, caller))) {
-      return;
+    if (account.kind != AccountKind.Scope) {
+      return (await this.#packageRole(did, caller)) != null || (await this.#ownsScopeOf(account, caller));
     }
-    throw new AppViewError(403, 'Forbidden', `${caller} has no role in ${did}`);
+    if ((await this.#scopeRole(did, caller)) != null || (await this.#isMember(did, caller))) {
+      return true;
+    }
+    if (target.collection != SCOPE_ORGANIZATION_TYPE) {
+      return false;
+    }
+    let org = await this.#organizationNamed(did, change);
+    return org != null && (await this.#scopeRole(org, caller)) == OWNER;
+  }
+
+  /** The organization `change` would put the scope `did` in, or else the one it is in; null for none. */
+  async #organizationNamed(did: String, change: PendingChange | null): Future<String | null> {
+    if (change != null) {
+      return ScopeOrganization.fromValue(decodeCbor(change.record)).organization;
+    }
+    let current = await this.#current(did, SCOPE_ORGANIZATION_TYPE, 'self');
+    return if (current != null) ScopeOrganization.fromValue(current.value).organization else null;
   }
 
   /** The change held to `target`, unless there is none or it has expired. */
@@ -3114,6 +3226,9 @@ export final class AppView {
    *
    * - A scope's maintainers, policy or members record: the scope
    *   maintainers record's `ownerThreshold` of owners.
+   * - A scope's organization record: the scope's `ownerThreshold` of its
+   *   owners and, as well, the organization's `ownerThreshold` of its
+   *   owners (`ChangeTally.all`).
    * - A team: its `threshold` of the team's maintainers, or the
    *   organization's scope's `ownerThreshold` of owners; a new team, the
    *   owners alone.
@@ -3146,6 +3261,15 @@ export final class AppView {
         tally.requirements.push(await this.#requirement(OWNER, scopeRecord.ownerThreshold,
             await this.#ownersIn(did, scopeRecord.maintainers), uri, change.cid, rkey));
       }
+      if (target.collection == SCOPE_ORGANIZATION_TYPE) {
+        // Joining: the organization's owners attest it too.
+        tally.all = true;
+        let org = ScopeOrganization.fromValue(decodeCbor(change.record)).organization;
+        let orgRecord = await this.#scopeMaintainers(org);
+        tally.requirements.push(if (orgRecord != null) await this.#requirement(ORGANIZATION_OWNER,
+            orgRecord.ownerThreshold, await this.#ownersIn(org, orgRecord.maintainers), uri, change.cid, rkey)
+            else new Requirement(ORGANIZATION_OWNER, 1 as i64));
+      }
       if (target.collection == TEAM_TYPE) {
         let team = await this.#current(did, TEAM_TYPE, target.rkey);
         if (team != null) {
@@ -3156,11 +3280,13 @@ export final class AppView {
         }
       }
     }
+    var met = 0;
     for (let requirement in tally.requirements) {
       if (requirement.met) {
-        tally.enough = true;
+        met += 1;
       }
     }
+    tally.enough = if (tally.all) met == tally.requirements.length && met > 0 else met > 0;
     return tally;
   }
 
@@ -3529,7 +3655,7 @@ function commitmentsTo(entries: Array<MemberEntry>): FixedArray<Cid> {
 
 /** The commitments the maintainers, members or team record `value`, of `collection`, lists. */
 function commitmentsIn(collection: String, value: Value): Array<Cid> {
-  if (collection == POLICY_TYPE) {
+  if (collection == POLICY_TYPE || collection == SCOPE_ORGANIZATION_TYPE) {
     return [];
   }
   if (collection == SCOPE_MAINTAINERS_TYPE) {
@@ -3581,8 +3707,10 @@ export final class Requirement {
 
 /** A change's attestations, against each way the record it replaces allows it. */
 export final class ChangeTally {
-  /** Any one of them met is enough. */
+  /** Any one of them met is enough, unless `all`. */
   requirements = new GrowableArray<Requirement>();
+  /** Whether every requirement must be met, as for a scope joining an organization. */
+  var all = false;
   var enough = false;
 }
 
@@ -3714,6 +3842,10 @@ export final class ScopeDetail {
   var members: FixedArray<Cid> = [];
   /** An organization's teams, by name, as the records list them. */
   teams = new GrowableArray<NamedTeam>();
+  /** The organization the scope belongs to, when it belongs to one this App View holds. */
+  var belongsTo: AppViewAccount | null = null;
+  /** For an organization, the scopes that belong to it, by name. */
+  scopes = new GrowableArray<AppViewAccount>();
 
   new(this.name, this.did, this.handle);
 }
@@ -3910,4 +4042,9 @@ function readRecord<T>(read: () => T): T {
     }
     throw e;
   }
+}
+
+/** The subject a scope's organization record mentions, which the organization's scopes are found by. */
+function organizationSubject(org: String): String {
+  return `organization ${org}`;
 }

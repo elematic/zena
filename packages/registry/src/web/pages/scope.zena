@@ -1,17 +1,18 @@
 /**
- * A scope's page: its profile, its packages, its owners and publishers, and,
- * for an organization, its members and teams.
+ * A scope's page: its profile, its packages, its owners and publishers, the
+ * organization it belongs to, and, for an organization, its members, its
+ * teams and the scopes that belong to it.
  */
 
 import {GrowableArray} from 'zena:core';
 import {Router, TemplateValue, html} from 'zena:http';
 import {percentDecode} from 'zena:url';
 import {ScopeMaintainers} from 'package-manager/records';
-import {AppView, ScopeDetail} from '../../app-view.zena';
+import {AppView, AppViewAccount, ScopeDetail} from '../../app-view.zena';
 import {page} from '../layout.zena';
 import {People} from '../people.zena';
 import {contextOf} from '../session.zena';
-import {count, externalLink, when} from '../partials/common.zena';
+import {count, each, externalLink, when} from '../partials/common.zena';
 import {addTeamScopes, maintainerList, members, shownWith, visibleEntries} from '../partials/members.zena';
 import {packageList} from '../partials/packages.zena';
 import {notFound} from './not-found.zena';
@@ -29,6 +30,7 @@ export function scopePage(router: Router, appView: AppView, people: People): voi
     let found = scope;
     let packages = await appView.listPackages(name);
     let organization = found.organization;
+    let belongsTo = found.belongsTo;
     // The entries the viewer may see, of the maintainers, the members and
     // every team, in one map: each commitment is a different hash.
     let entries = await visibleEntries(context, found.did, null);
@@ -76,6 +78,9 @@ export function scopePage(router: Router, appView: AppView, people: People): voi
           ${when(organization, () => html`<span>organization</span>`)}
           ${externalLink(website, 'Website')}
         </div>
+        ${when(belongsTo != null, () => html`
+        <p>Part of the organization
+          <a href="/scopes/${(belongsTo as AppViewAccount).scope}">${(belongsTo as AppViewAccount).scope}</a>.</p>`)}
       </div>
       <section>
         <h2>Packages</h2>
@@ -91,6 +96,13 @@ export function scopePage(router: Router, appView: AppView, people: People): voi
       <section>
         <h2>Members</h2>
         ${members(found.members, shown, 'No members.')}
+      </section>`)}
+      ${when(found.scopes.length > 0, () => html`
+      <section>
+        <h2>Scopes</h2>
+        <ul class="plain">${each(found.scopes, (scope) => html`
+          <li><a href="/scopes/${scope.scope}">${scope.scope}</a> <span class="mono muted">${scope.handle}</span></li>`)}
+        </ul>
       </section>`)}
       ${when(teams.length > 0, () => html`<section><h2>Teams</h2>${teams}</section>`)}
     `);

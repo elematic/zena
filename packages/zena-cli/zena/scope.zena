@@ -13,8 +13,8 @@ import { JsonArray, JsonObject } from 'zena:json';
 import { fromJson, toJson } from 'atproto/data';
 import { XrpcClient, XrpcError } from 'atproto/xrpc';
 import {
-  MEMBERS_TYPE, OWNER, RecordError, SCOPE_MAINTAINERS_TYPE, SCOPE_PROFILE_TYPE, ScopeMaintainers, ScopeProfile,
-  isValidScopeName
+  MEMBERS_TYPE, OWNER, RecordError, SCOPE_MAINTAINERS_TYPE, SCOPE_ORGANIZATION_TYPE, SCOPE_PROFILE_TYPE,
+  ScopeMaintainers, ScopeOrganization, ScopeProfile, isValidScopeName
 } from 'package-manager/records';
 import { PUT_SCOPE_PROFILE } from 'package-manager/registry-methods';
 import { Options } from './env.zena';
@@ -56,8 +56,9 @@ export async function scopeCreateCommand(args: ParsedArgs, options: Options): Fu
 /**
  * `zena pkg scope info <scope>`: the scope's DID, handle and PDS, its
  * maintainers record (how many owners and publishers, and how many owners a
- * change needs), and for an organization, how many members it has. The
- * scope is its name on the registry, its handle, or its DID. Who a private
+ * change needs), the organization it is part of, and for an
+ * organization, how many members it has. The scope is its name on the
+ * registry, its handle, or its DID. Who a private
  * maintainer or member is stays private (package-manager.md, "Private
  * membership").
  */
@@ -110,6 +111,12 @@ export async function scopeInfoCommand(args: ParsedArgs, options: Options): Futu
     let members = await recordOf(did, MEMBERS_TYPE);
     if (members != null) {
       console.log(`  Organization members: ${((members['value'] as JsonObject)['members'] as JsonArray).length}`);
+    }
+    let organization = await recordOf(did, SCOPE_ORGANIZATION_TYPE);
+    if (organization != null) {
+      let org = ScopeOrganization.fromValue(fromJson(organization['value'])).organization;
+      let named = (await packageResolver().resolve(org)).handle;
+      console.log(`  Part of the organization: ${if (named != null) `${named} (${org})` else org}`);
     }
   });
 }

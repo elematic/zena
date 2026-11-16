@@ -94,6 +94,23 @@ export let tests = suite('zena pkg scope, org, team and owner', () => {
       isTrue(orgMembers.succeeded() && orgMembers.stdout.contains(`${ALICE}  member`) &&
           orgMembers.stdout.contains(`${BOB}  member`), described(orgMembers));
 
+      // Bob's own scope joins acme once Alice, its owner, approves too, and
+      // either of them takes it out.
+      isTrue((await bob.run(['pkg', 'scope', 'create', 'bobs', '--yes'])).succeeded(), 'bob makes bobs');
+      let joining = await bob.run(['pkg', 'scope', 'join', 'bobs', 'acme']);
+      isTrue(joining.succeeded() && joining.stdout.contains('The change to the organization of bobs is waiting') &&
+          joining.stdout.contains('and approved by 0 of the 1 owners of the organization'), described(joining));
+      let request = await alice.run(['pkg', 'approve', 'bobs']);
+      isTrue(request.succeeded() && request.stdout.contains('organization: none → did:plc:'), described(request));
+      let accepted = await alice.run(['pkg', 'approve', 'bobs', '--yes']);
+      isTrue(accepted.succeeded() && accepted.stdout.contains('Changed the organization of bobs'), described(accepted));
+      let inAcme = await bob.run(['pkg', 'scope', 'info', 'bobs']);
+      isTrue(inAcme.succeeded() && inAcme.stdout.contains('Part of the organization: acme.pkg.test'), described(inAcme));
+      let out = await alice.run(['pkg', 'scope', 'leave', 'bobs']);
+      isTrue(out.succeeded() && out.stdout.contains('bobs belongs to no organization now'), described(out));
+      let alone = await bob.run(['pkg', 'scope', 'leave', 'bobs']);
+      isTrue(!alone.succeeded() && alone.stderr.contains('belongs to no organization'), described(alone));
+
       // A team, with Bob on it, publishes the package.
       let team = await alice.run(['pkg', 'team', 'create', 'acme/core']);
       isTrue(team.succeeded() && team.stdout.contains('Created the team acme/core'), described(team));
