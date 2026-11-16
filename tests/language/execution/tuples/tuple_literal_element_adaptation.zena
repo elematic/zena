@@ -1,0 +1,125 @@
+// @mode: run
+// @result: 59
+// Tuple literal elements adapt to their expected slot types across boxed,
+// nullable, tagged-union, inline, and spread forms (#1196).
+
+interface Named {
+  name(): String;
+}
+
+interface Tagged extends Named {
+  tag(): i32;
+}
+
+class Bird implements Tagged {
+  name(): String {
+    return 'bird';
+  }
+  tag(): i32 {
+    return 7;
+  }
+}
+
+class Holder {
+  var pair: (Named, i32) = (new Bird(), 1);
+}
+
+function returned(): (i32, Named) {
+  return (1, new Bird());
+}
+
+function passed(t: (Named, i32)): i32 {
+  return t[0].name().length + t[1];
+}
+
+function inlineReturned(): inline (i32, Named) {
+  return (1, new Bird());
+}
+
+function inlineUnion(ok: boolean): inline (true, Named) | inline (false, String) {
+  if (ok) {
+    return (true, new Bird());
+  }
+  return (false, 'no');
+}
+
+function boxedUnion(ok: boolean): (true, Named) | (false, String) {
+  if (ok) {
+    return (true, new Bird());
+  }
+  return (false, 'no');
+}
+
+export function main(): i32 {
+  var total = 0;
+
+  // Local binding, return, argument, closure body.
+  let local: (Named, i32) = (new Bird(), 1);
+  total += local[0].name().length + local[1]; // 5
+
+  let (n, r) = returned();
+  total += n + r.name().length; // +5 = 10
+
+  total += passed((new Bird(), 1)); // +5 = 15
+
+  let closure = (): (Named, i32) => (new Bird(), 1);
+  total += closure()[0].name().length; // +4 = 19
+
+  // Class field initializer and assignment.
+  let h = new Holder();
+  total += h.pair[0].name().length; // +4 = 23
+  h.pair = (new Bird(), 2);
+  total += h.pair[1]; // +2 = 25
+
+  // Nested tuple, array of tuples, record containing tuple.
+  let nested: (i32, (Named, i32)) = (0, (new Bird(), 1));
+  total += nested[1][0].name().length; // +4 = 29
+
+  let arr: Array<(Named, i32)> = [(new Bird(), 1)];
+  total += arr[0][0].name().length; // +4 = 33
+
+  let recHolder: {p: (Named, i32)} = {p: (new Bird(), 1)};
+  total += recHolder.p[0].name().length; // +4 = 37
+
+  // Nullable interface slot and nullable tuple expectation.
+  let nullableElem: (Named | null, i32) = (new Bird(), 1);
+  total += ((nullableElem[0] as Named).name()).length; // +4 = 41
+
+  let nullableTuple: (Named, i32) | null = (new Bird(), 1);
+  if (nullableTuple != null) {
+    total += nullableTuple[0].name().length; // +4 = 45
+  }
+
+  // Sub-interface to super-interface, record projection, function arity adaptation.
+  let subIface: Tagged = new Bird();
+  let widenedIface: (Named, i32) = (subIface, 1);
+  total += widenedIface[0].name().length; // +4 = 49
+
+  let fullRec = {a: 3, b: 9};
+  let narrowedRec: ({a: i32}, i32) = (fullRec, 1);
+  total += narrowedRec[0].a; // +3 = 52
+
+  let zeroArg = () => 2;
+  let adaptedFn: ((x: i32) => i32, i32) = (zeroArg, 1);
+  total += adaptedFn[0](99); // +2 = 54
+
+  // Inline tuple, inline union, boxed union, spread tuple, and Array<String>.
+  let (im, ii) = inlineReturned();
+  total += im; // +1 = 55
+
+  if (let (true, iu) = inlineUnion(true)) {
+    total += iu.name().length - 3; // +1 = 56
+  }
+  if (let (true, bu) = boxedUnion(true)) {
+    total += bu.name().length - 3; // +1 = 57
+  }
+
+  let pre = (1,);
+  let spreadT: (i32, Named) = (...pre, new Bird());
+  total += spreadT[0]; // +1 = 58
+
+  let names: (i32, Array<String>) = (1, ['a']);
+  total += names[1].length; // +1 = 59
+
+  return total;
+}

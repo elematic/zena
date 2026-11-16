@@ -481,6 +481,44 @@ export function tupleMemberForLiteral(expected: Type, elements: GrowableArray<Ex
 }
 
 /**
+ * Inline counterpart of `tupleMemberForLiteral`: the `InlineTupleType`
+ * member of `expected` whose arity and leading literal tag match `elements`.
+ */
+export function inlineTupleMemberForLiteral(expected: Type, elements: GrowableArray<Expression>): InlineTupleT | null {
+  if (elements.length == 0) {
+    return null;
+  }
+  let resolved = unwrapAliases(expected);
+  if (!(resolved is UnionT)) {
+    return null;
+  }
+  let head: Type | null = match (elements[0]) {
+    case BooleanLiteral {value}: new BoolLiteralType(value) as Type
+    case NumberLiteral {raw}: if (isBigIntLiteralRaw(raw)) null else new NumLiteralType(raw) as Type
+    case _: null
+  };
+  if (head == null) {
+    return null;
+  }
+  let tag = discriminantTag(head);
+  if (tag == null) {
+    return null;
+  }
+  for (let member in resolved.types) {
+    if (let InlineTupleT {elementTypes} = member) {
+      if (elementTypes.length != elements.length) {
+        continue;
+      }
+      let memberTag = discriminantTag(elementTypes[0]);
+      if (memberTag != null && memberTag.value == tag.value) {
+        return member as InlineTupleT;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * The tuple among `members` that starts with the same literal as the
  * tuple `t`, boxed or inline, or null when `t` is not such a tuple.
  */
