@@ -5201,7 +5201,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         resolvedTargetStruct = tgtCs;
         this.reachablyNamedClosures.add(tgtCs);
       }
-      
+      // A closure that already is one of the target type needs no wrapper:
+      // two function types can differ only in what shares a wasm type, such
+      // as tuple types that meet (#1137). Lowering passes the value on.
+      if (actualClosureStruct === resolvedTargetStruct) {
+        continue;
+      }
+
       let adaptKey = getFunctionAdaptationKey(src, tgt);
       let existingWrapper: WasmFunction | null = if (this.wasm.functionAdaptations.has(adaptKey)) {
         this.wasm.functionAdaptations[adaptKey]

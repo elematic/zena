@@ -1,0 +1,66 @@
+// @mode: run
+// @result: 0
+// Tuples keep the usual variance where they appear inside other types
+// (#1137): a function value is covariant in its result and contravariant
+// in its parameters, and an immutable array is covariant in its element.
+// Tuple types that meet share a struct, so these widen without a wrapper
+// or a copy.
+
+class Animal {
+  legs(): i32 {
+    return 4;
+  }
+}
+
+class Bird extends Animal {
+  legs(): i32 {
+    return 2;
+  }
+  wings(): i32 {
+    return 2;
+  }
+}
+
+function apply(f: () => (Animal, i32)): i32 {
+  let (a, n) = f();
+  return a.legs() + n;
+}
+
+function feed(f: (p: (Bird, i32)) => i32): i32 {
+  return f((new Bird(), 1));
+}
+
+function total(pairs: ImmutableArray<(Animal, i32)>): i32 {
+  var sum = 0;
+  for (let p in pairs) {
+    sum += p[0].legs() + p[1];
+  }
+  return sum;
+}
+
+function maybeLegs(pairs: ImmutableArray<(Animal | null, i32)>): i32 {
+  var sum = 0;
+  for (let p in pairs) {
+    let a = p[0];
+    sum += if (a != null) a.legs() else p[1];
+  }
+  return sum;
+}
+
+export let main = (): i32 => {
+  var failures = 0;
+  // A result widens: (2 + 3).
+  let make = (): (Bird, i32) => (new Bird(), 3);
+  if (apply(make) != 5) { failures += 1; }
+  // A parameter narrows: (2 + 1).
+  let eat = (p: (Animal, i32)): i32 => p[0].legs() + p[1];
+  if (feed(eat) != 3) { failures += 2; }
+  // An immutable array widens in its element, and its elements are still
+  // Birds.
+  let birds: ImmutableArray<(Bird, i32)> = [(new Bird(), 1), (new Bird(), 2)];
+  if (total(birds) != 7) { failures += 4; }
+  if (birds[1][0].wings() != 2) { failures += 8; }
+  // To a nullable class element too.
+  if (maybeLegs(birds) != 4) { failures += 16; }
+  return failures;
+};

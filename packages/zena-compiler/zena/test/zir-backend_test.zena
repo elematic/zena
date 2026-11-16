@@ -1673,6 +1673,26 @@ export let tests = suite('zir backend', () => {
         'a tuple type that meets no other keeps its element type');
   });
 
+  test('a function value whose tuple types meet needs no adaptation wrapper', async (ctx) => {
+    // `make` returns `(Bird, i32)` where `() => (Animal, i32)` is wanted,
+    // and `eat` takes `(Animal, i32)` where `((Bird, i32)) => i32` is. The
+    // tuple types meet, so they share a struct, the closures' signatures
+    // are equal, and no wrapper is built (#1137).
+    let result = await compileWithZir(dedentRaw`
+        class Animal { legs(): i32 { return 4; } }
+        class Bird extends Animal { legs(): i32 { return 2; } }
+        function apply(f: () => (Animal, i32)): i32 { let (a, n) = f(); return a.legs() + n; }
+        function feed(f: (p: (Bird, i32)) => i32): i32 { return f((new Bird(), 1)); }
+        export let main = (): i32 => {
+          let make = (): (Bird, i32) => (new Bird(), 3);
+          let eat = (p: (Animal, i32)): i32 => p[0].legs() + p[1];
+          return apply(make) + feed(eat);
+        };
+        `);
+    isTrue(!result.contains('function_adapt'),
+        'a closure already of the target type is passed as it is');
+  });
+
   test('a tuple rebuilt from every field of another is that tuple', async (ctx) => {
     // Each function keeps its parameter and has its result stored whole,
     // so neither explodes and the rebuild stays in the body. `copy`
