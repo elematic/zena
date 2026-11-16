@@ -191,6 +191,51 @@ export function representationOf(t: Type): Type {
 }
 
 /**
+ * Whether every value of `t` has a reference representation: a single
+ * reference type, `externref`, or a union whose members all have a
+ * reference representation (through `representationOf`, so distinct
+ * aliases and string-backed enums count as what they wrap).
+ */
+export function isReferenceRepresentation(t: Type): boolean {
+  let repr = representationOf(t);
+  if (repr is UnionT) {
+    if (repr.types.length == 0) {
+      return false;
+    }
+    for (let member in repr.types) {
+      if (!isReferenceRepresentation(member)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return isReferenceType(repr) || repr is ExternRefType;
+}
+
+/**
+ * Whether every value of `t` has a value-primitive representation
+ * (numeric, boolean, or vector): a primitive, an integer-backed enum,
+ * a distinct alias over a primitive, or a union of such types (`1 | 2`).
+ * An extension class `on i32` stays out so `42 as ExtInt` and
+ * `ext as i32` keep working.
+ */
+export function isPrimitiveRepresentation(t: Type): boolean {
+  let repr = representationOf(t);
+  if (repr is UnionT) {
+    if (repr.types.length == 0) {
+      return false;
+    }
+    for (let member in repr.types) {
+      if (!isPrimitiveRepresentation(member)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return isValuePrimitive(repr);
+}
+
+/**
  * Whether `t` is an extension class declared `on v128` — a shaped view
  * of a vector, like `I32x4` or `F32x4`. Extension classes are erased,
  * so such a type IS the same 128 bits with a lane interpretation
@@ -348,22 +393,22 @@ export function isValidCast(sourceType: Type, targetType: Type): boolean {
     }
   }
 
-  // Primitive → Reference (not an extension on primitive): INVALID
-  if (isValuePrimitive(sourceType) && isReferenceType(targetType)) {
+  // Primitive → Reference (excluding an extension on primitive above): INVALID
+  if (isPrimitiveRepresentation(sourceType) && isReferenceRepresentation(targetType)) {
     return false;
   }
 
   // Reference → Primitive: INVALID, the mirror of the rule above. A
   // reference holds no scalar to reinterpret, so the value has to be
   // read out of whatever holds it. This is a question about
-  // representation, so it looks through aliases: `distinct type Name =
-  // String` is as much a reference as `String`. Two things that look
-  // like they would be caught are not — an extension class over a
-  // primitive is not a reference type (`isReferenceType` asks its
-  // onType), and an enum is neither side — so unwrapping a distinct
-  // type over a primitive and `Opcode.return_ as i32` are untouched.
-  if (isReferenceType(representationOf(sourceType)) &&
-      isValuePrimitive(representationOf(targetType))) {
+  // representation, so it looks through aliases, enums, and unions:
+  // `distinct type Name = String` and `Box<boolean> | String` are as
+  // much references as `String`. Extension classes over primitives stay
+  // outside both predicates (`isReferenceType` asks `onType`), so
+  // `42 as ExtInt`, unwrapping a distinct type over a primitive, and
+  // `Opcode.return_ as i32` are untouched.
+  if (isReferenceRepresentation(sourceType) &&
+      isPrimitiveRepresentation(targetType)) {
     return false;
   }
 

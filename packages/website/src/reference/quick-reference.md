@@ -1196,6 +1196,8 @@ if (x is MyClass) {
 
 - Primitives cannot mix with other types: `i32?` is not allowed - Literal
   unions of the same primitive are fine: `1 | 2 | 3` works
+- Integer-backed enums and `distinct` types over primitives share that
+  primitive representation (`Level?` is invalid; string-backed `Mode?` is valid)
 - Extension classes on the same base type cannot be unioned (indistinguishable)
 - Use `Box<T>` to put primitives in unions with references: `Box<i32>?`
 

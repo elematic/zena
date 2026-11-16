@@ -63,7 +63,8 @@ import {
 import { awaitedFutureValueType, extractFutureValueType, protocolPayloadType } from './protocols.zena';
 import {
   ClosedRelation, checkOpaqueCast, checkTypeParameterCast, closedRelation,
-  expectedArrayElementType, isAssignableTo, isReferenceType, isValidCast,
+  expectedArrayElementType, isAssignableTo, isPrimitiveRepresentation,
+  isReferenceRepresentation, isReferenceType, isValidCast,
   isValuePrimitive, isWellKnownClassType, isWellKnownInterfaceType,
   operandText, representationOf, typesEqual
 } from './relations.zena';
@@ -966,11 +967,11 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       var errorMsg = `Cannot cast type '${typeToString(sourceType)}' to '${typeToString(targetType)}'.`;
       if (sourceType is NullType && !isNullableType(targetType)) {
         errorMsg = `Cannot cast 'null' to non-nullable type '${typeToString(targetType)}'.`;
-      } else if (isValuePrimitive(sourceType) && !isValuePrimitive(targetType)) {
+      } else if (isPrimitiveRepresentation(sourceType) && isReferenceRepresentation(targetType)) {
         errorMsg = "Cannot cast primitive type '" + typeToString(sourceType) + "' to reference type '" + typeToString(targetType) + "'. " +
                    "Use string concatenation or a conversion function instead.";
-      } else if (isReferenceType(representationOf(sourceType)) &&
-          isValuePrimitive(representationOf(targetType))) {
+      } else if (isReferenceRepresentation(sourceType) &&
+          isPrimitiveRepresentation(targetType)) {
         errorMsg = "Cannot cast reference type '" + typeToString(sourceType) + "' to primitive type '" + typeToString(targetType) + "'. " +
                    "A reference holds no scalar to reinterpret; read the value out of the " +
                    "object holding it — for a boxed primitive, '(x as Box<" +

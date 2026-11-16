@@ -657,6 +657,12 @@ union containing a value primitive (`i32`, `f32`, `boolean`).
 - **Valid**: `String?`, `MyClass | MyInterface`, `array<i32> | null`. -
   **Invalid**: `i32?`, `boolean | String`.
 
+An enum or a `distinct type` has the runtime representation of the type it
+wraps, so the same rule applies: for `enum Level { Low, High }` or
+`distinct type Meters = i32`, `Level?` and `Meters?` are invalid just as `i32?`
+is, whereas a string-backed enum (`enum Mode { A = 'a', B = 'b' }`) is carried
+as a `String` and `Mode?` is valid.
+
 This restriction exists because value primitives in WASM have a different memory
 representation (stack/value) than reference types (heap/pointer). Mixing them in
 a single variable would require implicit boxing or a tagged union
