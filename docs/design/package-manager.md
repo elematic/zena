@@ -11,7 +11,11 @@ App View (`packages/registry`) is a service of its own, which keeps its
 accounts on the PDS written in Zena (`packages/pds`), and could keep them
 on other PDSes ([Hosting, keys and maintainers](#hosting-keys-and-maintainers)).
 The checksum log is not built yet, so for now the App View's check of the
-attestations is the only one.
+attestations is the only one. Scopes and organizations are designed here as
+separate things, an organization being a scope with members and teams added
+([Scopes](#scopes)). The App View still builds an earlier model, in which
+every scope is an organization account with members, teams and a policy,
+until #988 changes it.
 
 This document designs Zena's package manager. Packages are published on the
 AT Protocol (atproto), the protocol behind Bluesky. A package is an atproto
@@ -60,9 +64,10 @@ dependencies (`zena-lock.json`).
   release is attested by the package's maintainers: each approves it with
   a record in their own repository, signed by their own PDS. A release
   needs M of N if the package asks for it, and the App View holds it back
-  until it has them; the checksum log checks the attestations again. Teams
-  and organizations have roles, and who belongs to them stays private
-  until they act. [Terms](#terms) defines these words, and
+  until it has them; the checksum log checks the attestations again.
+  Scopes, the namespaces packages are created in, have maintainers of their
+  own. Organizations hold people and teams, and teams can maintain scopes
+  and packages. Who belongs to them stays private until they act. [Terms](#terms) defines these words, and
   [What the records guarantee](#what-the-records-guarantee) why approvals
   and roles are public records.
 - **Supply-chain security.** A workspace builds the bytes it pinned, a
@@ -126,8 +131,8 @@ These are the package manager's own terms. Each is described in full in
 the section it links to.
 
 - The **App View** is the Zena service that `zena` and the site call, at
-  `pkg.zena-lang.dev`. It creates the accounts of packages, organizations
-  and CI on a PDS, holds their rotation keys, and is the only one that
+  `pkg.zena-lang.dev`. It creates the accounts of scopes, packages and CI
+  on a PDS, holds their rotation keys, and is the only one that
   writes to them
   ([Hosting, keys and maintainers](#hosting-keys-and-maintainers)). It is
   also the index: it collects package records across PDSes, from
@@ -136,16 +141,19 @@ the section it links to.
 - A **managed account** is an account a PDS creates for an App View
   it trusts, with no email address, password or invite code, and that
   only that App View writes to ([Managed accounts](#managed-accounts)).
-- An **organization** is an account on an App View that owns a
-  **scope**, the label its packages' handles share (`acme` in
-  `router.acme.pkg.zena-lang.dev`). Its **members** have roles, and its
-  **teams** are groups of members that maintain packages together
-  ([Scopes](#scopes), [Roles](#roles)).
+- A **scope** is an account on an App View that packages are created in.
+  Its handle is the label its packages' handles share (`acme` in
+  `router.acme.pkg.zena-lang.dev`). Its maintainers, people or teams, are
+  its **owners** and its **creators** ([Scopes](#scopes)).
+- An **organization** is a scope that also holds people and teams. Its
+  **members** are the people its teams are made of, and its **teams** are
+  groups of members that maintain scopes and packages together. Other
+  scopes can belong to it ([Maintainers, teams and organizations](#maintainers-teams-and-organizations)).
 - A package's **maintainers** are the people, and teams, who may publish
   it, in the role of **publisher** or **owner**. The **maintainers
-  record**, in the package's repository, lists them. An organization's
-  **members record** and its **team records** do the same for its
-  members and teams.
+  record**, in the package's repository, lists them. A scope's maintainers
+  record does the same for its owners and creators, and an organization's
+  **members record** and its **team records** for its members and teams.
 - An **attestation** is a record that one person writes to their own
   repository, saying that they approve another record: a release, or a
   new maintainers, members or team record. It names that record by
@@ -154,14 +162,15 @@ the section it links to.
   ([Who signs what](#who-signs-what)).
 - A **threshold** is how many attestations something needs, and from
   whom: a release, `threshold` of the package's maintainers, `humans` of
-  them people; a change to a maintainers or members record, its
-  `ownerThreshold` of owners; a change to a team, its `threshold` of the
-  team's maintainers or the organization's `adminThreshold` of admins. A
+  them people; a change to a maintainers record, its `ownerThreshold` of
+  owners; a change to an organization's members or teams, the
+  `ownerThreshold` of its scope's owners, or for a team its own `threshold`
+  of maintainers. A
   change counts under the thresholds of the record it replaces, and a
   scope's **policy** record can raise the release thresholds of every
   package in it ([Thresholds](#thresholds)).
-- A **membership entry** is one person's line in a members or team
-  record, or a maintainers record: their DID, their role, and a
+- A **membership entry** is one person's line in a maintainers, members
+  or team record: their DID, their role, and a
   **salt** of 32 random bytes. The entry is private. The record lists
   only its **commitment**: the CID of the entry, which is a SHA-256 hash
   of it. Given the entry, anyone can check that it is the one the record
@@ -233,22 +242,25 @@ them, so the rules below are about finding packages.
 **Scopes on an App View.** A package's handle on an App View always has a
 scope: `<package>.<scope>.<domain>`, such as
 `router.acme.pkg.zena-lang.dev`. A name one label below the App View's
-domain, `acme.pkg.zena-lang.dev`, is the handle of a scope, which is an
-organization account (see
-[Maintainers, teams and organizations](#maintainers-teams-and-organizations)).
-A person's scope is an organization with them as its only owner. No
-package has a name directly under the App View's domain, so no one can
-take a short name for a package. A package is created in a scope by the
-scope's admins, or by a team they allow. Scope names on an App View are
+domain, `acme.pkg.zena-lang.dev`, is the handle of a scope, an account of
+its own (see [Scopes](#scopes)). An organization is a scope with members
+and teams, so organizations and scopes share one set of names, and an
+organization's name is its own scope's. People get no scope of their own:
+a person is known by their own atproto handle, and has a scope only by
+creating one. No package has a name directly under the App View's domain,
+so no one can take a short name for a package. A package is created in a
+scope by the scope's owners and creators. Scope names on an App View are
 first come, first served, so names can be taken only as scopes, and only
-on that App View's domain.
+on that App View's domain. The App View can give a scope another handle at
+any time, and takes back names under the policy in
+[Changing names](#changing-names).
 
 **Domains as scopes.** A handle is a domain name, so any domain a
 package's maintainers control can hold its handle: `router.pkg.acme.com`,
 or `router.acme.com`. The maintainers publish the `_atproto` DNS records,
 or delegate a subdomain to the App View. No one else can take those names,
-and they stay with the package when it moves to another App View. An
-organization with a domain should use it; an App View's scopes are for those
+and they stay with the package when it moves to another App View. A
+project with a domain should use it; an App View's scopes are for those
 without one.
 
 **The `scope:name` shorthand.** `zena pkg add acme:router` means
@@ -288,7 +300,7 @@ it when the name goes. A DNS server of the App View's own would need
 machines that answer UDP, which Cloud Run cannot, in at least two places,
 and would make the App View's uptime every handle's. The scopes and names
 the App View keeps are the records' source, and it can write them again
-from those. A scope's admins decide which DID each of its names points to,
+from those. A scope's owners decide which DID each of its names points to,
 and a handle is valid only when that DID's document names the handle back.
 So a scope's names need not belong to packages hosted there, and a package
 that moves to another App View can keep its handle.
@@ -321,20 +333,55 @@ pages say when a name has changed.
 
 **Renames.** `renamePackage` changes a package's handle: a PLC operation,
 the scope's DNS records, and its profile's name. Moving a package to
-another scope is the same operation, with the other scope's admins
-agreeing. Renaming a scope changes its organization's handle and every
-handle under it, with a PLC operation for each account in the scope.
+another scope is the same operation, with the other scope's owners
+agreeing. `renameScope` changes a scope's handle and every handle under
+it, with a PLC operation for each account in the scope, at its owners'
+request or the operator's.
 
 **Reserved names.** A name a rename frees stays reserved for the account
 that held it: a package name, in its scope, for its package, and a scope
-name for its organization. No one else can take it until it is
-released, by the account's own owners or by an admin: a scope's admins
-for a name in it, and the App View's operator for a scope. A reservation
+name for its scope. No one else can take it until it is
+released, by the account's own owners or by those over it: a scope's
+owners for a name in it, and the App View's operator for a scope. A reservation
 does not expire. While a name is reserved, its old holder can take it
 back, which undoes the rename, and the App View answers for the old
 handle with the account's new one: its pages redirect there, and `zena pkg
 add` by the old handle names the new one. A handle cannot point to the
 old DID itself, since that DID's document names its new handle.
+
+**Reclaiming names.** The App View's operator can give a scope another
+handle at any time. Nothing depends on a scope's handle but people who look
+it up: manifests, lockfiles, releases and maintainers records name scopes
+and packages by DID, and the App View writes the scope's DNS records and
+signs its PLC operations. This is how a scope name comes back to the App
+View, to be given to someone else. The policy for doing it limits what a
+reused name can mislead:
+
+- **Scopes no one uses.** A scope in which no release has been published
+  six months after it was created is reclaimed, after its owners are told
+  and have had a month to publish or to object. Six months is the App
+  View's default, which its operator can change, and can set aside for a
+  scope either way: sooner for a scope made only to hold a name, later for
+  one with a reason to wait.
+- **Squatting and disputes.** A scope whose name someone else has a
+  better claim to, by a matching domain or GitHub organization, or one
+  used only to hold names, is the operator's to decide, and to rename at
+  once ([Squatting](#squatting)).
+- **What the old holder keeps.** The scope keeps its DID, its maintainers,
+  its packages and its records. The operator gives it a placeholder
+  handle made from its DID, `did-<identifier>`, such as
+  `did-az7hbdg2swimu4wx3o22iem4.pkg.zena-lang.dev`, which no one can
+  create, since `did-` is reserved. Its owners can then rename it to any
+  free name.
+- **What stays reserved.** Each package name in the scope under which a
+  release was published stays reserved for its package, as after a
+  rename, so `zena pkg add acme:router` still names the old package, by
+  its new handle. The scope's next holder gets the scope's name and none
+  of those package names until they are released. A name under which
+  nothing was released is not reserved.
+- **What people see.** The name history records the change, `zena` asks
+  again for 90 days before adding by a name that changed hands, and the
+  pages say what the scope was called before.
 
 **Name history.** The App View records each time a name is given or
 freed: the scope, the name, the DID, when, and the call that did it. It
@@ -369,7 +416,7 @@ lists its handles over time, from the name history.
 The record schemas are named under `dev.zena-lang.package`, after the
 Zena project's domain, `zena-lang.dev`. They are published as lexicons at
 that domain. The profile, releases and retractions are below. The maintainers
-record, attestations, and an organization's records are in
+record, attestations, and a scope's and an organization's records are in
 [Hosting, keys and maintainers](#hosting-keys-and-maintainers).
 
 ### Profile
@@ -967,7 +1014,8 @@ did:plc:routerrouterrouterrouter 1.4.2 release=bafyrei... source=bafkrei... comp
   records who did. It reads the maintainers from the latest maintainers
   record it has recorded for the package, and a team member's role from
   the membership entry their attestation includes. It records a change to
-  a maintainers record, an organization's members or a team the same way:
+  a package's or a scope's maintainers, an organization's members or a team
+  the same way:
   once the roles and threshold of the record before it have attested the
   change. See [Who signs what](#who-signs-what) and
   [Roles](#roles).
@@ -1031,7 +1079,7 @@ or an email address per package. On bsky.social every package would also
 be a Bluesky user.
 
 The **App View** is a service that does this for maintainers. Its
-methods, named `dev.zena-lang.registry.*`, create package, organization and
+methods, named `dev.zena-lang.registry.*`, create scope, package and
 automation accounts on request, and let their maintainers publish to them
 as themselves. Maintainers sign in with their own atproto account, the
 one they use for Bluesky or any other app, and no one has a password for
@@ -1193,29 +1241,79 @@ design does not add one.
 
 `zena pkg scope create`, `zena pkg scope info`, the manifest's `scope` and the
 operator's `create-scope` are built (#575), and so are the membership
-commands below (#576).
+commands below (#576), in the earlier model, where a scope is an
+organization with members, teams and a policy. This section is the model
+#988 builds.
 
-A scope is an organization account on an App View, whose handle is one
-label below the App View's domain (see
-[Names and scopes](#names-and-scopes)). A person's packages go in a scope
-with them as its only owner, and an organization's packages in a scope its
-owners share.
+A scope is an account on an App View that packages are created in. Its
+handle is one label below the App View's domain (see
+[Names and scopes](#names-and-scopes)). Its repository has these records:
+
+- `dev.zena-lang.scope.maintainers`, at `self`: the scope's owners and
+  creators, people or teams, and its `ownerThreshold`, the number of owners
+  who must approve a change to the scope;
+- `dev.zena-lang.scope.policy`, at `self`: the scope's policy for its
+  packages. Its minimums apply to every release in the scope at once: a
+  release needs the larger of its maintainers record's `threshold` and the
+  policy's `minimumThreshold`, and of `humans` and `minimumHumans`. The App
+  View refuses a maintainers record that could not meet them. Its defaults
+  are the maintainers a new package's record starts with, beside the
+  person who creates it;
+- `dev.zena-lang.scope.profile`, at `self`: how the scope presents itself,
+  with a display name, a description and a website. It decides no one's
+  role, so its owners write it at once, with `zena pkg scope profile`;
+- `dev.zena-lang.scope.organization`, at `self`, when the scope belongs to
+  an organization: the organization's DID ([Maintainers, teams and
+  organizations](#maintainers-teams-and-organizations)).
+
+A scope's maintainers record is shaped like a package's:
+
+```json
+{
+  "$type": "dev.zena-lang.scope.maintainers",
+  "maintainers": [
+    {"did": "did:plc:alicealicealicealicealic", "role": "owner"},
+    {
+      "org": "did:plc:acmeacmeacmeacmeacmeacme",
+      "team": "core",
+      "role": "creator"
+    }
+  ],
+  "ownerThreshold": 1
+}
+```
+
+**Owners and creators.** A scope's **creators** create packages in it, and
+each package they create starts with them as an owner. Its **owners** can
+do that too, and also change the scope's maintainers, policy and profile,
+create its automation accounts, rename it, and put it in an organization
+or take it out. They can also change the maintainers record of any
+package in the scope, as a package's own owners can, so that a scope can
+replace someone who left without each package's owners acting. That makes
+a scope's owners able to decide who publishes every package in it, and a
+scope with packages that matter should have an `ownerThreshold` above 1.
+Publishing itself stays with each package's own maintainers.
+
+A person's packages go in a scope with them as its only owner, and an
+organization's in a scope whose maintainers record names the
+organization's teams.
 
 **Creating a scope.** `zena pkg scope create acme` asks the App View for the
-organization, with `dev.zena-lang.registry.createOrganization`, with the
-caller as its only owner. Like `zena pkg publish`, it names the handle it
-would create, `acme.pkg.zena-lang.dev`, and stops, and `--yes` creates
-it. It prints the scope's DID and handle.
+scope, with `dev.zena-lang.registry.createScope`, with the caller as its only
+owner. Like `zena pkg publish`, it names the handle it would create,
+`acme.pkg.zena-lang.dev`, and stops, and `--yes` creates it. It prints the
+scope's DID and handle. `zena pkg scope upgrade acme` makes the scope an
+organization ([Maintainers, teams and organizations](#maintainers-teams-and-organizations)).
 
 **Who may create a scope.** Anyone, by default. An App View that is not
 open to everyone yet, as during a preview, sets
 `APP_VIEW_SCOPE_CREATORS=listed`: then only its admins and the accounts
-they list may create a scope, and `createOrganization` refuses anyone else
+they list may create a scope, and `createScope` refuses anyone else
 with `NotAllowed`. Admins change the list with `zena pkg admin allow` and
 `deny` (`putScopeCreator`) and see it with `zena pkg admin list`
 (`listScopeCreators`) and on `/admin`, at once, with no deploy. The list
-gates scopes only: inside a scope its owners decide who belongs, so a
-member or an automation account publishes without being listed, and a
+gates scopes only: inside a scope its owners decide who maintains it, so a
+creator or an automation account acts without being listed, and a
 listed owner vouches for whoever they add. `describeRegistry` says which
 rule applies (`scopeCreation`). Taking an account off the list leaves the
 scopes it created.
@@ -1247,20 +1345,21 @@ manifest following. A package whose handle is on a domain its maintainers
 control has no `scope`.
 
 **Seeing a scope.** `zena pkg scope info <scope>` takes the scope's name,
-handle or DID, and prints its DID, its handle, the thresholds of its
-members record, and the caller's role in it. `zena pkg scope members` prints
-the members the caller may see (see
+handle or DID, and prints its DID, its handle, its organization if it has
+one, the thresholds of its maintainers record, and the caller's role in it.
+`zena pkg scope maintainers` prints the maintainers the caller may see (see
 [Adding and removing people](#adding-and-removing-people)). The index
 lists the packages in a scope, by their handles.
 
 **Reserved scopes.** An App View keeps some scope names from everyone:
-`www`, `api`, `admin`, `zena`, `zena-lang`, `pkg` and `mail`, and those its operator
-adds. The operator creates a scope with one of those names, for the
-project that runs the App View, with a command run with the App View's own
-configuration, as `sync-handles` is:
+`www`, `api`, `admin`, `zena`, `zena-lang`, `pkg` and `mail`, every name
+that starts with `did-`, which [Changing names](#changing-names) uses for
+reclaimed scopes, and those its operator adds. The operator creates a
+scope with one of those names, for the project that runs the App View, with
+a command run with the App View's own configuration, as `sync-handles` is:
 
 ```sh
-zena run packages/registry/zena/main.zena -- create-scope zena \
+zena run packages/registry/src/main.zena -- create-scope zena-lang \
   --owner did:plc:... --recovery-key did:key:...
 ```
 
@@ -1270,7 +1369,7 @@ environment.
 The command is not an XRPC method, so nothing a caller can send takes a
 reserved name, and it needs no credentials the server does not already
 have. The scope's owner then manages it as any other. Which reserved
-scopes the Zena project's App View creates, and which packages go in `zena`,
+scopes the Zena project's App View creates, and which packages go in them,
 is still open.
 
 ### Creating a package
@@ -1311,7 +1410,7 @@ the tokens it was given to the real App View.
    knows which account the request is from without a password of its own.
    Every later call to the App View is made the same way.
 4. **The DID.** `zena` calls `dev.zena-lang.registry.createPackage` with the
-   scope's organization, any recovery keys, the profile and the
+   scope, any recovery keys, the profile and the
    maintainers record. The App View has its PDS reserve the account's
    signing key, writes the genesis operation, signs it with its online
    rotation key, submits it to the PLC directory, and creates the account
@@ -1350,7 +1449,7 @@ the tokens it was given to the real App View.
    signed genesis operation. A new package's DID document therefore names
    padstone as its PDS, the key padstone holds as its signing key, and its
    App View as `zena_registry`, and lists the maintainer's recovery
-   key, if any, ahead of the App View's two rotation keys.
+   key, if any, ahead of the App View's three rotation keys.
 
 5. **The repository.** The App View writes the account's first records
    through its PDS: the profile, from `zena-package.json`, and a
@@ -1422,8 +1521,8 @@ keys are added or removed. Each of these is a PLC operation, signed with a
 rotation key.
 
 CI publishes as an automation account: a maintainer marked `automation`,
-which an organization's App View creates on request, from `zena pkg ci create`
-or the management interface. It is a managed account like the package's,
+which the App View creates in a scope at its owners' request, from
+`zena pkg ci create` or the management interface. It is a managed account like the package's,
 so no one signs in to it at its PDS. Its credential is a token the App
 View issues once, which the CI system keeps as a secret, and with which
 `zena` calls the App View's methods as the automation account. The App
@@ -1435,7 +1534,7 @@ on another PDS, whose owner writes its attestations, counts like any
 maintainer. A package's owners add it with
 `zena pkg owner add <handle> --automation`, as a publisher: the App View
 refuses an automation account that is not marked as one, or that is an
-owner, since an owner chooses the maintainers. An organization's admins
+owner, since an owner chooses the maintainers. A scope's owners
 retire one that CI no longer uses, with `zena pkg ci retire`, once no
 package's maintainers or team names it: its token stops working and it
 gets no other, while its repository and name stay, since its attestations
@@ -1483,13 +1582,13 @@ attestations without fetching them, and anyone can fetch them to audit
 the log. A release in the log was approved by the package's maintainers,
 each through a PDS they chose, and the App View cannot make one alone.
 An App View that also holds the maintainers' own accounts could, which
-is why the Zena project's App View holds package and organization accounts,
+is why the Zena project's App View holds scope and package accounts,
 and automation accounts that cannot publish without a person (see
 [Publishing a release](#publishing-a-release)), and no one's own account.
 
 ### What the records guarantee
 
-The App View decides every write to the package, organization and automation
+The App View decides every write to the scope, package and automation
 accounts it creates, and their PDS signs what it writes, so a signature by
 one of those accounts shows only that the App View, or the PDS's operator,
 wrote the record. The design is meant to work without trusting either of
@@ -1499,8 +1598,9 @@ public records make that possible:
 - **Attestations**, in each approver's own repository, signed by their
   own PDS. The App View cannot write one for a person whose account it does
   not hold.
-- **The policy**: the maintainers record of each package, and the
-  members, team and policy records of each organization. They say who may approve
+- **The policy**: the maintainers record of each package, the maintainers
+  and policy records of each scope, and the members and team records of
+  each organization. They say who may approve
   what, and how many approvals each thing needs. They are public records
   in the account's repository, because whoever checks an approval has to
   read them: an approval is enough or not only against a threshold, and
@@ -1547,10 +1647,10 @@ What this guarantees, with the log running:
   under the maintainers record the log held when it recorded the
   release.
 - Every maintainers, members and team record behind that was approved by
-  the record before it, back to the records the package and its
-  organization were created with.
+  the record before it, or a package's by its scope's owners, back to the
+  records the package and its scope were created with.
 - Neither the App View nor the package's PDS alone can make a release count,
-  or make an account count as a maintainer, owner, admin or team member.
+  or make an account count as a maintainer, owner, creator or team member.
 - A pending release or change is in no repository, so it cannot reach a
   client.
 
@@ -1594,50 +1694,67 @@ A package's repository has a maintainers record at record key `self`:
 ```
 
 - **An individual** is the only maintainer, an owner, with thresholds of 1.
-- **A team** without an organization is several DIDs. `threshold` says how
-  many attestations each release needs, and `ownerThreshold` how many
-  owners must attest a change to the maintainers record.
-- **An organization** is an account of its own on an App View, with
-  four kinds of record:
-  - `dev.zena-lang.org.members`, at `self`: who belongs to the
-    organization and in which role, and the thresholds for changing its
-    members and its teams;
-  - `dev.zena-lang.org.team`, one per team, keyed by the team's name:
-    who is on the team and in which role;
-  - `dev.zena-lang.org.policy`, at `self`: the scope's policy for its
-    packages. Its minimums apply to every release in the scope at once: a
-    release needs the larger of its maintainers record's `threshold` and
-    the policy's `minimumThreshold`, and of `humans` and `minimumHumans`.
-    The App View refuses a maintainers record that could not meet them. Its
-    defaults, the teams and thresholds a new package's maintainers record
-    starts with, are what `zena` uses when it creates one. Its `creators`
-    are the teams whose members may create packages in the scope, besides
-    its admins;
-  - `dev.zena-lang.org.profile`, at `self`: how the scope presents
-    itself, with a display name, a description and a website. It decides
-    no one's role, so its admins write it at once, with
-    `zena pkg scope profile`.
+- **Several people** are several DIDs. `threshold` says how many
+  attestations each release needs, and `ownerThreshold` how many owners
+  must attest a change to the maintainers record.
+- **A team** is named by its organization's DID and its name, and every
+  member of the team has the role the record gives the team. Changing who
+  is on a team changes it for every package and scope the team maintains.
 
-  The members and team records list their members privately, as
-  [Private membership](#private-membership) describes. An organization's
-  handle on its App View is a scope, and its packages' handles are in it. A
-  package maintained by a team names the organization, the team and the
-  team's role on the package, and every member of the team has that role.
-  Changing who is on a team changes it for every package the team
-  maintains. The packages an organization creates list the recovery
-  keys its owners keep, if they keep any, rather than one person's.
+A scope's maintainers record is the same, with the roles owner and
+creator ([Scopes](#scopes)).
+
+**An organization** is a scope with two more kinds of record, which it gets
+when its owners upgrade it, with `zena pkg scope upgrade <scope>`
+(`upgradeScope`). Upgrading keeps the scope's DID, handle, maintainers
+and packages:
+
+- `dev.zena-lang.org.members`, at `self`: the people who belong to the
+  organization, whom its teams are made of;
+- `dev.zena-lang.org.team`, one per team, keyed by the team's name: who is
+  on the team, and which of them are its maintainers.
+
+An organization's owners are its own scope's owners. They change its
+members, create and delete its teams, and decide which scopes belong to it.
+Its members and teams records list people privately, as
+[Private membership](#private-membership) describes. An organization's
+members are not maintainers of anything by belonging: a person acts on a
+scope or a package only through its maintainers record, as themselves or
+through a team.
+
+**Scopes in an organization.** Other scopes can belong to an
+organization, as `acme-labs` belongs to `acme`. A scope belongs to one once
+its `dev.zena-lang.scope.organization` record names the organization, and
+the record counts only when both the scope's owners and the
+organization's owners have attested it. A scope leaves when its own owners
+delete the record, and an organization's owners can take a scope out the
+same way. Belonging groups scopes: the organization's page lists
+them, each one's page names the organization, and the App View's limits
+can count them together (#669). It gives the organization's people no role
+in the scope. An organization controls a scope it holds by being named in
+the scope's maintainers record, typically through a team of owners. An
+organization's own scope belongs to no other organization.
+
+Any scope's or package's maintainers record can name any organization's
+team, as it can name any person: whoever names a team trusts its
+members with that role, and the team's organization has no say in it.
+Teams are made of the organization's members.
+
+**Recovery keys.** The packages a scope's owners create list the recovery
+keys the scope's owners keep, if they keep any, rather than one person's.
 
 #### Roles
 
-| Record                    | Role       | Can                                                                                              |
-| ------------------------- | ---------- | ------------------------------------------------------------------------------------------------ |
-| a package's maintainers   | publisher  | attest releases, and retract them                                                                |
-|                           | owner      | also attest changes to the maintainers record, and edit the profile, rename and move the package |
-| an organization's members | member     | be put on teams                                                                                  |
-|                           | admin      | also create packages in the organization's scope, create teams, and attest changes to them       |
-|                           | owner      | also attest changes to the members record, and hold its recovery keys, if it has any             |
-| a team                    | member     | act on each of the team's packages in the role the package gives the team                        |
-|                           | maintainer | also attest changes to the team                                                                  |
+| Record                    | Role       | Can                                                                                                                                                                            |
+| ------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| a package's maintainers   | publisher  | attest releases, and retract them                                                                                                                                              |
+|                           | owner      | also attest changes to the maintainers record, and edit the profile, rename and move the package                                                                               |
+| a scope's maintainers     | creator    | create packages in the scope, starting as an owner of each                                                                                                                     |
+|                           | owner      | also attest changes to the scope's maintainers, policy and organization, and to any of its packages' maintainers; write its profile; create its automation accounts; rename it |
+| an organization's members | member     | be put on its teams                                                                                                                                                            |
+| an organization           | owner      | the owners of its own scope: attest changes to its members and its teams, create and delete teams, and approve scopes joining it                                               |
+| a team                    | member     | act on each of the team's scopes and packages in the role they give the team                                                                                                   |
+|                           | maintainer | also attest changes to the team                                                                                                                                                |
 
 The log checks roles for everything that decides which releases count:
 releases, and changes to maintainers, members and teams. The App View checks
@@ -1652,14 +1769,16 @@ release. That is what a package's dependents need when an account turns
 out to have been taken: the list of releases it approved. A package a team maintains
 is shown as published by the team, with its approvers one step away.
 
-Who belongs to an organization or a team is not public. Membership tells
-an attacker whom to go after, and tells dependents nothing they can use. The
-accounts most worth hiding are owners and admins who never publish, since
-they decide who is on each team. npm lists every package's maintainers,
+Who maintains a scope, and who belongs to an organization or a team, is
+not public. Membership tells an attacker whom to go after, and tells
+dependents nothing they can use. The accounts most worth hiding are owners
+who never publish, since they decide who is on each team and who maintains
+each package. npm lists every package's maintainers,
 and the maintainers of popular npm packages were phished in
 September 2025. GitHub keeps organization membership private by default.
 
-Members and team records therefore list commitments rather than DIDs:
+Maintainers, members and team records therefore list commitments rather
+than DIDs:
 
 ```json
 {
@@ -1682,17 +1801,18 @@ DAG-CBOR and hashed with SHA-256. The entry stays private:
 
 - **The salt** is 32 random bytes, so no one can find a commitment by
   trying DIDs.
-- **The App View keeps the entries.** It gives each member their own entry,
-  an organization's owners and admins every entry, and a team's
-  maintainers their team's. The App View's own admins, whom its operator
+- **The App View keeps the entries.** It gives each person their own
+  entries, a scope's owners every entry behind its maintainers record and,
+  for an organization, its members and teams, and a team's maintainers
+  their team's. The App View's own admins, whom its operator
   names, see every entry, as the operator could read them from the store
   anyway; the entries are private from the public, not from the App View.
 - **Acting reveals the entry.** An attestation that relies on a
   membership includes the entry, and the log checks it against the
   commitment. A member becomes known in a role when they first act in
   it, and not before.
-- **The App View cannot add members unseen.** A new members or team record
-  counts only with the attestations its owners' or admins' threshold
+- **The App View cannot add members unseen.** A new maintainers, members
+  or team record counts only with the attestations its owners' threshold
   requires. They approve it in the management interface, which shows the
   entry behind each commitment, so an account they do not know is
   visible to them before they approve.
@@ -1702,8 +1822,8 @@ in place of a DID.
 
 What still shows:
 
-- Acting reveals the role for good: an admin who approves a change to a
-  team is publicly an admin of that organization from then on.
+- Acting reveals the role for good: an owner who approves a change to a
+  team is publicly an owner of that organization from then on.
 - The number of commitments shows how large a team is, unless the team
   pads it with entries for no one.
 - Who has approved releases suggests who can.
@@ -1721,32 +1841,40 @@ in particular.
 Each command names a person by handle or DID, and changes one record
 through the App View:
 
-| Command                                                                       | Record                    | App View method  |
-| ----------------------------------------------------------------------------- | ------------------------- | ---------------- |
-| `zena pkg scope add <scope> <person> --role <role>`                           | the scope's members       | `putMembers`     |
-| `zena pkg scope remove <scope> <person>`                                      | the scope's members       | `putMembers`     |
-| `zena pkg team create <scope>/<team>`                                         | a new team                | `putTeam`        |
-| `zena pkg team add <scope>/<team> <person> --role <role>`                     | the team                  | `putTeam`        |
-| `zena pkg team remove <scope>/<team> <person>`                                | the team                  | `putTeam`        |
-| `zena pkg team delete <scope>/<team>`                                         | the team                  | `deleteTeam`     |
-| `zena pkg owner add <person> --role <role>`                                   | the package's maintainers | `putMaintainers` |
-| `zena pkg owner add --team <scope>/<team> --role publisher`                   | the package's maintainers | `putMaintainers` |
-| `zena pkg owner remove <person>`                                              | the package's maintainers | `putMaintainers` |
-| `zena pkg scope settings <scope> --owner-threshold <n> --admin-threshold <n>` | the scope's members       | `putMembers`     |
-| `zena pkg team settings <scope>/<team> --threshold <n>`                       | the team                  | `putTeam`        |
-| `zena pkg scope policy <scope> --minimum-threshold <n> ...`                   | the scope's policy        | `putPolicy`      |
-| `zena pkg owner settings --threshold <n> --owner-threshold <n> --humans <n>`  | the package's maintainers | `putMaintainers` |
+| Command                                                                      | Record                     | App View method        |
+| ---------------------------------------------------------------------------- | -------------------------- | ---------------------- |
+| `zena pkg scope add <scope> <person> --role <role>`                          | the scope's maintainers    | `putScopeMaintainers`  |
+| `zena pkg scope add <scope> --team <org>/<team> --role <role>`               | the scope's maintainers    | `putScopeMaintainers`  |
+| `zena pkg scope remove <scope> <person>`                                     | the scope's maintainers    | `putScopeMaintainers`  |
+| `zena pkg scope settings <scope> --owner-threshold <n>`                      | the scope's maintainers    | `putScopeMaintainers`  |
+| `zena pkg scope policy <scope> --minimum-threshold <n> ...`                  | the scope's policy         | `putPolicy`            |
+| `zena pkg scope upgrade <scope>`                                             | the organization's members | `upgradeScope`         |
+| `zena pkg scope join <scope> <org>`                                          | the scope's organization   | `putScopeOrganization` |
+| `zena pkg scope leave <scope>`                                               | the scope's organization   | `putScopeOrganization` |
+| `zena pkg org add <org> <person>`                                            | the organization's members | `putMembers`           |
+| `zena pkg org remove <org> <person>`                                         | the organization's members | `putMembers`           |
+| `zena pkg team create <org>/<team>`                                          | a new team                 | `putTeam`              |
+| `zena pkg team add <org>/<team> <person> --role <role>`                      | the team                   | `putTeam`              |
+| `zena pkg team remove <org>/<team> <person>`                                 | the team                   | `putTeam`              |
+| `zena pkg team settings <org>/<team> --threshold <n>`                        | the team                   | `putTeam`              |
+| `zena pkg team delete <org>/<team>`                                          | the team                   | `deleteTeam`           |
+| `zena pkg owner add <person> --role <role>`                                  | the package's maintainers  | `putMaintainers`       |
+| `zena pkg owner add --team <org>/<team> --role publisher`                    | the package's maintainers  | `putMaintainers`       |
+| `zena pkg owner remove <person>`                                             | the package's maintainers  | `putMaintainers`       |
+| `zena pkg owner settings --threshold <n> --owner-threshold <n> --humans <n>` | the package's maintainers  | `putMaintainers`       |
 
-The roles are those of [Roles](#roles), and `member` or `publisher` when
-`--role` is left out. The `settings` commands change a record's
+The roles are those of [Roles](#roles): `creator` for a scope, `member`
+for a team and `publisher` for a package when `--role` is left out. The `settings` commands change a record's
 [thresholds](#thresholds) and keep its people; each flag left out keeps
 its value, and with none they print the thresholds. A change to a
 threshold is approved under the thresholds it replaces, so raising
 `ownerThreshold` from 1 to 2 needs one owner, and lowering it back needs
 two. The `owner` commands act on the package in the
 current directory, or on the one `--package` names by DID, handle or
-`scope:name`. `zena pkg scope members <scope>`, `zena pkg team members` and
-`zena pkg owner list` print the entries the caller may see.
+`scope:name`, and a scope's owners can run them on any package in the
+scope. `zena pkg scope maintainers <scope>`, `zena pkg org members <org>`,
+`zena pkg team members` and `zena pkg owner list` print the entries the
+caller may see.
 
 Each change takes the same steps:
 
@@ -1776,13 +1904,15 @@ interface.
 A change counts once the roles and thresholds of the record before it
 have attested it. Only people count; automation chooses no one's roles.
 
-| Change to                 | Attested by                                                                                             |
-| ------------------------- | ------------------------------------------------------------------------------------------------------- |
-| an organization's members | its `ownerThreshold` of owners                                                                          |
-| an organization's policy  | the members record's `ownerThreshold` of owners                                                         |
-| a team                    | the team's `threshold` of its maintainers, or the organization's `adminThreshold` of admins and owners  |
-| a new team                | the organization's `adminThreshold` of admins and owners                                                |
-| a package's maintainers   | its `ownerThreshold` of owners, listed by DID, by commitment, or as members of a team in the owner role |
+| Change to                 | Attested by                                                                                                                                                    |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| a scope's maintainers     | its `ownerThreshold` of owners                                                                                                                                 |
+| a scope's policy          | its maintainers record's `ownerThreshold` of owners                                                                                                            |
+| a scope's organization    | joining: the scope's `ownerThreshold` of its owners, and the organization's scope's `ownerThreshold` of its owners; leaving: either side's owners alone        |
+| an organization's members | its scope's `ownerThreshold` of owners                                                                                                                         |
+| a team                    | the team's `threshold` of its maintainers, or the organization's scope's `ownerThreshold` of owners                                                            |
+| a new team                | the organization's scope's `ownerThreshold` of owners                                                                                                          |
+| a package's maintainers   | its `ownerThreshold` of owners, listed by DID, by commitment, or as members of a team in the owner role; or its scope's `ownerThreshold` of the scope's owners |
 
 So one owner of a package whose `ownerThreshold` is 2 cannot replace the
 others, and until the others approve, the record before the change
@@ -1801,11 +1931,13 @@ and with `--yes` writes their attestations and calls `completeChange`.
 - **A change waits seven days**, and the one who asked for it, or anyone
   who sees every entry behind the record, can withdraw it sooner
   (`dev.zena-lang.registry.withdrawChange`).
-- **Creating** an organization or a package writes its first members or
-  maintainers record at once, with its creator as its only owner. There
-  is no record before it to approve it. **Deleting** a team is done by an
-  admin at once, and takes the team's part in its packages away; it adds
-  no one.
+- **Creating** a scope or a package writes its first maintainers record
+  at once, with its creator as an owner. There is no record before it to
+  approve it. **Upgrading** a scope writes its organization's first
+  members record, listing its owners, as a change to the scope: its
+  owners' threshold approves it. **Deleting** a team is done by an owner
+  of its organization at once, and takes the team's part in its scopes
+  and packages away; it adds no one.
 
 The log records each change that counts. A release counts under the
 maintainers record the log held when it recorded the release, so someone
@@ -1817,8 +1949,8 @@ remaining holders remove it from the DID's rotation keys with a PLC
 operation. A higher-ranked rotation key can undo an operation signed by a
 lower-ranked one within 72 hours, so the removal is signed with a recovery
 key ranked above the departing one, not with the App View's key, which ranks
-last. The first rotation key should be the one trusted most, such as an
-organization's offline key.
+last. The first rotation key should be the one trusted most, such as a
+scope's offline key.
 
 Nothing records which rotation key is whose, so `zena pkg scope remove` and
 `zena pkg owner remove` cannot yet tell whether the person removed holds one.
@@ -1834,8 +1966,9 @@ recovery key.
   maintainers, through attestations. The maintainers record says how
   many, per package: `threshold` attestations for a release, of which
   `humans` must come from people rather than automation accounts, and
-  `ownerThreshold` owners for a change to the record. A scope's policy
-  can ask more of every release in it, with minimums that apply at
+  `ownerThreshold` owners for a change to the record, or the scope's
+  `ownerThreshold` of its owners. A scope's policy can ask more of every
+  release in it, with minimums that apply at
   once. A new package starts with the policy's defaults, which are 1 and
   1 unless the scope sets others, so the publisher's own attestation
   meets them. A
@@ -1854,7 +1987,7 @@ not planned.
 
 ### The management interface
 
-People sign in as themselves, never as an organization or a package:
+People sign in as themselves, never as a scope, an organization or a package:
 those have no passwords, and are managed through someone's role in them.
 The management interface is pages on the site, `pkg.zena-lang.dev`,
 rendered on the server ([Names and addresses](#names-and-addresses)). It
@@ -1873,10 +2006,10 @@ has no privileges of its own:
   until there is one, or straight from a package's PDS: packages, their
   maintainers records, releases waiting for approvals, pending recovery
   resets and PLC operations. It asks each App View the person uses for the
-  memberships the index cannot see: the person's own, and for an
-  organization's owners and admins, the whole list.
+  memberships the index cannot see: the person's own, and for a scope's or
+  an organization's owners, the whole list.
 - **Writing.** It writes attestations to the person's own repository.
-  Everything else goes to the package's or organization's App View, through
+  Everything else goes to the package's or scope's App View, through
   the person's PDS, which proxies the call with a service-auth token
   (`atproto-proxy`, which the `rpc` permission covers).
 
@@ -1888,7 +2021,7 @@ server is a compromise of the App View. Once the site runs apart, its
 server holds no keys, so a compromised site can show wrong data, and do no
 more.
 
-The interface lists a person's packages, organizations and teams with
+The interface lists a person's packages, scopes, organizations and teams with
 their roles, the releases waiting for their approval, with the changes to
 the source fetched by CID and shown in the browser, pending recovery
 resets, each package's PLC history and which recovery keys rank where,
@@ -1908,7 +2041,7 @@ How it handles keys:
 - **The App View's keys** never appear. The interface calls the App View's
   methods.
 - **CI credentials.** Creating a CI token has the App View create an
-  automation account in the organization, and shows its token once.
+  automation account in the scope, and shows its token once.
 
 People approve what the interface shows them, so its code is what they
 trust. It is served as static, versioned files built from open source,
@@ -1928,33 +2061,37 @@ records it already holds. A write that changes
 which releases count, such as a new maintainers record, takes effect
 once the attestations the previous record requires reach the log.
 
-| Method                    | Caller                                                        | What it does                                                        |
-| ------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `createOrganization`      | anyone the App View's limits allow, or only those it lists    | creates a scope, with the caller as its only owner                  |
-| `putScopeCreator`         | the App View's admins                                         | lists an account as one that may create scopes, or unlists it       |
-| `listScopeCreators`       | the App View's admins                                         | returns the accounts listed, with who listed each and when          |
-| `createPackage`           | an organization's admins, or a team they allow                | creates a package with its profile and maintainers record           |
-| `createAutomationAccount` | an organization's admins                                      | creates an account for CI and returns its token once                |
-| `uploadArtifact`          | a package's maintainers                                       | stores an artifact, or one part of it, as a blob of the package     |
-| `publish`                 | a package's maintainers                                       | checks a release and holds it, refusing a version that is taken     |
-| `completeRelease`         | a package's maintainers                                       | writes a held release once its attestations are enough              |
-| `getPendingReleases`      | a package's maintainers                                       | returns the held releases, with who has attested each               |
-| `withdrawRelease`         | a held release's publisher, or a package's owners             | stops holding a release, which frees its version                    |
-| `retract`                 | a package's maintainers                                       | writes a retraction record                                          |
-| `putProfile`              | a package's owners                                            | replaces the profile                                                |
-| `renamePackage`           | a package's owners                                            | changes the handle, with a PLC operation, and the profile's name    |
-| `releaseName`             | the account that held a reserved name, or an admin over it    | lets another account take a name a rename reserved                  |
-| `getNameHistory`          | anyone                                                        | returns who held a name, or which names a DID held, and when        |
-| `putMaintainers`          | a package's owners                                            | holds a maintainers record, with the entries behind its commitments |
-| `putMembers`              | an organization's owners                                      | holds a members record, with its entries                            |
-| `putTeam`                 | an organization's admins, or a team's maintainers             | holds a new or replaced team                                        |
-| `putPolicy`               | an organization's owners                                      | holds a new policy for the scope's packages                         |
-| `putScopeProfile`         | an organization's admins                                      | writes the scope's profile                                          |
-| `deleteTeam`              | an organization's admins                                      | deletes a team                                                      |
-| `completeChange`          | anyone with a role in the account                             | writes a held record once the record before it allows it            |
-| `getPendingChanges`       | anyone with a role in the account                             | returns the held records, with who has attested each                |
-| `withdrawChange`          | its proposer, and those who see every entry behind the record | stops holding a record                                              |
-| `getEntries`              | members, owners, admins and team maintainers                  | returns the private entries the caller may see                      |
+| Method                    | Caller                                                        | What it does                                                         |
+| ------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `createScope`             | anyone the App View's limits allow, or only those it lists    | creates a scope, with the caller as its only owner                   |
+| `upgradeScope`            | a scope's owners                                              | makes the scope an organization, with its owners as its members      |
+| `putScopeCreator`         | the App View's admins                                         | lists an account as one that may create scopes, or unlists it        |
+| `listScopeCreators`       | the App View's admins                                         | returns the accounts listed, with who listed each and when           |
+| `createPackage`           | a scope's creators and owners                                 | creates a package with its profile and maintainers record            |
+| `createAutomationAccount` | a scope's owners                                              | creates an account for CI and returns its token once                 |
+| `uploadArtifact`          | a package's maintainers                                       | stores an artifact, or one part of it, as a blob of the package      |
+| `publish`                 | a package's maintainers                                       | checks a release and holds it, refusing a version that is taken      |
+| `completeRelease`         | a package's maintainers                                       | writes a held release once its attestations are enough               |
+| `getPendingReleases`      | a package's maintainers                                       | returns the held releases, with who has attested each                |
+| `withdrawRelease`         | a held release's publisher, or a package's owners             | stops holding a release, which frees its version                     |
+| `retract`                 | a package's maintainers                                       | writes a retraction record                                           |
+| `putProfile`              | a package's owners                                            | replaces the profile                                                 |
+| `renamePackage`           | a package's owners, or its scope's                            | changes the handle, with a PLC operation, and the profile's name     |
+| `renameScope`             | a scope's owners, or the App View's operator                  | changes the scope's handle and every handle in it                    |
+| `releaseName`             | the account that held a reserved name, or those over it       | lets another account take a name a rename reserved                   |
+| `getNameHistory`          | anyone                                                        | returns who held a name, or which names a DID held, and when         |
+| `putMaintainers`          | a package's owners, or its scope's                            | holds a maintainers record, with the entries behind its commitments  |
+| `putScopeMaintainers`     | a scope's owners                                              | holds a scope's maintainers record, with its entries                 |
+| `putScopeOrganization`    | a scope's owners                                              | holds the record that puts the scope in an organization, or drops it |
+| `putMembers`              | an organization's owners                                      | holds a members record, with its entries                             |
+| `putTeam`                 | an organization's owners, or a team's maintainers             | holds a new or replaced team                                         |
+| `putPolicy`               | a scope's owners                                              | holds a new policy for the scope's packages                          |
+| `putScopeProfile`         | a scope's owners                                              | writes the scope's profile                                           |
+| `deleteTeam`              | an organization's owners                                      | deletes a team                                                       |
+| `completeChange`          | anyone with a role in the account                             | writes a held record once the record before it allows it             |
+| `getPendingChanges`       | anyone with a role in the account                             | returns the held records, with who has attested each                 |
+| `withdrawChange`          | its proposer, and those who see every entry behind the record | stops holding a record                                               |
+| `getEntries`              | owners, creators, members and team maintainers                | returns the private entries the caller may see                       |
 
 The `put` methods take the CID the record must have now, as
 `com.atproto.repo.putRecord` does, so two owners editing at once do not
@@ -1974,9 +2111,8 @@ for that are a later revision of this design.
 
 The Zena project's App View and PDS use three names:
 
-- **`pkg.zena-lang.dev`** is the domain handles are under. A scope's
-  organization is `acme.pkg.zena-lang.dev`, and its packages are names
-  below that, such as `router.acme.pkg.zena-lang.dev`. DNS TXT records
+- **`pkg.zena-lang.dev`** is the domain handles are under. A scope is
+  `acme.pkg.zena-lang.dev`, and its packages are names below that, such as `router.acme.pkg.zena-lang.dev`. DNS TXT records
   verify the handles, wherever the PDS runs. The same name is the address
   of **the App View**: its methods, which `zena` calls by default, its
   index, and **the site**, its web pages and management interface. Its
@@ -1984,7 +2120,7 @@ The Zena project's App View and PDS use three names:
   token for its methods. Its DID document lists the methods as
   `#zena_registry`, and the App View's own signing key ([Keys](#keys)).
 - **`padstone.zena-lang.dev`** is the PDS, which stores the App View's
-  accounts. Every package and organization account's DID document names
+  accounts. Every scope, package and automation account's DID document names
   it as the account's PDS, and `zena` reads packages from it. Its DID,
   `did:web:padstone.zena-lang.dev`, is the audience of the App View's
   tokens for writes to its managed accounts. A padstone is the block that
@@ -2061,7 +2197,7 @@ allows no change at the App View.
 
 A PDS's own pages are only those any PDS has: its operators' pages, and
 pages for the people whose atproto accounts it holds. Everything about
-packages and organizations is on the site, for every App View it finds this
+packages, scopes and organizations is on the site, for every App View it finds this
 way, and so is the App View's `/admin`, where its operators review accounts,
 reports and claims on scope names. The site can also show a package
 straight from its PDS, without the index, as `zena` reads it.
@@ -2457,8 +2593,9 @@ DID, so dependents can move.
 - **Handles** can be taken only as scope names on an App View's domain,
   first come, first served. An App View can reserve scopes for people who
   show they own a matching domain or GitHub organization, and settle
-  disputes, as package registries do. An organization that uses its own
-  domain as its scope is out of reach. A handle that a scope gives to
+  disputes, as package registries do, and takes back scopes no one uses
+  ([Changing names](#changing-names)). A project that uses its own domain
+  as its scope is out of reach. A handle that a scope gives to
   another package moves no dependent, since manifests and lockfiles record
   DIDs, and a name a rename frees stays reserved for its package until it
   is released (see [Changing names](#changing-names)).
@@ -2534,7 +2671,7 @@ operator handles reports.
 ### What a package account can do
 
 A package account exists to hold package records, and the App View lets it
-do nothing else. The same goes for organization accounts.
+do nothing else. The same goes for scope accounts, organizations among them.
 
 - No one can sign in as one of these accounts. As managed accounts they
   have no password, no app passwords and no OAuth authorization, and
@@ -2608,8 +2745,8 @@ testers have used it:
 | Packages and automation accounts a scope creates (`packageCreations`, `packages`) | 100 a day, 1000 in all |
 
 A release is two actions, its upload and its publish; approving it is
-none. A count in all fails with `QuotaExceeded`. When an organization can
-own several scopes (#988), an organization's count will join these.
+none. A count in all fails with `QuotaExceeded`. A count per organization,
+across the scopes that belong to it, will join these (#988).
 
 ### Reports and takedowns
 
@@ -2617,8 +2754,8 @@ own several scopes (#988), an organization's count will join these.
   `com.atproto.moderation.createReport`, which atproto clients already
   use, and through an address on its site. The index links every package
   page to it.
-- **Takedowns.** The operator can take down a release, a package or an
-  organization. The App View then stops answering for a taken-down
+- **Takedowns.** The operator can take down a release, a package or a
+  scope. The App View then stops answering for a taken-down
   account's handle, and asks the account's PDS to take down the records
   and blobs involved: on padstone, through the operator's admin methods,
   after which it stops serving them and marks the account as taken down on
@@ -2673,7 +2810,7 @@ own several scopes (#988), an organization's count will join these.
   `com.atproto.*`, checks service-auth tokens against roles, keeps
   membership entries and gives them to those allowed to see them, and
   writes its handles' records to its domain's DNS zone. It confines
-  package, organization and automation accounts to `dev.zena-lang.*`
+  scope, package and automation accounts to `dev.zena-lang.*`
   records, enforces the limits on creating accounts and on storage, takes
   reports, and has the operator's tools for reviewing scopes and taking
   content down. It is also the index, and serves the site.
@@ -2909,9 +3046,9 @@ the cache share files across versions.
 ## Open questions
 
 - **Who runs the checksum log and its witnesses.**
-- **The Zena App View's policy on scope names**: for example,
-  reserving scopes for verified domains or GitHub organizations, and
-  settling disputes.
+- **The Zena App View's policy on scope names**, beyond taking back scopes
+  no one uses: for example, reserving scopes for verified domains or GitHub
+  organizations, and settling disputes.
 - **The Zena App View's moderation**: who reviews new scopes and
   reports, the quotas on packages and storage, the legal entity that
   receives notices, and which labelers the App View follows for maintainers.

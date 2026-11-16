@@ -206,7 +206,7 @@ grows. Milestones 1 to 4 are done.
    account's repository, `com.atproto.sync.*` except `subscribeRepos`,
    blobs, `com.atproto.server.*` sessions and identity. Handlers get their
    account from the request from the start.
-6. **The App View.** Package and organization accounts created on request,
+6. **The App View.** Scope and package accounts created on request,
    each with a `did:plc` whose genesis operation the App View signs; the
    `dev.zena-lang.registry.*` methods, checked with service auth
    (`atproto/service-auth`); package accounts confined to
