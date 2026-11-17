@@ -14,4 +14,5 @@ read the CONTEXT.md nearest their work before editing:
 - `packages/pds-web/CONTEXT.md` — the App View's server-rendered pages and their assets
 - `packages/markdown/CONTEXT.md` — CommonMark and GFM parser, AST, plugin API, and HTML renderer
 - `packages/semver/CONTEXT.md` — semantic versions and npm's version ranges
+- `packages/terminal/CONTEXT.md` — colors, Clack-style layout and a spinner for command-line programs
 - `packages/workspace-hack/CONTEXT.md` — generated crate unifying the Rust crates' dependency features

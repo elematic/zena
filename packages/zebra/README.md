@@ -109,7 +109,7 @@ In GitHub Actions workflows, run `.github/actions/setup-zebra-cache` before buil
 - `zebra/builder` — Translates `ScriptConfig` closures into `workflow` steps and execution callbacks (`planScripts`, `StepExecution`, `lockfileCandidates`).
 - `zebra/disk-cache`, `zebra/github-cache`, and `zebra/state-json` — `.zebra/` blob/manifest storage (`DiskCache`, `TieredCache`, `stateDirOf`), GitHub Actions remote caching (`GitHubActionsCache`, `GitHubCacheConfig`, `CacheMode`, `resolveCacheMode`, `resolveGitHubCacheConfig`), and JSON serialization for state, manifests, and hash memos.
 - `zebra/fs-walk` and `zebra/fs-util` — Input glob discovery (`FileHasher`, `expandGlobs`, `hashFile`, `validateGlobs`, `splitBase`) and workspace path utilities.
-- `zebra/colors`, `zebra/layout`, `zebra/animation`, and `zebra/shell` — Terminal color formatting, Clack-style rail layout (`RailLayout`), interactive spinner animation (`Spinner`), and POSIX shell argument quoting (`shellQuote`, `appendShellArgs`).
+- `zebra/shell` — POSIX shell argument quoting (`shellQuote`, `appendShellArgs`). Zebra's terminal output uses `zena-lang:terminal` (`packages/terminal`): colors, the Clack-style rail layout and the spinner.
 
 ## License
 

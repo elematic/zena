@@ -143,7 +143,8 @@ maintainers will publish them on a registry:
 - The demo signs in as its maintainer with `zena pkg login`, and runs
   `zena pkg publish --yes` for each directory `DEMO_PUBLISH` names,
   separated by spaces, in order: by default `packages/wit-parser`,
-  `packages/markdown`, `packages/workflow` and `packages/zebra`. It
+  `packages/markdown`, `packages/workflow`, `packages/terminal` and
+  `packages/zebra`. It
   publishes each from a fresh copy in `.zena/demo/packages`, since
   `publish` writes the new package's DID into the manifest, and the
   repository's manifest must not name a DID that is gone when the demo

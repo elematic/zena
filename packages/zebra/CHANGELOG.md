@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- `zebra/colors`, `zebra/layout` and `zebra/animation`, which are now
+  `terminal/colors`, `terminal/layout` and `terminal/animation` in the
+  package `zena-lang:terminal`.
+
 ## [0.0.1-preview.1] - 2026-11-12
 
 ### Added
