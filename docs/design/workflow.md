@@ -251,9 +251,9 @@ monorepo can migrate incrementally and A/B the two systems.
 ```zconf
 scripts: {
   'build:cli': {
-    command: 'zena-cli build zena/cli/main.zena -o zena/out/cli.wasm',
+    command: 'zena-cli build src/cli/main.zena -o out/cli.wasm',
     files: ['zena/**/*.zena', 'bootstrap/cli.wasm'],
-    output: ['zena/out/cli.wasm'],
+    output: ['out/cli.wasm'],
     dependencies: ['../zena-cli:build'],
   },
   'build:scripts': typescript({tsconfig: 'tsconfig.json'}),

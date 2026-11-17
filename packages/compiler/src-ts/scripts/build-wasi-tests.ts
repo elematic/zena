@@ -2,7 +2,7 @@
 /**
  * Build the compiler test program for wasmtime.
  *
- * One module holds everything: the unit suites (`zena/test/*_test.zena`,
+ * One module holds everything: the unit suites (`src/test/*_test.zena`,
  * each exporting a `tests` Suite) and the three portable-test runners,
  * bundled by a generated wrapper that dispatches on a subcommand.
  *
@@ -35,9 +35,8 @@ import {glob} from 'glob';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
-const zenaDir = join(pkgDir, 'zena');
-const testDir = join(zenaDir, 'test');
-const outDir = join(zenaDir, 'out', 'test-self');
+const testDir = join(pkgDir, 'src', 'test');
+const outDir = join(pkgDir, 'out', 'test-self');
 const repoRoot = join(pkgDir, '..', '..');
 const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 
@@ -136,7 +135,7 @@ const env = {
   // would exercise stage B instead of the output the bootstrap produced.
   // Building it with B also made the four suites wait 64s for B first. See
   // docs/design/bootstrapping.md, "Which stage to use".
-  ZENA_COMPILER_WASM: 'packages/compiler/zena/out/cli.wasm',
+  ZENA_COMPILER_WASM: 'packages/compiler/out/cli.wasm',
   // Wasmtime's copying collector grows the GC heap only when an
   // allocation still does not fit after a full collection, so a heap
   // that starts at nothing leaves an allocation-heavy program

@@ -226,7 +226,7 @@ regression and the innocent reformat produce the same failure, and
 regenerating accepts both. When emission has to keep a property —
 "this function does not allocate", "this shape still compiles to a
 protected region" — assert the property too, with
-`zena/test/wat-invariants.zena`:
+`src/test/wat-invariants.zena`:
 
 ```zena
 assertNoAllocation(wat, '$main', 'a try-assigned local is mirrored into a wasm local');
@@ -246,10 +246,10 @@ compiler compiled by itself must byte-match the compiler that compiled
 it:
 
 ```bash
-npm run build:self-hosted   # writes zena/out/cli-self.wasm
-ZENA_GC_RESERVE_MB=1536 ZENA_COMPILER_WASM=zena/out/cli-self.wasm \
-  ../../target/release/zena-cli build zena/cli/main.zena -o zena/out/cli-self2.wasm
-cmp zena/out/cli-self.wasm zena/out/cli-self2.wasm
+npm run build:self-hosted   # writes out/cli-self.wasm
+ZENA_GC_RESERVE_MB=1536 ZENA_COMPILER_WASM=out/cli-self.wasm \
+  ../../target/release/zena-cli build src/cli/main.zena -o out/cli-self2.wasm
+cmp out/cli-self.wasm out/cli-self2.wasm
 ```
 
 Note: compiler-source refactors change the self-compile _input_, so
@@ -266,7 +266,7 @@ fixed input program instead.
 - Suspected miscompile in the self-compile: add a temporary index-range
   env filter in module-generator's function loop and bisect — a culprit
   function falls out in ~15 iterations.
-- Standalone lib-module builds (`zena-cli build zena/lib/X.zena`) are a
+- Standalone lib-module builds (`zena-cli build src/lib/X.zena`) are a
   fast trap probe — they exercise imports.
 - `ZENA_TEST_PARALLELISM=N` caps execution-test wasmtime fan-out (the
   default can exhaust machine memory).

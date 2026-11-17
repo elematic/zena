@@ -54,7 +54,7 @@ test('return string with zero runtime imports in Node.js (target js)', async () 
     'console-log-and-return-pure-js.wasm',
   );
   const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
-  const compilerWasm = join(pkgDir, 'zena', 'out', 'cli.wasm');
+  const compilerWasm = join(pkgDir, 'out', 'cli.wasm');
 
   const zenaFileRel = relative(repoRoot, zenaFile);
   const wasmPureJsFileRel = relative(repoRoot, wasmPureJsFile);
@@ -88,7 +88,7 @@ test('console.log and return string in Node.js (target zena-js)', async () => {
   const zenaFile = join(pkgDir, 'test-files', 'console-log-and-return.zena');
   const wasmJsFile = join(pkgDir, 'test', 'console-log-and-return-js.wasm');
   const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
-  const compilerWasm = join(pkgDir, 'zena', 'out', 'cli.wasm');
+  const compilerWasm = join(pkgDir, 'out', 'cli.wasm');
 
   const zenaFileRel = relative(repoRoot, zenaFile);
   const wasmJsFileRel = relative(repoRoot, wasmJsFile);
@@ -134,7 +134,7 @@ const esmStringConstants = 'wasm:js/string-constants';
 
 test('string literals from the --imported-string-constants module (zc, target zena-js)', async () => {
   const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
-  const compilerWasm = join(pkgDir, 'zena', 'out', 'cli.wasm');
+  const compilerWasm = join(pkgDir, 'out', 'cli.wasm');
   const zenaFileRel = relative(
     repoRoot,
     join(pkgDir, 'test-files', 'console-log-and-return.zena'),

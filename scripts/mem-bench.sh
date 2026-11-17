@@ -29,14 +29,14 @@ cd "$(dirname "$0")/.."
 OUT=perf-out
 mkdir -p "$OUT"
 
-COMPILER=${ZENA_PROBE_COMPILER:-packages/compiler/zena/out/cli.wasm}
+COMPILER=${ZENA_PROBE_COMPILER:-packages/compiler/out/cli.wasm}
 REPS=${MEM_BENCH_REPS:-1}
 ONLY=${MEM_BENCH_ONLY:-}   # alloc | live | time, or empty for all
 
 declare -A ENTRY=(
-  [hello]=packages/compiler/zena/test/hello_test.zena
+  [hello]=packages/compiler/src/test/hello_test.zena
   [cli-module]=packages/zena-cli/zena/main.zena
-  [self-hosted]=packages/compiler/zena/cli/main.zena
+  [self-hosted]=packages/compiler/src/cli/main.zena
   [lsp]=packages/language-service/src/lsp.zena
 )
 declare -A FLAGS=(

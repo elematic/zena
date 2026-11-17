@@ -17,7 +17,7 @@ The library is 69 `.zena` files under `packages/stdlib/zena/`, published as
 - `packages/stdlib/stdlib-manifest.json`, read at runtime by the
   TypeScript module loader.
 - `buildStdlibConfig` in
-  `packages/compiler/zena/lib/stdlib-manifest.zena`, compiled into
+  `packages/compiler/src/lib/stdlib-manifest.zena`, compiled into
   the self-hosted compiler. A module added there exists for `zena test`
   only once the compiler and the CLI module are rebuilt
   (`npm run build -w @zena-lang/zena-cli`).

@@ -523,7 +523,7 @@ release.
 
 ## Verification
 
-- `zena/test/zir-backend_test.zena`:
+- `src/test/zir-backend_test.zena`:
   - "a record literal argument is passed as its fields": at `-O1`, the
     caller allocates nothing and calls `f.core`, and the core has no
     `call_ref` and no allocation. Before this change the caller

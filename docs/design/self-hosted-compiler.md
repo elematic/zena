@@ -1317,7 +1317,7 @@ than discovering instantiations on its own.
   self-hosted compilers. A comprehensive porting plan maps ~278 tests from the
   bootstrap checker's unit tests to portable format. See
   `tests/language/semantics/PLAN.md`.
-- **Checker API tests** (`packages/compiler/zena/test/checker_test.zena`) —
+- **Checker API tests** (`packages/compiler/src/test/checker_test.zena`) —
   self-hosted unit tests that exercise the `checkModule()` API, `SemanticModel`
   queries, and `Diagnostic` output directly.
 

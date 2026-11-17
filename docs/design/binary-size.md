@@ -56,7 +56,7 @@ functions reached by a program with no calls in it.
 `BinaryEmitter.emitModuleEnd` wrote the `name` custom section on every
 compile. Nothing gated it — 29% of the module was debug metadata, and
 there was no way to turn it off. `AGENTS.md` and
-`packages/compiler/zena/lib/codegen/ir/CONTEXT.md` both already
+`packages/compiler/src/lib/codegen/ir/CONTEXT.md` both already
 documented `-g` as the flag that "emits a WASM name section with
 readable function names"; `-g` in fact only reached wasmtime's engine
 config (inlining) and never the compiler.
@@ -1669,7 +1669,7 @@ different place. Prerequisite for 1 and everything after it.
 
 ## The ratchet
 
-`zena/test/binary-size_test.zena` holds five fixtures to absolute
+`src/test/binary-size_test.zena` holds five fixtures to absolute
 byte budgets, to be moved DOWN only:
 
 | fixture                                | what it adds                                                                                                     | bytes | budget |

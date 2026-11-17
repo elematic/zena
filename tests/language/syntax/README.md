@@ -13,7 +13,7 @@ This directory contains portable syntax tests for Zena. These tests verify parse
 
 ## Porting & Testing Workflow
 
-The portable test runner is `packages/compiler/zena/test/portable_syntax.zena`, which discovers all `.zena` files under `tests/language/syntax/` recursively.
+The portable test runner is `packages/compiler/src/test/portable_syntax.zena`, which discovers all `.zena` files under `tests/language/syntax/` recursively.
 
 ### Snapshot Auto-Generation
 

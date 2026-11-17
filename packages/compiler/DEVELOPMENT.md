@@ -4,10 +4,10 @@ Notes for working on `compiler`.
 
 ## Layout
 
-- `zena/lib/` — compiler libraries (`compiler.zena`, `parser.zena`, `checker.zena`, `codegen/`, etc.), published as the `compiler` package (`"source": "zena/lib"`)
-- `zena/cli/` — standalone compiler CLI entry point (`zc`)
-- `zena/test/` — unit and compiler pipeline tests
-- `zena/bench/` — microbenchmarks for the lexer and string interning
+- `src/lib/` — compiler libraries (`compiler.zena`, `parser.zena`, `checker.zena`, `codegen/`, etc.), published as the `compiler` package (`"source": "src/lib"`)
+- `src/cli/` — standalone compiler CLI entry point (`zc`)
+- `src/test/` — unit and compiler pipeline tests
+- `src/bench/` — microbenchmarks for the lexer and string interning
 - `src/` and `scripts/` — TypeScript build and test runner harnesses
 
 ## Building and Testing
@@ -36,7 +36,7 @@ npm run test:execution -w @zena-lang/compiler-zena
 To run a single Zena unit test file directly:
 
 ```bash
-./target/release/zena-cli test packages/compiler/zena/test/compiler-api_test.zena
+./target/release/zena-cli test packages/compiler/src/test/compiler-api_test.zena
 ```
 
 ## Reseeding the Bootstrap Binary

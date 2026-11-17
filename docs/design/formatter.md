@@ -873,7 +873,7 @@ Track each AST node type and its print function.
 ## File Layout
 
 ```
-packages/compiler/zena/lib/formatter/
+packages/compiler/src/lib/formatter/
   doc-builders.zena      # Doc IR constructors (ported from Prettier)
   doc-printer.zena       # printDocToString, fits, propagateBreaks (ported)
   doc-indent.zena        # Indent representation (ported)
@@ -888,7 +888,7 @@ packages/compiler/zena/lib/formatter/
   print-comments.zena    # Comment printing helpers
   format.zena            # Public API: format(source) → string
 
-packages/compiler/zena/test/formatter/
+packages/compiler/src/test/formatter/
   doc-printer_test.zena  # Doc IR → string tests (ported from Prettier)
   expressions_test.zena  # Expression formatting snapshots
   statements_test.zena   # Statement formatting snapshots

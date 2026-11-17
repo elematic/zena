@@ -54,7 +54,7 @@ into one that costs a great deal, unless the optimizer closes the gap.
 ## Representation before the split
 
 `typeToValType` maps an extension class to its `on` type
-(`packages/compiler/zena/lib/codegen/type-mapping.zena`), so
+(`packages/compiler/src/lib/codegen/type-mapping.zena`), so
 `array<T>`, `FixedArray<T>`, and `ImmutableArray<T>` were one Wasm type.
 The cast above emitted no instructions because there was nothing to
 check.

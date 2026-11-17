@@ -70,7 +70,7 @@ a workspace's root manifest lists its packages. See
 ```json
 {
   "name": "zena-formatter",
-  "dependencies": {"compiler": {"path": "../../../compiler/zena/lib"}}
+  "dependencies": {"compiler": {"path": "../../../compiler/src/lib"}}
 }
 ```
 
@@ -157,7 +157,7 @@ import {Map} from 'zena:map';
 import {console} from 'zena:console'; // Imported as a read-only binding
 ```
 
-See packages/compiler/zena/lib/prelude.zena for the current prelude.
+See packages/compiler/src/lib/prelude.zena for the current prelude.
 
 ### Mutable Exports & Optimization
 

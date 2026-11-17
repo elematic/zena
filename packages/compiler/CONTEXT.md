@@ -31,7 +31,7 @@ bug, and the way to see diagnostics in standard library source.
 
 ## Purity Is Decided After the Check
 
-`zena/lib/analysis/purity.zena` (`PurityAnalysis`) answers what a
+`src/lib/analysis/purity.zena` (`PurityAnalysis`) answers what a
 function's body does to the program's state: four facts (effect, state
 read, write, mutable read), each with the place it was found and, for a
 call, the callee's own reason, so an error prints the chain of calls.
@@ -55,13 +55,13 @@ again every library whose previous result holds an obligation
 (`checkCompilation`, where `mustCheck` is built). A new analysis is
 made per check; nothing of it is carried from one to the next.
 
-`zena/test/purity_test.zena` asks for verdicts directly, and
+`src/test/purity_test.zena` asks for verdicts directly, and
 `tests/language/semantics/contracts/static-*.zena` are the programs.
 
 ## WebAssembly Code Generation
 
 Code generation separates semantic discovery from lowering and emission
-(all paths under `zena/lib/codegen/`):
+(all paths under `src/lib/codegen/`):
 
 - **`reachability/`**: `ReachabilityAnalysis` (RTA). Decides what exists —
   reached functions, generic instantiations, vtable membership — and
@@ -70,7 +70,7 @@ Code generation separates semantic discovery from lowering and emission
   per reached function: AST → ZIR → GVN → verify → emit — and iterates
   `WasmModule` fields calling section hooks on `WasmEmitter`.
 - **`ir/`**: the ZIR backend — the compiler's only backend; see
-  [ir/CONTEXT.md](zena/lib/codegen/ir/CONTEXT.md) for the file map,
+  [ir/CONTEXT.md](src/lib/codegen/ir/CONTEXT.md) for the file map,
   invariants, and verification workflow, and `docs/design/ir.md` for
   the design. `ir.zena` (instruction set + flat encoding),
   `builder.zena`, `cfg.zena`, `lowering.zena` + `lowering-context.zena`
@@ -106,7 +106,7 @@ compiler runs one `compile`, `invalidate` or `refreshCache` at a time
 (a second call while one is in flight throws). Checking and code
 generation are synchronous. See `docs/design/async-compiler.md`.
 The compiler keeps a `CompilerTarget` per target
-(`zena/lib/compiler-target.zena`): a `ModuleResolver` bound to it, the
+(`src/lib/compiler-target.zena`): a `ModuleResolver` bound to it, the
 `LibraryLoader` whose cache is that target's library set, the symbol and
 node id generators, and the scope building and import wiring over it.
 
@@ -132,7 +132,7 @@ bytes (`-g`, `-O`) belong to the generator and never affect sharing.
 `compileComponentRuntimeModule` is the first caller to use this: a
 component build's second core module is compiled at the enclosing
 compiler's `core` target rather than on a compiler of its own.
-`zena/test/multi-target_test.zena` covers the whole arrangement.
+`src/test/multi-target_test.zena` covers the whole arrangement.
 
 ### Nothing is shared between targets yet, and what it would take
 
@@ -236,7 +236,7 @@ worth more than the keying work itself.
 ## The AST
 
 - A node's `loc` is a byte range `[start, end)` (`SourceLocation` in
-  `zena/lib/ast.zena`). A binary operator's node (`BinaryExpression`,
+  `src/lib/ast.zena`). A binary operator's node (`BinaryExpression`,
   `&&`, `||` and `??` included, and `PipelineExpression`), an
   `AsExpression` and an `IsExpression` start at the operator: `a + b`
   starts at `+`.
@@ -260,7 +260,7 @@ worth more than the keying work itself.
 
   ```bash
   npm run build:cli -w @zena-lang/compiler-zena
-  ZENA_COMPILER_WASM=packages/compiler/zena/out/cli.wasm \
+  ZENA_COMPILER_WASM=packages/compiler/out/cli.wasm \
     ./target/release/zena-cli build <probe>.zena -o <probe>.wasm
   ```
 
@@ -270,7 +270,7 @@ worth more than the keying work itself.
   compile cache.
 - `typeToString` prints a class, interface or alias as its name and type
   arguments only, so two types with the same name from different
-  libraries print alike. Print `declaringModuleOf(t)` (`zena/lib/types.zena`)
+  libraries print alike. Print `declaringModuleOf(t)` (`src/lib/types.zena`)
   beside it to tell them apart.
 - Read an environment toggle once per compile, as `compile-file.zena`
   does. Each `getEnv` call asks the host for the whole environment and
@@ -290,7 +290,7 @@ worth more than the keying work itself.
 
 **Portable tests** are compiler-agnostic language tests under
 `tests/language/`, split into `syntax/`, `semantics/` and `execution/`.
-Each category has a runner written in Zena, in `zena/test/`:
+Each category has a runner written in Zena, in `src/test/`:
 
 | Runner                    | Checks                                                   |
 | ------------------------- | -------------------------------------------------------- |
@@ -315,7 +315,7 @@ instead of rotting. Two are marked today: the nested-generic-union check
 ([#118](https://github.com/elematic/zena/issues/118)) and a borrow storage
 rule.
 
-They share `zena/test/portable-harness.zena` (directory discovery,
+They share `src/test/portable-harness.zena` (directory discovery,
 `// @name: value` directive parsing, skip accounting). The execution
 runner additionally uses `zena:process` to run each language test in its
 own `zena-cli run` worker, with a bounded pool and a 120s per-test
@@ -365,7 +365,7 @@ nothing cached, 3.5s → 7.0s on a repeat run — the repeat costs more
 because it genuinely recompiles all 465 rather than serving `zena-cli`'s
 cache.
 
-`CompileSession` (`zena/lib/compile-file.zena`) packages the same
+`CompileSession` (`src/lib/compile-file.zena`) packages the same
 arrangement for other drivers, with the same cap; `zena test` compiles
 its files through it (`packages/zena-cli/CONTEXT.md`, "Tests").
 
@@ -375,7 +375,7 @@ was the type argument's _name_, so two entry points that each declared a
 `class Item` shared `zena:iterator`'s `Iterable<Item>` and the second
 emitted an interface trampoline that downcast to the first's struct.
 `instantiationKeyOf` in `lib/types.zena` now keys nominal types by
-identity; `zena/test/type-instantiation_test.zena` guards it.
+identity; `src/test/type-instantiation_test.zena` guards it.
 
 **A module is emitted the same bytes wherever it falls in a batch**, and
 that had to be made true too. `Type.hashCode` is a process-global uid,
@@ -388,7 +388,7 @@ same-signature wrappers was registered first. Unlike `WasmType`'s uid
 the counter cannot be reset per compile, because a long-lived compiler
 interns semantic types across compiles; instead `referencedTypes` is an
 `OrderedTypeSet` that iterates in insertion order.
-`zena/test/codegen-determinism_test.zena` guards it, and needs a _run_
+`src/test/codegen-determinism_test.zena` guards it, and needs a _run_
 of repeat compiles to do so — divergence is not monotonic in batch
 position, so a two-compile version of that test passed with the bug
 fully present.
@@ -413,7 +413,7 @@ npm run test:execution -w @zena-lang/compiler-zena -- variables
 
 **The execution suite runs twice**, at `-O1` (`test:execution`) and at
 `-O2` (`test:execution:o2`, which sets `ZENA_TEST_OPT_LEVEL=2` and writes
-to `zena/out/test-exec-O2`). The module loop — inlining,
+to `out/test-exec-O2`). The module loop — inlining,
 devirtualization, scalar replacement, type propagation — runs only at
 `-O2`, and before the second run nothing but the compiler's own build
 put it in front of a small program: five tests failed there unnoticed

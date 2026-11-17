@@ -6,7 +6,7 @@ are follow-ups, sketched at the bottom.
 
 ## Why
 
-Our benchmark story (`packages/compiler/src/scripts/benchmark.ts`)
+Our benchmark story (`packages/compiler/src-ts/scripts/benchmark.ts`)
 reports raw means to stdout and keeps no history. That is not enough to
 answer the two questions that matter as we remove the bootstrap compiler
 and the streaming backend:

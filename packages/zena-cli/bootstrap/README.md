@@ -6,7 +6,7 @@ falls back to `bootstrap/zena.wasm` whenever `out/zena.wasm` has not been built
 yet, so `zena build`, `zena fmt`, `zena lint`, `zena run` and `zena test` work
 immediately. During a repository build, `compiler:build:cli` runs
 `bootstrap/zena.wasm` to compile `zena/cli/main.zena` into the working Stage A
-compiler (`packages/compiler/zena/out/cli.wasm`), which then compiles
+compiler (`packages/compiler/out/cli.wasm`), which then compiles
 `packages/zena-cli/out/zena.wasm` and every other package. It is the only
 prebuilt artifact in the repository.
 

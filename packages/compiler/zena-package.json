@@ -3,8 +3,8 @@
   "version": "0.0.1-preview.1",
   "description": "The Zena self-hosted compiler",
   "license": "MIT",
-  "source": "zena/lib",
-  "files": ["zena/lib"],
+  "source": "src/lib",
+  "files": ["src/lib"],
   "main": "compiler",
   "exports": {
     "analysis/purity": {},
@@ -63,29 +63,29 @@
     },
     "build:scripts": {
       "command": "tsc",
-      "files": ["src/**/*.ts", "tsconfig.json"],
+      "files": ["src-ts/**/*.ts", "tsconfig.json"],
       "output": ["scripts/**/*.js", "scripts/**/*.js.map"],
       "clean": "if-file-deleted",
       "dependencies": ["../runtime:build"]
     },
     "build:cli": {
       "#command": "The checked-in CLI module bootstrap compiles the compiler, run through zena-cli's binary with ZENA_CLI_MODULE pointing at packages/zena-cli/bootstrap/zena.wasm so this step waits only on cargo and never on packages/zena-cli/out/zena.wasm, which this compiler builds. ZENA_OPT_LEVEL=2 (the env form, which a bootstrap that predates the -O flag ignores rather than misreads) makes the working compiler an -O2 build: it compiles the zena module in 20s where the -O1 build takes 27s, and every build and test step downstream of this one runs it (docs/design/compiler-memory.md).",
-      "command": "mkdir -p zena/out && ZENA_GC_RESERVE_MB=1536 ZENA_OPT_LEVEL=2 ZENA_CLI_MODULE=../zena-cli/bootstrap/zena.wasm ../../target/release/zena-cli build zena/cli/main.zena -o zena/out/cli.wasm",
-      "files": ["zena/cli/**/*.zena", "../zena-cli/bootstrap/zena.wasm"],
-      "output": ["zena/out/cli.wasm"],
+      "command": "mkdir -p out && ZENA_GC_RESERVE_MB=1536 ZENA_OPT_LEVEL=2 ZENA_CLI_MODULE=../zena-cli/bootstrap/zena.wasm ../../target/release/zena-cli build src/cli/main.zena -o out/cli.wasm",
+      "files": ["src/cli/**/*.zena", "../zena-cli/bootstrap/zena.wasm"],
+      "output": ["out/cli.wasm"],
       "dependencies": ["source", "../stdlib:lib", "../zena-cli:build:binary"]
     },
     "build:tests": {
       "#dependencies": "precompile:cli, not build:self-hosted: this program is built by stage A (see build-wasi-tests.ts), and precompiling it is what keeps running it off Cranelift. Depending on stage B put the four suites behind its 64s.",
       "command": "node scripts/build-wasi-tests.js",
       "files": [
-        "zena/test/**/*.zena",
-        "!zena/test/__all_tests__.zena",
-        "zena/out/cli.wasm"
+        "src/test/**/*.zena",
+        "!src/test/__all_tests__.zena",
+        "out/cli.wasm"
       ],
       "output": [
-        "zena/out/test-self/__all_tests__.wasm",
-        "zena/test/__all_tests__.zena"
+        "out/test-self/__all_tests__.wasm",
+        "src/test/__all_tests__.zena"
       ],
       "dependencies": [
         "source",
@@ -99,9 +99,9 @@
       ]
     },
     "build:self-hosted": {
-      "command": "ZENA_GC_RESERVE_MB=1536 ZENA_TEMPLATE_CHECK=1 ZENA_COMPILER_WASM=zena/out/cli.wasm ../../target/release/zena-cli -g -O2 build zena/cli/main.zena -o zena/out/cli-self.wasm",
-      "files": ["zena/cli/**/*.zena", "zena/out/cli.wasm"],
-      "output": ["zena/out/cli-self.wasm"],
+      "command": "ZENA_GC_RESERVE_MB=1536 ZENA_TEMPLATE_CHECK=1 ZENA_COMPILER_WASM=out/cli.wasm ../../target/release/zena-cli -g -O2 build src/cli/main.zena -o out/cli-self.wasm",
+      "files": ["src/cli/**/*.zena", "out/cli.wasm"],
+      "output": ["out/cli-self.wasm"],
       "dependencies": [
         "source",
         "../stdlib:lib",
@@ -120,8 +120,8 @@
       "command": "node scripts/run-wasmtime.js unit",
       "files": [
         "scripts/run-wasmtime.js",
-        "zena/out/test-self/__all_tests__.wasm",
-        "zena/cli/**/*.zena",
+        "out/test-self/__all_tests__.wasm",
+        "src/cli/**/*.zena",
         "test-files/snapshots/**/*.snap",
         "test-files/**/*.zena"
       ],
@@ -142,7 +142,7 @@
         "../../tests/language/syntax/**/*.zena",
         "../../tests/language/syntax/**/*.ast.json",
         "scripts/run-wasmtime.js",
-        "zena/out/test-self/__all_tests__.wasm"
+        "out/test-self/__all_tests__.wasm"
       ],
       "dependencies": [
         "../stdlib:lib",
@@ -159,7 +159,7 @@
       "files": [
         "../../tests/language/semantics/**/*.zena",
         "scripts/run-wasmtime.js",
-        "zena/out/test-self/__all_tests__.wasm",
+        "out/test-self/__all_tests__.wasm",
         "../../zena-package.json"
       ],
       "dependencies": [
@@ -177,7 +177,7 @@
       "files": [
         "../../tests/language/execution/**/*.zena",
         "scripts/run-wasmtime.js",
-        "zena/out/test-self/__all_tests__.wasm",
+        "out/test-self/__all_tests__.wasm",
         "../../zena-package.json"
       ],
       "env": {
@@ -199,12 +199,12 @@
       ]
     },
     "test:execution:o2": {
-      "#": "The execution suite compiled at -O2, through the module loop the default level skips. It writes to zena/out/test-exec-O2, and runs after test:execution rather than beside it, which keeps CI's peak memory where it was.",
+      "#": "The execution suite compiled at -O2, through the module loop the default level skips. It writes to out/test-exec-O2, and runs after test:execution rather than beside it, which keeps CI's peak memory where it was.",
       "command": "node scripts/run-wasmtime.js execution",
       "files": [
         "../../tests/language/execution/**/*.zena",
         "scripts/run-wasmtime.js",
-        "zena/out/test-self/__all_tests__.wasm",
+        "out/test-self/__all_tests__.wasm",
         "../../zena-package.json"
       ],
       "env": {
@@ -226,7 +226,7 @@
     },
     "test:interop": {
       "command": "node scripts/external-functions-test.js",
-      "files": ["scripts/external-functions-test.js", "zena/out/cli.wasm"],
+      "files": ["scripts/external-functions-test.js", "out/cli.wasm"],
       "dependencies": [
         "build:scripts",
         "../zena-cli:build",
@@ -242,11 +242,11 @@
       "#dependencies": "test:execution:o2 without its fingerprint, so the 4.7 GiB stage-C compile never runs beside the 6.5 GiB execution suite and zena-cli:test:zena on CI's 16 GiB runner.",
       "command": "node scripts/check-fixpoint.js",
       "files": [
-        "zena/cli/**/*.zena",
-        "zena/out/cli-self.wasm",
+        "src/cli/**/*.zena",
+        "out/cli-self.wasm",
         "scripts/check-fixpoint.js"
       ],
-      "output": ["zena/out/cli-self2.wasm"],
+      "output": ["out/cli-self2.wasm"],
       "dependencies": [
         "source",
         "../stdlib:lib",
@@ -268,9 +268,9 @@
         "scripts/component-e2e.js",
         "test-files/component/**/*.zena",
         "test-files/component/**/*.wit",
-        "zena/out/cli.wasm"
+        "out/cli.wasm"
       ],
-      "output": ["zena/out/component/**/*.wasm"],
+      "output": ["out/component/**/*.wasm"],
       "dependencies": [
         "build:scripts",
         {
@@ -295,7 +295,7 @@
     },
     "precompile:cli": {
       "#": "Stage A's .cwasm, untracked so remote caches never save machine code built for one host CPU and restore it onto another.",
-      "command": "../../target/release/zena-cli precompile zena/out/cli.wasm",
+      "command": "../../target/release/zena-cli precompile out/cli.wasm",
       "dependencies": ["build:cli", "../zena-cli:build"]
     }
   }

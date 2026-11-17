@@ -30,9 +30,9 @@ const pkgDir = join(__dirname, '..');
 const repoRoot = join(pkgDir, '..', '..');
 const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 
-const entry = join('zena', 'cli', 'main.zena');
-const stageBRel = join('zena', 'out', 'cli-self.wasm');
-const stageCRel = join('zena', 'out', 'cli-self2.wasm');
+const entry = join('src', 'cli', 'main.zena');
+const stageBRel = join('out', 'cli-self.wasm');
+const stageCRel = join('out', 'cli-self2.wasm');
 const stageB = join(pkgDir, stageBRel);
 const stageC = join(pkgDir, stageCRel);
 
@@ -71,7 +71,7 @@ try {
 // before relying on it: point it somewhere that does not exist and require the
 // build to fail.
 try {
-  build(stageC, join('zena', 'out', 'definitely-not-a-compiler.wasm'));
+  build(stageC, join('out', 'definitely-not-a-compiler.wasm'));
   console.error(`✗ ${COMPILER_ENV} is being ignored by zena-cli.`);
   console.error(
     '  A build with a nonexistent compiler path succeeded, so stage C',
