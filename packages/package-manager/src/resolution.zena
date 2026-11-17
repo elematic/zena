@@ -10,6 +10,7 @@
  *
  * ```json
  * {
+ *   "lockfileVersion": 1,
  *   "workspace": {".": {"router": "did:plc:...@1.4.2"}},
  *   "resolved": {
  *     "did:plc:...@1.4.2": {
@@ -28,6 +29,16 @@ import {CODEC_DAG_CBOR, CODEC_RAW, Cid} from 'atproto/cid';
 import {isValidCidSyntax, isValidDid} from 'atproto/syntax';
 import {Range, Version} from 'zena-lang:semver';
 import {parsePackageVersion} from './records.zena';
+
+/**
+ * The version of the lockfile's format, which `writeLockfile` writes as
+ * `lockfileVersion` and `readPins` requires. It is the format's own
+ * number, unrelated to any package's version. The compiler reads
+ * lockfiles too (`LOCKFILE_VERSION` in `zena-compiler/package-manifest`),
+ * so a change to the format raises both, and
+ * `packages/zena-cli/tests/lockfile-version_test.zena` checks they agree.
+ */
+export let LOCKFILE_VERSION = 1;
 
 /** A lockfile whose pins cannot be read. */
 export class ResolutionError extends Error {
@@ -61,7 +72,8 @@ export final class Pin {
 /**
  * The packages the lockfile `text` pins, in the order it lists
  * them; none when it has no `resolved` section. Throws `ResolutionError`
- * for a pin that cannot be fetched as written.
+ * for a lockfile of another `lockfileVersion`, or none, and for a pin that
+ * cannot be fetched as written.
  */
 export function readPins(text: String): GrowableArray<Pin> {
   var json: JsonValue = null;
@@ -74,6 +86,7 @@ export function readPins(text: String): GrowableArray<Pin> {
     throw new ResolutionError('zena-lock.json is not an object');
   }
   let root = json;
+  checkVersion(root['lockfileVersion']);
   let pins = new GrowableArray<Pin>();
   let resolved = root['resolved'];
   if (resolved == null) {
@@ -86,6 +99,30 @@ export function readPins(text: String): GrowableArray<Pin> {
     pins.push(readPin(key, value));
   });
   return pins;
+}
+
+/**
+ * Throws `ResolutionError` unless `value`, a lockfile's `lockfileVersion`,
+ * is `LOCKFILE_VERSION`: a newer one asks for a newer `zena`, and an older
+ * one, or none, for the lockfile to be written again.
+ */
+function checkVersion(value: JsonValue): void {
+  let again = 'delete it and run zena pkg update to write it again';
+  if (value == null) {
+    throw new ResolutionError(`zena-lock.json has no "lockfileVersion": ${again}`);
+  }
+  if (!(value is Box<f64>) || value.value != ((value.value as i32) as f64) || value.value < 1.0) {
+    throw new ResolutionError('the "lockfileVersion" of zena-lock.json is not a whole number of at least 1');
+  }
+  let version = value.value as i32;
+  if (version > LOCKFILE_VERSION) {
+    throw new ResolutionError(
+        `zena-lock.json is lockfile version ${version}, newer than the ${LOCKFILE_VERSION} this zena reads: upgrade zena`);
+  }
+  if (version < LOCKFILE_VERSION) {
+    throw new ResolutionError(
+        `zena-lock.json is lockfile version ${version}, older than the ${LOCKFILE_VERSION} this zena reads: ${again}`);
+  }
 }
 
 function readPin(key: String, value: JsonValue): Pin {
@@ -224,12 +261,13 @@ export final class Resolution {
 /**
  * `zena-lock.json` text pinning `resolution`'s packages, with `workspace`,
  * each workspace package's names by its directory, each mapped to a key
- * of `resolution`. The lockfile holds nothing else, so it is written
- * whole.
+ * of `resolution`, after `lockfileVersion`. The lockfile holds nothing
+ * else, so it is written whole.
  */
 export function writeLockfile(resolution: Resolution,
     workspace: OrderedHashMap<String, OrderedHashMap<String, String>>): String {
   let root = new JsonObject();
+  root['lockfileVersion'] = new Box<f64>(LOCKFILE_VERSION as f64);
   let names = new JsonObject();
   workspace.forEach((dir, pins) => {
     if (pins.size > 0) {

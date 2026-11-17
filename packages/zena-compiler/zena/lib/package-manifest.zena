@@ -14,6 +14,35 @@ import { HashMap } from 'zena:collections';
 // Pins
 // ============================================================================
 
+// The version of the lockfile's format this compiler reads, which the
+// lockfile records as `lockfileVersion`. It is the format's own number,
+// unrelated to any package's version. The package manager writes and
+// reads lockfiles too (`LOCKFILE_VERSION` in `package-manager/resolution`),
+// so a change to the format raises both, and
+// `packages/zena-cli/tests/lockfile-version_test.zena` checks they agree.
+export let LOCKFILE_VERSION = 1;
+
+// Throws unless the lockfile `json`, from `file`, is of `LOCKFILE_VERSION`:
+// a newer one asks for a newer `zena`, and an older one, or none, for the
+// lockfile to be written again.
+function checkLockfileVersion(json: JsonObject, file: String) {
+  let again = "delete it and run zena pkg update to write it again";
+  let value = json["lockfileVersion"];
+  if (value == null) {
+    throw new Error(`${file} has no "lockfileVersion": ${again}`);
+  }
+  if (!(value is Box<f64>) || value.value != ((value.value as i32) as f64) || value.value < 1.0) {
+    throw new Error(`the "lockfileVersion" of ${file} is not a whole number of at least 1`);
+  }
+  let version = value.value as i32;
+  if (version > LOCKFILE_VERSION) {
+    throw new Error(`${file} is lockfile version ${version}, newer than the ${LOCKFILE_VERSION} this zena reads: upgrade zena`);
+  }
+  if (version < LOCKFILE_VERSION) {
+    throw new Error(`${file} is lockfile version ${version}, older than the ${LOCKFILE_VERSION} this zena reads: ${again}`);
+  }
+}
+
 // Adds the packages the `resolved` section of `json`, from `file`, pins:
 // each keyed by DID and version and rooted at its unpacked source
 // archive in `packageCache`, with the names its own libraries import.
@@ -238,6 +267,7 @@ final class WorkspaceLoader {
     let lock = joinPath(root, "zena-lock.json");
     if (cache != null && await fileExists(this.#host, lock)) {
       let pins = await this.#readJson(lock);
+      checkLockfileVersion(pins, "zena-lock.json");
       this.#workspacePins = workspacePins(pins, "zena-lock.json");
       for (let key in addPins(pins, cache, this.#result, "zena-lock.json")) {
         // A published package's own manifest gives its exports, once it is

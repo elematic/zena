@@ -4,6 +4,7 @@ import {OrderedHashMap} from 'zena:collections';
 import {parseJson} from 'zena:json';
 import {Cid} from 'atproto/cid';
 import {
+  LOCKFILE_VERSION,
   Pin,
   PinAdded,
   PinChange,
@@ -54,19 +55,32 @@ function describe(changes: GrowableArray<PinChange>) {
   return out;
 }
 
-function rejects(text: String) {
-  var caught = false;
+/** A lockfile of the current version, with `members` after its `lockfileVersion`. */
+function lockfile(members: String) {
+  return `{"lockfileVersion": ${LOCKFILE_VERSION}, ${members}}`;
+}
+
+/** The message `readPins` refuses `text` with, or '' when it reads it. */
+function refusal(text: String) {
   try {
     readPins(text);
   } catch (e) {
-    caught = e is ResolutionError;
+    if (e is ResolutionError) {
+      return e.message;
+    }
+    throw e;
   }
-  isTrue(caught, text);
+  return '';
+}
+
+function rejects(text: String) {
+  isTrue(refusal(text) != '', text);
 }
 
 export let tests = suite('package-manager/resolution', () => {
   test('reads the pins of a lockfile', (ctx) => {
     let pins = readPins(`{
+      "lockfileVersion": 1,
       "workspace": {".": {"router": "did:plc:router@1.4.2"}},
       "resolved": {
         "did:plc:router@1.4.2": ${entry(RELEASE, SOURCE, ', "dependencies": {"json": "did:web:json.example.com@2.1.0-rc.1"}')},
@@ -88,7 +102,17 @@ export let tests = suite('package-manager/resolution', () => {
   });
 
   test('has no pins without a resolved section', (ctx) => {
-    equal(readPins('{"packages": {"app": "./src"}}').length, 0);
+    equal(readPins(lockfile('"packages": {"app": "./src"}')).length, 0);
+  });
+
+  test('reads only its own lockfile version, and asks for a newer zena for a newer one', (ctx) => {
+    isTrue(refusal('{"resolved": {}}').contains('has no "lockfileVersion"'), 'none');
+    isTrue(refusal('{"lockfileVersion": 2, "resolved": {}}').contains('newer than the 1 this zena reads: upgrade zena'),
+        'newer');
+    for (let bad in ['"1"', '0', '1.5', 'null', 'true']) {
+      isTrue(refusal(`{"lockfileVersion": ${bad}, "resolved": {}}`) != '', bad);
+    }
+    equal(refusal(lockfile('"resolved": {}')), '');
   });
 
   test('names packages by DID and version', (ctx) => {
@@ -98,18 +122,18 @@ export let tests = suite('package-manager/resolution', () => {
   test('rejects pins that cannot be fetched as written', (ctx) => {
     rejects('not json');
     rejects('[]');
-    rejects('{"resolved": []}');
-    rejects(`{"resolved": {"router@1.4.2": ${entry()}}}`);
-    rejects(`{"resolved": {"did:plc:router": ${entry()}}}`);
-    rejects(`{"resolved": {"did:plc:router@1.4": ${entry()}}}`);
-    rejects(`{"resolved": {"did:plc:router@1.4.2+build": ${entry()}}}`);
-    rejects(`{"resolved": {"did:plc:router@1.4.2": ${entry('not a cid')}}}`);
+    rejects(lockfile('"resolved": []'));
+    rejects(lockfile(`"resolved": {"router@1.4.2": ${entry()}}`));
+    rejects(lockfile(`"resolved": {"did:plc:router": ${entry()}}`));
+    rejects(lockfile(`"resolved": {"did:plc:router@1.4": ${entry()}}`));
+    rejects(lockfile(`"resolved": {"did:plc:router@1.4.2+build": ${entry()}}`));
+    rejects(lockfile(`"resolved": {"did:plc:router@1.4.2": ${entry('not a cid')}}`));
     // The release is a record and the source a blob, not the other way round.
-    rejects(`{"resolved": {"did:plc:router@1.4.2": ${entry(SOURCE, SOURCE)}}}`);
-    rejects(`{"resolved": {"did:plc:router@1.4.2": ${entry(RELEASE, RELEASE)}}}`);
-    rejects('{"resolved": {"did:plc:router@1.4.2": {}}}');
-    rejects(`{"resolved": {"did:plc:router@1.4.2": ${entry(RELEASE, SOURCE, ', "dependencies": []')}}}`);
-    rejects(`{"resolved": {"did:plc:router@1.4.2": ${entry(RELEASE, SOURCE, ', "dependencies": {"json": 2}')}}}`);
+    rejects(lockfile(`"resolved": {"did:plc:router@1.4.2": ${entry(SOURCE, SOURCE)}}`));
+    rejects(lockfile(`"resolved": {"did:plc:router@1.4.2": ${entry(RELEASE, RELEASE)}}`));
+    rejects(lockfile('"resolved": {"did:plc:router@1.4.2": {}}'));
+    rejects(lockfile(`"resolved": {"did:plc:router@1.4.2": ${entry(RELEASE, SOURCE, ', "dependencies": []')}}`));
+    rejects(lockfile(`"resolved": {"did:plc:router@1.4.2": ${entry(RELEASE, SOURCE, ', "dependencies": {"json": 2}')}}`));
   });
 
   test('writes a lockfile that reads back as the same pins', (ctx) => {
@@ -130,6 +154,7 @@ export let tests = suite('package-manager/resolution', () => {
     workspace['packages/lib'] = new OrderedHashMap<String, String>();
     let text = writeLockfile(new Resolution(packages), workspace);
     jsonEqual(parseJson(text), parseJson(`{
+      "lockfileVersion": 1,
       "workspace": {".": {"router": "${router}@1.4.2"}},
       "resolved": {
         "${router}@1.4.2": {
@@ -140,6 +165,8 @@ export let tests = suite('package-manager/resolution', () => {
       }
     }`));
     isTrue(text.endsWith('}\n') && !text.endsWith('\n\n'));
+    // The version comes first, so that a reader sees it before anything else.
+    isTrue(text.startsWith('{\n  "lockfileVersion": 1,\n'), text);
     let pins = readPins(text);
     equal(pins.length, 2);
     equal(pins[0].key, `${router}@1.4.2`);
@@ -160,6 +187,7 @@ export let tests = suite('package-manager/resolution', () => {
 
   test('sorts what a new resolution changes in the pins', (ctx) => {
     let before = readPins(`{
+      "lockfileVersion": 1,
       "resolved": {
         "did:plc:kept@1.0.0": ${entry()},
         "did:plc:raised@1.4.2": ${entry()},
