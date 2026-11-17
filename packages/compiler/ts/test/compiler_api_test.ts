@@ -8,7 +8,7 @@
 
 import {suite, test, before} from 'node:test';
 import assert from 'node:assert';
-import {readFileSync} from 'node:fs';
+import {readdirSync, readFileSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
 import {resolve, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -16,6 +16,7 @@ import {
   compilerWasmUrl,
   createCompiler,
   createLanguageService,
+  createVirtualDirReader,
   createVirtualFileReader,
   lspWasmUrl,
   stdlibUrl,
@@ -646,5 +647,129 @@ suite('@zena-lang/compiler primary exports and bundled stdlib', () => {
     );
     const bytes = await compiler.compileToWasm('/virtual/app.zena', source);
     assert.ok(bytes && bytes.byteLength > 0);
+  });
+
+  test('createCompiler({target: "zena-component"}) synthesizes bundled WIT modules and resolves workspace packages', async () => {
+    const standalone = await createCompiler({target: 'zena-component'});
+    const fetchDiags = await standalone.check(
+      '/virtual/fetch_app.zena',
+      "import { fetch } from 'zena:fetch';\nexport function check(s: String): String { let _ = fetch; return s; }\n",
+    );
+    assert.deepStrictEqual(
+      fetchDiags.filter((d) => d.severity === 'error'),
+      [],
+    );
+
+    const list = createVirtualDirReader({
+      '/stdlib/wit/cli.wit': 'package wasi:cli@0.3.0;',
+      '/stdlib/wit/http.wit': 'package wasi:http@0.3.0;',
+    });
+    assert.deepStrictEqual(list('/stdlib/wit'), ['cli.wit', 'http.wit']);
+
+    const wasm = await readFile(wasmPath);
+    const repoRoot = resolve(__dirname, '../../..');
+    const wsService = await createCompiler({
+      wasm,
+      stdlibRoot,
+      target: 'zena-component',
+      workspaceRoot: repoRoot,
+      readFile: (p) => {
+        try {
+          return readFileSync(p, 'utf8');
+        } catch {
+          return undefined;
+        }
+      },
+      listDir: (p) => {
+        try {
+          return readdirSync(p);
+        } catch {
+          return undefined;
+        }
+      },
+    });
+
+    const dnsPath = resolve(repoRoot, 'packages/google-cloud/src/dns.zena');
+    const dnsSrc = readFileSync(dnsPath, 'utf8');
+    const dnsDiags = await wsService.check(dnsPath, dnsSrc);
+    assert.deepStrictEqual(
+      dnsDiags.filter((d) => d.severity === 'error'),
+      [],
+    );
+
+    const credOffset = dnsSrc.indexOf('import {Credentials}') + 8;
+    const credDef = await wsService.definition(dnsPath, credOffset);
+    assert.ok(credDef);
+    assert.strictEqual(
+      credDef.file,
+      resolve(repoRoot, 'packages/protobuf/src/runtime.zena'),
+    );
+
+    const strOffset = dnsSrc.indexOf('name: String') + 6;
+    const strDef = await wsService.definition(dnsPath, strOffset);
+    assert.ok(strDef);
+    assert.strictEqual(strDef.file, resolve(stdlibRoot, 'core/string.zena'));
+
+    const strHover = await wsService.hover(dnsPath, strOffset);
+    assert.ok(strHover);
+    assert.match(strHover.doc, /immutable sequence of characters/i);
+
+    const strFile = resolve(stdlibRoot, 'core/string.zena');
+    const strDiags = await wsService.check(
+      strFile,
+      readFileSync(strFile, 'utf8'),
+    );
+    assert.deepStrictEqual(
+      strDiags.filter((d) => d.severity === 'error'),
+      [],
+    );
+
+    // Checking another entry (`core/string.zena`) must NOT evict `dns.zena`'s
+    // checked state: hovering in `dns.zena` without re-checking it still works!
+    const dnsHoverAfterOtherTab = await wsService.hover(dnsPath, strOffset);
+    assert.ok(
+      dnsHoverAfterOtherTab,
+      'expected hover in previously checked tab to stay live after checking another tab',
+    );
+    assert.match(
+      dnsHoverAfterOtherTab.doc,
+      /immutable sequence of characters/i,
+    );
+  });
+
+  test('parser recovery terminates quickly on unclosed block followed by function signature', async () => {
+    // Regression test: previously, a stray `): anyref {` after a line break
+    // inside an unclosed function body caused `#parsePrimary` +
+    // `#parseExpressionStatement` to spin forever without advancing `#current`.
+    const malformed = [
+      'export function init(stdlibRoot: String): anyref {',
+      '  return stdlibRoot;',
+      '}',
+      '',
+      'async function initService(stdlibRoot: String): Future<void> {',
+      '/**',
+      ' * Partial merge doc comment.',
+      ' */',
+      'export function initWithOptions(',
+      '  stdlibRoot: String,',
+      '  target: String,',
+      '): anyref {',
+      '  return stdlibRoot;',
+      '}',
+      '',
+    ].join('\n');
+
+    const standalone = await createCompiler({target: 'zena-component'});
+    const start = performance.now();
+    const diags = await standalone.check('/broken_merge.zena', malformed);
+    const elapsedMs = performance.now() - start;
+    assert.ok(
+      diags.some((d) => d.severity === 'error'),
+      'expected syntax errors to be reported',
+    );
+    assert.ok(
+      elapsedMs < 2000,
+      `expected recovery check to complete quickly, took ${elapsedMs.toFixed(1)}ms`,
+    );
   });
 });

@@ -293,7 +293,13 @@ suite('packaged vscode-zena extension (.vsix)', () => {
   let changeDocListener:
     ((e: {document: MockTextDocument}) => void) | undefined;
   let closeDocListener: ((doc: MockTextDocument) => void) | undefined;
+  let configChangeListener:
+    | ((e: {
+        affectsConfiguration: (section: string) => boolean;
+      }) => Promise<void> | void)
+    | undefined;
   let activeEditor: {document: MockTextDocument} | undefined;
+  let configuredTarget = 'zena-component';
 
   before(async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'vscode-zena-vsix-'));
@@ -523,12 +529,56 @@ suite('packaged vscode-zena extension (.vsix)', () => {
         },
         fs: {
           readFile: async (uri: MockUri): Promise<Uint8Array> => {
+            if (uri.scheme === 'file') {
+              return new Uint8Array(readFileSync(uri.fsPath));
+            }
             const bytes = vfsFiles.get(uri.toString());
             if (!bytes) {
               throw new Error(`FileNotFound: ${uri.toString()}`);
             }
             return bytes;
           },
+          readDirectory: async (
+            uri: MockUri,
+          ): Promise<Array<[string, number]>> => {
+            if (uri.scheme === 'file') {
+              return readdirSync(uri.fsPath, {withFileTypes: true}).map((e) => [
+                e.name,
+                e.isDirectory() ? 2 : 1,
+              ]);
+            }
+            const base = uri.toString().replace(/\/+$/, '') + '/';
+            const entries = new Map<string, number>();
+            for (const key of vfsFiles.keys()) {
+              if (key.startsWith(base)) {
+                const rest = key.slice(base.length);
+                const slash = rest.indexOf('/');
+                if (slash < 0) {
+                  entries.set(rest, 1);
+                } else {
+                  entries.set(rest.slice(0, slash), 2);
+                }
+              }
+            }
+            if (entries.size === 0) {
+              throw new Error(`FileNotFound: ${uri.toString()}`);
+            }
+            return [...entries.entries()].sort((a, b) =>
+              a[0].localeCompare(b[0]),
+            );
+          },
+        },
+        getConfiguration: (section?: string) => ({
+          get: <T>(key: string, defaultValue?: T): T => {
+            if (section === 'zena' && key === 'target') {
+              return configuredTarget as unknown as T;
+            }
+            return defaultValue as T;
+          },
+        }),
+        onDidChangeConfiguration: (cb: any) => {
+          configChangeListener = cb;
+          return {dispose: () => {}};
         },
         registerTextDocumentContentProvider: (
           scheme: string,
@@ -731,7 +781,7 @@ suite('packaged vscode-zena extension (.vsix)', () => {
     // Introduce a type error and verify diagnostics update.
     validDoc.setText('export let broken: i32 = "not an i32";\n');
     changeDocListener!({document: validDoc});
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const brokenDiags = diagnosticsByUri.get(mainUri.toString()) ?? [];
     assert.ok(
@@ -896,5 +946,593 @@ suite('packaged vscode-zena extension (.vsix)', () => {
 
     closeDocListener!(lintDoc);
     textDocuments.pop();
+  });
+
+  test('defaults to zena-component: String resolves to core/string.zena with zenadocs and zena:fetch works', async () => {
+    const uri = MockUri.from({
+      scheme: 'vscode-vfs',
+      authority: 'github',
+      path: '/owner/repo/component_target.zena',
+    });
+    const src = [
+      "import { fetch } from 'zena:fetch';",
+      'export function greet(name: String): String {',
+      '  let _f = fetch;',
+      '  return name;',
+      '}',
+      '',
+    ].join('\n');
+    const doc = new MockTextDocument(uri, src);
+    textDocuments.push(doc);
+    changeDocListener!({document: doc});
+    await new Promise((r) => setTimeout(r, 250));
+
+    const errors = (diagnosticsByUri.get(uri.toString()) ?? []).filter(
+      (d) => d.severity === 0,
+    );
+    assert.deepStrictEqual(
+      errors,
+      [],
+      `expected zero errors for zena:fetch on zena-component, got ${JSON.stringify(errors)}`,
+    );
+
+    const strCol = src.split('\n')[1].indexOf('String') + 2;
+    const hover = await hoverProvider.provideHover(
+      doc,
+      new MockPosition(1, strCol),
+    );
+    assert.ok(hover, 'expected hover on String');
+    assert.match(
+      hover.contents.value,
+      /immutable sequence of characters/i,
+      'String hover includes zenadocs',
+    );
+
+    const defs = await definitionProvider.provideDefinition(
+      doc,
+      new MockPosition(1, strCol),
+    );
+    assert.ok(
+      Array.isArray(defs) && defs.length > 0,
+      'expected String definition',
+    );
+    assert.strictEqual(defs[0].targetUri.scheme, 'zena-stdlib');
+    assert.strictEqual(
+      defs[0].targetUri.path,
+      '/stdlib/core/string.zena',
+      'String resolves to unsuffixed core/string.zena rather than string-js.zena',
+    );
+
+    closeDocListener!(doc);
+    textDocuments.pop();
+  });
+
+  test('resolves workspace packages, cached zena-lock.json dependencies, and monorepo stdlib files', async () => {
+    const enc = new TextEncoder();
+    const putVfs = (path: string, text: string) => {
+      vfsFiles.set(
+        MockUri.from({
+          scheme: 'vscode-vfs',
+          authority: 'github',
+          path,
+        }).toString(),
+        enc.encode(text),
+      );
+    };
+
+    const cid = 'bafkreiaaaaaaaaaaaaaaaaaaaaaaaa';
+    putVfs(
+      '/owner/repo/zena-package.json',
+      JSON.stringify({
+        workspace: {packages: ['packages/*']},
+      }),
+    );
+    putVfs(
+      '/owner/repo/zena-lock.json',
+      JSON.stringify({
+        lockfileVersion: 1,
+        resolved: {
+          'did:plc:extpkg@1.0.0': {
+            source: cid,
+            dependencies: {},
+          },
+        },
+        workspace: {
+          'packages/app': {
+            'ext-pkg': 'did:plc:extpkg@1.0.0',
+          },
+        },
+      }),
+    );
+    putVfs(
+      `/owner/repo/.zena/packages/sources/${cid}/zena-package.json`,
+      JSON.stringify({
+        name: 'ext-pkg',
+        version: '1.0.0',
+        exports: {util: {}},
+      }),
+    );
+    putVfs(
+      `/owner/repo/.zena/packages/sources/${cid}/src/util.zena`,
+      '/** Helper from cached dependency. */\nexport function cachedHelper(): i32 { return 7; }\n',
+    );
+    putVfs(
+      '/owner/repo/packages/protobuf/zena-package.json',
+      JSON.stringify({
+        name: 'protobuf',
+        version: '0.0.1',
+        exports: {runtime: {}},
+      }),
+    );
+    putVfs(
+      '/owner/repo/packages/protobuf/src/runtime.zena',
+      '/** Credentials from workspace package. */\nexport class Credentials {}\n',
+    );
+    putVfs(
+      '/owner/repo/packages/app/zena-package.json',
+      JSON.stringify({
+        name: 'app',
+        version: '0.0.1',
+        dependencies: {
+          protobuf: {path: '../protobuf'},
+          'ext-pkg': {did: 'did:plc:extpkg', version: '^1.0.0'},
+        },
+      }),
+    );
+
+    assert.ok(configChangeListener, 'registered onDidChangeConfiguration');
+    await configChangeListener({
+      affectsConfiguration: (s) => s === 'zena.target',
+    });
+
+    const appUri = MockUri.from({
+      scheme: 'vscode-vfs',
+      authority: 'github',
+      path: '/owner/repo/packages/app/src/dns.zena',
+    });
+    const appSrc = [
+      "import { Credentials } from 'protobuf/runtime';",
+      "import { cachedHelper } from 'ext-pkg/util';",
+      'export function check(c: Credentials, s: String): i32 {',
+      '  let _ = (c, s);',
+      '  return cachedHelper();',
+      '}',
+      '',
+    ].join('\n');
+    const appDoc = new MockTextDocument(appUri, appSrc);
+    textDocuments.push(appDoc);
+    activeEditor = {document: appDoc};
+    changeDocListener!({document: appDoc});
+    await new Promise((r) => setTimeout(r, 250));
+
+    const appErrors = (diagnosticsByUri.get(appUri.toString()) ?? []).filter(
+      (d) => d.severity === 0,
+    );
+    assert.deepStrictEqual(
+      appErrors,
+      [],
+      `expected zero errors for workspace + cached deps, got ${JSON.stringify(appErrors)}`,
+    );
+
+    const credCol = appSrc.split('\n')[0].indexOf('Credentials') + 2;
+    const credDefs = await definitionProvider.provideDefinition(
+      appDoc,
+      new MockPosition(0, credCol),
+    );
+    assert.ok(Array.isArray(credDefs) && credDefs.length > 0);
+    assert.strictEqual(credDefs[0].targetUri.scheme, 'vscode-vfs');
+    assert.strictEqual(
+      credDefs[0].targetUri.path,
+      '/owner/repo/packages/protobuf/src/runtime.zena',
+    );
+
+    const helperCol = appSrc.split('\n')[1].indexOf('cachedHelper') + 2;
+    const helperDefs = await definitionProvider.provideDefinition(
+      appDoc,
+      new MockPosition(1, helperCol),
+    );
+    assert.ok(Array.isArray(helperDefs) && helperDefs.length > 0);
+    assert.strictEqual(helperDefs[0].targetUri.scheme, 'vscode-vfs');
+    assert.strictEqual(
+      helperDefs[0].targetUri.path,
+      `/owner/repo/.zena/packages/sources/${cid}/src/util.zena`,
+    );
+
+    // Populate real stdlib in `/owner/repo/packages/stdlib/zena` to simulate the Zena monorepo
+    const realStdlibDir = resolve(pkgRoot, '../stdlib/zena');
+    const copyStdlibToVfs = (dir: string, relBase: string) => {
+      for (const entry of readdirSync(dir, {withFileTypes: true})) {
+        const full = join(dir, entry.name);
+        const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          copyStdlibToVfs(full, rel);
+        } else if (
+          entry.name.endsWith('.zena') ||
+          entry.name.endsWith('.wit')
+        ) {
+          vfsFiles.set(
+            MockUri.from({
+              scheme: 'vscode-vfs',
+              authority: 'github',
+              path: `/owner/repo/packages/stdlib/zena/${rel}`,
+            }).toString(),
+            new Uint8Array(readFileSync(full)),
+          );
+        }
+      }
+    };
+    copyStdlibToVfs(realStdlibDir, '');
+
+    await configChangeListener({
+      affectsConfiguration: (s) => s === 'zena.target',
+    });
+    await new Promise((r) => setTimeout(r, 250));
+
+    // In the monorepo, Go to Definition on `String` opens the real workspace file!
+    const strCol = appSrc.split('\n')[2].indexOf('String') + 2;
+    const strDefs = await definitionProvider.provideDefinition(
+      appDoc,
+      new MockPosition(2, strCol),
+    );
+    assert.ok(Array.isArray(strDefs) && strDefs.length > 0);
+    assert.strictEqual(strDefs[0].targetUri.scheme, 'vscode-vfs');
+    assert.strictEqual(
+      strDefs[0].targetUri.path,
+      '/owner/repo/packages/stdlib/zena/core/string.zena',
+    );
+
+    closeDocListener!(appDoc);
+    textDocuments.pop();
+  });
+
+  test('runs compiler in a worker_threads worker on Desktop file:// hosts and opens real dist/stdlib files', async () => {
+    const desktopWorkspaceDir = join(tempDir, 'standalone-project');
+    mkdirSync(desktopWorkspaceDir, {recursive: true});
+    writeFileSync(
+      join(desktopWorkspaceDir, 'zena-package.json'),
+      JSON.stringify({name: 'standalone-app', version: '0.1.0'}, null, 2),
+    );
+    const desktopMainPath = join(desktopWorkspaceDir, 'main.zena');
+    const desktopSrc = [
+      'export function greet(name: String): String {',
+      '  return `Hello, ${name}!`;',
+      '}',
+      '',
+    ].join('\n');
+    writeFileSync(desktopMainPath, desktopSrc);
+
+    const desktopLogs: string[] = [];
+    const desktopDiags = new Map<string, any[]>();
+    const desktopDocs: MockTextDocument[] = [];
+    let desktopDefProvider: any;
+    let desktopHoverProvider: any;
+    let desktopFormatProvider: any;
+
+    const desktopDoc = new MockTextDocument(
+      MockUri.file(desktopMainPath),
+      desktopSrc,
+    );
+    desktopDocs.push(desktopDoc);
+
+    const desktopVscodeMock = {
+      Uri: MockUri,
+      Position: MockPosition,
+      Range: MockRange,
+      Diagnostic: class {
+        range: MockRange;
+        message: string;
+        severity: number;
+        source?: string;
+        code?: string;
+        constructor(range: MockRange, message: string, severity = 0) {
+          this.range = range;
+          this.message = message;
+          this.severity = severity;
+        }
+      },
+      DiagnosticSeverity: {Error: 0, Warning: 1, Information: 2, Hint: 3},
+      StatusBarAlignment: {Left: 1, Right: 2},
+      ThemeColor: class {
+        id: string;
+        constructor(id: string) {
+          this.id = id;
+        }
+      },
+      MarkdownString: class {
+        value = '';
+        appendCodeblock(code: string, lang = '') {
+          this.value += `\n\`\`\`${lang}\n${code}\n\`\`\`\n`;
+          return this;
+        }
+        appendMarkdown(md: string) {
+          this.value += md;
+          return this;
+        }
+      },
+      Hover: class {
+        contents: any;
+        range?: MockRange;
+        constructor(contents: any, range?: MockRange) {
+          this.contents = contents;
+          this.range = range;
+        }
+      },
+      CompletionItem: class {
+        label: string;
+        kind: number;
+        constructor(label: string, kind: number) {
+          this.label = label;
+          this.kind = kind;
+        }
+      },
+      CompletionItemKind: {
+        Method: 1,
+        Function: 2,
+        Variable: 5,
+        Class: 6,
+        Keyword: 13,
+      },
+      SymbolKind: {
+        Class: 4,
+        Method: 5,
+        Property: 6,
+        Constructor: 8,
+        Enum: 9,
+        Interface: 10,
+        Function: 11,
+        Variable: 12,
+        EnumMember: 21,
+      },
+      DocumentSymbol: class {
+        name: string;
+        children: any[] = [];
+        constructor(name: string) {
+          this.name = name;
+        }
+      },
+      CodeAction: class {
+        title: string;
+        constructor(title: string) {
+          this.title = title;
+        }
+      },
+      CodeActionKind: {
+        QuickFix: {value: 'quickfix', append: (s: string) => ({value: s})},
+        SourceFixAll: {
+          value: 'source.fixAll',
+          append: (s: string) => ({value: s}),
+        },
+      },
+      WorkspaceEdit: class {
+        replace() {}
+      },
+      TextEdit: {
+        replace: (range: MockRange, newText: string) => ({range, newText}),
+      },
+      window: {
+        activeTextEditor: {document: desktopDoc},
+        createOutputChannel: () => ({
+          appendLine: (line: string) => desktopLogs.push(line),
+          show: () => {},
+          dispose: () => {},
+        }),
+        createStatusBarItem: () => ({
+          text: '',
+          tooltip: '',
+          command: undefined,
+          backgroundColor: undefined,
+          show: () => {},
+          hide: () => {},
+          dispose: () => {},
+        }),
+        onDidChangeActiveTextEditor: () => ({dispose: () => {}}),
+        showErrorMessage: (msg: string) => desktopLogs.push(`ERR: ${msg}`),
+        showInformationMessage: () => {},
+      },
+      workspace: {
+        textDocuments: desktopDocs,
+        workspaceFolders: [
+          {
+            uri: MockUri.file(desktopWorkspaceDir),
+            name: 'standalone',
+            index: 0,
+          },
+        ],
+        fs: {
+          readFile: async (uri: MockUri) =>
+            new Uint8Array(readFileSync(uri.fsPath)),
+          readDirectory: async (
+            uri: MockUri,
+          ): Promise<Array<[string, number]>> =>
+            readdirSync(uri.fsPath, {withFileTypes: true}).map((e) => [
+              e.name,
+              e.isDirectory() ? 2 : 1,
+            ]),
+        },
+        getConfiguration: () => ({
+          get: <T>(_key: string, defaultValue?: T): T => defaultValue as T,
+        }),
+        onDidChangeConfiguration: () => ({dispose: () => {}}),
+        registerTextDocumentContentProvider: () => ({dispose: () => {}}),
+        onDidChangeTextDocument: () => ({dispose: () => {}}),
+        onDidCloseTextDocument: () => ({dispose: () => {}}),
+        onDidOpenTextDocument: () => ({dispose: () => {}}),
+        applyEdit: async () => true,
+      },
+      commands: {
+        registerCommand: () => ({dispose: () => {}}),
+      },
+      languages: {
+        createDiagnosticCollection: () => ({
+          set: (uri: MockUri, diags: any[]) =>
+            desktopDiags.set(uri.toString(), diags),
+          get: (uri: MockUri) => desktopDiags.get(uri.toString()),
+          delete: (uri: MockUri) => desktopDiags.delete(uri.toString()),
+          clear: () => desktopDiags.clear(),
+          dispose: () => {},
+        }),
+        registerDefinitionProvider: (_s: any, p: any) => {
+          desktopDefProvider = p;
+          return {dispose: () => {}};
+        },
+        registerHoverProvider: (_s: any, p: any) => {
+          desktopHoverProvider = p;
+          return {dispose: () => {}};
+        },
+        registerDocumentFormattingEditProvider: (_s: any, p: any) => {
+          desktopFormatProvider = p;
+          return {dispose: () => {}};
+        },
+        registerDocumentSymbolProvider: () => ({dispose: () => {}}),
+        registerCodeActionsProvider: () => ({dispose: () => {}}),
+        registerCompletionItemProvider: () => ({dispose: () => {}}),
+      },
+    };
+
+    const Module = createRequire(import.meta.url)('node:module') as any;
+    const origLoad = Module._load;
+    const manifest = JSON.parse(
+      readFileSync(join(extDir, 'package.json'), 'utf8'),
+    );
+    const req = createRequire(join(extDir, 'package.json'));
+    const resolvedEntry = req.resolve(manifest.main);
+    delete req.cache[resolvedEntry];
+
+    let desktopEntry: any;
+    Module._load = function (request: string, parent: any, isMain: boolean) {
+      if (request === 'vscode') {
+        return desktopVscodeMock;
+      }
+      return origLoad.call(this, request, parent, isMain);
+    };
+    try {
+      desktopEntry = req(manifest.main);
+    } finally {
+      Module._load = origLoad;
+    }
+
+    try {
+      await desktopEntry.activate({
+        extensionPath: extDir,
+        extensionUri: MockUri.file(extDir),
+        subscriptions: [],
+      });
+
+      assert.ok(
+        desktopLogs.some((l) =>
+          l.includes('Zena language service loaded (worker thread)'),
+        ),
+        `expected worker thread initialization, got logs:\n${desktopLogs.join('\n')}`,
+      );
+
+      // Wait for initial active editor check to finish on the worker thread.
+      await new Promise((r) => setTimeout(r, 250));
+      const errs = (desktopDiags.get(desktopDoc.uri.toString()) ?? []).filter(
+        (d) => d.severity === 0,
+      );
+      assert.deepStrictEqual(errs, []);
+
+      // Go to Definition on `String` opens real `<extDir>/dist/stdlib/core/string.zena`!
+      const strCol = desktopSrc.indexOf('String') + 2;
+      const defs = await desktopDefProvider.provideDefinition(
+        desktopDoc,
+        new MockPosition(0, strCol),
+      );
+      assert.ok(Array.isArray(defs) && defs.length > 0);
+      assert.strictEqual(defs[0].targetUri.scheme, 'file');
+      assert.strictEqual(
+        defs[0].targetUri.fsPath,
+        join(extDir, 'dist', 'stdlib', 'core', 'string.zena'),
+      );
+
+      // Hover on `String` returns zenadocs from the worker thread.
+      const hover = await desktopHoverProvider.provideHover(
+        desktopDoc,
+        new MockPosition(0, strCol),
+      );
+      assert.ok(hover);
+      assert.match(hover.contents.value, /immutable sequence of characters/i);
+
+      // Formatting works asynchronously through the worker thread.
+      const unformatted = new MockTextDocument(
+        MockUri.file(join(desktopWorkspaceDir, 'messy.zena')),
+        'export let   x:i32=1;\n',
+      );
+      const edits =
+        await desktopFormatProvider.provideDocumentFormattingEdits(unformatted);
+      assert.strictEqual(edits.length, 1);
+      assert.strictEqual(edits[0].newText.trim(), 'export let x: i32 = 1;');
+
+      // Concurrent cold-start burst of hover + definition + cancelled hover
+      // shares a single check and returns valid results for all active calls.
+      let helperReads = 0;
+      const helperPath = join(desktopWorkspaceDir, 'helper.zena');
+      writeFileSync(
+        helperPath,
+        '/** Multiplies `n` by two. */\nexport function twice(n: i32): i32 { return n * 2; }\n',
+      );
+      const origReadFile = desktopVscodeMock.workspace.fs.readFile;
+      desktopVscodeMock.workspace.fs.readFile = async (uri: MockUri) => {
+        if (uri.fsPath === helperPath) helperReads++;
+        return origReadFile(uri);
+      };
+
+      const burstSrc = [
+        "import { twice } from './helper.zena';",
+        'export function compute(v: i32): i32 {',
+        '  return twice(v);',
+        '}',
+        '',
+      ].join('\n');
+      const burstDoc = new MockTextDocument(
+        MockUri.file(join(desktopWorkspaceDir, 'burst.zena')),
+        burstSrc,
+      );
+      desktopDocs.push(burstDoc);
+      const twiceCol = burstSrc.split('\n')[2].indexOf('twice') + 2;
+      const cancelledToken = {isCancellationRequested: false};
+      const burstPromises = [
+        desktopHoverProvider.provideHover(
+          burstDoc,
+          new MockPosition(2, twiceCol),
+          cancelledToken,
+        ),
+        desktopHoverProvider.provideHover(
+          burstDoc,
+          new MockPosition(2, twiceCol),
+        ),
+        desktopHoverProvider.provideHover(
+          burstDoc,
+          new MockPosition(2, twiceCol),
+        ),
+        desktopDefProvider.provideDefinition(
+          burstDoc,
+          new MockPosition(2, twiceCol),
+        ),
+        desktopDefProvider.provideDefinition(
+          burstDoc,
+          new MockPosition(2, twiceCol),
+        ),
+      ];
+      cancelledToken.isCancellationRequested = true;
+
+      const [cancelledHover, h1, h2, d1, d2] = await Promise.all(burstPromises);
+      assert.strictEqual(
+        cancelledHover,
+        null,
+        'cancelled hover token short-circuits cleanly',
+      );
+      assert.ok(h1 && /Multiplies `n` by two/.test(h1.contents.value));
+      assert.ok(h2 && /Multiplies `n` by two/.test(h2.contents.value));
+      assert.ok(Array.isArray(d1) && d1[0].targetUri.fsPath === helperPath);
+      assert.ok(Array.isArray(d2) && d2[0].targetUri.fsPath === helperPath);
+      assert.strictEqual(
+        helperReads,
+        1,
+        `expected concurrent cold-start burst to check/read helper.zena only once, got ${helperReads}`,
+      );
+    } finally {
+      await desktopEntry.deactivate();
+    }
   });
 });

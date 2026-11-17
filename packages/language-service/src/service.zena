@@ -28,7 +28,7 @@ import {
 } from 'zena-compiler/diagnostics';
 import { Symbol, ScopeResult } from 'zena-compiler/scope';
 import { Program, CompilationUnit } from 'zena-compiler/program';
-import { DocumentHost, FileReader, normalizePath } from './host.zena';
+import { DocumentHost, DirReader, FileReader, normalizePath } from './host.zena';
 import { FileAnalysis, symbolUnder } from './analysis.zena';
 import { HoverResult, hoverAt } from './hover.zena';
 import { CompletionItem, memberCompletions, scopeCompletions } from './completion.zena';
@@ -42,7 +42,7 @@ import { Completer } from 'zena:async';
 
 export { Edit } from 'zena-lint/source';
 
-export { FileReader } from './host.zena';
+export { DirReader, FileReader } from './host.zena';
 export { HoverResult } from './hover.zena';
 export { CompletionItem, CompletionItemKind } from './completion.zena';
 export { DocumentSymbol, SymbolKind } from './symbols.zena';
@@ -120,7 +120,8 @@ function diagnosticFromError(message: String, source: String) {
  */
 export class LanguageService {
   #host: DocumentHost;
-  #compiler: Compiler;
+  var #compiler: Compiler;
+  #makeCompiler: (() => Compiler) | null;
   /** The target the editor's code is analyzed for; fixed for the service's life. */
   #targetName: String;
   var #checked: ProgramCheckResult | null = null;
@@ -128,11 +129,17 @@ export class LanguageService {
   #scopes = new Map<String, ScopeResult>();
   /** The last compile of each document checked, by normalized path. */
   #compilations = new Map<String, CompilationResult>();
+  /** Stdlib modules whose open editor buffer differs from what was first loaded. */
+  #dirtyStdlib = new Map<String, boolean>();
   /** The last compile queued, which the next waits for; null when none is in flight. */
   var #tail: Future<void> | null = null;
 
-  new(host: DocumentHost, compiler: Compiler, targetName: String)
-    : #host = host, #compiler = compiler, #targetName = targetName;
+  new(
+    host: DocumentHost,
+    compiler: Compiler,
+    targetName: String,
+    makeCompiler: (() => Compiler) | null = null,
+  ) : #host = host, #compiler = compiler, #makeCompiler = makeCompiler, #targetName = targetName;
 
   /**
    * Takes this call's turn: waits for the compile before it, if any, and
@@ -177,27 +184,61 @@ export class LanguageService {
     // state with a synthetic core root cycle.
   }
 
+  #keyOf(path: String): String {
+    return normalizePath(this.#host.canonicalizePath(path));
+  }
+
+  #resetCompiler(): void {
+    let make = this.#makeCompiler;
+    if (make != null) {
+      this.#compiler = make();
+      this.#checked = null;
+      this.#compilations.clear();
+      this.#scopes.clear();
+    }
+  }
+
   /**
    * Register or update an open document's source in the host and compiler cache.
    */
   openDocument(path: String, source: String): void {
-    let key = normalizePath(path);
+    let normalized = normalizePath(path);
+    let key = this.#keyOf(path);
+    let existing = this.#target.getSourceFile(key);
     this.#host.setDocument(path, source);
-    this.#host.setDocument(key, source);
+    this.#host.setDocument(normalized, source);
+    if (key.startsWith('zena:')) {
+      if (existing != null && existing.source != source) {
+        this.#dirtyStdlib[key] = true;
+        this.#resetCompiler();
+      }
+      return;
+    }
+    if (existing != null && existing.source == source) {
+      return;
+    }
     this.#compiler.delete(path);
-    this.#compiler.delete(key);
+    this.#compiler.delete(normalized);
   }
 
   /**
    * Remove an open document, evicting it from compiler cache and analysis state.
    */
   closeDocument(path: String): void {
-    let key = normalizePath(path);
+    let normalized = normalizePath(path);
+    let key = this.#keyOf(path);
     this.#host.deleteDocument(path);
-    this.#host.deleteDocument(key);
-    this.#compiler.delete(path);
-    this.#compiler.delete(key);
+    this.#host.deleteDocument(normalized);
     this.#compilations.delete(key);
+    if (key.startsWith('zena:')) {
+      if (this.#dirtyStdlib.has(key)) {
+        this.#dirtyStdlib.delete(key);
+        this.#resetCompiler();
+      }
+      return;
+    }
+    this.#compiler.delete(path);
+    this.#compiler.delete(normalized);
     this.#scopes.delete(key);
   }
 
@@ -213,6 +254,54 @@ export class LanguageService {
     return await this.checkForTarget(path, source, this.#targetName);
   }
 
+  #remapEntryDiagnostic(diag: Diagnostic, entry: String, fsPath: String): Diagnostic {
+    if (entry == fsPath) {
+      return diag;
+    }
+    let loc = diag.location;
+    if (loc == null || loc.file != entry) {
+      return diag;
+    }
+    let remapped = new SourceSpan(fsPath, loc.start, loc.length, loc.line, loc.column);
+    return new Diagnostic(diag.code, diag.message, diag.severity, remapped);
+  }
+
+  /**
+   * Preserves still-valid CheckResults from earlier checks of other open
+   * entry files so hovering in an inactive split pane or switching tabs
+   * does not lose already-checked modules.
+   */
+  #mergeCarried(previous: ProgramCheckResult | null, current: ProgramCheckResult): void {
+    if (previous == null || previous.sharedState != current.sharedState) {
+      return;
+    }
+    let target = this.#target;
+    for (let prevPath in previous.results.keys()) {
+      if (current.results.has(prevPath)) {
+        continue;
+      }
+      let sf = target.getSourceFile(prevPath);
+      if (sf == null) {
+        continue;
+      }
+      if (!previous.sources.has(prevPath) || previous.sources[prevPath] != sf.source) {
+        continue;
+      }
+      if (!previous.asts.has(prevPath) || previous.asts[prevPath] != sf.ast) {
+        continue;
+      }
+      current.results[prevPath] = previous.results[prevPath];
+      current.sources[prevPath] = sf.source;
+      current.asts[prevPath] = sf.ast;
+      if (previous.exportSignatures.has(prevPath)) {
+        current.exportSignatures[prevPath] = previous.exportSignatures[prevPath];
+      }
+      if (previous.scopes.has(prevPath)) {
+        current.scopes[prevPath] = previous.scopes[prevPath];
+      }
+    }
+  }
+
   /**
    * Like `check`, but against an explicit `target` instead of the
    * service's default target.
@@ -221,7 +310,9 @@ export class LanguageService {
     let turn = await this.#takeTurn();
     try {
       this.openDocument(path, source);
-      let result = await this.#compiler.compile({entry: path, target});
+      let normalized = normalizePath(path);
+      let entry = this.#keyOf(path);
+      let result = await this.#compiler.compile({entry, target});
 
       if (target == this.#targetName) {
         // Scopes for every file the compile reached, so that definition
@@ -232,7 +323,7 @@ export class LanguageService {
             this.#scopes[normalizePath(file.path)] = scopes;
           }
         }
-        this.#compilations[normalizePath(path)] = result;
+        this.#compilations[entry] = result;
       }
 
       // Type-check all modules, carrying forward unchanged results when
@@ -240,6 +331,7 @@ export class LanguageService {
       let previous = if (target == this.#targetName) { this.#checked } else { null };
       let checked = checkCompilation(result, previous);
       if (target == this.#targetName) {
+        this.#mergeCarried(previous, checked);
         this.#checked = checked;
       }
 
@@ -249,11 +341,11 @@ export class LanguageService {
       let diagnostics = new Array<Diagnostic>(checked.diagnostics.length);
       for (let file in result.files) {
         for (let parseError in file.parseErrors) {
-          diagnostics.push(parseError);
+          diagnostics.push(this.#remapEntryDiagnostic(parseError, entry, normalized));
         }
       }
       for (let diagnostic in checked.diagnostics) {
-        diagnostics.push(diagnostic);
+        diagnostics.push(this.#remapEntryDiagnostic(diagnostic, entry, normalized));
       }
       return diagnostics;
     } catch (e) {
@@ -336,7 +428,7 @@ export class LanguageService {
    * a rule reads types the checker could not give.
    */
   lint(path: String): GrowableArray<Edit> {
-    let key = normalizePath(path);
+    let key = this.#keyOf(path);
     let checked = this.#checked;
     var compilation: CompilationResult | null = null;
     if (let (true, c) = this.#compilations.get(key)) {
@@ -429,11 +521,15 @@ export class LanguageService {
     if (loc == null) {
       return null;
     }
-    let file = if (target.modulePath.length > 0) {
-      this.#host.resolveToFilesystemPath(target.modulePath)
+    let rawFile = if (target.modulePath.length > 0) {
+      target.modulePath
     } else {
       key
     };
+    if (rawFile.startsWith('wit:')) {
+      return null;
+    }
+    let file = this.#host.resolveToFilesystemPath(rawFile);
     // Line and column come from the location's own path (the module it
     // was parsed under); the span names the filesystem path the editor
     // wants.
@@ -443,7 +539,7 @@ export class LanguageService {
 
   /** The definition of what is at a byte offset in a checked file. */
   getDefinition(path: String, offset: i32): SourceSpan | null {
-    let key = normalizePath(path);
+    let key = this.#keyOf(path);
     let scopes = this.#scopesOf(key);
     if (scopes == null) {
       return null;
@@ -459,13 +555,18 @@ export class LanguageService {
     if (file == null) {
       return null;
     }
-    return resolveMemberDefinition(file.ast, offset, file.model, scopes, this.#target);
+    let memberSpan = resolveMemberDefinition(file.ast, offset, file.model, scopes, this.#target);
+    if (memberSpan == null || memberSpan.file.startsWith('wit:')) {
+      return null;
+    }
+    let memberFile = this.#host.resolveToFilesystemPath(memberSpan.file);
+    return new SourceSpan(memberFile, memberSpan.start, memberSpan.length, memberSpan.line, memberSpan.column);
   }
 
   /** Hover for a byte offset in a checked file, or null for none. */
   getHover(path: String, offset: i32): HoverResult | null {
     let checked = this.#checked;
-    let file = this.#analysis(normalizePath(path));
+    let file = this.#analysis(this.#keyOf(path));
     if (checked == null || file == null) {
       return null;
     }
@@ -474,7 +575,7 @@ export class LanguageService {
 
   /** Completions at a byte offset. */
   getCompletions(path: String, offset: i32): Array<CompletionItem> {
-    let key = normalizePath(path);
+    let key = this.#keyOf(path);
     let checked = this.#checked;
     let file = this.#analysis(key);
     if (checked != null && file != null) {
@@ -513,8 +614,9 @@ export function createLanguageService(
   readFile: FileReader,
   target: String = 'js',
   packageMap: Map<String, PackageConfig> | null = null,
+  listDir: DirReader | null = null,
 ): LanguageService {
-  let host = new DocumentHost(stdlibRoot, readFile);
+  let host = new DocumentHost(stdlibRoot, readFile, listDir);
   let packages = packageMap ?? new Map<String, PackageConfig>();
   // Source in an editor is source mid-edit: recover from what can be
   // recovered from, so an unfinished import still yields an AST to
@@ -524,12 +626,12 @@ export function createLanguageService(
   // adaptation warnings ("boxed to pass as"), which valid code gets, so
   // the lint rule for unnecessary casts has nothing to read here and is a
   // command-line rule only.
-  let compiler = createCompiler(host, {
+  let makeCompiler = () => createCompiler(host, {
     stdlibRoot,
     packages,
     recoverFromParseErrors: true,
   });
-  let ls = new LanguageService(host, compiler, target);
+  let ls = new LanguageService(host, makeCompiler(), target, makeCompiler);
   ls.preloadStdlib();
   return ls;
 }

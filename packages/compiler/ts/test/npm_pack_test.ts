@@ -83,11 +83,12 @@ suite('public @zena-lang/* npm packages', () => {
         ['pack', '--dry-run', '--json', '-w', pkgName],
         {cwd: repoRoot, encoding: 'utf8'},
       );
-      const [info] = JSON.parse(stdout) as Array<{
+      const parsed = JSON.parse(stdout);
+      const info = (Array.isArray(parsed) ? parsed[0] : parsed[pkgName]) as {
         name: string;
         version: string;
         files: Array<{path: string}>;
-      }>;
+      };
       assert.strictEqual(info.name, pkgName);
       assert.match(info.version, /^\d+\.\d+\.\d+(-preview\.\d+)?$/);
 

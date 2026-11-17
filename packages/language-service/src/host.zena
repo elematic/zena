@@ -3,8 +3,10 @@
  * documents an editor has open in place of the files on disk.
  */
 
-import { CompilerHost } from 'zena-compiler/compiler';
-import { stdlibIdToRelativeFile } from 'zena-compiler/module-resolver';
+import { CompilerHost, buildStdlibConfig } from 'zena-compiler/compiler';
+import { ModuleExport, stdlibIdToRelativeFile } from 'zena-compiler/module-resolver';
+import { isWitModulePath, synthesizeWitModule } from 'zena-compiler/wit-module-synth';
+import { readWitSource } from 'zena-compiler/wit-source';
 
 /**
  * Reads a file that is not open in the editor, by path; null when there
@@ -13,12 +15,30 @@ import { stdlibIdToRelativeFile } from 'zena-compiler/module-resolver';
 export type FileReader = (path: String) => Future<String | null>;
 
 /**
+ * Lists the entry names in a directory on the host; null when there is no
+ * such directory.
+ */
+export type DirReader = (path: String) => Future<Array<String> | null>;
+
+/**
  * A path as the service keys its state. An editor may send a path
- * without its leading slash; a standard library id like `zena:core` is
- * left as it is.
+ * without its leading slash; a standard library id like `zena:core` or a
+ * synthesized WIT id like `wit:...` is left as it is.
  */
 export function normalizePath(path: String): String {
-  return if (path.startsWith('/') || path.startsWith('zena:')) { path } else { `/${path}` };
+  return if (path.startsWith('/') || path.startsWith('zena:') || path.startsWith('wit:')) {
+    path
+  } else {
+    `/${path}`
+  };
+}
+
+/** Strips any trailing slash from `dir` unless `dir` is `/`. */
+function trimTrailingSlash(dir: String) {
+  if (dir.length > 1 && dir.endsWith('/')) {
+    return dir.sliceBytes(0, dir.length - 1);
+  }
+  return dir;
 }
 
 /**
@@ -28,10 +48,48 @@ export function normalizePath(path: String): String {
 export class DocumentHost implements CompilerHost {
   #openDocuments = new Map<String, String>();
   #stdlibRoot: String;
+  #stdlibExports: HashMap<String, ModuleExport> | null;
   #readFile: FileReader;
+  #listDir: DirReader | null;
+  var #wasiWitLoaded = false;
+  var #wasiWit = '';
 
-  new(stdlibRoot: String, readFile: FileReader)
-    : #stdlibRoot = stdlibRoot, #readFile = readFile;
+  new(stdlibRoot: String, readFile: FileReader, listDir: DirReader | null = null)
+    : #stdlibRoot = trimTrailingSlash(stdlibRoot),
+      #stdlibExports = buildStdlibConfig(trimTrailingSlash(stdlibRoot)).exports,
+      #readFile = readFile,
+      #listDir = listDir;
+
+  /**
+   * Maps a path inside `#stdlibRoot` to its canonical `zena:` module id
+   * (matching `ModuleResolver`), leaving all other paths unchanged.
+   */
+  canonicalizePath(path: String): String {
+    if (path.startsWith('zena:') || path.startsWith('wit:')) {
+      return path;
+    }
+    let norm = normalizePath(path);
+    let prefix = `${this.#stdlibRoot}/`;
+    if (!norm.startsWith(prefix)) {
+      return path;
+    }
+    let rel = norm.sliceBytes(prefix.length, norm.length);
+    if (!rel.endsWith('.zena')) {
+      return path;
+    }
+    if (!rel.contains('/')) {
+      let name = rel.sliceBytes(0, rel.length - 5);
+      let exports = this.#stdlibExports;
+      if (exports != null) {
+        if (let (true, moduleExport) = exports.get(name)) {
+          if (moduleExport.virtual == null && moduleExport.path == null) {
+            return `zena:${name}`;
+          }
+        }
+      }
+    }
+    return `zena:${rel}`;
+  }
 
   /**
    * Where a module is on disk: a standard library id like `zena:core`
@@ -52,17 +110,45 @@ export class DocumentHost implements CompilerHost {
   /** Registers or updates an open document's source. */
   setDocument(path: String, source: String): void {
     this.#openDocuments[path] = source;
+    let canonical = this.canonicalizePath(path);
+    if (canonical != path) {
+      this.#openDocuments[canonical] = source;
+    }
   }
 
   deleteDocument(path: String): void {
     this.#openDocuments.delete(path);
+    let canonical = this.canonicalizePath(path);
+    if (canonical != path) {
+      this.#openDocuments.delete(canonical);
+    }
+  }
+
+  async #ensureWasiWit(): Future<String> {
+    if (this.#wasiWitLoaded) {
+      return this.#wasiWit;
+    }
+    this.#wasiWitLoaded = true;
+    try {
+      this.#wasiWit = await readWitSource(this, `${this.#stdlibRoot}/wit`);
+    } catch (e) {
+      this.#wasiWit = '';
+    }
+    return this.#wasiWit;
   }
 
   async readFile(path: String): Future<String> {
+    if (isWitModulePath(path)) {
+      let wasiWit = await this.#ensureWasiWit();
+      return await synthesizeWitModule(this, path, wasiWit);
+    }
     if (let (true, source) = this.#openDocuments.get(path)) {
       return source;
     }
     let fsPath = this.resolveToFilesystemPath(path);
+    if (let (true, openByFs) = this.#openDocuments.get(fsPath)) {
+      return openByFs;
+    }
     let read = this.#readFile;
     let content = await read(fsPath);
     if (content == null) {
@@ -72,10 +158,15 @@ export class DocumentHost implements CompilerHost {
   }
 
   /**
-   * Null: the service does not synthesize WIT-backed modules, so it
-   * never reads a WIT root. An import from one is reported missing.
+   * Lists a directory through the host's directory reader, or null when
+   * none was provided or the path is not a directory.
    */
   async listDir(path: String): Future<Array<String> | null> {
-    return null;
+    let list = this.#listDir;
+    if (list == null) {
+      return null;
+    }
+    let fsPath = this.resolveToFilesystemPath(path);
+    return await list(fsPath);
   }
 }

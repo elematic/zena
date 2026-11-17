@@ -11,7 +11,7 @@
  * this cannot import: that package depends on this one, so the dependency
  * would be a cycle.
  */
-import {readFileSync} from 'node:fs';
+import {readdirSync, readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {
@@ -111,6 +111,13 @@ const languageService = async (): Promise<Service> => {
           // file it cannot read, where an empty one would compile as a
           // module exporting nothing.
           return readFileSync(path, 'utf8');
+        },
+        'string',
+      ),
+      list_dir: hostAsync.wrap(
+        async (pathRef: unknown, pathLen: number): Promise<string> => {
+          const path = readString!(pathRef, pathLen);
+          return readdirSync(path).sort().join('\n');
         },
         'string',
       ),
