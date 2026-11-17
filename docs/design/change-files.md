@@ -70,12 +70,12 @@ A pull request adds its entries under `## [Unreleased]` by hand. Two pull
 requests that add an entry to one changelog conflict, and the second has
 to rebase.
 
-Versions are also written by hand, and the manifests in one directory
-disagree. `packages/zena-cli` is `0.0.1-preview.1` in `zena-package.json`,
-`0.0.1` in `package.json` and `0.1.0` in `Cargo.toml`. The five npm
-packages that are published (`compiler`, `runtime`, `playground`,
-`codemirror`, `wasm-web-ui`) are at `0.0.2-preview.1` in the repository,
-and `@zena-lang/compiler` is on npm as `0.0.1`.
+Versions are also written by hand. The Zena packages, the Rust crates
+and the toolchain are at `0.0.1-preview.1`, in every manifest of their
+directories. The only package published anywhere is
+`@zena-lang/compiler`, which is on npm as `0.0.1`. That package and the
+other four npm packages meant for publishing (`runtime`, `playground`,
+`codemirror`, `wasm-web-ui`) are at `0.0.2-preview.1` in the repository.
 
 The one release that exists is the toolchain's
 (`.github/workflows/release.yml`). It takes its version from
@@ -305,10 +305,12 @@ The toolchain has been released once, as `0.0.1-preview.1`, and
 
 1. `0.0.1`, after as many preview releases as testing needs: the
    toolchain group with its npm units (`compiler`, `runtime`,
-   `playground`) held, and the independent Zena packages. The held units'
-   manifests go back to the versions npm has.
-2. `0.0.2`: the npm units come off the `held` list, and the whole group
-   is at one version.
+   `playground`) held, and the independent Zena packages. The held units
+   stay at `0.0.2-preview.1`.
+2. `0.0.2`: the npm units come off the `held` list. The group's version
+   is then the highest among its units, `0.0.2-preview.1`, and the
+   version that follows a preview is the one it previews, so the whole
+   group is released as `0.0.2`.
 
 `vscode-zena` does not wait for the second step. It bundles the npm
 packages it depends on until they are released. `wasm-web-ui` depends on
