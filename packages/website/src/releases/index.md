@@ -65,10 +65,16 @@ $env:ZENA_VERSION = 'v0.0.1-preview.1'; irm https://zena-lang.dev/install.ps1 | 
 
 ## Install the VS Code extension
 
-Each release includes a self-contained `vscode-zena` `.vsix` package (for both
-VS Code Desktop and `vscode.dev`) bundling `compiler.wasm` and the standard
-library. Download the `.vsix` from the release table below and install it with
-the `code` CLI or **Extensions: Install from VSIX...**:
+Install [**Zena Language**](https://marketplace.visualstudio.com/items?itemName=zena-lang.vscode-zena)
+from the VS Code Marketplace (works in VS Code Desktop and `vscode.dev`):
+
+```sh
+code --install-extension zena-lang.vscode-zena
+```
+
+Each release also attaches a self-contained `vscode-zena` `.vsix` package in
+the release table below for offline or pinned installation via the `code` CLI
+or **Extensions: Install from VSIX...**:
 
 ```sh
 code --install-extension vscode-zena-v0.1.0.vsix
