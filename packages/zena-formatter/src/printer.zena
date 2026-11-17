@@ -14,10 +14,10 @@ import {
   Statement, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, Decorator, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration, isSymbolFieldDeclaration, // Patterns
   Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, ArrayPattern, RestPattern, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTypeAnnotation, ThisTypeAnnotation, // Direct Node variants
-  TemplateElement, PropertyAssignment, SpreadElement, BindingProperty, LetPatternCondition, TypeParameter, Parameter, CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer, MethodSignature, AccessorSignature, CatchClause, PropertySignature, SymbolPropertyName, ContractClause, ContractMode, contractKeyword, contractModifier,
+  TemplateElement, PropertyAssignment, SpreadElement, BindingProperty, LetPatternCondition, TypeParameter, Parameter, CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer, MethodSignature, AccessorSignature, CatchClause, PropertySignature, ImportSpecifier, SymbolPropertyName, ContractClause, ContractMode, contractKeyword, contractModifier,
 } from 'zena-compiler/ast';
 import {
-  Doc, text, concat, group, indent, line, softline, hardline, join, lineSuffix,
+  Doc, text, concat, group, groupWithBreak, ifBreak, indent, line, softline, hardline, join, lineSuffix,
 } from './doc.zena';
 import { printDocToString, PrintOptions } from './doc-printer.zena';
 import { CommentMap, attachComments } from 'zena-compiler/comment-attachment';
@@ -1346,21 +1346,91 @@ function printTypeAliasDeclaration(decl: TypeAliasDeclaration): Doc {
 // Import Declaration
 // ============================================================================
 
-function printImportDeclaration(decl: ImportDeclaration): Doc {
-  let parts = growable<Doc>([text('import {')]);
-  let specDocs = new Array<Doc>();
-  for (let spec in decl.imports) {
-    if (spec.imported.name == spec.local.name) {
-      specDocs.push(text(spec.imported.name));
-    } else {
-      specDocs.push(concat(docs3(text(spec.imported.name), text(' as '), text(spec.local.name))));
+function printImportSpecifier(spec: ImportSpecifier) {
+  if (spec.imported.name == spec.local.name) {
+    return text(spec.imported.name);
+  }
+  return concat(docs3(text(spec.imported.name), text(' as '), text(spec.local.name)));
+}
+
+function printSpecifierListDeclaration(
+  prefix: String,
+  decl: Node,
+  specifiers: GrowableArray<ImportSpecifier>,
+  moduleSpecifier: Expression
+) {
+  if (specifiers.length == 0) {
+    return concat(growable<Doc>([
+      text(prefix),
+      printEmptyBody(decl, false),
+      text(' from '),
+      printExpression(moduleSpecifier),
+      text(';'),
+    ]));
+  }
+  var hasSpecComments = false;
+  for (let spec in specifiers) {
+    if (currentCommentMap.getLeading(spec) != null
+        || currentCommentMap.getTrailing(spec) != null) {
+      hasSpecComments = true;
     }
   }
-  parts.push(join(text(', '), specDocs));
-  parts.push(text('} from '));
-  parts.push(printExpression(decl.moduleSpecifier));
-  parts.push(text(';'));
-  return group(concat(parts));
+  if (specifiers.length == 1 && !hasSpecComments) {
+    return concat(growable<Doc>([
+      text(prefix),
+      text('{'),
+      printImportSpecifier(specifiers[0]),
+      text('} from '),
+      printExpression(moduleSpecifier),
+      text(';'),
+    ]));
+  }
+  let specParts = new Array<Doc>();
+  var i = 0;
+  while (i < specifiers.length) {
+    let cur = specifiers[i];
+    let specDoc = printImportSpecifier(cur);
+    let withComma = if (i < specifiers.length - 1) {
+      concat(docs2(specDoc, text(',')))
+    } else {
+      concat(docs2(specDoc, ifBreak(text(','), text(''))))
+    };
+    specParts.push(withComments(cur, withComma));
+    if (i < specifiers.length - 1) {
+      let next = specifiers[i + 1];
+      if (currentCommentMap.getLeading(next) != null
+          && hasBlankLineBetweenNodes(cur, next)) {
+        specParts.push(hardline);
+        specParts.push(hardline);
+      } else {
+        specParts.push(line);
+      }
+    }
+    i += 1;
+  }
+  let parts = growable<Doc>([
+    text(prefix),
+    text('{'),
+    indent(concat(docs2(softline, concat(specParts)))),
+    softline,
+    text('} from '),
+    printExpression(moduleSpecifier),
+    text(';'),
+  ]);
+  return groupWithBreak(concat(parts), hasSpecComments);
+}
+
+function printImportDeclaration(decl: ImportDeclaration): Doc {
+  if (decl.imports.length == 1 && decl.imports[0].imported.name == '*') {
+    return concat(growable<Doc>([
+      text('import * as '),
+      text(decl.imports[0].local.name),
+      text(' from '),
+      printExpression(decl.moduleSpecifier),
+      text(';'),
+    ]));
+  }
+  return printSpecifierListDeclaration('import ', decl, decl.imports, decl.moduleSpecifier);
 }
 
 // ============================================================================
@@ -1368,20 +1438,7 @@ function printImportDeclaration(decl: ImportDeclaration): Doc {
 // ============================================================================
 
 function printExportFromDeclaration(decl: ExportFromDeclaration): Doc {
-  let parts = growable<Doc>([text('export {')]);
-  let specDocs = new Array<Doc>();
-  for (let spec in decl.specifiers) {
-    if (spec.imported.name == spec.local.name) {
-      specDocs.push(text(spec.imported.name));
-    } else {
-      specDocs.push(concat(docs3(text(spec.imported.name), text(' as '), text(spec.local.name))));
-    }
-  }
-  parts.push(join(text(', '), specDocs));
-  parts.push(text('} from '));
-  parts.push(printExpression(decl.moduleSpecifier));
-  parts.push(text(';'));
-  return group(concat(parts));
+  return printSpecifierListDeclaration('export ', decl, decl.specifiers, decl.moduleSpecifier);
 }
 
 // ============================================================================

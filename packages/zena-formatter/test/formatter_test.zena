@@ -779,6 +779,108 @@ let tests = suite('formatter', () => {
 
   test('formats import declaration', (t) => {
     checkStable('import', "import {Array} from 'zena:array';");
+    checkStable('short multi import', "import {a, b as c} from 'mod';");
+    checkStable('namespace import', "import * as ns from 'mod';");
+    checkFormat('from namespace import', "from 'mod' import * as ns;", "import * as ns from 'mod';");
+    checkStable('empty import', "import {} from 'mod';");
+    checkStable('short export from', "export {a, b as c} from 'mod';");
+  });
+
+  test('breaks long multi-specifier imports and re-exports one per line with trailing comma', (t) => {
+    // Exactly 80 columns stays on one line; 81 columns breaks.
+    checkStable('80-col import',
+        "import {AlphaIdentifier, BravoIdentifier} from './exact-eighty-columns-module!';");
+    checkFormat('81-col import',
+        "import {AlphaIdentifier, BravoIdentifier} from './eighty-one-columns-module-xx!';",
+        dedentRaw`
+          import {
+            AlphaIdentifier,
+            BravoIdentifier,
+          } from './eighty-one-columns-module-xx!';
+        `);
+    checkFormat('long import',
+        "import {FirstThing, SecondThing as RenamedThing, ThirdThing, FourthThing} from 'some-longer-module-name';",
+        dedentRaw`
+          import {
+            FirstThing,
+            SecondThing as RenamedThing,
+            ThirdThing,
+            FourthThing,
+          } from 'some-longer-module-name';
+        `);
+    checkFormat('long export from',
+        "export {FirstThing, SecondThing as RenamedThing, ThirdThing, FourthThing} from 'some-longer-module-name';",
+        dedentRaw`
+          export {
+            FirstThing,
+            SecondThing as RenamedThing,
+            ThirdThing,
+            FourthThing,
+          } from 'some-longer-module-name';
+        `);
+    checkFormat('collapses blank line between uncommented specifiers',
+        dedentRaw`
+          import {
+            FirstThing,
+            SecondThing,
+
+            ThirdThing,
+            FourthThing,
+          } from 'some-longer-module-name';
+        `,
+        dedentRaw`
+          import {
+            FirstThing,
+            SecondThing,
+            ThirdThing,
+            FourthThing,
+          } from 'some-longer-module-name';
+        `);
+  });
+
+  test('keeps comment-free single-specifier imports on one line even past 80 columns', (t) => {
+    checkStable('long single import',
+        "import {SingleVeryLongIdentifierNameThatExceedsWidth} from 'some-very-long-module-specifier-path-here';");
+    checkStable('long single renamed import',
+        "import {SingleLongName as RenamedSingleLongName} from 'some-very-long-module-specifier-path-here';");
+    checkStable('long single export from',
+        "export {SingleVeryLongIdentifierNameThatExceedsWidth} from 'some-very-long-module-specifier-path-here';");
+  });
+
+  test('preserves comments inside import and export-from specifier lists', (t) => {
+    checkStable('single specifier with leading comment', dedentRaw`
+      import {
+        // lead
+        a,
+      } from 'mod';
+    `);
+    checkStable('specifier with trailing comment', dedentRaw`
+      import {
+        a, // trail
+        b,
+      } from 'mod';
+    `);
+    checkStable('blank line before commented specifier group', dedentRaw`
+      import {
+        // group 1
+        a,
+
+        // group 2
+        b,
+      } from 'mod';
+    `);
+    checkStable('empty import with inner comment', dedentRaw`
+      import {
+        // todo
+      } from 'mod';
+    `);
+    checkStable('comment after last specifier', dedentRaw`
+      import {
+        a,
+        b,
+        // trailing note
+      } from 'mod';
+    `);
   });
 
   test('formats type alias', (t) => {
