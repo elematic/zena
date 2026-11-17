@@ -635,15 +635,12 @@ is rewriting it. Wireit usually says so: "Input file … was deleted
 unexpectedly. Is another process writing to the same location?" Wait for the
 other run to finish; nothing is broken.
 
-Otherwise the output really is wrong, and Wireit has cached it as good:
-
-1. A file disappears from `lib/` — an interrupted build, a stray `rm`.
-2. An input changes, so Wireit re-runs `tsc`. The `tsc` scripts use
-   `clean: "if-file-deleted"` to stay incremental, so `tsconfig.tsbuildinfo`
-   survives — and it still lists that file as emitted, so `tsc` re-emits
-   nothing and exits 0.
-3. Wireit caches the incomplete output, and every dependent fails until some
-   unrelated input shifts the fingerprint.
+Otherwise the output really is wrong, and Wireit has cached it as good.
+Before Wireit 0.15 this followed from a deleted output file: the `tsc`
+scripts use `clean: "if-file-deleted"`, which kept `tsconfig.tsbuildinfo`,
+so `tsc` re-emitted nothing and Wireit cached the incomplete `lib/`. Wireit
+0.15 cleans when an output was deleted, so a new build no longer does this,
+but a cache entry an earlier Wireit wrote can still hold such output.
 
 The fingerprint is computed from inputs, so deleting the output does not
 invalidate it — Wireit will just restore the same bad cache entry. Drop the

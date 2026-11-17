@@ -40,29 +40,36 @@ export class BareModuleTransformer {
     packageJson: PackageJson = {},
   ): Promise<TransformableFile> {
     let js = file.content;
-    let specifiers: ReadonlyArray<esModuleLexer.ImportSpecifier>;
+    let imports: ReadonlyArray<esModuleLexer.Import>;
     await esModuleLexer.init;
     try {
-      [specifiers] = esModuleLexer.parse(js);
+      [imports] = esModuleLexer.parse(js);
     } catch {
       return file;
     }
 
     const transforms: Array<{
-      info: esModuleLexer.ImportSpecifier;
+      info: esModuleLexer.Import;
+      oldSpecifier: string;
       newSpecifierPromise: Promise<string>;
     }> = [];
 
     // Iterate backwards so character offsets remain valid after each replacement.
-    for (let i = specifiers.length - 1; i >= 0; i--) {
-      const {n: oldSpecifier} = specifiers[i];
-      if (oldSpecifier === undefined) {
+    for (let i = imports.length - 1; i >= 0; i--) {
+      const info = imports[i];
+      // `import.meta` has no specifier, and neither does a dynamic import of
+      // an expression; one of a template literal is a glob, not a module.
+      if (
+        typeof info.specifier !== 'string' ||
+        (info.type === 'dynamic' && info.glob)
+      ) {
         continue;
       }
       transforms.push({
-        info: specifiers[i],
+        info,
+        oldSpecifier: info.specifier,
         newSpecifierPromise: this.#transformSpecifier(
-          oldSpecifier,
+          info.specifier,
           file.name,
           packageJson,
         ),
@@ -70,7 +77,8 @@ export class BareModuleTransformer {
     }
 
     for (const {
-      info: {s: start, e: end, n: oldSpecifier, d: dynamicStart},
+      info: {start, end, type},
+      oldSpecifier,
       newSpecifierPromise,
     } of transforms) {
       let newSpecifier: string;
@@ -83,7 +91,8 @@ export class BareModuleTransformer {
       if (newSpecifier === oldSpecifier) {
         continue;
       }
-      const isDynamic = dynamicStart !== -1;
+      // A dynamic import's range is the string literal, quotes included.
+      const isDynamic = type === 'dynamic';
       const replacement = isDynamic ? `'${newSpecifier}'` : newSpecifier;
       js = js.substring(0, start) + replacement + js.substring(end);
     }
