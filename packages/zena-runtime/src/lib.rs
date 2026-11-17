@@ -4,8 +4,9 @@
 //! component that imports WASI 0.3 and the `zena:host` interfaces
 //! (`packages/stdlib/zena/host-wit/host.wit`): stack traces for `Error`,
 //! process spawning behind `zena:process`, running other programs
-//! behind `zena:wasm`, and loading components as extensions behind
-//! `zena:extensions` ([`extensions`]). This crate
+//! behind `zena:wasm`, loading components as extensions behind
+//! `zena:extensions` ([`extensions`]), and raw mode for the terminal's
+//! prompts (`src/terminal.rs`). This crate
 //! implements all of that on wasmtime
 //! ([`component`]), plus the engine configuration such a component needs
 //! ([`engine`]) and a cache of ahead-of-time compiled components and
@@ -44,6 +45,7 @@ pub mod core_module;
 pub mod engine;
 mod fs_read;
 pub mod http_client;
+mod terminal;
 
 /// Prints wasmtime's log records to stderr when `ZENA_RUST_LOG` is set, in
 /// `RUST_LOG` syntax. `ZENA_RUST_LOG=wasmtime::runtime::store::gc=trace`

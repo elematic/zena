@@ -1,0 +1,264 @@
+import {Future} from 'zena:async';
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {StringBuilder} from 'zena:core';
+import {Colors, ESC, stripAnsi} from 'terminal/colors';
+import {Key, KeyKind, ScriptedKeys, keyOf, textKey} from 'terminal/keys';
+import {
+  Choice,
+  PromptCancelled,
+  PromptUnavailable,
+  Prompts,
+  TerminalSize,
+  canPrompt,
+  rowsAbove,
+} from 'terminal/prompts';
+
+let enter = keyOf(KeyKind.Enter);
+let down = keyOf(KeyKind.Down);
+let space = textKey(' ');
+
+/** The keys of each character of `text`. */
+function typed(text: String): Array<Key> {
+  let keys = new GrowableArray<Key>();
+  for (let grapheme in text.graphemes) {
+    keys.push(textKey(grapheme));
+  }
+  return keys;
+}
+
+/** `first`, then `rest`. */
+function keys(first: Array<Key>, rest: Array<Key>): Array<Key> {
+  let all = new GrowableArray<Key>();
+  for (let key in first) {
+    all.push(key);
+  }
+  for (let key in rest) {
+    all.push(key);
+  }
+  return all;
+}
+
+function screen(): TerminalSize {
+  return {columns: 80, rows: 24};
+}
+
+function shortScreen(): TerminalSize {
+  return {columns: 80, rows: 10};
+}
+
+/** Prompts without color that answer with `script`, drawing into `out`. */
+function harness(script: Array<Key>, size: () => TerminalSize = screen) {
+  let out = new StringBuilder();
+  let keys = new ScriptedKeys(script);
+  return new Harness(out, keys,
+    new Prompts(true, new Colors(false), keys, (text) => {
+      out.append(text);
+    }, size));
+}
+
+/** What `harness` makes: the prompts, their keys, and what they drew. */
+class Harness {
+  out: StringBuilder;
+  script: ScriptedKeys;
+  prompts: Prompts;
+
+  new(this.out, this.script, this.prompts);
+
+  /** Each frame drawn, without its escape sequences. */
+  frames(): Array<String> {
+    let frames = new GrowableArray<String>();
+    for (let piece in this.out.toString().split(`${ESC}[J`)) {
+      var frame = stripAnsi(piece);
+      while (frame.endsWith('\r') || frame.endsWith('\n')) {
+        frame = frame.sliceBytes(0, frame.length - 1);
+      }
+      frames.push(frame);
+    }
+    return frames;
+  }
+
+  /** The frame drawn last: the answer, as it stays on the rail. */
+  last(): String {
+    let frames = this.frames();
+    return frames[frames.length - 1];
+  }
+}
+
+/** What `ask` threw: `cancelled`, `unavailable`, `other`, or `none`. */
+async function thrownBy(ask: () => Future<void>): Future<String> {
+  try {
+    await ask();
+  } catch (e) {
+    if (e is PromptCancelled) {
+      return 'cancelled';
+    }
+    if (e is PromptUnavailable) {
+      return 'unavailable';
+    }
+    return 'other';
+  }
+  return 'none';
+}
+
+export let tests = suite('Prompts', () => {
+  test('text: typing, and Backspace', async (ctx) => {
+    let h = harness(keys(typed('zenx'), [keyOf(KeyKind.Backspace), textKey('a'), enter]));
+    equal(await h.prompts.text('Name?'), 'zena');
+    equal(h.last(), '│\n◇  Name?\n│  zena');
+    equal(h.frames()[0], '│\n◆  Name?\n│   \n└');
+  });
+
+  test('text: the cursor moves a character at a time', async (ctx) => {
+    let h = harness(keys(typed('ac'), keys([keyOf(KeyKind.Left), textKey('b'),
+      keyOf(KeyKind.End), textKey('d'), keyOf(KeyKind.Home), keyOf(KeyKind.Delete),
+      keyOf(KeyKind.Right), keyOf(KeyKind.Right), keyOf(KeyKind.Backspace)], [enter])));
+    equal(await h.prompts.text('Letters?'), 'bd');
+  });
+
+  test('text: a grapheme of several code points is one step', async (ctx) => {
+    let h = harness(keys(typed('aé'), [keyOf(KeyKind.Backspace), enter]));
+    equal(await h.prompts.text('Letters?'), 'a');
+  });
+
+  test('text: the placeholder, the initial text and the default', async (ctx) => {
+    let h = harness([enter]);
+    equal(await h.prompts.text('Name?', 'my-package', '', 'untitled'), 'untitled');
+    equal(h.frames()[0], '│\n◆  Name?\n│  my-package\n└');
+    let initial = harness(keys(typed('s'), [enter]));
+    equal(await initial.prompts.text('Name?', '', 'zena'), 'zenas');
+  });
+
+  test('text: validation refuses an answer until it is fixed', async (ctx) => {
+    let h = harness(keys([enter], keys(typed('x'), [enter])));
+    let answer = await h.prompts.text('Name?', '', '', '',
+      (value) => if (value == '') 'A name is needed.' else null);
+    equal(answer, 'x');
+    let frames = h.frames();
+    equal(frames[1], '│\n▲  Name?\n│   \n└  A name is needed.');
+    equal(frames[2], '│\n◆  Name?\n│  x \n└');
+  });
+
+  test('password: a mask for each character', async (ctx) => {
+    let h = harness(keys(typed('héllo'), [enter]));
+    equal(await h.prompts.password('Password?'), 'héllo');
+    equal(h.last(), '│\n◇  Password?\n│  ▪▪▪▪▪');
+  });
+
+  test('confirm: the cursor keys switch, Enter answers', async (ctx) => {
+    let h = harness([keyOf(KeyKind.Right), enter]);
+    isFalse(await h.prompts.confirm('Publish?'));
+    equal(h.frames()[0], '│\n◆  Publish?\n│  ● Yes / ○ No\n└');
+    equal(h.last(), '│\n◇  Publish?\n│  No');
+  });
+
+  test('confirm: y and n answer at once', async (ctx) => {
+    let yes = harness([textKey('y')]);
+    isTrue(await yes.prompts.confirm('Publish?', false));
+    let no = harness([textKey('N')]);
+    isFalse(await no.prompts.confirm('Publish?'));
+    let named = harness([enter]);
+    isTrue(await named.prompts.confirm('Publish?', true, 'Publish', 'Not yet'));
+    equal(named.last(), '│\n◇  Publish?\n│  Publish');
+  });
+
+  test('select: the cursor keys move, and wrap', async (ctx) => {
+    let choices = [new Choice<i32>(1, 'One'), new Choice<i32>(2, 'Two', 'the second'),
+      new Choice<i32>(3, 'Three')];
+    let h = harness([down, enter]);
+    equal(await h.prompts.select<i32>('Which?', choices), 2);
+    equal(h.frames()[1], '│\n◆  Which?\n│  ○ One\n│  ● Two (the second)\n│  ○ Three\n└');
+    equal(h.last(), '│\n◇  Which?\n│  Two');
+    let wrapped = harness([textKey('k'), enter]);
+    equal(await wrapped.prompts.select<i32>('Which?', choices), 3);
+    let initial = harness([down, enter]);
+    equal(await initial.prompts.select<i32>('Which?', choices, 2), 1);
+  });
+
+  test('select: a long list shows a window around the cursor', async (ctx) => {
+    let choices = new GrowableArray<Choice<i32>>();
+    for (var i = 0; i < 20; i += 1) {
+      choices.push(new Choice<i32>(i, `Choice ${i}`));
+    }
+    let moves = new GrowableArray<Key>();
+    for (var i = 0; i < 10; i += 1) {
+      moves.push(down);
+    }
+    moves.push(enter);
+    let h = harness(moves, shortScreen);
+    equal(await h.prompts.select<i32>('Which?', choices), 10);
+    // Ten rows leave room for six choices.
+    equal(h.frames()[0],
+      '│\n◆  Which?\n│  ● Choice 0\n│  ○ Choice 1\n│  ○ Choice 2\n│  ○ Choice 3\n│  ○ Choice 4\n│  ...\n└');
+    equal(h.frames()[10],
+      '│\n◆  Which?\n│  ...\n│  ○ Choice 8\n│  ○ Choice 9\n│  ● Choice 10\n│  ○ Choice 11\n│  ...\n└');
+  });
+
+  test('multiselect: space ticks, and a is all or none', async (ctx) => {
+    let choices = [new Choice<String>('a', 'A'), new Choice<String>('b', 'B'),
+      new Choice<String>('c', 'C')];
+    let h = harness([space, down, down, space, enter]);
+    let picked = await h.prompts.multiselect<String>('Which?', choices);
+    equal(picked.length, 2);
+    equal(picked[0], 'a');
+    equal(picked[1], 'c');
+    // Without color the cursor's row looks like the others, as in
+    // Clack, so moving it draws nothing: the frames are the first, the
+    // two ticks and the answer.
+    equal(h.frames().length, 4);
+    equal(h.frames()[2], '│\n◆  Which?\n│  ◼ A\n│  ◻ B\n│  ◼ C\n└');
+    equal(h.last(), '│\n◇  Which?\n│  A, C');
+
+    let all = harness([textKey('a'), enter]);
+    equal((await all.prompts.multiselect<String>('Which?', choices, [1])).length, 3);
+    let none = harness([textKey('a'), textKey('a'), enter]);
+    equal((await none.prompts.multiselect<String>('Which?', choices, [], false)).length, 0);
+    equal(none.last(), '│\n◇  Which?\n│  none');
+  });
+
+  test('multiselect: an answer must tick one when required', async (ctx) => {
+    let choices = [new Choice<String>('a', 'A'), new Choice<String>('b', 'B')];
+    let h = harness([enter, space, enter]);
+    equal((await h.prompts.multiselect<String>('Which?', choices)).length, 1);
+    equal(h.frames()[1],
+      '│\n▲  Which?\n│  ◻ A\n│  ◻ B\n└  Choose at least one: space ticks a choice, enter answers.');
+  });
+
+  test('Escape, Ctrl+C and the end of the input cancel', async (ctx) => {
+    for (let kind in [KeyKind.Escape, KeyKind.Interrupt, KeyKind.EndOfInput]) {
+      let h = harness(keys(typed('ab'), [keyOf(kind)]));
+      equal(await thrownBy(async () => {
+        await h.prompts.text('Name?');
+      }), 'cancelled');
+      equal(h.last(), '│\n■  Name?\n│  ab\n│');
+      isFalse(h.script.isOpen);
+    }
+    let h = harness([]);
+    equal(await thrownBy(async () => {
+      await h.prompts.confirm('Publish?');
+    }), 'cancelled');
+    equal(h.last(), '│\n■  Publish?\n│  Yes\n│');
+  });
+
+  test('without a terminal, a prompt cannot ask', async (ctx) => {
+    let script = new ScriptedKeys([enter]);
+    let prompts = new Prompts(false, new Colors(false), script, (text) => {}, screen);
+    equal(await thrownBy(async () => {
+      await prompts.confirm('Publish?');
+    }), 'unavailable');
+    // Under the test runner, stdin and stdout are not terminals.
+    isFalse(canPrompt());
+    isFalse(canPrompt(true, true, (name) => if (name == 'TERM') 'dumb' else null));
+    isTrue(canPrompt(true, true, (name) => null));
+  });
+
+  test('rowsAbove counts the rows wrapped lines take', (ctx) => {
+    equal(rowsAbove('a\nb\n', 80), 2);
+    equal(rowsAbove('a\nb', 80), 1);
+    equal(rowsAbove('', 80), 0);
+    // Ten columns: 25 characters take three rows, and 10 take one.
+    equal(rowsAbove('aaaaaaaaaaaaaaaaaaaaaaaaa\nb\n', 10), 4);
+    equal(rowsAbove('aaaaaaaaaa\n', 10), 1);
+    equal(rowsAbove('aaaaaaaaaaaaaaaaaaaaaaaaa', 10), 2);
+  });
+});
