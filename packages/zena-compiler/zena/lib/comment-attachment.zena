@@ -17,7 +17,7 @@
 
 import { NodeMap } from './node-map.zena';
 import {
-  Comment, Node, Module, Statement, Expression, BlockStatement, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, EnumMember, TypeAliasDeclaration, VariableDeclaration, FunctionDeclaration, FunctionExpression, BinaryExpression, UnaryExpression, AssignmentExpression, CallExpression, MemberExpression, IndexExpression, NewExpression, ArrayLiteral, IfExpression, MatchExpression, MatchCase, AsExpression, IsExpression, SpreadElement, IfStatement, WhileStatement, ForStatement, ForInStatement, ReturnStatement, YieldStatement, ExpressionStatement, UsingStatement, ShieldedStatement, MethodDefinition, AccessorDeclaration, SetterInfo, FieldDefinition, SealedVariant, CaseClassParam, TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTypeAnnotation, PropertySignature,
+  Comment, Node, Module, Statement, Expression, BlockStatement, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, EnumMember, TypeAliasDeclaration, ImportDeclaration, ExportFromDeclaration, ImportSpecifier, VariableDeclaration, FunctionDeclaration, FunctionExpression, BinaryExpression, UnaryExpression, AssignmentExpression, CallExpression, MemberExpression, IndexExpression, NewExpression, ArrayLiteral, IfExpression, MatchExpression, MatchCase, AsExpression, IsExpression, SpreadElement, IfStatement, WhileStatement, ForStatement, ForInStatement, ReturnStatement, YieldStatement, ExpressionStatement, UsingStatement, ShieldedStatement, MethodDefinition, AccessorDeclaration, SetterInfo, FieldDefinition, SealedVariant, CaseClassParam, TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTypeAnnotation, PropertySignature,
 } from './ast.zena';
 import { growable } from 'zena:core';
 
@@ -186,6 +186,15 @@ function typeAnnotationsToNodes(anns: GrowableArray<TypeAnnotation>) {
   return result;
 }
 
+/** Convert Array<ImportSpecifier> to Array<Node>. */
+function importSpecifiersToNodes(specs: GrowableArray<ImportSpecifier>) {
+  let result = new Array<Node>(specs.length);
+  for (let s in specs) {
+    result.push(s);
+  }
+  return result;
+}
+
 /**
  * Extract the child body (Array<Node>) from nodes that contain bodies.
  * Also handles variable declarations and function expressions so that
@@ -257,6 +266,14 @@ function getChildBody(node: Node): GrowableArray<Node> | null {
   case TypeAliasDeclaration {typeAnnotation}: {
     if (typeAnnotation == null) { null } else { singleNode(typeAnnotation as Node) }
   }
+  case ImportDeclaration {imports}: {
+    if (imports.length == 1 && imports[0].imported.name == '*') {
+      null
+    } else {
+      importSpecifiersToNodes(imports)
+    }
+  }
+  case ExportFromDeclaration {specifiers}: importSpecifiersToNodes(specifiers)
   // Statements that hold a body. Without these a comment written inside the
   // body is not descended into, and ends up attached outside the statement.
   case IfStatement {test, consequent, alternate}: {

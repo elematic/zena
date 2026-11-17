@@ -10,7 +10,7 @@ import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { parse } from '../lib/parser.zena';
 import {
-  Comment, VariableDeclaration, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, BlockStatement, FunctionExpression, FieldDefinition, MethodDefinition, MethodSignature, RecordTypeAnnotation, SealedVariant, CaseClassParam, BinaryExpression, CallExpression, ArrayLiteral, NumberLiteral,
+  Comment, VariableDeclaration, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, ImportDeclaration, ExportFromDeclaration, BlockStatement, FunctionExpression, FieldDefinition, MethodDefinition, MethodSignature, RecordTypeAnnotation, SealedVariant, CaseClassParam, BinaryExpression, CallExpression, ArrayLiteral, NumberLiteral,
 } from '../lib/ast.zena';
 import { attachComments } from '../lib/comment-attachment.zena';
 
@@ -558,6 +558,26 @@ export let tests = suite('comment-attachment', () => {
       let comments = leading as GrowableArray<Comment>;
       equal(comments.length, 1);
       equal(comments[0].value, ' first');
+    });
+
+    test('comments inside import and export-from specifier lists', (t) => {
+      let source = "import {\n  // lead\n  a,\n  b, // trail\n} from 'mod';\nexport {\n  // re-export\n  c,\n} from 'mod';";
+      let mod = parse(source, 'test.zena');
+      let map = attachComments(mod);
+
+      let imp = mod.body[0] as ImportDeclaration;
+      let leadA = map.getLeading(imp.imports[0]);
+      isTrue(leadA != null);
+      equal((leadA as GrowableArray<Comment>)[0].value, ' lead');
+
+      let trailB = map.getTrailing(imp.imports[1]);
+      isTrue(trailB != null);
+      equal((trailB as GrowableArray<Comment>)[0].value, ' trail');
+
+      let exp = mod.body[1] as ExportFromDeclaration;
+      let leadC = map.getLeading(exp.specifiers[0]);
+      isTrue(leadC != null);
+      equal((leadC as GrowableArray<Comment>)[0].value, ' re-export');
     });
 
   });
