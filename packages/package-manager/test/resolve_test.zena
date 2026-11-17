@@ -105,7 +105,30 @@ function versionsOf(resolution: Resolution, did: String) {
   return out;
 }
 
+/** `Versions` of `releases`, with `retracted` retracted. */
+function releasesOf(releases: Array<String>, retracted: Array<String> = []) {
+  let parsed = new GrowableArray<Version>();
+  for (let release in releases) {
+    parsed.push(Version.parse(release));
+  }
+  let set = new HashSet<String>();
+  for (let version in retracted) {
+    set.add(version);
+  }
+  return new Versions(parsed, set);
+}
+
 export let tests = suite('package-manager/resolve', () => {
+  test('prefers a stable release to add, and takes a pre-release only when there is none', (ctx) => {
+    equal((releasesOf(['1.0.0', '1.1.0-rc.1']).preferred() as Version).toString(), '1.0.0');
+    equal((releasesOf(['0.1.0-preview.1', '0.1.0-preview.2', '0.1.0-preview.3'], ['0.1.0-preview.3'])
+        .preferred() as Version).toString(), '0.1.0-preview.2');
+    // A retracted stable release does not count, so the pre-release is taken.
+    equal((releasesOf(['1.0.0', '2.0.0-rc.1'], ['1.0.0']).preferred() as Version).toString(), '2.0.0-rc.1');
+    isTrue(releasesOf(['1.0.0'], ['1.0.0']).preferred() == null, 'every release retracted');
+    isTrue(releasesOf([]).preferred() == null, 'no releases');
+  });
+
   test('installs one version for ranges that overlap, the highest they share', async (ctx): Future<void> => {
     let registry = new Registry();
     registry.addAll(JSON, ['1.0.0', '1.1.0', '1.1.5', '1.9.0']);

@@ -340,7 +340,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
     `zena-package.json` with the directory's name, or `--name`, and
     version 0.1.0. It refuses a directory that already has a manifest.
   - **`pkg add <package>[@version] [--name <local>]`**: Add a published
-    package, by DID, handle or `scope:name`, to `zena-package.json`,
+    package, by DID, handle or `scope:name`, to `zena-package.json`, at its
+    latest stable release when no version is given (its latest
+    pre-release when it has no stable one),
     under `scope:name` for a package in a scope (imports then read
     `'scope:name/library'`); select versions for everything it leads to, pin them in
     `zena-lock.json`, and fetch them. It prints what changed in the

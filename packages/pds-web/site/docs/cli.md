@@ -30,7 +30,7 @@ zena pkg add <package>[@<version>] [--name <local-name>]
 Adds a published package to the current package's `zena-package.json`, selects versions across the workspace, updates `zena-lock.json`, and fetches the resolved archives into the package cache.
 
 - `<package>`: `scope:name`, a handle (`router.acme.pkg.zena-lang.dev`), or a DID (`did:plc:...`, `did:web:...`).
-- `@<version>`: Optional version to start the range from; the manifest gets `^<version>` (defaults to the package's latest non-retracted release).
+- `@<version>`: Optional version to start the range from; the manifest gets `^<version>`. Without it, `zena pkg add` takes the package's latest release that is neither retracted nor a pre-release, or, when it has no such release, its latest pre-release that is not retracted, and says so.
 - `--name <local-name>`: Local import alias in `zena-package.json` (defaults to the name in the package's profile).
 
 ### `zena pkg update`

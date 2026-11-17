@@ -5,7 +5,12 @@
  * - `acme:router` (router.acme.pkg.zena-lang.dev): 1.4.2 and 1.5.0, which
  *   need json 2.1.0, and 1.6.0, which is retracted;
  * - `acme:json` (json.acme.pkg.zena-lang.dev): 2.0.0 and 2.1.0;
- * - `acme:log` (log.acme.pkg.zena-lang.dev): 1.0.0.
+ * - `acme:log` (log.acme.pkg.zena-lang.dev): 1.0.0;
+ * - `acme:preview` (preview.acme.pkg.zena-lang.dev): only pre-releases,
+ *   0.1.0-preview.1 and 0.1.0-preview.2, and 0.1.0-preview.3, which is
+ *   retracted;
+ * - `acme:gone` (gone.acme.pkg.zena-lang.dev): 1.0.0, which is retracted;
+ * - `acme:empty` (empty.acme.pkg.zena-lang.dev): no releases.
  *
  * Run from the repository root with `--dir <scratch>::/out`, it writes the
  * PLC directory's origin to `/out/plc.txt` and then serves until it is
@@ -25,6 +30,9 @@ import {Range, Version} from 'zena-lang:semver';
 
 let JSON_DID = 'did:plc:jsonjsonjsonjsonjsonjson';
 let LOG_DID = 'did:plc:loglogloglogloglogloglog';
+let PREVIEW_DID = 'did:plc:previewpreviewpreviewpre';
+let GONE_DID = 'did:plc:gonegonegonegonegonegone';
+let EMPTY_DID = 'did:plc:emptyemptyemptyemptyempt';
 
 function bytesOf(text: String) {
   let out = new FixedArray<u8>(text.length, 0 as u8);
@@ -85,6 +93,18 @@ export async function main(): Future<i32> {
   publish(router, '1.5.0', routerFiles('1.5.0'), needsJson);
   publish(router, '1.6.0', routerFiles('1.6.0'), needsJson);
   router.retract(new Retraction(Version.parse('1.6.0'), 'broken'));
+
+  let preview = pds.account(PREVIEW_DID, 'preview.acme.pkg.zena-lang.dev');
+  preview.setProfile(new Profile('preview'));
+  for (let version in ['0.1.0-preview.1', '0.1.0-preview.2', '0.1.0-preview.3']) {
+    publish(preview, version, logFiles, none);
+  }
+  preview.retract(new Retraction(Version.parse('0.1.0-preview.3'), 'broken'));
+  let gone = pds.account(GONE_DID, 'gone.acme.pkg.zena-lang.dev');
+  gone.setProfile(new Profile('gone'));
+  publish(gone, '1.0.0', logFiles, none);
+  gone.retract(new Retraction(Version.parse('1.0.0'), 'broken'));
+  pds.account(EMPTY_DID, 'empty.acme.pkg.zena-lang.dev').setProfile(new Profile('empty'));
 
   await writeFile('/out/plc.txt', pds.plcDirectory);
   await pds.done();
