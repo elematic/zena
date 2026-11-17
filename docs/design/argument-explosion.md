@@ -548,7 +548,7 @@ release.
   overridden methods; unnamed, named and generic constructors, and
   `super(...)` records at every level of a chain; generic functions and
   methods per instantiation. `npm run test:execution -w
-@zena-lang/zena-compiler -- across-calls` runs exactly this set. The
+@zena-lang/compiler-zena -- across-calls` runs exactly this set. The
   WAT tests above are what show the optimization happens.
 - Stage-2 byte parity, as always.
 

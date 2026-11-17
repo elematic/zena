@@ -114,7 +114,7 @@ hits `==`'s reference-equal fast path against an already-hashed key.
 
 ## The corpus
 
-`packages/zena-compiler/zena/bench/interning.zena`, via `zena:bench`, over
+`packages/compiler/zena/bench/interning.zena`, via `zena:bench`, over
 the compiler's own `zena/lib`:
 
 ```
@@ -137,7 +137,7 @@ exactly as much as that ratio is far from 1:1.
 Run from the repository root:
 
 ```sh
-zena-cli run packages/zena-compiler/zena/bench/interning.zena --dir .
+zena-cli run packages/compiler/zena/bench/interning.zena --dir .
 ```
 
 `zena:bench` samples variants round-robin and reports the CI of the

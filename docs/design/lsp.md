@@ -86,7 +86,7 @@ Each of the service's features is a module of its own beside it
 (`hover.zena`, `completion.zena`, `symbols.zena`), and so is compiling a
 document for the playground (`compile.zena`), so that the language server
 does not carry the code generator. Doc comments are read with the
-compiler's `zena-compiler/doc-comment`, the parser zenadoc uses, and an
+compiler's `compiler/doc-comment`, the parser zenadoc uses, and an
 import is followed to its declaration with `Symbol.resolveTarget()`.
 
 `lib/server.zena` (`language-service/server`) is the protocol:
@@ -109,7 +109,7 @@ import is followed to its declaration with `Symbol.resolveTarget()`.
 
 `zena lsp` analyses for the `zena-cli` target and loads the repository's
 workspace (`zena-package.json`), so a file that uses `zena:fs` or imports
-`zena-compiler/parser` checks the way it builds. It reads stdin with
+`compiler/parser` checks the way it builds. It reads stdin with
 `zena:cli`'s `readStdinSync`. Diagnostics are published for the document
 that was checked; problems it finds in the files that document imports
 wait until those files are opened.

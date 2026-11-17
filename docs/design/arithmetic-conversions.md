@@ -3,7 +3,7 @@
 ## Status
 
 - **Implemented** for `i32`/`u32`/`i64`/`u64`/`f32`/`f64` — the tables below
-  describe `promoteNumeric` in `packages/zena-compiler/zena/lib/types.zena`,
+  describe `promoteNumeric` in `packages/compiler/zena/lib/types.zena`,
   not a proposal.
 - **Narrow integers (`u8`, `u16`, `i8`, `i16`) implemented 2026-08-06**, as
   types, promotion, casts and literal range checking. Their _packed storage_

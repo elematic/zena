@@ -36,7 +36,7 @@ with `range` a generator is the canary benchmark.
   ordinary method, callable from streaming-compiled code through the
   existing `Iterator` interface path.
 - **Two important corollaries of the divergence:**
-  1. The compiler's own source (`packages/zena-compiler/zena/`) cannot use
+  1. The compiler's own source (`packages/compiler/zena/`) cannot use
      generators until the bootstrap compiler is deleted — stage1 is built by
      the bootstrap, which cannot parse them.
   2. The stdlib cannot use generators either (the bootstrap compiles stdlib

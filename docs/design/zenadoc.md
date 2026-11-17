@@ -114,7 +114,7 @@ compiler already produces:
 - **The `SemanticModel`** for resolved types, so an unannotated
   declaration documents the type it actually has and a type reference
   can name the declaration it resolves to.
-- **`attachComments`** (`zena-compiler/comment-attachment`), which
+- **`attachComments`** (`compiler/comment-attachment`), which
   already assigns each comment to the nearest node. The formatter and
   the language server both use it; zenadoc filters its leading comments
   for `/** … */`.
@@ -127,7 +127,7 @@ each module's AST with its `SemanticModel`. Two constraints from the
 existing test runners carry over: cap entry points per compiler at 16
 (a compiler accumulates per-entry state that is never collected, so one
 compiler for a whole package gets slower than several — measurements in
-`packages/zena-compiler/CONTEXT.md`), and never let one source file be
+`packages/compiler/CONTEXT.md`), and never let one source file be
 loaded under two module ids, which produces two same-named nominal
 types that compare unequal.
 

@@ -41,11 +41,11 @@ numbers are from an idle machine with `ZENA_GC_RESERVE_MB=1536`. The
 bodies lowered from one source function in one role form a **group**;
 its bodies after the first are **repeats**.
 
-| workload                                             | compile | repeat lowering + cleanup |
-| ---------------------------------------------------- | ------- | ------------------------- |
-| `packages/stdlib/tests/assert/assert_test.zena`      | 0.46 s  | 4 ms                      |
-| `packages/zena-compiler/zena/test/checker_test.zena` | 2.7 s   | 0.22 s                    |
-| compiler self-compile, `-O1`                         | 13.1 s  | 0.86 s                    |
+| workload                                        | compile | repeat lowering + cleanup |
+| ----------------------------------------------- | ------- | ------------------------- |
+| `packages/stdlib/tests/assert/assert_test.zena` | 0.46 s  | 4 ms                      |
+| `packages/compiler/zena/test/checker_test.zena` | 2.7 s   | 0.22 s                    |
+| compiler self-compile, `-O1`                    | 13.1 s  | 0.86 s                    |
 
 ir.md §14 gave a 47 s cold compile of `assert_test.zena` as the reason
 for this milestone; that case is gone. Without the GC reserve,

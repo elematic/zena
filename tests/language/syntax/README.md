@@ -13,14 +13,14 @@ This directory contains portable syntax tests for Zena. These tests verify parse
 
 ## Porting & Testing Workflow
 
-The portable test runner lives at `packages/compiler/src/test/portable-runner.ts` and is invoked via the `portable-syntax_test.ts` test file, which discovers all `.zena` files under `tests/language/syntax/` recursively.
+The portable test runner is `packages/compiler/zena/test/portable_syntax.zena`, which discovers all `.zena` files under `tests/language/syntax/` recursively.
 
 ### Snapshot Auto-Generation
 
 When a `.zena` file has no corresponding `.ast.json` file, the runner parses the source, strips location info, and writes the cleaned AST as the snapshot automatically. The workflow is:
 
 1. Create only the `.zena` file.
-2. Run `npm test -w @zena-lang/zena-compiler` (Wireit runs the portable suite).
+2. Run `npm test -w @zena-lang/compiler-zena` (Wireit runs the portable suite).
 3. Verify the auto-generated `.ast.json` looks correct.
 4. Commit both files.
 

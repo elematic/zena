@@ -4,9 +4,9 @@
 Once cargo builds `zena-cli` (`cargo build --release -p zena-cli`), the host
 falls back to `bootstrap/zena.wasm` whenever `out/zena.wasm` has not been built
 yet, so `zena build`, `zena fmt`, `zena lint`, `zena run` and `zena test` work
-immediately. During a repository build, `zena-compiler:build:cli` runs
+immediately. During a repository build, `compiler:build:cli` runs
 `bootstrap/zena.wasm` to compile `zena/cli/main.zena` into the working Stage A
-compiler (`packages/zena-compiler/zena/out/cli.wasm`), which then compiles
+compiler (`packages/compiler/zena/out/cli.wasm`), which then compiles
 `packages/zena-cli/out/zena.wasm` and every other package. It is the only
 prebuilt artifact in the repository.
 

@@ -9,5 +9,5 @@ reading `wasi/` — where it used to sit beside `zena:wasi`'s own files —
 does not suggest it is part of that library.
 
 See `memory.zena`'s own docstring,
-`packages/zena-compiler/zena/lib/codegen/component-runtime.zena`, and
+`packages/compiler/zena/lib/codegen/component-runtime.zena`, and
 `docs/design/component-emission.md` §1.3.

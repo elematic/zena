@@ -25,10 +25,10 @@ same release of `zena` and the App View as the break.
 ## Background
 
 - The compiler has a version, the `version` in
-  `packages/zena-compiler/zena-package.json` (`0.0.1-preview.1` now).
+  `packages/compiler/zena-package.json` (`0.0.1-preview.1` now).
   `npm run versions` copies it into `packages/zena-cli/zena/versions.zena`,
   `zena --version` prints it, and every call to a registry names it in its
-  `user-agent` (`zena/0.0.1-preview.1 (linux-x86_64) zena-compiler/…`).
+  `user-agent` (`zena/0.0.1-preview.1 (linux-x86_64) compiler/…`).
 - The packages' versions change together when the toolchain is released
   (`.github/workflows/release.yml`, `packages/zena-cli/dev/release-version.zena`),
   and each package's `CHANGELOG.md` collects changes under
@@ -59,7 +59,7 @@ is all a reader concludes.
 
 The version changes when the toolchain is released, with every
 package's. A language change is recorded where the release will find it:
-an entry under `## [Unreleased]` in `packages/zena-compiler/CHANGELOG.md`,
+an entry under `## [Unreleased]` in `packages/compiler/CHANGELOG.md`,
 in `### Removed` or `### Changed` for one that breaks code that compiled
 before, and `### Added` for a new feature. A release then carries every
 language change since the last one, and a breaking entry is where the

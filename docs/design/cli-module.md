@@ -47,7 +47,7 @@ The CLI module contains:
 
 The compiler, zebra, zenadoc and the formatter are all Zena packages
 already. The compiler's own command-line program
-(`packages/zena-compiler/zena/cli/main.zena`) is about 400 lines around
+(`packages/compiler/zena/cli/main.zena`) is about 400 lines around
 the compiler library, and the language service
 (`packages/language-service/zena/lsp.zena`) already uses that library
 directly. Putting them in one module means calling those libraries from
@@ -245,7 +245,7 @@ host process's environment, which does not have them, so the runner
 hands them over explicitly (`hostEnv()` in `env.zena`).
 
 A later version can keep one compiler warm across several test files,
-which [workflow.md](./workflow.md#zena-compiler-integration) plans for
+which [workflow.md](./workflow.md#compiler-integration) plans for
 as the compile server. For now each copy compiles its own file, which
 keeps compiles independent and parallel.
 
@@ -305,14 +305,14 @@ does not exist yet, `zena-cli` falls back to `bootstrap/zena.wasm`, so
 (`build`, `fmt`, `lint`, `run`, `test`) before any Zena target is built.
 
 Building `out/zena.wasm` from HEAD source still goes through Stage A
-(`packages/zena-compiler/zena/out/cli.wasm`) so that edits to non-compiler
+(`packages/compiler/zena/out/cli.wasm`) so that edits to non-compiler
 packages in the CLI module (`zebra`, `zenadoc`, `zena-lint`,
 `zena-formatter`, `package-manager`) compile with HEAD's compiler and
 never require a reseed:
 
 ```
 cargo build                         → zena-cli, zena-run
-zena-cli + bootstrap/zena.wasm      → packages/zena-compiler/zena/out/cli.wasm
+zena-cli + bootstrap/zena.wasm      → packages/compiler/zena/out/cli.wasm
 zena-run + zena/out/cli.wasm        → packages/zena-cli/out/zena.wasm   (the CLI module)
 zena-cli (+ out/zena.wasm)          → everything else
 ```
@@ -342,7 +342,7 @@ checks byte-for-byte self-reproduction before replacing it.
    over stdin and stdout. `zena:cli` gained `readStdin`.
 
 5. **The CLI module as the bootstrap**. `packages/zena-cli/bootstrap/zena.wasm`
-   replaced `packages/zena-compiler/bootstrap/cli.wasm`, with `zena-cli`
+   replaced `packages/compiler/bootstrap/cli.wasm`, with `zena-cli`
    falling back to `bootstrap/zena.wasm` until `out/zena.wasm` is built
    while keeping Stage A (`zena/out/cli.wasm`) so non-compiler packages
    remain compiled by HEAD's compiler.

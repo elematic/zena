@@ -30,7 +30,7 @@ Before `packages/zena-cli/out/zena.wasm` is built, `zena-cli` falls back
 to `packages/zena-cli/bootstrap/zena.wasm`, so once cargo has built
 `zena-cli` a fresh checkout can already run `zena build` (including
 zebra target builds), `zena fmt`, `zena lint`, `zena run` and
-`zena test`. During a build, `build:cli` in `packages/zena-compiler`
+`zena test`. During a build, `build:cli` in `packages/compiler`
 sets `ZENA_CLI_MODULE=../zena-cli/bootstrap/zena.wasm` explicitly so
 Stage A is always compiled by the bootstrap even when `out/zena.wasm`
 already exists on disk. Only the Wasm module is prebuilt; the host that

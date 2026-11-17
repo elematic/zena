@@ -102,7 +102,7 @@ remove it.
   nothing, and a range-checked `DataView` class over them, as
   [byte-buffer.md](byte-buffer.md) planned. The runtime decodes with the
   free functions.
-- **WIT synthesis** (`packages/zena-compiler/zena/lib/wit-module-synth.zena`).
+- **WIT synthesis** (`packages/compiler/zena/lib/wit-module-synth.zena`).
   The one existing case of generating Zena from an interface language. A
   dependency `{"wit": "./path"}` in a `zena-package.json` makes the host turn a
   WIT interface into Zena source text when a module imports it. The

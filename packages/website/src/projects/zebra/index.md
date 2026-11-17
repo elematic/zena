@@ -38,7 +38,7 @@ into `zena-package.json` or `zebra.json`):
 ```sh
 # Build the current package, or a specific package target
 zena build
-zena build packages/zena-compiler:build
+zena build packages/compiler:build
 
 # Watch inputs and keep dependent dev services running
 zena build -w packages/website:serve

@@ -56,7 +56,7 @@ functions reached by a program with no calls in it.
 `BinaryEmitter.emitModuleEnd` wrote the `name` custom section on every
 compile. Nothing gated it — 29% of the module was debug metadata, and
 there was no way to turn it off. `AGENTS.md` and
-`packages/zena-compiler/zena/lib/codegen/ir/CONTEXT.md` both already
+`packages/compiler/zena/lib/codegen/ir/CONTEXT.md` both already
 documented `-g` as the flag that "emits a WASM name section with
 readable function names"; `-g` in fact only reached wasmtime's engine
 config (inlining) and never the compiler.
@@ -1554,7 +1554,7 @@ It is not. Gating it:
   it passes standalone. That is order-dependence across entry points
   sharing one `Compiler`, the same hazard as the batch-position
   nondeterminism already documented in
-  `packages/zena-compiler/CONTEXT.md`.
+  `packages/compiler/CONTEXT.md`.
 
 Built, measured, reverted. Phase-gating is probably still right, but it
 has to come _after_ the keystone, not before it — while the force-reach
