@@ -1,0 +1,26 @@
+// @mode: run
+// @result: 1
+
+// A method reached only through an interface calls a function in
+// another library, which makes the first value of a class there. That
+// class's override is reached in the late vtable round, and its body
+// constructs a generic class with a synthesized constructor, which is
+// reached by key. Before every late settle drained those keys, nothing
+// reached the constructor, and lowering failed with "constructor
+// missing for Holder_u8".
+import {make} from './late-override-synthesized-ctor-lib.zena';
+
+interface Source {
+  next(): i32;
+}
+
+class Reads implements Source {
+  next(): i32 {
+    return make().read();
+  }
+}
+
+export function main(): i32 {
+  let source: Source = new Reads();
+  return source.next();
+}

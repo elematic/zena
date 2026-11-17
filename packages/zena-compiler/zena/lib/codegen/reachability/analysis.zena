@@ -257,6 +257,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * this timing hole was invisible.
    */
   #pendingMemberReaches = new Array<ClassMethodKey>();
+  /**
+   * How many of `#pendingMemberReaches` have been reached: -1 until the
+   * first drain, which waits for populate to register the members.
+   */
+  var #pendingDrained = -1;
   reachablyNamedClosures = new Set<WasmStruct>();
   reachablyNamedAnonStructs = new Set<WasmStruct>();
   /**
@@ -1954,17 +1959,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // Field accessors named by reachable referrers before populate
     // registered them: re-check now that populate has run, BEFORE the
     // settle layout — the drain can reach bodies that instantiate.
+    // From here every settle drains what was pended since.
     this.currentReachable = true;
-    // Index loop: draining can push MORE pending reaches (reaching a
-    // case class's == pends String.== for its string fields).
-    var pendIdx = 0;
-    while (pendIdx < this.#pendingMemberReaches.length) {
-      let pendingKey = this.#pendingMemberReaches[pendIdx];
-      pendIdx += 1;
-      if (let (true, f) = this.wasm.classMethodMap.get(pendingKey)) {
-        this.markFunctionReached(f);
-      }
-    }
+    this.#pendingDrained = 0;
+    this.#drainPendingMemberReaches();
     this.#settleQueues();
     this.activateCancellationMachinery();
     this.#settleQueues();
@@ -2400,9 +2398,41 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    */
   #settleQueues(): void {
     this.processQueues();
-    while (this.#syncGenericClassSlots() || this.#fillReachedSlots()) {
+    while (this.#syncGenericClassSlots() || this.#fillReachedSlots() ||
+        this.#drainPendingMemberReaches()) {
       this.processQueues();
     }
+  }
+
+  /**
+   * Reaches the members pended since the last drain, and says whether
+   * it reached any. Nothing is drained before the first drain in `run`,
+   * which waits for populate. After it, every settle drains, because
+   * the late rounds walk bodies too: a `new` in a body that only a late
+   * override reaches pends its synthesized constructor, which nothing
+   * else reaches, and lowering failed with `constructor missing`.
+   */
+  #drainPendingMemberReaches(): boolean {
+    if (this.#pendingDrained < 0) {
+      return false;
+    }
+    let savedReachable = this.currentReachable;
+    this.currentReachable = true;
+    var reached = false;
+    // Index loop: draining can push MORE pending reaches (reaching a
+    // case class's == pends String.== for its string fields).
+    while (this.#pendingDrained < this.#pendingMemberReaches.length) {
+      let pendingKey = this.#pendingMemberReaches[this.#pendingDrained];
+      this.#pendingDrained += 1;
+      if (let (true, f) = this.wasm.classMethodMap.get(pendingKey)) {
+        if (!this.reachedFunctionsSet.has(f)) {
+          this.markFunctionReached(f);
+          reached = true;
+        }
+      }
+    }
+    this.currentReachable = savedReachable;
+    return reached;
   }
 
   /**
