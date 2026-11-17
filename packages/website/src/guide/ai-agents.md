@@ -141,17 +141,17 @@ without assembling third-party plugins:
 
 ## Practical tips
 
-- **Install the Zena agent skill**: Add [`skills/zena/`](https://github.com/elematic/zena/tree/main/skills/zena)
-  to your project or global agent configuration (for example,
-  `npx skills add elematic/zena`), and note in `AGENTS.md` or `CLAUDE.md` that
-  `.zena` files use Zena so sessions activate the skill before editing.
-- **Give agents a short Zena cheat sheet in `AGENTS.md` or `CLAUDE.md`**: Note
-  the handful of differences from TypeScript up front—`let` vs `var`, `String`
-  with a capital `S`, `function` for top-level non-closure declarations, `/`
-  returning a float (`div(a, b)` from `zena:math` for integer division), and
-  `sealed class` + `match` instead of discriminated object unions. The
-  [Quick Reference](/reference/quick-reference/) is structured for both human and
-  agent lookup.
+- **Install the Zena skill**: Copy
+  [`skills/zena`](https://github.com/elematic/zena/tree/main/skills/zena) from
+  the repository into the directory your agent reads skills from
+  (`.claude/skills/zena` for Claude Code), or run
+  `npx skills add elematic/zena`. Then say in your `AGENTS.md` or `CLAUDE.md`
+  that `.zena` files are Zena and that the skill is to be read before editing
+  them, so that the agent loads it. It describes the language in brief,
+  lists the features an agent trained on TypeScript tends to leave unused
+  (sealed classes, contracts, inline tuple returns, `using`), gives the
+  compiler's message for common mistakes, and says where to look things up.
+  Its code blocks are compiled by the repository's tests.
 - **Specify boundaries with types and contracts first**: Write the public types,
   `distinct type` wrappers, and `requires`/`ensures` clauses before asking an
   agent to fill in an algorithm. The clauses document edge cases (`amount > 0`,
