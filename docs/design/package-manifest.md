@@ -298,6 +298,7 @@ with the versions selection chose across the whole workspace
 
 ```json
 {
+  "lockfileVersion": 1,
   "workspace": {
     ".": {"router": "did:plc:routerrouterrouterrouter@1.4.2"}
   },
@@ -315,11 +316,32 @@ with the versions selection chose across the whole workspace
 }
 ```
 
+`lockfileVersion` is the version of the lockfile's format, a number of
+its own, unrelated to any package's version. It is 1, and changes only
+when the format does. `zena` reads only the version it writes: given a
+newer one, it asks for a newer `zena`, and given an older one, or a
+lockfile without the field, it asks for the lockfile to be deleted and
+written again with `zena pkg update`. Both of `zena`'s readers check it,
+the package manager's (`package-manager/resolution`) and the
+compiler's (`zena-compiler/package-manifest`).
+
 Each entry of `resolved` is keyed by a package's DID and version, since
-a workspace can use two versions of one package. It records the CID of
-the release record and of the source archive, and the installed version
-each of the release's own names stands for. `workspace` gives the same
-for each workspace package's names, by the package's directory.
+a workspace can use two versions of one package. It records:
+
+- `release`: the CID of the package's `dev.zena-lang.package.release`
+  record for the version, a hash of the record's DAG-CBOR encoding.
+- `source`: the CID of the release's source archive, a hash of the
+  archive's bytes, and the name of its directory in the package cache.
+- `dependencies`: the pinned version each of the release's own names for
+  its dependencies stands for, as a key of `resolved`.
+
+`workspace` maps each workspace package's names, by the package's
+directory (`.` for the root), to keys of `resolved` too.
+
+The two CIDs are checksums. `zena pkg fetch` checks the release record's
+CID against `release`, and that the record names the `source` CID and the
+same dependencies, then checks the downloaded archive against `source`
+before unpacking it (package-manager.md, "Fetching and verification").
 
 The names are in the manifests; the lockfile holds only the versions
 they stand for.

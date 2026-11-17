@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Lockfiles record `lockfileVersion` (`LOCKFILE_VERSION`, 1), and `readPins` refuses another version, or none.
+
 ## [0.0.1-preview.1] - 2026-11-12
 
 ### Added

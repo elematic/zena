@@ -69,27 +69,32 @@ When you publish `packages/server` with `zena pkg publish`, the CLI replaces `{"
 
 ```json [zena-lock.json]
 {
+  "lockfileVersion": 1,
   "workspace": {
     "packages/server": {"router": "did:plc:routerrouterrouterrouter@1.4.2"}
   },
   "resolved": {
     "did:plc:routerrouterrouterrouter@1.4.2": {
-      "release": "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
-      "source": "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      "release": "bafyreiacaqzs6eeir3sujrd7r2olqqvv5pz7u6u52fnefvplhfizfbbngi",
+      "source": "bafkreibcvpjyzvstyfv4tuymmku7cbry7rzwusztpf3dappir5wh55kpsy",
       "dependencies": {
         "json": "did:web:json.example.com@2.1.0"
       }
     },
     "did:web:json.example.com@2.1.0": {
-      "release": "bafyreibvjvcv745gig4mvqs4hctx4zfkono4rjejm2ta6gtyzkqxfjeily",
-      "source": "bafkreibvjvcv745gig4mvqs4hctx4zfkono4rjejm2ta6gtyzkqxfjeily"
+      "release": "bafyreiav6xyaoqpx6byrh727pez7ovomlndqwwqiatiwvvq5qlxfrlri6e",
+      "source": "bafkreidte7rh73ye5s7ctf2qzmb2ciuroxpoe2t6fgvknkstljoody2aba"
     }
   }
 }
 ```
 
+**`lockfileVersion`** is the version of the lockfile's format, a number of its own, unrelated to any package's version. It is `1`. A `zena` that reads another version refuses the lockfile: given a newer one, upgrade `zena`; given an older one, or a lockfile without the field, delete it and run `zena pkg update` to write it again.
+
 `workspace` gives, for each workspace package by its directory (`.` for the root), the pinned version each of its published dependencies stands for. Each entry under `resolved` is keyed by `<did>@<version>`, the package and the version selected, and records:
 
-- **`release`**: The CID of the `dev.zena-lang.package.release` record in the package's atproto repository.
-- **`source`**: The CID of the source archive blob (`application/vnd.ipld.car`), which `zena pkg fetch` verifies and unpacks into `sources/<source-cid>` in the package cache.
-- **`dependencies`**: Map from the local names used inside that package's source to the `<did>@<major>` keys of its own dependencies.
+- **`release`**: The CID of the `dev.zena-lang.package.release` record in the package's atproto repository: a hash of the record, which names the version, the source archive and the dependencies.
+- **`source`**: The CID of the source archive blob (`application/vnd.ipld.car`): a hash of its bytes. `zena pkg fetch` checks the archive against it, and unpacks it into `sources/<source-cid>` in the package cache.
+- **`dependencies`**: Map from the local names used inside that package's source to the `<did>@<version>` keys of its own dependencies, which are keys of `resolved` too.
+
+Both CIDs are checksums: `zena pkg fetch` refuses a release record or an archive that does not match its pin, so a build from a committed `zena-lock.json` gets the same bytes or fails.

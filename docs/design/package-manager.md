@@ -883,6 +883,7 @@ every CID needed to reproduce it. `zena pkg add` and `zena pkg update` write it:
 
 ```json
 {
+  "lockfileVersion": 1,
   "workspace": {
     ".": {"router": "did:plc:routerrouterrouterrouter@1.4.2"},
     "packages/lib": {"json": "did:web:json.example.com@2.1.0"}
@@ -901,6 +902,8 @@ every CID needed to reproduce it. `zena pkg add` and `zena pkg update` write it:
 }
 ```
 
+`lockfileVersion` is the format's own version, which `zena` checks before
+reading anything else ([package-manifest.md](package-manifest.md#zena-lockjson)).
 `resolved` holds one entry per installed version, keyed by the DID and
 the version: the CID of its release record and of its source artifact,
 and the installed version each of the release's local names stands
