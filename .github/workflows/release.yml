@@ -457,11 +457,128 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Phase 2c: Build, test, and pack all public @zena-lang/* npm tarballs.
+  build-npm:
+    name: Pack npm packages
+    needs: build-assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      npm_version: ${{ steps.pack-npm.outputs.npm_version }}
+    env:
+      WORKSPACE_CRATES: |
+        target/zena-rust-sources.tsv
+        target/release/zena-run
+        target/release/zena-cli
+        target/release/*.d
+        target/release/.fingerprint/workspace-hack-*
+        target/release/.fingerprint/zena-*
+        target/release/build/workspace-hack-*
+        target/release/build/zena-*
+        target/release/deps/*workspace_hack*
+        target/release/deps/*zena_*
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Put the dev shell's cargo and rustc on PATH
+        run: |
+          # shellcheck disable=SC2016
+          nix develop --command bash -c 'dirname "$(command -v rustc)"; dirname "$(command -v cargo)"' >> "$GITHUB_PATH"
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          save-if: false
+
+      - name: Restore the workspace crates
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.WORKSPACE_CRATES }}
+          key: rust-workspace-${{ runner.os }}-${{ hashFiles('.github/workflows/test.yml', 'scripts/ci-cargo-freshness.py', 'Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/zena-cli/Cargo.toml', 'packages/zena-cli/build.rs', 'packages/zena-cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
+          restore-keys: rust-workspace-${{ runner.os }}-
+
+      - name: Restore the Rust sources' times from the cached build
+        run: python3 scripts/ci-cargo-freshness.py restore
+
+      - name: Setup Wireit GitHub Actions Caching
+        uses: google/wireit@setup-github-actions-caching/v2
+
+      - name: Install npm dependencies
+        run: nix develop --command npm ci
+
+      - name: Build and test public npm packages
+        env:
+          WIREIT_PARALLEL: 2
+        run: |
+          nix develop --command bash -c '
+            npm test -w @zena-lang/runtime
+            npm test -w @zena-lang/compiler
+            npm test -w @zena-lang/playground
+            npm test -w @zena-lang/wasm-web-ui
+          '
+
+      - name: Pack npm tarballs in dependency order
+        id: pack-npm
+        run: |
+          rm -rf dist-npm
+          mkdir -p dist-npm
+
+          PACKAGES=(
+            "packages/runtime"
+            "packages/compiler"
+            "packages/codemirror"
+            "packages/wasm-web-ui"
+            "packages/playground"
+          )
+
+          COMPILER_VERSION="$(jq -r '.version' packages/compiler/package.json)"
+          echo "npm_version=${COMPILER_VERSION}" >> "$GITHUB_OUTPUT"
+
+          MANIFEST='[]'
+          for dir in "${PACKAGES[@]}"; do
+            if [ "$(jq -r '.private // false' "${dir}/package.json")" = "true" ]; then
+              echo "::error::Expected ${dir} to be a public npm package, but private=true"
+              exit 1
+            fi
+            pkg_name="$(jq -r '.name' "${dir}/package.json")"
+            pkg_version="$(jq -r '.version' "${dir}/package.json")"
+            if ! [[ "$pkg_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$ ]]; then
+              echo "::error::Invalid release version '${pkg_version}' in ${dir}/package.json"
+              exit 1
+            fi
+            tarball="$(nix develop --command npm pack "./${dir}" --pack-destination dist-npm --silent | tail -n 1)"
+            if [ ! -s "dist-npm/${tarball}" ]; then
+              echo "::error::Packed tarball dist-npm/${tarball} is missing or empty"
+              exit 1
+            fi
+            echo "Packed ${pkg_name}@${pkg_version} -> dist-npm/${tarball}"
+            MANIFEST="$(jq -cn --argjson list "$MANIFEST" --arg name "$pkg_name" --arg version "$pkg_version" --arg tarball "$tarball" '$list + [{name: $name, version: $version, tarball: $tarball}]')"
+          done
+
+          printf '%s\n' "$MANIFEST" | jq . > dist-npm/manifest.json
+          cat dist-npm/manifest.json
+
+      - name: Upload npm tarballs
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-tarballs
+          path: |
+            dist-npm/*.tgz
+            dist-npm/manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
   # Phase 4a: Aggregate platform archives and VSIX, create unversioned asset copies,
   # verify SHA256SUMS, and format the release notes (runs on dry_run too).
   assemble:
     name: Assemble release bundle
-    needs: [build-assets, build-native, build-vscode]
+    needs: [build-assets, build-native, build-vscode, build-npm]
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -482,7 +599,9 @@ jobs:
       - name: Create unversioned copies, SHA256SUMS, and release notes
         env:
           TAG: ${{ needs.build-assets.outputs.tag }}
+          PRERELEASE: ${{ needs.build-assets.outputs.prerelease }}
           VSIX_VERSION: ${{ needs.build-vscode.outputs.vsix_version }}
+          NPM_VERSION: ${{ needs.build-npm.outputs.npm_version }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           cd dist
@@ -526,6 +645,11 @@ jobs:
           fi
           sha256sum -c SHA256SUMS
 
+          NPM_TAG_SUFFIX=""
+          if [ "$PRERELEASE" = "true" ] || [[ "$NPM_VERSION" == *-* ]]; then
+            NPM_TAG_SUFFIX="@next"
+          fi
+
           # shellcheck disable=SC2016
           {
             cat ../release-meta/release-notes.md
@@ -535,6 +659,7 @@ jobs:
             printf '**Windows (PowerShell):**\n\n```powershell\n$env:ZENA_VERSION = '\''%s'\''; irm https://zena-lang.dev/install.ps1 | iex\n```\n\n' "$TAG"
             printf 'Omit `ZENA_VERSION` to install the latest release.\n\n'
             printf '**VS Code Extension:**\n\n```sh\ncode --install-extension %s\n```\n\n' "$VSIX_VERSIONED"
+            printf '**npm Packages (`@zena-lang/*`):**\n\n```sh\nnpm install @zena-lang/compiler%s @zena-lang/runtime%s\n```\n\n' "$NPM_TAG_SUFFIX" "$NPM_TAG_SUFFIX"
             printf '### Downloads\n\n'
             printf '| Platform | Archive | SHA-256 |\n'
             printf '| --- | --- | --- |\n'
@@ -565,15 +690,16 @@ jobs:
           retention-days: 7
 
   # Phase 4b: Tag the commit, publish the GitHub Release, and optionally publish
-  # the VS Code extension to VS Code Marketplace and Open VSX. Skipped on dry_run.
+  # to npm, VS Code Marketplace, and Open VSX. Skipped on dry_run.
   publish:
     name: Publish GitHub Release
-    needs: [build-assets, build-vscode, assemble]
+    needs: [build-assets, build-vscode, build-npm, assemble]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       contents: write
+      id-token: write
 
     steps:
       - name: Checkout repository
@@ -586,6 +712,12 @@ jobs:
         with:
           name: release-bundle
           path: dist
+
+      - name: Download npm tarballs
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-tarballs
+          path: dist-npm
 
       - name: Verify SHA256SUMS before publishing
         run: |
@@ -623,14 +755,22 @@ jobs:
             --notes-file dist/RELEASE_NOTES.md \
             "${PRERELEASE_FLAG[@]}"
 
-      - name: Check extension marketplace credentials
+      - name: Check registry credentials
         id: creds
         env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TRUSTED_PUBLISHING: ${{ vars.NPM_TRUSTED_PUBLISHING }}
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: |
+          HAS_NPM="false"
           HAS_VSCE="false"
           HAS_OVSX="false"
+          if [ -n "${NPM_TOKEN:-}" ] || [ "${NPM_TRUSTED_PUBLISHING:-}" = "true" ]; then
+            HAS_NPM="true"
+          else
+            echo "::notice::Neither NPM_TOKEN secret nor NPM_TRUSTED_PUBLISHING=true variable is configured; skipping npm publish."
+          fi
           if [ -n "${VSCE_PAT:-}" ]; then
             HAS_VSCE="true"
           else
@@ -641,22 +781,67 @@ jobs:
           else
             echo "::notice::OVSX_PAT is not configured; skipping Open VSX publish."
           fi
-          ANY="false"
+          NEEDS_NIX="false"
+          NEEDS_MARKETPLACE_DEPS="false"
           if [ "$HAS_VSCE" = "true" ] || [ "$HAS_OVSX" = "true" ]; then
-            ANY="true"
+            NEEDS_MARKETPLACE_DEPS="true"
+          fi
+          if [ "$HAS_NPM" = "true" ] || [ "$NEEDS_MARKETPLACE_DEPS" = "true" ]; then
+            NEEDS_NIX="true"
           fi
           {
+            echo "has_npm=${HAS_NPM}"
             echo "has_vsce=${HAS_VSCE}"
             echo "has_ovsx=${HAS_OVSX}"
-            echo "any=${ANY}"
+            echo "needs_nix=${NEEDS_NIX}"
+            echo "needs_marketplace_deps=${NEEDS_MARKETPLACE_DEPS}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install Nix for marketplace CLI tools
-        if: steps.creds.outputs.any == 'true'
+      - name: Install Nix for registry CLI tools
+        if: steps.creds.outputs.needs_nix == 'true'
         uses: DeterminateSystems/determinate-nix-action@v3
 
+      - name: Publish @zena-lang/* packages to npm
+        if: steps.creds.outputs.has_npm == 'true'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PRERELEASE: ${{ needs.build-assets.outputs.prerelease }}
+        run: |
+          NPMRC="${RUNNER_TEMP}/.npmrc-publish"
+          rm -f "$NPMRC"
+          touch "$NPMRC"
+          chmod 600 "$NPMRC"
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$NPMRC"
+          fi
+
+          COUNT="$(jq 'length' dist-npm/manifest.json)"
+          for ((i = 0; i < COUNT; i++)); do
+            pkg_name="$(jq -r ".[$i].name" dist-npm/manifest.json)"
+            pkg_version="$(jq -r ".[$i].version" dist-npm/manifest.json)"
+            tarball="$(jq -r ".[$i].tarball" dist-npm/manifest.json)"
+
+            if nix develop --command npm view "${pkg_name}@${pkg_version}" version >/dev/null 2>&1; then
+              echo "Skipping ${pkg_name}@${pkg_version} (already published on npm)"
+              continue
+            fi
+
+            dist_tag="latest"
+            if [ "$PRERELEASE" = "true" ] || [[ "$pkg_version" == *-* ]]; then
+              dist_tag="next"
+            fi
+
+            echo "Publishing ${pkg_name}@${pkg_version} with dist-tag '${dist_tag}'..."
+            NPM_CONFIG_USERCONFIG="$NPMRC" nix develop --command npm publish \
+              "dist-npm/${tarball}" \
+              --access public \
+              --provenance \
+              --tag "$dist_tag"
+          done
+          rm -f "$NPMRC"
+
       - name: Install npm dependencies for marketplace CLI tools
-        if: steps.creds.outputs.any == 'true'
+        if: steps.creds.outputs.needs_marketplace_deps == 'true'
         run: nix develop --command npm ci
 
       - name: Publish VSIX to VS Code Marketplace
