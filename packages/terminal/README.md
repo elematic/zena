@@ -93,6 +93,11 @@ export async function main(): Future<i32> {
   boxed notes.
 - `terminal/animation` — `Spinner`: a spinner (`◒`, `◐`, `◓`, `◑`) on the
   last line of the terminal, with lines printed above it.
+- `terminal/output` — `Output`: prints a command's progress with the
+  layout and the spinner. Steps and the summary go to stdout; warnings and
+  failures go to stderr, in their place on the line, so that a program
+  reading stdout gets the progress alone. `waitFor` shows the spinner
+  until a future completes, and `run` turns an exception into a failure.
 - `terminal/prompts` — `Prompts`: `text`, `password`, `confirm`, `select`
   and `multiselect`.
 - `terminal/keys` — the keys pressed in the terminal (`TerminalKeys`), and

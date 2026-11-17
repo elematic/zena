@@ -13,3 +13,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `terminal/prompts`: prompts that the user answers with the keyboard (`text`, `password`, `confirm`, `select` and `multiselect`), which throw `PromptCancelled` on Escape or Ctrl+C and `PromptUnavailable` where there is no terminal.
 - `terminal/keys`: the keys a terminal in raw mode sends (`KeyDecoder`), read from stdin by `TerminalKeys`, or given in advance by `ScriptedKeys` for tests.
 - `isTerminalStdin` in `terminal/colors`.
+- `terminal/output`: `Output`, which prints a command's progress on the rail, with a spinner while it waits.

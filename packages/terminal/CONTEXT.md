@@ -19,11 +19,14 @@ once, rather than in either program.
   a private class that draws itself in a `PromptState` and answers a
   key; `Prompts.#loop` opens the keys, draws, and after each key moves
   the cursor up over the previous frame (`rowsAbove`) and draws again.
+- `src/output.zena`: `Output`, which prints a command's progress with the
+  layout and the spinner: steps on stdout, warnings and failures on
+  stderr, and a spinner while it waits (`waitFor`), advanced by a timer.
 - `examples/prompts.zena`: one of each prompt, to try in a terminal.
 - `test/terminal_test.zena`: colors, layout and animation;
   `test/keys_test.zena` and `test/prompts_test.zena`: decoding, and each
   prompt answered with `ScriptedKeys`, comparing the frames drawn
-  without color.
+  without color; `test/output_test.zena`: `Output`, writing into strings.
 
 ## Rules
 

@@ -26,23 +26,27 @@ import { Future } from 'zena:async';
 import { getEnv } from 'zena:cli';
 import { HashSet, OrderedHashMap } from 'zena:collections';
 import { exists, readFile, writeFile } from 'zena:fs';
+import { relative } from 'zena:path';
+import { join } from 'zena:core';
 import { Cid } from 'atproto/cid';
+import { DidDocument } from 'atproto/did';
 import { IdentityResolver } from 'atproto/identity';
 import { writeDependencies } from 'package-manager/manifest';
-import { isValidLocalName, parsePackageVersion } from 'package-manager/records';
+import { Profile, isValidLocalName, parsePackageVersion } from 'package-manager/records';
 import {
-  DEFAULT_DOMAIN, fetchProfile, isScopedIdentifier, listVersions, NetworkSource, resolveIdentifier, scopedHandle,
-  scopedName
+  DEFAULT_DOMAIN, fetchProfile, isScopedIdentifier, listVersions, NetworkSource, resolveIdentifier,
+  scopedHandle, scopedName
 } from 'package-manager/registry';
 import {
-  Pin, PinAdded, PinChange, PinChangedInPlace, PinRemoved, PinVersionChanged, diffPins, packageKey, readPins,
-  writeLockfile
+  Pin, PinAdded, PinChange, PinChangedInPlace, PinRemoved, PinVersionChanged, Resolution, diffPins, packageKey,
+  readPins, writeLockfile
 } from 'package-manager/resolution';
-import { Requirement, resolve } from 'package-manager/resolve';
+import { Requirement, Versions, resolve } from 'package-manager/resolve';
 import { Range, Version } from 'zena-lang:semver';
+import { Output } from 'zena-lang:terminal/output';
 import { DiskFiles, Workspace, WorkspacePackage, readWorkspace } from 'package-manager/workspace';
 import { Options, workspaceRoot, userCwd } from '../env.zena';
-import { fetchAndReport, packageResolver } from './fetch.zena';
+import { countOf, fetchAndReport, packageResolver } from './fetch.zena';
 import { findRegistry } from './publish.zena';
 
 /**
@@ -63,6 +67,12 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
     console.error('Error: zena pkg add takes one package: a DID, a handle or scope:name, with @<version> if wanted.');
     return 2;
   }
+  let output = new Output();
+  output.intro(`zena pkg add ${args.rest[0]}`);
+  return await output.run(() => add(args, options, output));
+}
+
+async function add(args: ParsedArgs, options: Options, output: Output): Future<i32> {
   let (identifier, versionText) = splitVersion(args.rest[0]);
   let workspace = await readWorkspace(workspaceRoot().value, new DiskFiles());
   let target = workspace.packageAt(userCwd().value);
@@ -71,22 +81,23 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
   let resolver = packageResolver();
   let scopedIdentifier = isScopedIdentifier(identifier);
   let domain = if (scopedIdentifier) await scopeDomain(args) else DEFAULT_DOMAIN;
-  let did = await resolveIdentifier(identifier, workspace.root.manifest.scopes, resolver, domain);
-  let document = await resolver.resolveDid(did);
+  let did = await output.waitFor<String>(`Looking up ${identifier}`,
+      resolveIdentifier(identifier, workspace.root.manifest.scopes, resolver, domain));
+  let document = await output.waitFor<DidDocument>(`Looking up ${did}`, resolver.resolveDid(did));
 
   var version: Version | null = null;
   if (versionText != null) {
     version = parsePackageVersion(versionText);
   } else {
-    let versions = await listVersions(document);
+    let versions = await output.waitFor<Versions>(`Listing the versions of ${identifier}`,
+        listVersions(document));
     version = versions.preferred();
     if (version == null) {
-      console.error(if (versions.releases.length == 0) `Error: ${identifier} (${did}) has no releases yet.`
-          else `Error: every release of ${identifier} (${did}) is retracted.`);
-      return 1;
+      return output.fail(if (versions.releases.length == 0) `${identifier} (${did}) has no releases yet.`
+          else `Every release of ${identifier} (${did}) is retracted.`);
     }
     if (version.isPrerelease) {
-      console.log(`${identifier} has no stable release, so this adds its latest pre-release, ${version.toString()}.`);
+      output.warn(`${identifier} has no stable release, so this adds its latest pre-release, ${version.toString()}.`);
     }
   }
   let chosen = version;
@@ -110,29 +121,29 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
     if (scoped != null) {
       name = scoped;
     } else {
-      let profile = await fetchProfile(document);
+      let profile = await output.waitFor<Profile | null>(`Reading the profile of ${identifier}`,
+          fetchProfile(document));
       if (profile == null) {
-        console.error(`Error: ${identifier} has no profile to suggest a name; give one with --name.`);
-        return 1;
+        return output.fail(`${identifier} has no profile to suggest a name; give one with --name.`);
       }
       name = profile.name;
     }
   }
   if (!isValidLocalName(name)) {
-    console.error(`Error: '${name}' is not a valid local name: a package name, or scope:name.`);
-    return 1;
+    return output.fail(`'${name}' is not a valid local name: a package name, or scope:name.`);
   }
   let taken = nameTaken(workspace, target, name, did);
   if (taken != null) {
-    console.error(`Error: '${name}' already names ${taken}; give this package another name with --name.`);
-    return 1;
+    return output.fail(`'${name}' already names ${taken}; give this package another name with --name.`);
   }
 
   requirements[name] = new Requirement(did, Range.parse(`^${chosen.toString()}`));
-  console.log(`Adding ${name} to ${target.manifestPath()}: ${did} ${chosen.toString()}`);
+  output.step(`Found ${name} ${chosen.toString()}`, did);
   // The version chosen is kept, as a pin is, where the ranges allow it.
   let chosenKey = packageKey(did, chosen);
-  return await resolveWriteAndFetch(workspace, target, resolver, args, options, (pin) => true, chosenKey);
+  return await resolveWriteAndFetch(workspace, target, resolver, args, options, output,
+      `Added ${name} ${chosen.toString()} to ${relative(userCwd().value, target.manifestPath())}`, (pin) => true,
+      chosenKey);
 }
 
 /**
@@ -141,11 +152,17 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
  * gets the highest version it can. The manifests do not change.
  */
 export async function updateCommand(args: ParsedArgs, options: Options): Future<i32> {
+  let output = new Output();
+  output.intro(if (args.rest.length == 0) 'zena pkg update' else `zena pkg update ${join(args.rest, ' ')}`);
+  return await output.run(() => update(args, options, output));
+}
+
+async function update(args: ParsedArgs, options: Options, output: Output): Future<i32> {
   let workspace = await readWorkspace(workspaceRoot().value, new DiskFiles());
   let target = workspace.packageAt(userCwd().value);
   let requirements = target.manifest.requirements;
   if (requirements.size == 0) {
-    console.log(`Nothing to update: ${target.manifestPath()} declares no published dependencies.`);
+    output.outro(`Nothing to update: ${target.manifestPath()} declares no published dependencies.`);
     return 0;
   }
   let dids = new HashSet<String>();
@@ -153,13 +170,12 @@ export async function updateCommand(args: ParsedArgs, options: Options): Future<
     if (let (true, requirement) = requirements.get(name)) {
       dids.add(requirement.did);
     } else {
-      console.error(`Error: ${target.manifestPath()} has no published dependency named '${name}'.`);
-      return 1;
+      return output.fail(`${target.manifestPath()} has no published dependency named '${name}'.`);
     }
   }
   let named = args.rest.length > 0;
-  return await resolveWriteAndFetch(workspace, target, packageResolver(), args, options,
-      (pin) => named && !dids.has(pin.did));
+  return await resolveWriteAndFetch(workspace, target, packageResolver(), args, options, output,
+      'Updated the versions zena-lock.json pins', (pin) => named && !dids.has(pin.did));
 }
 
 /**
@@ -223,22 +239,22 @@ function nameTaken(workspace: Workspace, target: WorkspacePackage, name: String,
  * requirements, keeping the pins `keep` accepts, and the version `also`
  * names, where the ranges allow,
  * writes `target`'s manifest and the lockfile, prints what changed in its
- * pins, and fetches what it pins. A version lowered to share it with
- * another package is a warning, and so, with `--duplicates warn` or the
- * root manifest's `"duplicates": "warn"`, is a package selected at two
- * versions. Nothing is written when selection fails, when a pinned release
- * changed in place and `--allow-changed` is not given, or when a package
- * has two versions under `--duplicates error`.
+ * pins, fetches what it pins, and closes the rail with `done`. A version
+ * lowered to share it with another package is a warning, and so, with
+ * `--duplicates warn` or the root manifest's `"duplicates": "warn"`, is a
+ * package selected at two versions. Nothing is written when selection
+ * fails, when a pinned release changed in place and `--allow-changed` is
+ * not given, or when a package has two versions under `--duplicates error`.
  */
 async function resolveWriteAndFetch(workspace: Workspace, target: WorkspacePackage,
-    resolver: IdentityResolver, args: ParsedArgs, options: Options, keep: (pin: Pin) => boolean,
-    also: String | null = null): Future<i32> {
+    resolver: IdentityResolver, args: ParsedArgs, options: Options, output: Output, done: String,
+    keep: (pin: Pin) => boolean, also: String | null = null): Future<i32> {
   var duplicates = workspace.root.manifest.duplicates;
   if (let (true, given) = args.getOption('duplicates')) {
     duplicates = given;
   }
   if (duplicates != 'allow' && duplicates != 'warn' && duplicates != 'error') {
-    console.error(`Error: --duplicates is allow, warn or error, not '${duplicates}'.`);
+    output.fail(`--duplicates is allow, warn or error, not '${duplicates}'.`);
     return 2;
   }
   let requirements = target.manifest.requirements;
@@ -253,45 +269,60 @@ async function resolveWriteAndFetch(workspace: Workspace, target: WorkspacePacka
   if (also != null) {
     preferred.add(also);
   }
-  let resolution = await resolve(workspace.requirements(), new NetworkSource(resolver), preferred);
+  let resolution = await output.waitFor<Resolution>('Selecting versions',
+      resolve(workspace.requirements(), new NetworkSource(resolver), preferred));
   let changes = diffPins(before, resolution);
-  if (!args.getFlag('allow-changed') && refuseChangedInPlace(changes)) {
-    return 1;
+  if (!args.getFlag('allow-changed')) {
+    let changed = changedInPlace(changes);
+    if (changed != '') {
+      return output.fail(changed);
+    }
   }
   let twice = resolution.duplicates();
   if (twice.size > 0 && duplicates == 'error') {
+    var refused = '';
     twice.forEach((did, versions) => {
-      console.error(`Error: ${did} would be installed at ${listVersionsOf(versions)}.`);
+      refused = `${refused}${did} would be installed at ${listVersionsOf(versions)}.\n`;
     });
-    console.error('Nothing was written: --duplicates error refuses a package at two versions.');
-    return 1;
+    return output.fail(`${refused}Nothing was written: --duplicates error refuses a package at two versions.`);
   }
   let lockfile = writeLockfile(resolution, workspace.pinsByPackage(resolution));
   await writeFile(target.manifestPath(), writeDependencies(target.text, requirements, target.manifest.paths));
   await writeFile(lockfilePath, lockfile);
-  if (changes.length == 0) {
-    console.log('zena-lock.json is unchanged.');
-  }
+  var described = '';
   for (let change in changes) {
     if (let PinVersionChanged {pin, now} = change) {
       if (now.version.compareTo(pin.version) < 0) {
         // Selection lowers a version only to install one where it would
         // otherwise install two.
-        console.error(`warning: ${describeChange(change)}, to share one version with another package`);
+        output.warn(`${describeChange(change)}, to share one version with another package`);
         continue;
       }
     }
-    console.log(describeChange(change));
+    described = `${described}${describeChange(change)}\n`;
   }
   twice.forEach((did, versions) => {
     let line = `${did} is installed at ${listVersionsOf(versions)}, for ranges no one version is in`;
     if (duplicates == 'warn') {
-      console.error(`warning: ${line}`);
+      output.warn(line);
     } else {
-      console.log(line);
+      described = `${described}${line}\n`;
     }
   });
-  return await fetchAndReport(readPins(lockfile), options);
+  if (changes.length == 0) {
+    output.step('zena-lock.json is unchanged.');
+  } else {
+    output.step('Updated zena-lock.json');
+  }
+  if (described != '') {
+    output.lines(described);
+  }
+  let failed = await fetchAndReport(readPins(lockfile), options, output);
+  if (failed > 0) {
+    return output.fail(`${countOf(failed, 'package')} could not be fetched.`);
+  }
+  output.outro(done);
+  return 0;
 }
 
 /** `versions` as `1.1.5 and 1.9.0`. */
@@ -305,25 +336,22 @@ function listVersionsOf(versions: GrowableArray<Version>): String {
 }
 
 /**
- * Whether `changes` has a release changed in place; if so, says which,
- * and how to pin them anyway.
+ * What says which of `changes` have releases changed in place, and how to
+ * pin them anyway, or '' when none has.
  */
-function refuseChangedInPlace(changes: GrowableArray<PinChange>): boolean {
-  var refused = false;
+function changedInPlace(changes: GrowableArray<PinChange>): String {
+  var lines = '';
   for (let change in changes) {
     if (let PinChangedInPlace {pin, now} = change) {
-      if (!refused) {
-        console.error('Error: these releases have other CIDs than zena-lock.json pins, at the same version:');
-        refused = true;
-      }
-      console.error(`  ${pin.key}: ${cidsChanged(pin, now.release, now.source)}`);
+      lines = `${lines}  ${pin.key}: ${cidsChanged(pin, now.release, now.source)}\n`;
     }
   }
-  if (refused) {
-    console.error('A published version never changes, so its PDS or its package host changed it. Nothing was written.');
-    console.error('To pin these releases as they are now, run the command again with --allow-changed.');
+  if (lines == '') {
+    return '';
   }
-  return refused;
+  return `These releases have other CIDs than zena-lock.json pins, at the same version:\n${lines}` +
+      'A published version never changes, so its PDS or its package host changed it. Nothing was written.\n' +
+      'To pin these releases as they are now, run the command again with --allow-changed.';
 }
 
 /** A line saying what `change` does to the lockfile. */

@@ -1,0 +1,199 @@
+/**
+ * A command's progress, printed on the rail.
+ *
+ * `Output` opens the rail with the command's title, prints a line for each
+ * step, indents what other programs printed under the step that ran them,
+ * and closes the rail with a summary. While the command waits on
+ * something, `waitFor` shows a spinner saying what it waits for. Steps and
+ * the summary go to stdout. Warnings and failures go to stderr, in their
+ * place on the rail, so that a program reading stdout gets the progress
+ * alone.
+ */
+
+import {Future} from 'zena:async';
+import {logString} from 'zena:console';
+import {milliseconds, sleep} from 'zena:time';
+import {Spinner, shouldAnimate} from './animation.zena';
+import {Colors, isTerminalStderr, shouldUseColor} from './colors.zena';
+import {BAR_END, RailLayout, StepKind} from './layout.zena';
+
+/** How long the spinner shows each frame, in milliseconds. */
+let FRAME_MILLIS = 80 as i64;
+
+function errorLine(line: String) {
+  console.error(line);
+}
+
+/**
+ * Prints a command's steps on the rail: `intro`, then `step`, `lines`,
+ * `warn` and `fail` in any order, with `waitFor` around the waits, then
+ * `outro`.
+ */
+export class Output {
+  #rail: RailLayout;
+  #errorRail: RailLayout;
+  #spinner: Spinner;
+  #write: (text: String) => void;
+  #writeError: (line: String) => void;
+  /** Whether the last line printed is the rail alone, which the next step then reuses. */
+  var #afterBar = false;
+  /** Counts the waits, so that a wait's animation stops when the next begins or it ends. */
+  var #waits = 0;
+
+  new(
+    interactive: boolean = shouldAnimate(),
+    colors: Colors = new Colors(),
+    errorColors: Colors = new Colors(shouldUseColor(isTerminalStderr())),
+    write: (text: String) => void = logString,
+    writeError: (line: String) => void = errorLine,
+  ) : #rail = new RailLayout(colors),
+      #errorRail = new RailLayout(errorColors),
+      #spinner = new Spinner(interactive, colors, write),
+      #write = write,
+      #writeError = writeError;
+
+  /** Opens the rail with the command's title (`┌  title`). */
+  intro(title: String): void {
+    this.#line(this.#rail.intro(title));
+  }
+
+  /** A step done: `◇  message`, with `detail` dimmed after it. */
+  step(message: String, detail: String = '', kind: StepKind = StepKind.Success): void {
+    this.#bar();
+    this.#line(this.#rail.step(kind, message, detail));
+  }
+
+  /** Lines under the last step, on the rail: what another program printed, or a list. */
+  lines(text: String): void {
+    for (let line in this.#rail.logBlock(text)) {
+      this.#line(line);
+    }
+  }
+
+  /**
+   * A warning, on stderr: `▲  message`. The lines of `message` after the
+   * first are indented under it.
+   */
+  warn(message: String): void {
+    this.#errorStep(StepKind.Warning, message);
+  }
+
+  /**
+   * An error, on stderr: `■  message`. The lines of `message` after the
+   * first are indented under it. The command goes on; `fail` ends it.
+   */
+  error(message: String): void {
+    this.#errorStep(StepKind.Error, message);
+  }
+
+  /**
+   * A failure that ends the command: `error(message)`, and the rail
+   * closed after it. Returns 1, the exit status of a command that failed.
+   */
+  fail(message: String): i32 {
+    this.error(message);
+    this.#errorLine(this.#errorRail.colors.gray(BAR_END));
+    return 1;
+  }
+
+  /**
+   * Runs `body`, the rest of a command, and returns its exit status. When
+   * it throws, the error's message fails the command.
+   */
+  async run(body: () => Future<i32>): Future<i32> {
+    try {
+      return await body();
+    } catch (e) {
+      return this.fail(e.message);
+    }
+  }
+
+  /** Closes the rail with a summary (`└  message`). */
+  outro(message: String): void {
+    this.#bar();
+    this.#line(this.#rail.outro(message));
+  }
+
+  /**
+   * Waits for `work`, with a spinner saying `message` on the line below
+   * the rail. The spinner is erased when `work` completes or fails, and
+   * draws nothing where output does not animate.
+   */
+  async waitFor<T>(message: String, work: Future<T>): Future<T> {
+    let spinner = this.#spinner;
+    if (!spinner.interactive) {
+      return await work;
+    }
+    this.#bar();
+    this.#waits += 1;
+    let wait = this.#waits;
+    spinner.start(message);
+    this.#animate(wait);
+    try {
+      return await work;
+    } finally {
+      this.#waits += 1;
+      spinner.stop();
+    }
+  }
+
+  /** Advances the spinner every frame until wait `wait` ends. */
+  async #animate(wait: i32): Future<void> {
+    while (this.#waits == wait) {
+      await sleep(milliseconds(FRAME_MILLIS));
+      if (this.#waits == wait) {
+        this.#spinner.tick();
+      }
+    }
+  }
+
+  #bar(): void {
+    if (!this.#afterBar) {
+      this.#line(this.#rail.bar());
+      this.#afterBar = true;
+    }
+  }
+
+  #errorStep(kind: StepKind, message: String): void {
+    this.#errorBar();
+    let rail = this.#errorRail;
+    let newline = message.indexOf('\n');
+    if (let (true, at) = newline) {
+      this.#errorLine(rail.step(kind, message.slice(message.startIndex, at)));
+      for (let line in rail.logBlock(message.slice(message.indexAfter(at)), kind == StepKind.Error)) {
+        this.#errorLine(line);
+      }
+    } else {
+      this.#errorLine(rail.step(kind, message));
+    }
+  }
+
+  /** The rail on stderr, unless stdout's last line already is the rail. */
+  #errorBar(): void {
+    if (!this.#afterBar) {
+      this.#errorLine(this.#errorRail.bar());
+    }
+  }
+
+  /** Prints `text` on stdout, above the spinner when one is showing. */
+  #line(text: String): void {
+    this.#afterBar = false;
+    let spinner = this.#spinner;
+    if (spinner.isActive) {
+      spinner.writeLine(text);
+    } else {
+      let write = this.#write;
+      write(`${text}\n`);
+    }
+  }
+
+  /** Prints `line` on stderr, above the spinner when one is showing. */
+  #errorLine(line: String): void {
+    this.#afterBar = false;
+    let spinner = this.#spinner;
+    let writeError = this.#writeError;
+    spinner.clear();
+    writeError(line);
+    spinner.redraw();
+  }
+}

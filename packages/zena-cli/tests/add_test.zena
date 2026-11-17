@@ -105,15 +105,18 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
 
       // preview has only pre-releases, and its newest is retracted.
       let preview = await zena.run(['pkg', 'add', 'acme:preview']);
-      isTrue(preview.succeeded() && preview.stdout.contains(
+      isTrue(preview.succeeded() && preview.stderr.contains(
           'acme:preview has no stable release, so this adds its latest pre-release, 0.1.0-preview.2.'),
           described(preview));
+      // The steps are on the rail, from the command to what it added.
+      isTrue(preview.stdout.startsWith('┌  zena pkg add acme:preview\n') &&
+          preview.stdout.contains('└  Added acme:preview 0.1.0-preview.2 to zena-package.json'), described(preview));
       let text = await read(manifest);
       isTrue(text.contains('"acme:preview"') && text.contains('^0.1.0-preview.2'), text);
 
       // A package whose every release is retracted, and one with none.
       let gone = await zena.run(['pkg', 'add', 'acme:gone']);
-      isTrue(!gone.succeeded() && gone.stderr.contains('every release of acme:gone') &&
+      isTrue(!gone.succeeded() && gone.stderr.contains('■  Every release of acme:gone') &&
           gone.stderr.contains('is retracted'), described(gone));
       let empty = await zena.run(['pkg', 'add', 'acme:empty']);
       isTrue(!empty.succeeded() && empty.stderr.contains('acme:empty') && empty.stderr.contains('has no releases yet'),
@@ -150,7 +153,7 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
       equal(await read(lockfile), pins);
 
       let warned = await zena.run(['pkg', 'update', '--duplicates', 'warn']);
-      isTrue(warned.succeeded() && warned.stderr.contains('warning: did:plc:jsonjsonjsonjsonjsonjson is installed at 2.0.0 and 2.1.0'),
+      isTrue(warned.succeeded() && warned.stderr.contains('▲  did:plc:jsonjsonjsonjsonjsonjson is installed at 2.0.0 and 2.1.0'),
           described(warned));
       let both = await read(lockfile);
       isTrue(both.contains('jsonjson@2.0.0') && both.contains('jsonjson@2.1.0'), both);

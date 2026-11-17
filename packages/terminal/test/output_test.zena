@@ -1,0 +1,100 @@
+import {Future} from 'zena:async';
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {StringBuilder} from 'zena:core';
+import {CLEAR_LINE} from 'terminal/animation';
+import {Colors, stripAnsi} from 'terminal/colors';
+import {StepKind} from 'terminal/layout';
+import {Output} from 'terminal/output';
+
+/** What an `Output` without color wrote to stdout and to stderr. */
+class Capture {
+  stdout = new StringBuilder();
+  stderr = new StringBuilder();
+}
+
+function outputInto(capture: Capture, interactive: boolean = false) {
+  let stdout = capture.stdout;
+  let stderr = capture.stderr;
+  return new Output(interactive, new Colors(false), new Colors(false), (text) => {
+    stdout.append(text);
+  }, (line) => {
+    stderr.append(`${line}\n`);
+  });
+}
+
+async function answer(): Future<i32> {
+  return 42;
+}
+
+async function broken(): Future<i32> {
+  throw new Error('The PDS did not answer.');
+}
+
+export let tests = suite('Output', () => {
+  test('steps, lines and the summary on stdout', (ctx) => {
+    let capture = new Capture();
+    let output = outputInto(capture);
+    output.intro('zena pkg add acme:json');
+    output.step('Resolved acme:json', '2.1.0');
+    output.lines('Added acme:json@2.1.0\nAdded acme:log@1.0.0');
+    output.step('Fetching', '', StepKind.Active);
+    output.outro('Added acme:json 2.1.0');
+    equal(capture.stdout.toString(),
+      '┌  zena pkg add acme:json\n│\n◇  Resolved acme:json 2.1.0\n' +
+      '│  Added acme:json@2.1.0\n│  Added acme:log@1.0.0\n│\n◆  Fetching\n' +
+      '│\n└  Added acme:json 2.1.0\n');
+    equal(capture.stderr.toString(), '');
+  });
+
+  test('warnings and failures on stderr, in their place on the rail', (ctx) => {
+    let capture = new Capture();
+    let output = outputInto(capture);
+    output.intro('zena pkg add acme:gone');
+    output.warn('acme:gone has no stable release');
+    output.step('Resolved acme:gone');
+    equal(output.fail('Every release of acme:gone is retracted.'), 1);
+    equal(capture.stdout.toString(), '┌  zena pkg add acme:gone\n│\n◇  Resolved acme:gone\n');
+    equal(capture.stderr.toString(),
+      '│\n▲  acme:gone has no stable release\n│\n■  Every release of acme:gone is retracted.\n└\n');
+  });
+
+  test('run returns the body\'s status, or fails with what it threw', async (ctx) => {
+    let capture = new Capture();
+    let output = outputInto(capture);
+    equal(await output.run(answer), 42);
+    equal(await output.run(broken), 1);
+    equal(capture.stderr.toString(), '│\n■  The PDS did not answer.\n└\n');
+  });
+
+  test('the lines of an error after the first are indented under it', (ctx) => {
+    let capture = new Capture();
+    let output = outputInto(capture);
+    output.error('Two releases changed:\n  acme:json@2.1.0\n  acme:log@1.0.0');
+    output.warn('Look at them.');
+    equal(capture.stderr.toString(),
+      '│\n■  Two releases changed:\n│    acme:json@2.1.0\n│    acme:log@1.0.0\n│\n▲  Look at them.\n');
+  });
+
+  test('waitFor returns what it waited for, and draws nothing without a terminal', async (ctx) => {
+    let capture = new Capture();
+    let output = outputInto(capture);
+    equal(await output.waitFor<i32>('Waiting', answer()), 42);
+    output.step('Done waiting');
+    equal(capture.stdout.toString(), '│\n◇  Done waiting\n');
+  });
+
+  test('waitFor shows a spinner, and the step after it reuses its rail', async (ctx) => {
+    let capture = new Capture();
+    let output = outputInto(capture, true);
+    output.intro('zena pkg fetch');
+    equal(await output.waitFor<i32>('Fetching 2 packages', answer()), 42);
+    output.step('Fetched 2 packages');
+    let written = capture.stdout.toString();
+    isTrue(written.contains('◒  Fetching 2 packages'), written);
+    // The spinner's line is erased, and the step is written where it was.
+    let pieces = written.split(CLEAR_LINE);
+    equal(stripAnsi(pieces[pieces.length - 1]), '◇  Fetched 2 packages\n');
+    equal(stripAnsi(pieces[0]), '┌  zena pkg fetch\n│\n');
+  });
+});
