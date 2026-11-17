@@ -469,7 +469,7 @@ walk's memo was keyed by a string built per join visit, and
 interning the paths and keying both walks by `i64` took 40 ms off
 `check-bodies` on this fixture, measured twice.
 
-`portable-semantics` compiles `zena/test/portable_semantics.zena`,
+`portable-semantics` compiles `src/test/portable_semantics.zena`,
 which imports the compiler, so it is the one fixture whose input the
 split changed. The 8 ms it gained is in registration: the members of
 an import cycle register their signatures twice

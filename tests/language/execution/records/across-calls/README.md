@@ -13,8 +13,8 @@ record, a dispatched or a direct call, evaluation order, field
 presence), so a mistake in it shows up here as a wrong result.
 
 What shows that the optimization actually happens is the WAT tests in
-`packages/compiler/zena/test/zir-backend_test.zena`. While changing
-`packages/compiler/zena/lib/codegen/ir/explode.zena`, run this set
+`packages/compiler/src/test/zir-backend_test.zena`. While changing
+`packages/compiler/src/lib/codegen/ir/explode.zena`, run this set
 with:
 
 ```bash

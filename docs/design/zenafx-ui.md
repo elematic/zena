@@ -460,7 +460,7 @@ safe even where the ABI allowed one:
   `future` on a synchronous export with the reason that "a stream or future is
   pumped by callback re-entries, which a synchronous export never gets; declare
   the export `async func`"
-  ([wit-module-synth.zena](../../packages/compiler/zena/lib/wit-module-synth.zena)).
+  ([wit-module-synth.zena](../../packages/compiler/src/lib/wit-module-synth.zena)).
 
 The same two facts show the way out. A synchronous activation has no way to
 yield, so anything requiring the guest to make progress while an outer call is
@@ -1898,7 +1898,7 @@ described under the list.
    `zenafx` WIT sitting beside it: when the target emits a component, the CLI
    collects the source of every WIT-backed package in the manifest and splices
    it into the declared world's document before parsing
-   ([cli/main.zena](../../packages/compiler/zena/cli/main.zena), the
+   ([cli/main.zena](../../packages/compiler/src/cli/main.zena), the
    `packagesWit` collection).
 
 The world the application is checked against:

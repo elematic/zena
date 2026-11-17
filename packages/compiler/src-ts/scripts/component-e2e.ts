@@ -23,7 +23,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const repoRoot = join(pkgDir, '..', '..');
 const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
-const outDir = join(pkgDir, 'zena', 'out', 'component');
+const outDir = join(pkgDir, 'out', 'component');
 const fixtures = join(pkgDir, 'test-files', 'component');
 
 const RED = '\x1b[31m';
@@ -41,7 +41,7 @@ const env = {
   // the current implementation of component emission, not that the
   // compiler emitting it was itself built by the current implementation.
   // See docs/design/bootstrapping.md, "Which stage to use".
-  ZENA_COMPILER_WASM: 'packages/compiler/zena/out/cli.wasm',
+  ZENA_COMPILER_WASM: 'packages/compiler/out/cli.wasm',
 };
 
 interface Invocation {

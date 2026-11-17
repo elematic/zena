@@ -122,7 +122,7 @@ We need a suite of micro-benchmarks to track performance regressions.
 
 ## Benchmarking Suite
 
-A micro-benchmark suite has been added under `packages/compiler/test-files/benchmarks/` and `packages/compiler/src/scripts/` to measure compiler code output and runtime execution overhead against native JS:
+A micro-benchmark suite has been added under `packages/compiler/test-files/benchmarks/` and `packages/compiler/src-ts/scripts/` to measure compiler code output and runtime execution overhead against native JS:
 
 - **`string_bench.zena` / `string-bench-node.js`**: Measures string concatenation (`+` vs `StringBuilder`), slicing, searching, and HashMap lookup with string keys.
 - **`basic_bench.zena` / `basic-bench-node.js`**: Measures recursive function calls (Fibonacci), iterative loops, and basic function call overhead.

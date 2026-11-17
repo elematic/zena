@@ -58,7 +58,7 @@ and a real file both failed.
 ## Where it threw
 
 `declaredTypeOf` in
-[component-shape.zena](../../../zena/lib/codegen/component-shape.zena):
+[component-shape.zena](../../../src/lib/codegen/component-shape.zena):
 
 ```zena
 export let declaredTypeOf = (func: WasmFunction, what: String): FunctionType => {
@@ -82,7 +82,7 @@ export and two separate sites then tried to lift `main$asyncEntry` as if
 it were an ordinary function.
 
 `prepareComponentEntry` in
-[component-adapters.zena](../../../zena/lib/codegen/ir/component-adapters.zena)
+[component-adapters.zena](../../../src/lib/codegen/ir/component-adapters.zena)
 opens with:
 
 ```zena
@@ -99,7 +99,7 @@ branch and rebuilding: a program with an async `main` reached it and
 returned without building the entry.
 
 `zena:wasi` is linked — `getTargetRuntimeModules` in
-[prelude.zena](../../../zena/lib/prelude.zena) returns `["zena:wasi"]`
+[prelude.zena](../../../src/lib/prelude.zena) returns `["zena:wasi"]`
 for every component build, whether or not the program names it. But
 being linked is not being _in the function map_: as the comment on the
 next gate puts it, "the checkable traversal registers functions it only
@@ -112,7 +112,7 @@ guards that would have skipped `main` failed open:
 - `prepareComponentExports` in component-adapters.zena —
   `if (wasm.componentEntryFunc != null && coreName == 'main') continue;`
 - the export loop in
-  [component-shape.zena](../../../zena/lib/codegen/component-shape.zena) —
+  [component-shape.zena](../../../src/lib/codegen/component-shape.zena) —
   `if (entry != null && coreName == "main") continue;`
 
 Whichever ran first called `declaredTypeOf` on the wrapper and threw.
@@ -130,7 +130,7 @@ which is precisely what type-walks the driver.
 Rooting the driver is a reachability decision, so the condition went
 where the component target roots its runtime modules:
 `#rootComponentAsyncDriver` in
-[analysis.zena](../../../zena/lib/codegen/reachability/analysis.zena)
+[analysis.zena](../../../src/lib/codegen/reachability/analysis.zena)
 now counts an `async main` as a third door, alongside the awaited async
 import and the entry wrapper module.
 

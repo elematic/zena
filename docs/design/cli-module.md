@@ -47,7 +47,7 @@ The CLI module contains:
 
 The compiler, zebra, zenadoc and the formatter are all Zena packages
 already. The compiler's own command-line program
-(`packages/compiler/zena/cli/main.zena`) is about 400 lines around
+(`packages/compiler/src/cli/main.zena`) is about 400 lines around
 the compiler library, and the language service
 (`packages/language-service/zena/lsp.zena`) already uses that library
 directly. Putting them in one module means calling those libraries from
@@ -305,15 +305,15 @@ does not exist yet, `zena-cli` falls back to `bootstrap/zena.wasm`, so
 (`build`, `fmt`, `lint`, `run`, `test`) before any Zena target is built.
 
 Building `out/zena.wasm` from HEAD source still goes through Stage A
-(`packages/compiler/zena/out/cli.wasm`) so that edits to non-compiler
+(`packages/compiler/out/cli.wasm`) so that edits to non-compiler
 packages in the CLI module (`zebra`, `zenadoc`, `zena-lint`,
 `zena-formatter`, `package-manager`) compile with HEAD's compiler and
 never require a reseed:
 
 ```
 cargo build                         → zena-cli, zena-run
-zena-cli + bootstrap/zena.wasm      → packages/compiler/zena/out/cli.wasm
-zena-run + zena/out/cli.wasm        → packages/zena-cli/out/zena.wasm   (the CLI module)
+zena-cli + bootstrap/zena.wasm      → packages/compiler/out/cli.wasm
+zena-run + out/cli.wasm        → packages/zena-cli/out/zena.wasm   (the CLI module)
 zena-cli (+ out/zena.wasm)          → everything else
 ```
 
@@ -344,7 +344,7 @@ checks byte-for-byte self-reproduction before replacing it.
 5. **The CLI module as the bootstrap**. `packages/zena-cli/bootstrap/zena.wasm`
    replaced `packages/compiler/bootstrap/cli.wasm`, with `zena-cli`
    falling back to `bootstrap/zena.wasm` until `out/zena.wasm` is built
-   while keeping Stage A (`zena/out/cli.wasm`) so non-compiler packages
+   while keeping Stage A (`out/cli.wasm`) so non-compiler packages
    remain compiled by HEAD's compiler.
 
 ## Open questions

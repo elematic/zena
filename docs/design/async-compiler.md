@@ -10,7 +10,7 @@ describe what was built; "Verification" records what was measured.
 ## Overview
 
 The compiler reads source through `CompilerHost`
-(`packages/compiler/zena/lib/library-loader.zena`), whose two
+(`packages/compiler/src/lib/library-loader.zena`), whose two
 methods are synchronous:
 
 ```zena
@@ -189,7 +189,7 @@ the output.
 
 ### Command-line tools
 
-The compiler's `main` (`zena/cli/main.zena`) and `zena-cli`'s `main`
+The compiler's `main` (`src/cli/main.zena`) and `zena-cli`'s `main`
 become `async function main(): Future<i32>`. The commands that compile
 (`build`, `run`, `test`, `bench`, `lint`, `doc`, `lsp`) become
 asynchronous down to the call that reaches the compiler. That takes in

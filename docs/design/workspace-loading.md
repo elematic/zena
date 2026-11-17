@@ -12,7 +12,7 @@ neither, except where it says so. It is the design for
 
 ## Overview
 
-`loadWorkspace` (`compiler/zena/lib/package-manifest.zena`) runs
+`loadWorkspace` (`compiler/src/lib/package-manifest.zena`) runs
 before a compile resolves anything. It reads the root manifest, every
 `workspace.packages` entry's manifest, the manifests of their path
 dependencies, and the pins in `zena-lock.json` with each pinned package's
@@ -79,11 +79,11 @@ name:
 | `packages/zena-cli/dev/bundle.zena`                              | workflow                                                                                        |
 | `packages/zena-cli/tests/fixtures`                               | atproto, package-manager, pds                                                                   |
 | `packages/language-service/zena` (`lsp.zena`, tests)             | compiler, zena-formatter                                                                        |
-| `packages/compiler/zena/test`                                    | wit-parser                                                                                      |
+| `packages/compiler/src/test`                                     | wit-parser                                                                                      |
 | `packages/zenadoc/zena/cli`, `zena/test`                         | compiler                                                                                        |
 | examples under `packages/protobuf`, `google-cloud`, `wit-parser` | their packages                                                                                  |
 
-The compiler's own build is not among them: `compiler/zena/cli/main.zena`
+The compiler's own build is not among them: `compiler/src/cli/main.zena`
 imports `../lib` by relative path, and the libraries there are in the
 `compiler` package.
 

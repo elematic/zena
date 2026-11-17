@@ -20,7 +20,7 @@ if (args.length > 0) {
   target = args[0];
 }
 
-const outDir = join(pkgDir, 'zena', 'out');
+const outDir = join(pkgDir, 'out');
 if (!existsSync(outDir)) {
   mkdirSync(outDir, {recursive: true});
 }

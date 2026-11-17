@@ -28,7 +28,7 @@ search from the entry over `SourceFile.imports`, which maps specifier to
 resolved path.
 
 For the compiler's own build that makes every file under
-`packages/compiler/zena/` local, since `cli/main.zena` reaches them
+`packages/compiler/src/` local, since `cli/main.zena` reaches them
 all through `../lib/...`. The standard library it imports as `zena:` is a
 dependency.
 

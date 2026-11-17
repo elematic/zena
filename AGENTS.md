@@ -207,7 +207,7 @@ The repository bootstraps from a prebuilt, checked-in CLI module:
 falls back to `bootstrap/zena.wasm`, so `zena build`, `zena fmt` and
 `zena lint` work as soon as cargo builds `zena-cli`. During a build,
 `compiler:build:cli` runs `bootstrap/zena.wasm` through `zena-cli`
-to produce the working Stage A compiler (`zena/out/cli.wasm`), which
+to produce the working Stage A compiler (`packages/compiler/out/cli.wasm`), which
 then builds `packages/zena-cli/out/zena.wasm` and everything else.
 Design doc: `docs/design/bootstrapping.md`. Rules:
 
@@ -232,7 +232,7 @@ directives. They're organized into three categories:
 - **`semantics/`** — Type checker tests. Directive: `// @mode: check` with `// @error:` on error lines.
 - **`execution/`** — Codegen tests. Directive: `// @mode: run` with `// @result:` for expected return value.
 
-The runners are Zena programs in `packages/compiler/zena/test/`
+The runners are Zena programs in `packages/compiler/src/test/`
 (`portable_syntax`, `portable_semantics`, `portable_execution`). They
 discover tests by walking the directory — there is no list of tests or
 directories to add to. A test that cannot run yet says so in the file:
@@ -259,9 +259,9 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 `CONTEXT.md` nearest your work before editing:
 
 - [packages/compiler/CONTEXT.md](packages/compiler/CONTEXT.md) — self-hosted compiler and codegen overview
-- [packages/compiler/zena/lib/codegen/ir/CONTEXT.md](packages/compiler/zena/lib/codegen/ir/CONTEXT.md) — ZIR backend (lowering, GVN, emit)
-- [packages/compiler/zena/lib/checker/CONTEXT.md](packages/compiler/zena/lib/checker/CONTEXT.md) — the type checker's libraries
-- [packages/compiler/zena/lib/codegen/reachability/CONTEXT.md](packages/compiler/zena/lib/codegen/reachability/CONTEXT.md) — RTA and specialization
+- [packages/compiler/src/lib/codegen/ir/CONTEXT.md](packages/compiler/src/lib/codegen/ir/CONTEXT.md) — ZIR backend (lowering, GVN, emit)
+- [packages/compiler/src/lib/checker/CONTEXT.md](packages/compiler/src/lib/checker/CONTEXT.md) — the type checker's libraries
+- [packages/compiler/src/lib/codegen/reachability/CONTEXT.md](packages/compiler/src/lib/codegen/reachability/CONTEXT.md) — RTA and specialization
 - [packages/zena-cli/CONTEXT.md](packages/zena-cli/CONTEXT.md) — CLI module and Rust/wasmtime host
 - [packages/pds/CONTEXT.md](packages/pds/CONTEXT.md) — the PDS, ported from pds.js, and its managed accounts
 - [packages/registry/CONTEXT.md](packages/registry/CONTEXT.md) — the App View: the registry methods, the site, and the service
@@ -601,7 +601,7 @@ script and everything after it, so keep inputs to what the script reads:
   package's `lib/`. A package's tests are inputs only of the script that
   runs them.
 - **A dependency's output.** When a script reads a file another script
-  writes (`zena/out/cli.wasm`), list the file and depend on that script
+  writes (`out/cli.wasm`), list the file and depend on that script
   with `"cascade": false`. It then reruns when the file's bytes change,
   and not whenever the other script reruns. It no longer inherits that
   script's inputs, so it lists everything else it reads itself.
@@ -724,7 +724,7 @@ npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
 import project modules because relative paths are broken.
 
 - If you truly need a temporary file for debugging, create temporary test files
-  in the **normal test directories** (e.g., `packages/compiler/zena/test/`
+  in the **normal test directories** (e.g., `packages/compiler/src/test/`
   or `packages/runtime/src/test/`).
 - For portable tests, create them in `tests/language/`.
 - Keep them. Promote a scratch file to a permanent test, or leave it where it
@@ -807,8 +807,8 @@ interfaces, and the rest of that table. In addition:
 
 - New syntax, type-checking, or codegen features and bug fixes should include
   portable tests under `tests/language/` (`syntax/`, `semantics/`, `execution/`).
-- New AST nodes in `packages/compiler/zena/lib/ast.zena` must be handled in
-  `ast-visitor.zena` and the reachability pass (`zena/lib/codegen/reachability/`).
+- New AST nodes in `packages/compiler/src/lib/ast.zena` must be handled in
+  `ast-visitor.zena` and the reachability pass (`src/lib/codegen/reachability/`).
 - Zena unit tests (`*_test.zena`) use `suite`, `test`, and `expect` from
   `zena:test` and can be run directly during iteration with
   `npm run test:quick -- <path>`. A test body may be `async`

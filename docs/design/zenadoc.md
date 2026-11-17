@@ -96,7 +96,7 @@ standard library is the scope `zena` (import-names.md).
 The rename of `stdlib-manifest.json` to `zena-package.json` is planned
 independently (see package-manifest.md); zenadoc reading both means the
 rename does not have to happen first. Note that the compiler does not
-read this file at all — `zena/lib/stdlib-manifest.zena` carries a baked
+read this file at all — `src/lib/stdlib-manifest.zena` carries a baked
 copy of the same list, and the two must be kept in sync. Zenadoc reads
 the JSON, so a module missing from the JSON is missing from the docs
 even if it compiles.

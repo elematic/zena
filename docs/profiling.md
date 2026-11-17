@@ -107,7 +107,7 @@ browser, which is what you want over SSH or in a VM:
 
 ```bash
 ZENA_PROFILE=1 ZENA_GC_RESERVE_MB=1536 \
-  ZENA_COMPILER_WASM=packages/compiler/zena/out/cli-self.wasm \
+  ZENA_COMPILER_WASM=packages/compiler/out/cli-self.wasm \
   samply record --save-only -o /tmp/prof.json.gz -- \
   ./target/release/zena-cli -g build <file>.zena -o /tmp/out.wasm
 ```

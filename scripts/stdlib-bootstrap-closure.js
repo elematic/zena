@@ -10,7 +10,7 @@
  *
  * A module is bootstrap-critical if it is reached from either of:
  *
- * - the import closure of `packages/compiler/zena/cli/main.zena`, the one
+ * - the import closure of `packages/compiler/src/cli/main.zena`, the one
  *   file `build:cli` compiles, plus the wit-parser and formatter packages it
  *   pulls in;
  * - the prelude, which the bootstrap applies to every file it compiles,
@@ -34,8 +34,8 @@ import {join, dirname, normalize} from 'node:path';
 
 const STDLIB = 'packages/stdlib/zena';
 const MANIFEST = 'packages/stdlib/stdlib-manifest.json';
-const PRELUDE = 'packages/compiler/zena/lib/prelude.zena';
-const ENTRY = 'packages/compiler/zena/cli/main.zena';
+const PRELUDE = 'packages/compiler/src/lib/prelude.zena';
+const ENTRY = 'packages/compiler/src/cli/main.zena';
 const ALSO_COMPILED = [
   'packages/wit-parser/src',
   'packages/zena-formatter/src',
