@@ -2,7 +2,7 @@ import { growable } from 'zena:core';
 import {
   CallExpression, Expression, FunctionExpression, Identifier,
   MemberExpression, NewExpression, Node, NullLiteral, SourceLocation,
-  StringLiteral, TypeAnnotation
+  StringLiteral, TypeAnnotation, samePostfixChain
 } from '../ast.zena';
 import {
   ClassType, ErrorType, FunctionType, InterfaceType, NullType, Type,
@@ -415,11 +415,15 @@ function noteCancellationCause(ctx: CheckerContext, call: CallExpression) {
 export function checkCallExpression(
   ctx: CheckerContext,
   call: CallExpression,
-  expectedType: Type | null
+  expectedType: Type | null,
+  inChain: boolean = false
 ): Type {
   let oldType = checkOldExpression(ctx, call);
   if (oldType != null) { return oldType; }
   ctx.directCallee = call.callee;
+  if (inChain && samePostfixChain(call, call.callee)) {
+    ctx.chainInteriorNode = call.callee as Node;
+  }
   let calleeType = checkExpression(ctx, call.callee, null);
   noteCancellationCause(ctx, call);
 
@@ -447,6 +451,10 @@ export function checkCallExpression(
   }
 
   if (isNullable && (call.optional || optionalMemberOnNullable)) {
+    if (inChain) {
+      ctx.chainShortCircuits = true;
+      return resultType;
+    }
     // A skipped void call produces no value, so its type stays `void`.
     if (unwrapAliases(resultType) is VoidType) {
       return resultType;

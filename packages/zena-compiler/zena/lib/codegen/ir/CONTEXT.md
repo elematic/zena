@@ -105,7 +105,8 @@ polices the loop.
 
 This directory is a real module cycle: the per-construct modules import
 `lowerExpr`/`lowerExprRaw`/`lowerStmt`/`varDecl`/`throwStmt`/
-`multiSource`/`optionalHit` as top-level fully-annotated functions from
+`multiSource`/`lowerOptionalChainCoalesce` as top-level fully-annotated
+functions from
 `lowering.zena` (the "Recursion seams" section at the end of that
 file), and `lowering-context.zena` imports `FunctionLowerer` back. The
 language's cycle rules (`docs/design/import-cycles.md`) allow this:

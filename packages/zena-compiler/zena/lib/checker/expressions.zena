@@ -11,7 +11,8 @@ import {
   PipelineExpression, PropertyAssignment, RangeExpression, RecordLiteral,
   SourceLocation, SpreadElement, StringLiteral, SuperExpression,
   TaggedTemplateExpression, TemplateLiteral, ThisExpression, ThrowExpression,
-  TryExpression, TupleLiteral, UnaryExpression, getMemberPropertyName
+  TryExpression, TupleLiteral, UnaryExpression, getMemberPropertyName,
+  hasOptionalChainStep
 } from '../ast.zena';
 import {
   ArrayType, BoolLiteralType, BooleanType, ClassType, ErrorType, F32Type,
@@ -63,7 +64,8 @@ import {
 import { awaitedFutureValueType, extractFutureValueType, protocolPayloadType } from './protocols.zena';
 import {
   ClosedRelation, checkOpaqueCast, checkTypeParameterCast, closedRelation,
-  expectedArrayElementType, isAssignableTo, isPrimitiveRepresentation,
+  expectedArrayElementType, isAssignableTo, isBoxablePrimitive,
+  isPrimitiveRepresentation,
   isReferenceRepresentation, isReferenceType, isValidCast,
   isValuePrimitive, isWellKnownClassType, isWellKnownInterfaceType,
   operandText, representationOf, typesEqual
@@ -121,9 +123,17 @@ function checkIfBranchNode(ctx: CheckerContext, node: Node, expectedType: Type |
 }
 
 export function checkExpression(ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type {
-  // The callee marker belongs to this expression, not to its operands.
+  // The callee and optional-chain interior markers belong to this
+  // expression, not to its operands.
   let callee = ctx.directCallee;
   ctx.directCallee = null;
+  let inChainInterior = ctx.chainInteriorNode === (expr as Node);
+  ctx.chainInteriorNode = null;
+  let isChainRoot = !inChainInterior && hasOptionalChainStep(expr);
+  let savedChainShortCircuits = ctx.chainShortCircuits;
+  if (isChainRoot) {
+    ctx.chainShortCircuits = false;
+  }
   // An inline record is wanted as a record: a literal for it adapts to
   // the record, as it would to a boxed one. A union of inline records is
   // wanted as the union of the records, so a literal picks its member.
@@ -132,7 +142,34 @@ export function checkExpression(ctx: CheckerContext, expr: Expression, expectedT
   } else {
     null
   };
-  var t = checkExpressionInner(ctx, expr, expectedRecord ?? expectedType);
+  let rawExpected = expectedRecord ?? expectedType;
+  let innerExpected: Type | null = if (isChainRoot && rawExpected != null) {
+    subtractNullFromType(rawExpected)
+  } else {
+    rawExpected
+  };
+  var t = checkExpressionInner(ctx, expr, innerExpected, isChainRoot || inChainInterior);
+  if (isChainRoot) {
+    let shortCircuits = ctx.chainShortCircuits;
+    ctx.chainShortCircuits = savedChainShortCircuits;
+    if (shortCircuits && !(t is ErrorType) && !(unwrapAliases(t) is VoidType)) {
+      let sanctioned = ctx.nullishSanctioned.has((expr as Node).id as i32);
+      if (isBoxablePrimitive(t) && !sanctioned) {
+        let msg = if (expr is CallExpression) {
+          "Optional call yielding a primitive requires immediate coalescence: follow it with '?? <default>'."
+        } else if (expr is IndexExpression) {
+          "Optional access to a primitive element requires immediate coalescence: follow it with '?? <default>'."
+        } else {
+          "Optional access to a primitive member requires immediate coalescence: follow it with '?? <default>'."
+        };
+        ctx.error(msg, DiagnosticCode.InvalidOperator, expr.loc);
+        t = new ErrorType();
+      } else {
+        let types = growable<Type>([t, new NullType()]);
+        t = if (sanctioned) createUnionType(types) else createUnionType(types, ctx, expr.loc);
+      }
+    }
+  }
   // Inline-ness is the binding's, not the value's: a reference to an
   // inline record reads as the record (docs/design/inline-parameters.md).
   if (let InlineRecordType {record} = t) {
@@ -146,7 +183,12 @@ export function checkExpression(ctx: CheckerContext, expr: Expression, expectedT
   return t;
 }
 
-function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type {
+function checkExpressionInner(
+  ctx: CheckerContext,
+  expr: Expression,
+  expectedType: Type | null,
+  inChain: boolean = false
+): Type {
   if (expectedType != null) {
     let matched = getMatchedLiteralType(expr, expectedType);
     if (matched != null) {
@@ -311,6 +353,15 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
   // --- Assignment ---
 
   case AssignmentExpression {left, value, operator, loc}: {
+    if (hasOptionalChainStep(left)) {
+      checkExpression(ctx, value, null);
+      ctx.error(
+        "The left-hand side of an assignment expression cannot be an optional chain.",
+        DiagnosticCode.InvalidAssignment,
+        loc
+      );
+      return new ErrorType();
+    }
     // Check for assignment to immutable let binding
     if (let Identifier {name} = left) {
       let info = ctx.model.resolve(left);
@@ -756,7 +807,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
   }
 
   case CallExpression as call: {
-    checkCallExpression(ctx, call, expectedType)
+    checkCallExpression(ctx, call, expectedType, inChain)
   }
 
   // --- If Expression ---
@@ -841,10 +892,10 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
   // --- TODO: Other expression types ---
 
   case MemberExpression as memExpr: {
-    checkMemberExpression(ctx, memExpr, memExpr.object, memExpr.property, memExpr.optional, memExpr.isSymbolAccess, memExpr.loc)
+    checkMemberExpression(ctx, memExpr, memExpr.object, memExpr.property, memExpr.optional, memExpr.isSymbolAccess, memExpr.loc, inChain)
   }
   case IndexExpression as idxExpr: {
-    checkIndexExpression(ctx, idxExpr.object, idxExpr.index, idxExpr.optional, idxExpr.loc, idxExpr)
+    checkIndexExpression(ctx, idxExpr.object, idxExpr.index, idxExpr.optional, idxExpr.loc, idxExpr, inChain)
   }
   case ThisExpression {loc}: {
     let cc = ctx.currentClass;

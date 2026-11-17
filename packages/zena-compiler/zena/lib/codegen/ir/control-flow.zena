@@ -14,6 +14,7 @@ import {
 } from '../codegen-utils.zena';
 import {
   BindingPattern, BindingProperty, BlockStatement, BooleanLiteral, CatchClause, ClassDeclaration, ClassPattern, Expression, FieldDefinition, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, RecordPattern, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression, RangeExpression,
+  hasOptionalChainStep,
 } from '../../ast.zena';
 import {
   ArrayType, BoolLiteralType, ClassType, HoleType, InlineTupleType, sameNumericLiteralRaw, InterfaceType, TupleType, NumLiteralType, NullType, I32Type, RecordType, Type, UnionType, VoidType, baseType, isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType, isOwnershipWrapper, ownershipHandleInner, ownershipHandleOf, soleNonNullMember, UnionType, isScopedType, scopedInner, releaseMemberOf, scopedFieldNames, OwnershipHandle, holdsOwner, typeContainsScoped
@@ -36,9 +37,9 @@ import {
 import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { lowerContractClauses } from './contracts.zena';
 import { emitGeneratorDispose } from './generators.zena';
-import { boxInline, heldInline, lowerIntoSlots, memberTest, returnInlineTail, coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, pathElements, representativeMember, tupleRestIndexOf, unboxTuples, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
+import { boxInline, heldInline, lowerIntoSlots, memberTest, returnInlineTail, coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerOptionalChainCoalesce, lowerStmt, multiSource, MultiValues, inlineMembersMatching, pathElements, representativeMember, tupleRestIndexOf, unboxTuples, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
 import {
-  FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ResultSlots, ZirUnsupported, isOptionalMethodCall, noValues,
+  FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ResultSlots, ZirUnsupported, noValues,
 } from './lowering-context.zena';
 import {
   branchUnless, lowerPatternBindings, lowerPatternTest, maskBitTest,
@@ -3754,29 +3755,15 @@ export function lowerNullishCoalesce(cx: LoweringContext, bin: BinaryExpression)
   // chain produces a reference, lowering `bin.left` normally yields a
   // nullable reference and the null check below covers both a null
   // receiver and a null member/result (#1031).
-  let leftIsOptionalNode =
-      (bin.left is MemberExpression && (bin.left as MemberExpression).optional) ||
-      (bin.left is IndexExpression && (bin.left as IndexExpression).optional) ||
-      (bin.left is CallExpression && ((bin.left as CallExpression).optional ||
-          isOptionalMethodCall(bin.left as CallExpression)));
-  let leftIsOptionalChain = leftIsOptionalNode && !isRefValType(cx.exprVt(bin.left));
-  var testValue = -1;
-  if (leftIsOptionalChain) {
-    testValue = cx.chainReceiver(cx.optionalChainObject(bin.left));
-    if (!cx.reachable) {
-      return -1;
-    }
-    if (!isRefValType(cx.valueTypeOf(testValue))) {
-      bail(cx, 'optional receiver kind');
-    }
-  } else {
-    testValue = lowerExpr(cx, bin.left, null);
-    if (!cx.reachable) {
-      return -1;
-    }
-    if (!isRefValType(cx.valueTypeOf(testValue))) {
-      bail(cx, 'nullish on non-reference');
-    }
+  if (hasOptionalChainStep(bin.left) && !isRefValType(cx.exprVt(bin.left))) {
+    return lowerOptionalChainCoalesce(cx, bin, overallVt);
+  }
+  let testValue = lowerExpr(cx, bin.left, null);
+  if (!cx.reachable) {
+    return -1;
+  }
+  if (!isRefValType(cx.valueTypeOf(testValue))) {
+    bail(cx, 'nullish on non-reference');
   }
 
   let isNull = cx.b.emit(
@@ -3787,16 +3774,9 @@ export function lowerNullishCoalesce(cx: LoweringContext, bin: BinaryExpression)
 
   let saved = cx.copyEnv();
   cx.b.switchTo(okB);
-  // The value arm is the left operand once null is ruled out. An
-  // optional chain never lowers `bin.left` as a whole — only its
-  // receiver — so neither arm can rely on the post-expression hook;
-  // the checker records the pack on the `??` and it applies here, to
-  // the value arm, for every shape alike.
-  let okValue = cx.conformToSlot(coalesceArmAdaptation(cx, bin, if (leftIsOptionalChain) {
-    optionalHit(cx, bin.left, cx.stripNonNull(testValue))
-  } else {
-    cx.stripNonNull(testValue)
-  }), overallVt, 'nullish arm type');
+  let okValue = cx.conformToSlot(
+      coalesceArmAdaptation(cx, bin, cx.stripNonNull(testValue)),
+      overallVt, 'nullish arm type');
   let mergeB = cx.b.newBlock();
   let mergeParams = cx.addParams(mergeB, mergeSyms);
   let resultParam = cx.b.blockParam(mergeB, overallVt);
