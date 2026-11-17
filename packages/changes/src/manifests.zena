@@ -1,0 +1,76 @@
+/**
+ * The version a unit's manifests state: `zena-package.json`,
+ * `package.json` and `Cargo.toml` (docs/design/change-files.md, "Units").
+ */
+
+import {Future} from 'zena:async';
+import {exists, readFile} from 'zena:fs';
+import {JsonObject, JsonValue, parseJson} from 'zena:json';
+import {Version, VersionError} from 'zena-lang:semver';
+
+/** A manifest whose version cannot be read. */
+export class ManifestError extends Error {
+  new(message: String) : super(message) {}
+}
+
+/** The `version` of a `zena-package.json` or `package.json`, when it has one. */
+export function jsonManifestVersion(text: String): inline (true, String) | (false, _) {
+  var root: JsonValue = null;
+  try {
+    root = parseJson(text);
+  } catch (e) {
+    throw new ManifestError(`not JSON: ${e.message}`);
+  };
+  if (root is JsonObject) {
+    return root.stringAt('version');
+  }
+  return (false, _);
+}
+
+/** The `version` under `[package]` in a `Cargo.toml`, when it has one. */
+export function cargoManifestVersion(text: String): inline (true, String) | (false, _) {
+  var inPackage = false;
+  for (let raw in text.split('\n')) {
+    let line = raw.trim();
+    if (line.startsWith('[')) {
+      inPackage = line == '[package]';
+    } else if (inPackage && line.startsWith('version')) {
+      let parts = line.split('"');
+      if (parts.length >= 3 && parts[0].trim() == 'version =') {
+        return (true, parts[1]);
+      }
+    }
+  }
+  return (false, _);
+}
+
+function parsed(text: String, path: String): Version {
+  try {
+    return Version.parse(text);
+  } catch (e) {
+    throw new ManifestError(`${path}: ${e.message}`);
+  };
+}
+
+/**
+ * The version of the unit in `dir`: its `zena-package.json`'s, or else
+ * its `package.json`'s, or else its `Cargo.toml`'s. Null when no manifest
+ * there states one.
+ */
+export async function readUnitVersion(dir: String): Future<Version?> {
+  for (let name in ['zena-package.json', 'package.json']) {
+    let path = `${dir}/${name}`;
+    if (await exists(path)) {
+      if (let (true, version) = jsonManifestVersion(await readFile(path))) {
+        return parsed(version, path);
+      }
+    }
+  }
+  let path = `${dir}/Cargo.toml`;
+  if (await exists(path)) {
+    if (let (true, version) = cargoManifestVersion(await readFile(path))) {
+      return parsed(version, path);
+    }
+  }
+  return null;
+}

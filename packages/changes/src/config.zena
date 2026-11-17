@@ -1,0 +1,240 @@
+/**
+ * The configuration in `.changes/config.json`: which directories under
+ * `packages/` are units, and which units share a version
+ * (docs/design/change-files.md, "Units" and "Groups").
+ *
+ * ```json
+ * {
+ *   "groups": {
+ *     "toolchain": {
+ *       "versions": "patch",
+ *       "units": ["zena-cli", "zena-compiler"],
+ *       "held": ["compiler"]
+ *     }
+ *   },
+ *   "units": {
+ *     "zena-compiler": {"paths": ["packages/stdlib"]},
+ *     "semver": {},
+ *     "pds": {"versioned": false}
+ *   }
+ * }
+ * ```
+ */
+
+import {HashSet, OrderedHashMap} from 'zena:collections';
+import {JsonArray, JsonObject, JsonValue, parseJson} from 'zena:json';
+
+/** A configuration that cannot be read, or that contradicts itself. */
+export class ConfigError extends Error {
+  new(message: String) : super(message) {}
+}
+
+/** How the versions of a group or an independent unit advance. */
+export enum VersionPolicy {
+  /** By the size of the entries, once the version is `0.1.0` or above. */
+  Semver,
+  /** Every release is the next patch. */
+  Patch
+}
+
+/** A directory under `packages/` that has a changelog. */
+export final class Unit {
+  /** The directory's name, which is how change files name the unit. */
+  name: String;
+  /** Paths outside the directory whose changes belong in this unit's changelog. */
+  paths: GrowableArray<String>;
+  /** The group the unit is in, or null for an independent unit. */
+  group: String?;
+  /** Whether the group's releases leave this unit out for now. */
+  held: boolean;
+  /** False for a unit that is never published and has only a dated changelog. */
+  versioned: boolean;
+
+  new(this.name, this.paths, this.group, this.held, this.versioned) {}
+
+  /** The unit's directory, from the repository root. */
+  dir: String {
+    get {
+      return `packages/${this.name}`;
+    }
+  }
+}
+
+/** Units that have one version and are released together. */
+export final class Group {
+  name: String;
+  policy: VersionPolicy;
+  /** The names of the group's units, held ones included, as listed. */
+  units: GrowableArray<String>;
+
+  new(this.name, this.policy, this.units) {}
+}
+
+/** Everything `.changes/config.json` says. */
+export final class Config {
+  /** The groups, by name, as listed. */
+  groups: OrderedHashMap<String, Group>;
+  /** The units, by name: each group's as listed, then the independent ones. */
+  units: OrderedHashMap<String, Unit>;
+
+  new(this.groups, this.units) {}
+
+  /** Reads the text of a configuration file. Throws `ConfigError`. */
+  static parse(text: String): Config {
+    var root: JsonValue = null;
+    try {
+      root = parseJson(text);
+    } catch (e) {
+      throw new ConfigError(`not JSON: ${e.message}`);
+    };
+    let top = objectOf(root, 'the configuration');
+    onlyKeys(top, ['groups', 'units'], 'the configuration');
+    let settings = if (top.has(
+      'units'
+    )) objectOf(top['units'], '"units"') else new JsonObject();
+    settings.forEach(
+      (name, value) => {
+        onlyKeys(
+          objectOf(value, `unit '${name}'`),
+          ['paths', 'versioned'],
+          `unit '${name}'`
+        );
+      }
+    );
+
+    let groups = new OrderedHashMap<String, Group>();
+    let units = new OrderedHashMap<String, Unit>();
+    if (top.has('groups')) {
+      objectOf(top['groups'], '"groups"').forEach(
+        (groupName, value) => {
+          let what = `group '${groupName}'`;
+          let group = objectOf(value, what);
+          onlyKeys(group, ['versions', 'units', 'held'], what);
+          let names = stringsOf(group['units'], `${what}: "units"`);
+          let held = new HashSet<String>();
+          if (group.has('held')) {
+            for (let name in stringsOf(group['held'], `${what}: "held"`)) {
+              if (!names.contains(name)) {
+                throw new ConfigError(
+                  `${what} holds '${name}', which is not one of its units`
+                );
+              }
+              held.add(name);
+            }
+          }
+          for (let name in names) {
+            if (let (true, other) = units.get(name)) {
+              throw new ConfigError(
+                `unit '${name}' is in group '${other.group
+                  ?? ''}' and in ${what}`
+              );
+            }
+            if (!versionedOf(settings, name)) {
+              throw new ConfigError(
+                `unit '${name}' is in ${what}, so it cannot be "versioned": false`
+              );
+            }
+            units[name] = new Unit(
+              name,
+              pathsOf(settings, name),
+              groupName,
+              held.has(name),
+              true
+            );
+          }
+          groups[groupName] = new Group(
+            groupName,
+            policyOf(group, what),
+            names
+          );
+        }
+      );
+    }
+    settings.forEach(
+      (name, value) => {
+        if (!units.has(name)) {
+          units[name] = new Unit(
+            name,
+            pathsOf(settings, name),
+            null,
+            false,
+            versionedOf(settings, name)
+          );
+        }
+      }
+    );
+    return new Config(groups, units);
+  }
+}
+
+function objectOf(value: JsonValue, what: String): JsonObject {
+  if (value is JsonObject) {
+    return value;
+  }
+  throw new ConfigError(`${what} is not an object`);
+}
+
+function stringsOf(value: JsonValue, what: String): GrowableArray<String> {
+  if (!(value is JsonArray)) {
+    throw new ConfigError(`${what} is not a list of names`);
+  }
+  let list = value;
+  let names = new GrowableArray<String>();
+  for (let i in 0..list.length) {
+    let item = list[i];
+    if (!(item is String)) {
+      throw new ConfigError(`${what} is not a list of names`);
+    }
+    names.push(item);
+  }
+  return names;
+}
+
+function onlyKeys(object: JsonObject, allowed: Array<String>, what: String): void {
+  object.forEach(
+    (key, value) => {
+      if (!allowed.contains(key)) {
+        throw new ConfigError(`${what} has an unknown key '${key}'`);
+      }
+    }
+  );
+}
+
+function policyOf(group: JsonObject, what: String): VersionPolicy {
+  if (!group.has('versions')) {
+    return VersionPolicy.Semver;
+  }
+  let value = group['versions'];
+  if (value is String) {
+    if (value == 'patch') {
+      return VersionPolicy.Patch;
+    }
+    if (value == 'semver') {
+      return VersionPolicy.Semver;
+    }
+  }
+  throw new ConfigError(`${what}: "versions" is not "patch" or "semver"`);
+}
+
+function pathsOf(settings: JsonObject, name: String): GrowableArray<String> {
+  if (settings.has(name)) {
+    let unit = settings[name] as JsonObject;
+    if (unit.has('paths')) {
+      return stringsOf(unit['paths'], `unit '${name}': "paths"`);
+    }
+  }
+  return new GrowableArray<String>();
+}
+
+function versionedOf(settings: JsonObject, name: String): boolean {
+  if (settings.has(name)) {
+    let unit = settings[name] as JsonObject;
+    if (unit.has('versioned')) {
+      if (let (true, versioned) = unit.boolAt('versioned')) {
+        return versioned;
+      }
+      throw new ConfigError(`unit '${name}': "versioned" is not true or false`);
+    }
+  }
+  return true;
+}

@@ -1,0 +1,130 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isNull, isTrue} from 'zena:assert';
+import {Config, ConfigError, VersionPolicy} from 'zena-lang:changes/config';
+
+/** The message of the `ConfigError` that reading `text` throws. */
+function refusal(text: String) {
+  try {
+    Config.parse(text);
+  } catch (e) {
+    isTrue(e is ConfigError, e.message);
+    return e.message;
+  };
+  return 'no error';
+}
+
+export let tests = suite(
+  'zena-lang:changes/config',
+  () => {
+    test(
+      'reads groups, held units and independent units',
+      () => {
+        let config = Config.parse(
+          `{
+      "groups": {
+        "toolchain": {
+          "versions": "patch",
+          "units": ["zena-compiler", "zena-cli", "compiler"],
+          "held": ["compiler"]
+        }
+      },
+      "units": {
+        "zena-compiler": {"paths": ["packages/stdlib", "tests/language"]},
+        "semver": {},
+        "pds": {"versioned": false}
+      }
+    }`
+        );
+        equal(config.groups.size, 1);
+        let group = config.groups['toolchain'];
+        isTrue(group.policy == VersionPolicy.Patch);
+        equal(group.units.length, 3);
+
+        let names = new GrowableArray<String>();
+        for (let {key} in config.units) {
+          names.push(key);
+        }
+        equal(names.length, 5);
+        equal(names[0], 'zena-compiler');
+        equal(names[1], 'zena-cli');
+        equal(names[2], 'compiler');
+        equal(names[3], 'semver');
+        equal(names[4], 'pds');
+
+        let compiler = config.units['zena-compiler'];
+        equal(compiler.dir, 'packages/zena-compiler');
+        equal(compiler.group, 'toolchain');
+        equal(compiler.paths.length, 2);
+        equal(compiler.paths[1], 'tests/language');
+        isFalse(compiler.held);
+        isTrue(compiler.versioned);
+
+        isTrue(config.units['compiler'].held);
+        isFalse(config.units['zena-cli'].held);
+
+        let semver = config.units['semver'];
+        isNull(semver.group);
+        isTrue(semver.versioned);
+        equal(semver.paths.length, 0);
+        isFalse(config.units['pds'].versioned);
+      }
+    );
+
+    test(
+      'a group follows semver unless it says patch',
+      () => {
+        let config = Config.parse(
+          '{"groups": {"a": {"units": ["x"]}, "b": {"versions": "semver", "units": ["y"]}}}'
+        );
+        isTrue(config.groups['a'].policy == VersionPolicy.Semver);
+        isTrue(config.groups['b'].policy == VersionPolicy.Semver);
+      }
+    );
+
+    test(
+      'refuses a configuration that contradicts itself',
+      () => {
+        isTrue(refusal('{').startsWith('not JSON: '));
+        equal(refusal('[]'), 'the configuration is not an object');
+        equal(
+          refusal('{"unit": {}}'),
+          'the configuration has an unknown key \'unit\''
+        );
+        equal(
+          refusal('{"units": {"semver": {"path": []}}}'),
+          'unit \'semver\' has an unknown key \'path\''
+        );
+        equal(
+          refusal('{"units": {"semver": {"paths": "src"}}}'),
+          `unit 'semver': "paths" is not a list of names`
+        );
+        equal(
+          refusal('{"units": {"semver": {"versioned": "no"}}}'),
+          `unit 'semver': "versioned" is not true or false`
+        );
+        equal(
+          refusal('{"groups": {"a": {}}}'),
+          `group 'a': "units" is not a list of names`
+        );
+        equal(
+          refusal('{"groups": {"a": {"units": ["x"], "versions": "minor"}}}'),
+          `group 'a': "versions" is not "patch" or "semver"`
+        );
+        equal(
+          refusal('{"groups": {"a": {"units": ["x"], "held": ["y"]}}}'),
+          'group \'a\' holds \'y\', which is not one of its units'
+        );
+        equal(
+          refusal('{"groups": {"a": {"units": ["x"]}, "b": {"units": ["x"]}}}'),
+          'unit \'x\' is in group \'a\' and in group \'b\''
+        );
+        equal(
+          refusal(
+            '{"groups": {"a": {"units": ["x"]}}, "units": {"x": {"versioned": false}}}'
+          ),
+          `unit 'x' is in group 'a', so it cannot be "versioned": false`
+        );
+      }
+    );
+  }
+);

@@ -1,0 +1,148 @@
+/**
+ * The `changes` command: `npm run changes -- <command>`, from the
+ * repository root (docs/design/change-files.md, "Commands").
+ *
+ * - `status` prints the entries waiting in `.changes/` by unit, and the
+ *   version each group and unit would be released at.
+ * - `check` reports what is wrong with the configuration and the change
+ *   files, and exits 1 when anything is.
+ */
+
+import {ArgParser} from 'zena:args';
+import {Future} from 'zena:async';
+import {exit, getArguments} from 'zena:cli';
+import {HashMap} from 'zena:collections';
+import {exists, listDir, readFile} from 'zena:fs';
+import {Version} from 'zena-lang:semver';
+import {
+  ChangeFile,
+  Problem,
+  checkChangeFile,
+  formatProblem,
+  parseChangeFile,
+} from '../src/change-file.zena';
+import {Config} from '../src/config.zena';
+import {readUnitVersion} from '../src/manifests.zena';
+import {formatStatus, planReleases} from '../src/plan.zena';
+
+let CHANGES_DIR = '.changes';
+let CONFIG_PATH = '.changes/config.json';
+/** The file in `.changes/` that says what the directory is for. */
+let README = 'README.md';
+
+async function readConfig(): Future<Config> {
+  if (!await exists(CONFIG_PATH)) {
+    throw new Error(
+      `${CONFIG_PATH} is missing; run this from the repository root`
+    );
+  }
+  try {
+    return Config.parse(await readFile(CONFIG_PATH));
+  } catch (e) {
+    throw new Error(`${CONFIG_PATH}: ${e.message}`);
+  };
+}
+
+/** The change files, in the order of their names, with what is wrong with them. */
+async function readChangeFiles(config: Config, problems: GrowableArray<Problem>): Future<GrowableArray<ChangeFile>> {
+  let names = new GrowableArray<String>();
+  for (let entry in await listDir(CHANGES_DIR)) {
+    if (entry.name.endsWith('.md') && entry.name != README) {
+      names.push(entry.name);
+    }
+  }
+  names.sort((a, b) => a.compareTo(b));
+  let files = new GrowableArray<ChangeFile>();
+  for (let name in names) {
+    let path = `${CHANGES_DIR}/${name}`;
+    let file = parseChangeFile(path, await readFile(path), problems);
+    checkChangeFile(file, config, problems);
+    files.push(file);
+  }
+  return files;
+}
+
+function report(problems: GrowableArray<Problem>) {
+  for (let problem in problems) {
+    console.error(formatProblem(problem));
+  }
+}
+
+async function status(): Future<i32> {
+  let config = await readConfig();
+  let problems = new GrowableArray<Problem>();
+  let files = await readChangeFiles(config, problems);
+  if (problems.length > 0) {
+    report(problems);
+    return 1;
+  }
+  let versions = new HashMap<String, Version>();
+  for (let {value as unit} in config.units) {
+    let version = await readUnitVersion(unit.dir);
+    if (version != null) {
+      versions[unit.name] = version;
+    }
+  }
+  console.log(formatStatus(planReleases(config, files, versions)).trim());
+  return 0;
+}
+
+async function check(): Future<i32> {
+  let config = await readConfig();
+  let problems = new GrowableArray<Problem>();
+  let files = await readChangeFiles(config, problems);
+  for (let {value as unit} in config.units) {
+    if (!await exists(unit.dir)) {
+      problems.push(
+        new Problem(
+          CONFIG_PATH,
+          1,
+          `unit '${unit.name}' has no directory ${unit.dir}`
+        )
+      );
+    }
+  }
+  report(problems);
+  if (problems.length > 0) {
+    return 1;
+  }
+  console.log(
+    `${files.length} change files, ${config.units.size} units: no problems`
+  );
+  return 0;
+}
+
+export async function main(): Future<void> {
+  let parser = new ArgParser(
+    {
+      name: 'changes',
+      help: 'Change files, changelogs and release notes (docs/design/change-files.md).',
+      commands: {
+        'status' => {
+          help: 'Print the pending entries and the versions they would give'
+        },
+        'check' => {
+          help: 'Report what is wrong with the configuration and the change files'
+        }
+      }
+    }
+  );
+  let parsed = parser.parse(getArguments(), 1);
+  var code = 2;
+  try {
+    let command = parsed.commandName;
+    if (command == 'status') {
+      code = await status();
+    } else if (command == 'check') {
+      code = await check();
+    } else {
+      console.error(parser.formatHelp());
+    };
+  } catch (e) {
+    console.error(`Error: ${e.message}`);
+    code = 1;
+  };
+  if (code != 0) {
+    exit(code);
+  }
+}

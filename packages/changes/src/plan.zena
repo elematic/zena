@@ -1,0 +1,258 @@
+/**
+ * What the next release would be: the change files' entries by unit, and
+ * the version each group and independent unit would get
+ * (docs/design/change-files.md, "Groups" and "Versions").
+ */
+
+import {StringBuilder} from 'zena:core';
+import {HashMap, OrderedHashMap} from 'zena:collections';
+import {join} from 'zena:string';
+import {Version} from 'zena-lang:semver';
+import {
+  ChangeFile,
+  Entry,
+  SECTIONS,
+  Size,
+  largerSize,
+  sectionName,
+} from './change-file.zena';
+import {Config, Group, Unit, VersionPolicy} from './config.zena';
+import {nextVersion} from './versions.zena';
+
+/** A release that cannot be planned. */
+export class PlanError extends Error {
+  new(message: String) : super(message) {}
+}
+
+/** A unit's entries, from every change file. */
+export final class UnitPlan {
+  unit: Unit;
+  entries: GrowableArray<Entry> = new GrowableArray<Entry>();
+  requires: GrowableArray<String> = new GrowableArray<String>();
+
+  new(this.unit) {}
+
+  /** The size of the largest entry. */
+  size: Size {
+    get {
+      var size = Size.Fix;
+      for (let entry in this.entries) {
+        size = largerSize(size, entry.size);
+      }
+      return size;
+    }
+  }
+}
+
+/** The next release of a group or of an independent unit. */
+export final class ReleasePlan {
+  /** The group's name, or the unit's. */
+  name: String;
+  isGroup: boolean;
+  /** False for a unit with a dated changelog and no version. */
+  versioned: boolean;
+  /** The version now, and null for an unversioned unit. */
+  current: Version?;
+  /**
+   * The version the release would have. Null for an unversioned unit, and
+   * for a group whose only entries are for held units, which is not
+   * released.
+   */
+  next: Version?;
+  /** The units released with entries of their own. */
+  units: GrowableArray<UnitPlan> = new GrowableArray<UnitPlan>();
+  /** A group's units that are released with no entries of their own. */
+  unchanged: GrowableArray<String> = new GrowableArray<String>();
+  /** A group's held units that have entries, which stay pending. */
+  held: GrowableArray<UnitPlan> = new GrowableArray<UnitPlan>();
+
+  new(this.name, this.isGroup, this.versioned, this.current, this.next) {}
+}
+
+function unitPlans(config: Config, files: Array<ChangeFile>) {
+  let plans = new OrderedHashMap<String, UnitPlan>();
+  for (let file in files) {
+    for (let changes in file.units) {
+      if (let (true, unit) = config.units.get(changes.unit)) {
+        if (!plans.has(unit.name)) {
+          plans[unit.name] = new UnitPlan(unit);
+        }
+        let plan = plans[unit.name];
+        for (let entry in changes.entries) {
+          plan.entries.push(entry);
+        }
+        for (let name in changes.requires) {
+          if (!plan.requires.contains(name)) {
+            plan.requires.push(name);
+          }
+        }
+      } else {
+        throw new PlanError(
+          `${file.path}: '${changes.unit}' is not a unit in .changes/config.json`
+        );
+      }
+    }
+  }
+  return plans;
+}
+
+function versionOf(unit: String, versions: HashMap<String, Version>): Version {
+  if (let (true, version) = versions.get(unit)) {
+    return version;
+  }
+  throw new PlanError(`packages/${unit} has no manifest that states a version`);
+}
+
+function planGroup(group: Group, config: Config, plans: OrderedHashMap<String, UnitPlan>, versions: HashMap<String, Version>): ReleasePlan? {
+  let changed = new GrowableArray<UnitPlan>();
+  let unchanged = new GrowableArray<String>();
+  let held = new GrowableArray<UnitPlan>();
+  var size = Size.Fix;
+  for (let name in group.units) {
+    let unit = config.units[name];
+    if (let (true, plan) = plans.get(name)) {
+      if (unit.held) {
+        held.push(plan);
+      } else {
+        changed.push(plan);
+        size = largerSize(size, plan.size);
+      }
+    } else if (!unit.held) {
+      unchanged.push(name);
+    }
+  }
+  if (changed.length == 0 && held.length == 0) {
+    return null;
+  }
+  // The group's version is the highest among the units it releases, which
+  // differ only until their first release together.
+  var current: Version? = null;
+  var next: Version? = null;
+  if (changed.length > 0) {
+    for (let name in group.units) {
+      if (config.units[name].held) {
+        continue;
+      }
+      let version = versionOf(name, versions);
+      if (current == null || version.compareTo(current) > 0) {
+        current = version;
+      }
+    }
+    if (current != null) {
+      next = nextVersion(current, size, group.policy);
+    }
+  }
+  let plan = new ReleasePlan(group.name, true, true, current, next);
+  for (let unit in changed) {
+    plan.units.push(unit);
+  }
+  for (let unit in held) {
+    plan.held.push(unit);
+  }
+  if (next != null) {
+    for (let name in unchanged) {
+      plan.unchanged.push(name);
+    }
+  }
+  return plan;
+}
+
+/**
+ * The releases the change files call for: each group, then each
+ * independent unit, in the configuration's order, leaving out those with
+ * no entries. `versions` has each unit's version now, by its name.
+ * Throws `PlanError` for a unit to release that has no version, and for
+ * a change file that names something that is not a unit.
+ */
+export function planReleases(config: Config, files: Array<ChangeFile>, versions: HashMap<String, Version>): GrowableArray<ReleasePlan> {
+  let plans = unitPlans(config, files);
+  let releases = new GrowableArray<ReleasePlan>();
+  for (let {value as group} in config.groups) {
+    let plan = planGroup(group, config, plans, versions);
+    if (plan != null) {
+      releases.push(plan);
+    }
+  }
+  for (let {value as unit} in config.units) {
+    if (unit.group != null) {
+      continue;
+    }
+    if (let (true, unitPlan) = plans.get(unit.name)) {
+      var release = new ReleasePlan(unit.name, false, false, null, null);
+      if (unit.versioned) {
+        let current = versionOf(unit.name, versions);
+        release = new ReleasePlan(
+          unit.name,
+          false,
+          true,
+          current,
+          nextVersion(current, unitPlan.size, VersionPolicy.Semver)
+        );
+      }
+      release.units.push(unitPlan);
+      releases.push(release);
+    }
+  }
+  return releases;
+}
+
+function appendEntries(out: StringBuilder, plan: UnitPlan, indent: String) {
+  for (let section in SECTIONS) {
+    var first = true;
+    for (let entry in plan.entries) {
+      if (entry.section != section) {
+        continue;
+      }
+      if (first) {
+        out.append(`${indent}${sectionName(section)}\n`);
+        first = false;
+      }
+      for (let line in entry.text.split('\n')) {
+        out.append(`${indent}  ${line}\n`);
+      }
+    }
+  }
+  if (plan.requires.length > 0) {
+    out.append(`${indent}Requires: ${join(plan.requires, ', ')}\n`);
+  }
+}
+
+/** The releases as text, for `status`. */
+export function formatStatus(releases: Array<ReleasePlan>): String {
+  if (releases.length == 0) {
+    return 'No change files: nothing to release.\n';
+  }
+  let out = new StringBuilder();
+  for (let release in releases) {
+    let current = release.current;
+    let next = release.next;
+    if (!release.versioned) {
+      out.append(`${release.name} (no version)\n`);
+    } else if (current != null && next != null) {
+      out.append(
+        `${release.name} ${current.toString()} -> ${next.toString()}\n`
+      );
+    } else {
+      out.append(
+        `${release.name}: not released, since only held units have entries\n`
+      );
+    }
+    for (let unit in release.units) {
+      var indent = '  ';
+      if (release.isGroup) {
+        out.append(`  ${unit.unit.name}\n`);
+        indent = '    ';
+      }
+      appendEntries(out, unit, indent);
+    }
+    if (release.unchanged.length > 0) {
+      out.append(`  no changes: ${join(release.unchanged, ', ')}\n`);
+    }
+    for (let unit in release.held) {
+      out.append(`  ${unit.unit.name} (held, entries stay pending)\n`);
+      appendEntries(out, unit, '    ');
+    }
+    out.append('\n');
+  }
+  return out.toString();
+}

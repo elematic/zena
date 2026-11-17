@@ -1,0 +1,244 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {
+  ChangeFile,
+  Problem,
+  Section,
+  Size,
+  checkChangeFile,
+  formatProblem,
+  parseChangeFile,
+} from 'zena-lang:changes/change-file';
+import {Config} from 'zena-lang:changes/config';
+
+let PATH = '.changes/example.md';
+
+function read(text: String): inline (ChangeFile, GrowableArray<Problem>) {
+  let problems = new GrowableArray<Problem>();
+  let file = parseChangeFile(PATH, text, problems);
+  return (file, problems);
+}
+
+/** The one problem reading `text` gives, as `line: message`. */
+function problem(text: String) {
+  let (file, problems) = read(text);
+  equal(problems.length, 1, text);
+  return `${problems[0].line}: ${problems[0].message}`;
+}
+
+export let tests = suite(
+  'zena-lang:changes/change-file',
+  () => {
+    test(
+      'reads units, sections and entries',
+      () => {
+        let (file, problems) = read(
+          '## zena-compiler\n'
+            + '\n'
+            + '### Removed\n'
+            + '\n'
+            + '- **Breaking:** `{x: y}` renaming in patterns; use\n'
+            + '  `{x as y}` instead.\n'
+            + '\n'
+            + '## zena-cli\n'
+            + '\n'
+            + '### Added\n'
+            + '\n'
+            + '- Raw mode.\n'
+            + '- Prompts.\n'
+            + '\n'
+            + '### Fixed\n'
+            + '\n'
+            + '- A crash.\n'
+        );
+        equal(problems.length, 0);
+        equal(file.path, PATH);
+        equal(file.units.length, 2);
+        equal(file.releaseNotes, '');
+
+        let compiler = file.units[0];
+        equal(compiler.unit, 'zena-compiler');
+        equal(compiler.line, 1);
+        equal(compiler.entries.length, 1);
+        let removed = compiler.entries[0];
+        isTrue(removed.section == Section.Removed);
+        equal(
+          removed.text,
+          '- **Breaking:** `{x: y}` renaming in patterns; use\n  `{x as y}` instead.'
+        );
+        equal(removed.line, 5);
+        isTrue(removed.breaking);
+        isTrue(removed.size == Size.Breaking);
+
+        let cli = file.units[1];
+        equal(cli.entries.length, 3);
+        equal(cli.entries[0].text, '- Raw mode.');
+        isTrue(cli.entries[0].size == Size.Feature);
+        isFalse(cli.entries[0].breaking);
+        equal(cli.entries[1].text, '- Prompts.');
+        isTrue(cli.entries[2].section == Section.Fixed);
+        isTrue(cli.entries[2].size == Size.Fix);
+      }
+    );
+
+    test(
+      'keeps an entry with several paragraphs whole',
+      () => {
+        let (file, problems) = read(
+          '## semver\n\n### Changed\n\n- First paragraph.\n\n  Second paragraph.\n\n- Next entry.\n'
+        );
+        equal(problems.length, 0);
+        equal(file.units[0].entries.length, 2);
+        equal(
+          file.units[0].entries[0].text,
+          '- First paragraph.\n\n  Second paragraph.'
+        );
+        equal(file.units[0].entries[1].text, '- Next entry.');
+      }
+    );
+
+    test(
+      'sizes entries by their section and the Breaking marker',
+      () => {
+        let (file, problems) = read(
+          '## semver\n\n'
+            + '### Added\n\n- a\n\n'
+            + '### Changed\n\n- b\n- **Breaking:** c\n\n'
+            + '### Deprecated\n\n- d\n\n'
+            + '### Fixed\n\n- e\n\n'
+            + '### Security\n\n- f\n'
+        );
+        equal(problems.length, 0);
+        let sizes = file.units[0].entries;
+        isTrue(sizes[0].size == Size.Feature);
+        isTrue(sizes[1].size == Size.Fix);
+        isTrue(sizes[2].size == Size.Breaking);
+        isTrue(sizes[3].size == Size.Feature);
+        isTrue(sizes[4].size == Size.Fix);
+        isTrue(sizes[5].size == Size.Fix);
+      }
+    );
+
+    test(
+      'reads release notes, with headings and code of their own',
+      () => {
+        let (file, problems) = read(
+          '## Release notes\n'
+            + '\n'
+            + '### Prompts\n'
+            + '\n'
+            + 'A program can ask a question.\n'
+            + '\n'
+            + '```md\n'
+            + '## not a unit\n'
+            + '```\n'
+            + '\n'
+            + '## terminal\n'
+            + '\n'
+            + '### Added\n'
+            + '\n'
+            + '- Prompts.\n'
+        );
+        equal(problems.length, 0);
+        equal(
+          file.releaseNotes,
+          '### Prompts\n\nA program can ask a question.\n\n```md\n## not a unit\n```'
+        );
+        equal(file.units.length, 1);
+        equal(file.units[0].unit, 'terminal');
+      }
+    );
+
+    test(
+      'reads Requires, with or without entries',
+      () => {
+        let (file, problems) = read(
+          '## terminal\n\nRequires: semver, markdown\n\n### Added\n\n- Ranges.\n\n## zebra\n\nRequires: terminal\n'
+        );
+        equal(problems.length, 0);
+        equal(file.units[0].requires.length, 2);
+        equal(file.units[0].requires[0], 'semver');
+        equal(file.units[0].requires[1], 'markdown');
+        equal(file.units[1].requires[0], 'terminal');
+        equal(file.units[1].entries.length, 0);
+      }
+    );
+
+    test(
+      'reports what is wrong with a file, by line',
+      () => {
+        equal(problem(''), '1: the file has no entries');
+        equal(
+          problem('# Title\n\n## semver\n\n### Added\n\n- a\n'),
+          '1: expected \'## <unit>\' or \'## Release notes\''
+        );
+        equal(problem('## semver\n'), '1: \'## semver\' has no entries');
+        equal(
+          problem(
+            '## semver\n\n### Added\n\n## terminal\n\n### Fixed\n\n- a\n'
+          ),
+          '3: \'### Added\' has no entries'
+        );
+        equal(
+          problem('## semver\n\n- a\n'),
+          '3: expected \'Requires: <unit>\' or a section such as \'### Added\''
+        );
+        equal(
+          problem('## semver\n\n### Improved\n\n- a\n'),
+          '3: \'Improved\' is not a section: Added, Changed, Deprecated, Removed, Fixed or Security'
+        );
+        equal(
+          problem('## semver\n\n### Added\n\nSome prose.\n\n- a\n'),
+          '5: expected an entry, which starts with \'- \''
+        );
+        equal(
+          problem('## semver\n\n### Removed\n\n- `lowest`.\n'),
+          '5: an entry under Removed must start with **Breaking:**'
+        );
+        equal(
+          problem(
+            '## semver\n\n### Added\n\n- a\n\n## semver\n\n### Fixed\n\n- b\n'
+          ),
+          '7: a second \'## semver\'; put its entries under the first'
+        );
+        equal(
+          problem('## semver\n\n### Added\n\n- a\n\n### Added\n\n- b\n'),
+          '7: a second \'### Added\'; put its entries under the first'
+        );
+        equal(
+          problem('## Release notes\n\n## semver\n\n### Added\n\n- a\n'),
+          '1: \'## Release notes\' has no text'
+        );
+        equal(
+          problem('## semver\n\nRequires:\n\n### Added\n\n- a\n'),
+          '3: \'Requires:\' names no unit'
+        );
+      }
+    );
+
+    test(
+      'checks the units a file names against the configuration',
+      () => {
+        let config = Config.parse('{"units": {"semver": {}, "terminal": {}}}');
+        let (file, problems) = read(
+          '## semver\n\nRequires: semver, range\n\n### Added\n\n- a\n\n## nothing\n\n### Added\n\n- b\n'
+        );
+        equal(problems.length, 0);
+        checkChangeFile(file, config, problems);
+        equal(problems.length, 3);
+        equal(
+          formatProblem(problems[0]),
+          '.changes/example.md:1: \'semver\' requires itself'
+        );
+        equal(
+          formatProblem(problems[1]),
+          '.changes/example.md:1: \'Requires: range\' names something that is not a unit in .changes/config.json'
+        );
+        equal(
+          formatProblem(problems[2]),
+          '.changes/example.md:9: \'nothing\' is not a unit in .changes/config.json'
+        );
+      }
+    );
+  }
+);

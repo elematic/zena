@@ -1,0 +1,42 @@
+/**
+ * The version a release gets (docs/design/change-files.md, "Versions").
+ */
+
+import {Version} from 'zena-lang:semver';
+import {Size} from './change-file.zena';
+import {VersionPolicy} from './config.zena';
+
+function release(major: i64, minor: i64, patch: i64) {
+  return new Version(major, minor, patch, new FixedArray<String>(0, ''));
+}
+
+/**
+ * The version that follows `current` for a release whose largest entry
+ * is `size`.
+ *
+ * A pre-release such as `0.0.3-preview.2` is followed by the version it
+ * previews, `0.0.3`, whatever the entries. Under `VersionPolicy.Patch`,
+ * and at `0.0.x` under any policy, the next version is the next patch.
+ * From `0.1.0` a breaking entry moves the minor number, and from `1.0.0`
+ * the major number, where a feature moves the minor.
+ */
+export function nextVersion(current: Version, size: Size, policy: VersionPolicy): Version {
+  let {major, minor, patch} = current;
+  if (current.isPrerelease) {
+    return release(major, minor, patch);
+  }
+  if (policy == VersionPolicy.Patch || major == 0 && minor == 0) {
+    return release(major, minor, patch + 1);
+  }
+  if (major == 0) {
+    if (size == Size.Breaking) {
+      return release(0, minor + 1, 0);
+    }
+    return release(0, minor, patch + 1);
+  }
+  return match (size) {
+    case Size.Breaking: release(major + 1, 0, 0)
+    case Size.Feature: release(major, minor + 1, 0)
+    case Size.Fix: release(major, minor, patch + 1)
+  };
+}
