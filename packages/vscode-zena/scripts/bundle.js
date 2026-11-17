@@ -4,6 +4,7 @@
 // - `dist/compiler-worker.cjs`: Node `worker_threads` bundle used on Desktop
 //   hosts so WASM compilation and type checking never block the Extension Host.
 // - `dist/compiler.wasm`: Copy of `packages/compiler/compiler.wasm`.
+// - `dist/icon.png`: Copy of `assets/logo.png`.
 // - `dist/stdlib/`: Individual `.zena` and `.wit` files from `packages/compiler/stdlib/`,
 //   read asynchronously via `vscode.workspace.fs`.
 
@@ -15,12 +16,14 @@ import {fileURLToPath} from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, '..');
 const wasmSrc = resolve(pkgRoot, '../compiler/compiler.wasm');
+const iconSrc = resolve(pkgRoot, '../../assets/logo.png');
 const stdlibSrc = resolve(pkgRoot, '../compiler/stdlib');
 const distDir = resolve(pkgRoot, 'dist');
 const distStdlib = join(distDir, 'stdlib');
 
 mkdirSync(distDir, {recursive: true});
 copyFileSync(wasmSrc, join(distDir, 'compiler.wasm'));
+copyFileSync(iconSrc, join(distDir, 'icon.png'));
 rmSync(distStdlib, {recursive: true, force: true});
 cpSync(stdlibSrc, distStdlib, {recursive: true});
 

@@ -700,8 +700,17 @@ suite('packaged vscode-zena extension (.vsix)', () => {
       manifest.main,
       'manifest declares matching browser entrypoint for vscode.dev',
     );
+    assert.strictEqual(
+      manifest.icon,
+      'dist/icon.png',
+      'manifest declares icon',
+    );
     assert.strictEqual(manifest.dependencies, undefined);
     const extEntries = readdirSync(extDir).map((e) => e.toLowerCase());
+    assert.ok(
+      existsSync(join(extDir, 'dist', 'icon.png')),
+      'ships dist/icon.png',
+    );
     assert.ok(
       extEntries.some((e) => e.startsWith('license')),
       'ships LICENSE',

@@ -4,7 +4,7 @@ Language support for the [Zena](https://zena-lang.dev) programming language in V
 
 ## Features
 
-- **Diagnostics**: Type checking and syntax diagnostics powered by Zena's self-hosted WebAssembly language service (`lsp.wasm`).
+- **Diagnostics**: Type checking and syntax diagnostics powered by Zena's self-hosted WebAssembly compiler (`compiler.wasm`).
 - **Linting & Quick Fixes**: Inline `zena-lint` warnings with per-finding quick fixes, Fix All, and the `Zena: Fix lint findings in file` command.
 - **Navigation**: Go to Definition across workspace modules and read-only bundled `zena:*` standard library modules, plus document symbol outlines.
 - **Hover & Completions**: Hover type signatures and doc comments, plus member, local, built-in, and keyword completions.
@@ -12,6 +12,14 @@ Language support for the [Zena](https://zena-lang.dev) programming language in V
 - **Syntax Highlighting**: TextMate grammars for `.zena` source files and fenced `zena` blocks in Markdown.
 
 ## Installation
+
+### From the VS Code Marketplace
+
+Install [**Zena Language**](https://marketplace.visualstudio.com/items?itemName=zena-lang.vscode-zena) from the Extensions view in VS Code or via the CLI:
+
+```sh
+code --install-extension zena-lang.vscode-zena
+```
 
 ### From a Release VSIX
 
