@@ -39,6 +39,7 @@ import {
   orgCommand, ownerCommand, scopeAddCommand, scopeMaintainersCommand, scopeOrganizationCommand, scopePolicyCommand,
   scopeRemoveCommand, scopeSettingsCommand, scopeUpgradeCommand, teamCommand
 } from './members.zena';
+import { initCommand } from './init.zena';
 import { approveCommand } from './approve.zena';
 import { retractCommand } from './retract.zena';
 import { adminCommand } from './admin.zena';
@@ -284,6 +285,14 @@ function describe() {
         help: 'Add, fetch and publish packages, and change who maintains them',
         options: {'help' => help},
         commands: {
+          'init' => {
+            help: 'Make the current directory, or the one named, a package: write its zena-package.json',
+            options: {
+              'help' => help,
+              'name' => {help: "The package's name, instead of the directory's"},
+              'scope' => {help: 'The scope the package is published in'},
+            },
+          },
           'add' => {
             help: 'Add a package to the dependencies, pin it, and fetch it',
             options: {
@@ -541,6 +550,9 @@ async function pkgCommand(pkg: ArgParser, args: ParsedArgs, options: Options): F
   if (sub.getFlag('help')) {
     console.log((pkg.command(name) ?? pkg).formatHelp());
     return 0;
+  }
+  if (name == 'init') {
+    return await initCommand(sub, options);
   }
   if (name == 'fetch') {
     return await fetchCommand(sub, options);

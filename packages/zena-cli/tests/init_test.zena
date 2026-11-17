@@ -1,0 +1,53 @@
+/**
+ * `zena pkg init`: a directory made a package, by its own name or one
+ * given, and a manifest that is never written over.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {exists} from 'zena:fs';
+import {Scratch, described, ensureDir, read, zenaIn} from './cli-support.zena';
+
+export let tests = suite('zena pkg init', () => {
+  test('writes a manifest named after the directory, and never over one', async (ctx) => {
+    let scratch = await Scratch.create('init');
+    try {
+      await ensureDir(scratch.at('app'));
+      let zena = zenaIn(scratch, 'app');
+      let init = await zena.run(['pkg', 'init']);
+      isTrue(init.succeeded() && init.stdout.contains('the package app'), described(init));
+      equal(await read(scratch.at('app/zena-package.json')), '{\n  "name": "app",\n  "version": "0.1.0"\n}\n');
+
+      let again = await zena.run(['pkg', 'init']);
+      isTrue(!again.succeeded() && again.stderr.contains('already exists'), described(again));
+      equal(await read(scratch.at('app/zena-package.json')), '{\n  "name": "app",\n  "version": "0.1.0"\n}\n');
+    } finally {
+      await scratch.remove();
+    }
+  });
+
+  test('makes the directory it is given, with the name and scope it is given', async (ctx) => {
+    let scratch = await Scratch.create('init-dir');
+    try {
+      await ensureDir(scratch.at('ws'));
+      let zena = zenaIn(scratch, 'ws');
+      let scoped = await zena.run(['pkg', 'init', 'packages/router', '--scope', 'acme']);
+      isTrue(scoped.succeeded(), described(scoped));
+      equal(await read(scratch.at('ws/packages/router/zena-package.json')),
+          '{\n  "name": "router",\n  "scope": "acme",\n  "version": "0.1.0"\n}\n');
+
+      // A directory whose name is not a package name needs --name.
+      let bad = await zena.run(['pkg', 'init', 'My_Lib']);
+      isTrue(!bad.succeeded() && bad.stderr.contains("'My_Lib' is not a valid package name"), described(bad));
+      isTrue(!(await exists(scratch.at('ws/My_Lib'))), 'made the directory of a package it refused');
+      let named = await zena.run(['pkg', 'init', 'My_Lib', '--name', 'my-lib']);
+      isTrue(named.succeeded(), described(named));
+      isTrue((await read(scratch.at('ws/My_Lib/zena-package.json'))).contains('"name": "my-lib"'), 'named');
+
+      let badScope = await zena.run(['pkg', 'init', 'other', '--scope', 'Acme']);
+      isTrue(!badScope.succeeded() && badScope.stderr.contains('not a valid scope name'), described(badScope));
+    } finally {
+      await scratch.remove();
+    }
+  });
+});
