@@ -181,6 +181,7 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 - [packages/pds-web/CONTEXT.md](packages/pds-web/CONTEXT.md) — the App View's server-rendered pages and their assets (Radica)
 - [packages/markdown/CONTEXT.md](packages/markdown/CONTEXT.md) — CommonMark and GFM parser, AST, plugin API, and HTML renderer
 - [packages/semver/CONTEXT.md](packages/semver/CONTEXT.md) — semantic versions and npm's version ranges
+- [packages/terminal/CONTEXT.md](packages/terminal/CONTEXT.md) — colors, Clack-style layout and a spinner for command-line programs
 - [packages/workspace-hack/CONTEXT.md](packages/workspace-hack/CONTEXT.md) — the generated crate that gives the Rust crates one set of dependency features
 
 ### Packages & Directories
@@ -201,6 +202,7 @@ in the root `CLAUDE.md`.
 - **`packages/zena-formatter`**: Code formatter for Zena (`@zena-lang/zena-formatter`).
 - **`packages/zena-lint`**: Lint rules for Zena source, each with a fix the tool applies: `function` declarations for top-level arrows, `??`/`?.`, collection literals, immutable fields and variables, no redundant casts or annotations (`@zena-lang/zena-lint`). Every fix is type-checked before it is kept. `zena lint <paths>` reports, `zena lint --fix <paths>` rewrites; the language server and the VS Code extension show the findings with quick fixes. See its README.
 - **`packages/zebra`**: Zebra build orchestrator tool (`@zena-lang/zebra`).
+- **`packages/terminal`**: Output for command-line programs (`zena-lang:terminal`): colors that follow `NO_COLOR` and `FORCE_COLOR`, Clack's rail and step markers, and its spinner. Zebra and `zena` print with it.
 - **`packages/workflow`**: Workflow automation package (`@zena-lang/workflow`).
 - **`packages/protobuf`**: Protocol Buffers support for Zena (`@zena-lang/protobuf`).
 - **`packages/google-cloud`**: Google Cloud client libraries for Zena (`@zena-lang/google-cloud`).
