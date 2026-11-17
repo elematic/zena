@@ -5,7 +5,7 @@ import {
   BoolLiteralType, BooleanType, ClassType, ErrorType, F64Type, HoleType,
   I32Type, InlineRecordType, InlineTupleType as InlineTupleT, InterfaceType, NeverType,
   NullType, NumLiteralType, StringLiteralType, TupleType as TupleT, Type,
-  TypeAliasType, UnionType as UnionT, UnknownType, V128Type, VoidType, baseType,
+  TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType, V128Type, VoidType, baseType,
   integerLiteralMagnitude, isBigIntLiteralRaw, isIntegerType, isNumericType, isOwnershipWrapper,
   ownershipHandleInner, typeToString, unwrapAliases
 } from '../types.zena';
@@ -643,14 +643,25 @@ export function unwrapNullableForMemberLookup(t: Type): Type | null {
  * and comes back as itself, flagged.
  */
 export function stripNull(ctx: CheckerContext, t: Type): inline (Type, boolean) {
-  if (t is NullType) {
-    return (t, true);
+  let u = unwrapAliases(t);
+  if (u is TypeParameterType) {
+    let bound = u.constraint;
+    if (bound != null) {
+      let (strippedBound, boundNullable) = stripNull(ctx, bound);
+      if (boundNullable) {
+        return (strippedBound, true);
+      }
+    }
+    return (t, false);
   }
-  if (let UnionT {types} = t) {
+  if (u is NullType) {
+    return (u, true);
+  }
+  if (let UnionT {types} = u) {
     var hasNull = false;
     let nonNull = new Array<Type>();
     for (let member in types) {
-      if (member is NullType) {
+      if (unwrapAliases(member) is NullType) {
         hasNull = true;
       } else {
         nonNull.push(member);

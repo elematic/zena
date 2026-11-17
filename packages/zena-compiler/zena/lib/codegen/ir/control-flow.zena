@@ -22,7 +22,8 @@ import {
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
   ValType, ValTypeI32, ValTypeI8, ValTypeI16, ValTypeRef, ValTypeRefNull,
-  ValTypeOptRef, ValTypeVoid, WasmType, isRefValType, refTargetOf,
+  ValTypeExternRef, ValTypeOptRef, ValTypeVoid, WasmType, isNullableAnyRef,
+  isRefValType, refTargetOf,
 } from '../wasm.zena';
 import {
   ClassCodegenInfo, RecordDispatchInfo, WasmFunction, WasmGlobal, WasmStruct,
@@ -3762,8 +3763,10 @@ export function lowerNullishCoalesce(cx: LoweringContext, bin: BinaryExpression)
   if (!cx.reachable) {
     return -1;
   }
-  if (!isRefValType(cx.valueTypeOf(testValue))) {
-    bail(cx, 'nullish on non-reference');
+  let testVt = cx.valueTypeOf(testValue);
+  if (!isNullableAnyRef(testVt) && !(testVt is ValTypeExternRef)) {
+    return cx.conformToSlot(
+        coalesceArmAdaptation(cx, bin, testValue), overallVt, 'nullish arm type');
   }
 
   let isNull = cx.b.emit(

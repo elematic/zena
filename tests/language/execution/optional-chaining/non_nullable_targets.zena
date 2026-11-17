@@ -1,0 +1,71 @@
+// @mode: run
+// @result: 142
+
+import { equal } from 'zena:assert';
+
+class Point {
+  x: i32;
+  y: i32;
+  new(this.x, this.y);
+
+  sum(): i32 {
+    return this.x + this.y;
+  }
+}
+
+class SubPoint extends Point {
+  z: i32;
+  new(x: i32, y: i32, this.z) : super(x, y);
+}
+
+class Holder<T extends Point | null> {
+  item: T;
+  new(this.item);
+
+  readX(): i32 {
+    return this.item?.x ?? -1;
+  }
+}
+
+class Outer {
+  point: Point;
+  new(this.point);
+}
+
+function readGenericX<T extends Point | null>(p: T): i32 {
+  return p?.x ?? -9;
+}
+
+export function main(): i32 {
+  // Statically non-nullable optional accesses returning primitives without `??`
+  // lower straight-line with no null check or merge block.
+  let p = new Point(10, 20);
+  equal(p?.x, 10);
+  equal(p?.sum(), 30);
+
+  let outer = new Outer(p);
+  equal(outer?.point?.y, 20);
+
+  let arr: FixedArray<i32> = [3, 4, 5];
+  equal(arr?[2], 5);
+
+  let fn = (n: i32): i32 => n * 6;
+  equal(fn?(7), 42);
+
+  // Generic specializations: non-nullable concrete `T` lowers straight-line,
+  // while nullable `Point | null` emits the null guard.
+  let nullPoint: Point | null = null;
+  equal(readGenericX(p), 10);
+  equal(readGenericX(nullPoint), -9);
+
+  let h1 = new Holder<Point>(p);
+  let h2 = new Holder<SubPoint>(new SubPoint(25, 1, 2));
+  let h3 = new Holder<Point | null>(null);
+  let h4 = new Holder<Point | null>(new Point(11, 2));
+  equal(h1.readX(), 10);
+  equal(h2.readX(), 25);
+  equal(h3.readX(), -1);
+  equal(h4.readX(), 11);
+
+  return p?.x + p?.sum() + outer?.point?.y + arr?[2] + fn?(7) + h2.readX() + 10;
+}

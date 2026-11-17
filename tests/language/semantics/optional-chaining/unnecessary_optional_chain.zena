@@ -1,0 +1,60 @@
+// @mode: check
+// Warnings when `?.`, `?[`, or `?(` is used on a non-nullable target.
+
+class Inner {
+  leaf: String;
+  count: i32;
+  new(this.leaf, this.count);
+  tag(): String {
+    return this.leaf;
+  }
+}
+
+class Box {
+  inner: Inner;
+  maybeInner: Inner | null;
+  new(this.inner, this.maybeInner);
+}
+
+function readNullableBound<T extends Inner | null>(x: T): String | null {
+  return x?.leaf;
+}
+
+function readNonNullBound<T extends Inner>(x: T): String {
+  return x?.leaf; // @warning: not nullable
+}
+
+export function checkAll(maybeBox: Box | null): i32 {
+  let inner = new Inner('ok', 5);
+  let s1: String = inner?.leaf; // @warning: not nullable
+  let n1: i32 = inner?.count; // @warning: not nullable
+  let s2: String = inner?.tag(); // @warning: not nullable
+
+  let arr: FixedArray<i32> = [10, 20];
+  let n2: i32 = arr?[0]; // @warning: not nullable
+
+  let fn = (): i32 => 7;
+  let n3: i32 = fn?(); // @warning: not nullable
+
+  // First `?.` is needed (`maybeBox` is nullable); second `?.` is redundant
+  // because `inner` is non-nullable inside the unparenthesized chain.
+  let chainedWarn: String | null = maybeBox?.inner?.leaf; // @warning: not nullable
+  let chainedClean: String | null = maybeBox?.inner.leaf;
+
+  // Parentheses close the inner chain (`Inner | null`), so the outer `?.` is needed.
+  let parenthesizedClean: String | null = (maybeBox?.inner)?.leaf;
+  let nullableHopClean: String | null = maybeBox?.maybeInner?.leaf;
+
+  var narrowedLen = 0;
+  if (maybeBox != null) {
+    narrowedLen = maybeBox?.inner.count; // @warning: not nullable
+  }
+
+  let g1 = readNullableBound(maybeBox?.inner);
+  let g2 = readNonNullBound(inner);
+
+  return s1.length + n1 + s2.length + n2 + n3 +
+      (chainedWarn?.length ?? 0) + (chainedClean?.length ?? 0) +
+      (parenthesizedClean?.length ?? 0) + (nullableHopClean?.length ?? 0) +
+      narrowedLen + (g1?.length ?? 0) + g2.length;
+}

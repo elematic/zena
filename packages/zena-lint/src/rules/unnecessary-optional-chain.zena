@@ -1,0 +1,110 @@
+/**
+ * `x?.f`, `x?[i]` and `f?(…)` where the receiver or callee cannot be
+ * `null` become `x.f`, `x[i]` and `f(…)`.
+ *
+ * The checker reports these (`DiagnosticCode.UnnecessaryNullish`); this
+ * rule removes the `?` before `.`, `[` or `(`.
+ */
+
+import { Expression, MemberExpression, IndexExpression, CallExpression } from 'zena-compiler/ast';
+import { walkEnter } from 'zena-compiler/visitor';
+import { DiagnosticCode } from 'zena-compiler/compiler';
+import { RuleContext } from '../context.zena';
+import { skipWhitespace } from '../source.zena';
+
+let LEFT_PAREN = 40;
+let RIGHT_PAREN = 41;
+let DOT = 46;
+let QUESTION = 63;
+let LEFT_BRACKET = 91;
+
+export function unnecessaryOptionalChains(ctx: RuleContext): void {
+  let warnings = ctx.diagnosticsOf(DiagnosticCode.UnnecessaryNullish);
+  if (warnings.length == 0) {
+    return;
+  }
+  let optionalBySpan = new Map<String, Expression>();
+  walkEnter(ctx.ast, (n) => {
+    if (!ctx.isParsed(n)) {
+      return;
+    }
+    let loc = n.loc;
+    if (loc == null) {
+      return;
+    }
+    match (n) {
+      case MemberExpression {optional}: {
+        if (optional) {
+          optionalBySpan[`${loc.start}:${loc.end}`] = n;
+        }
+      }
+      case IndexExpression {optional}: {
+        if (optional) {
+          optionalBySpan[`${loc.start}:${loc.end}`] = n;
+        }
+      }
+      case CallExpression {optional}: {
+        if (optional) {
+          optionalBySpan[`${loc.start}:${loc.end}`] = n;
+        }
+      }
+      case _: {}
+    }
+  });
+  if (optionalBySpan.size == 0) {
+    return;
+  }
+  for (let warning in warnings) {
+    let location = warning.location;
+    if (location == null) {
+      continue;
+    }
+    let key = `${location.start}:${location.start + location.length}`;
+    if (let (true, expr) = optionalBySpan.get(key)) {
+      let q = questionOffset(ctx, expr);
+      if (q >= 0) {
+        ctx.removeRange(q, q + 1);
+      }
+    }
+  }
+}
+
+/** Byte offset of the `?` in `expr`'s optional operator, or -1. */
+function questionOffset(ctx: RuleContext, expr: Expression): i32 {
+  let (target, afterQuestion) = match (expr) {
+    case MemberExpression {object}: (object, DOT)
+    case IndexExpression {object}: (object, LEFT_BRACKET)
+    case CallExpression {callee}: (callee, LEFT_PAREN)
+    case _: { return -1; }
+  };
+  let source = ctx.source;
+  let limit = ctx.end(expr);
+  var i = ctx.end(target);
+  if (i < 0 || limit < 0) {
+    return -1;
+  }
+  while (i + 1 < limit) {
+    i = skipWhitespace(source, i);
+    var skippedComment = false;
+    for (let comment in ctx.ast.comments) {
+      if (i >= comment.start && i < comment.end) {
+        i = comment.end;
+        skippedComment = true;
+        break;
+      }
+    }
+    if (skippedComment) {
+      continue;
+    }
+    if (i < limit && source.getByteAt(i) == RIGHT_PAREN) {
+      i += 1;
+      continue;
+    }
+    if (i + 1 < limit && source.getByteAt(i) == QUESTION &&
+        source.getByteAt(i + 1) == afterQuestion) {
+      return i;
+    }
+    return -1;
+  }
+  return -1;
+}

@@ -1113,6 +1113,78 @@ let tests = suite('lint', () => {
         'A `var` never assigned again; declare it with `let`.');
   });
 
+  test('unnecessary optional chains become plain accesses', async (t) => {
+    await check(t, dedentRaw`
+      class Inner {
+        leaf: String;
+        new(this.leaf);
+        tag(): String {
+          return this.leaf;
+        }
+      }
+      class Box {
+        inner: Inner;
+        maybeInner: Inner | null;
+        new(this.inner, this.maybeInner);
+      }
+      function readNullable<T extends Inner | null>(x: T): String | null {
+        return x?.leaf;
+      }
+      function readNonNull<T extends Inner>(x: T): String {
+        return x?.leaf;
+      }
+      export function run(maybeBox: Box | null): i32 {
+        let inner = new Inner('ok');
+        let arr: FixedArray<i32> = [1, 2];
+        let fn = (n: i32): i32 => n + 1;
+        let a = inner?.leaf;
+        let b = inner?.tag();
+        let c = arr?[0];
+        let d = fn?(3);
+        let e = maybeBox?.inner?.leaf;
+        let f = (maybeBox?.inner)?.leaf;
+        let g = maybeBox?.maybeInner?.leaf;
+        return a.length + b.length + c + d +
+            (e?.length ?? 0) + (f?.length ?? 0) + (g?.length ?? 0) +
+            (readNullable(maybeBox?.inner)?.length ?? 0) + readNonNull(inner).length;
+      }
+    `, dedentRaw`
+      class Inner {
+        leaf: String;
+        new(this.leaf);
+        tag(): String {
+          return this.leaf;
+        }
+      }
+      class Box {
+        inner: Inner;
+        maybeInner: Inner | null;
+        new(this.inner, this.maybeInner);
+      }
+      function readNullable<T extends Inner | null>(x: T): String | null {
+        return x?.leaf;
+      }
+      function readNonNull<T extends Inner>(x: T): String {
+        return x.leaf;
+      }
+      export function run(maybeBox: Box | null): i32 {
+        let inner = new Inner('ok');
+        let arr: FixedArray<i32> = [1, 2];
+        let fn = (n: i32): i32 => n + 1;
+        let a = inner.leaf;
+        let b = inner.tag();
+        let c = arr[0];
+        let d = fn(3);
+        let e = maybeBox?.inner.leaf;
+        let f = (maybeBox?.inner)?.leaf;
+        let g = maybeBox?.maybeInner?.leaf;
+        return a.length + b.length + c + d +
+            (e?.length ?? 0) + (f?.length ?? 0) + (g?.length ?? 0) +
+            (readNullable(maybeBox?.inner)?.length ?? 0) + readNonNull(inner).length;
+      }
+    `, 'unnecessary-optional-chain');
+  });
+
   test('a file that does not check is left alone', async (t) => {
     let report = await lint('export let run = (): i32 => { return "x"; };\n');
     isTrue(report.errorsBefore.length > 0);

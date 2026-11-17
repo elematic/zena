@@ -39,6 +39,17 @@ function hasFindingAt(findings: GrowableArray<Edit>, offset: i32): boolean {
   return false;
 }
 
+/** Whether a finding for `rule` lies inside `[start, end)`. */
+function hasRuleFindingIn(findings: GrowableArray<Edit>, rule: String,
+    start: i32, end: i32): boolean {
+  for (let finding in findings) {
+    if (finding.rule == rule && finding.start >= start && finding.end <= end) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export { MessageReader, frame } from './framing.zena';
 export { Position, offsetOf, positionOf } from './positions.zena';
 
@@ -232,6 +243,12 @@ export final class LspServer {
       if (location == null || normalizePath(location.file) == key) {
         if (diagnostic.code == DiagnosticCode.UnnecessaryCast && location != null &&
             hasFindingAt(findings, location.start)) {
+          continue;
+        }
+        if (diagnostic.code == DiagnosticCode.UnnecessaryNullish && location != null &&
+            diagnostic.message.contains('optional chaining') &&
+            hasRuleFindingIn(findings, 'unnecessary-optional-chain',
+                location.start, location.start + location.length)) {
           continue;
         }
         writeDiagnostic(b, text, diagnostic);

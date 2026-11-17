@@ -10,7 +10,7 @@ import {
   isSymbolFieldDeclaration, samePostfixChain, syntacticMemberName
 } from '../ast.zena';
 import {
-  ArrayType, BoolLiteralType, ClassType, EnumType, ErrorType, FieldInfo, NumLiteralType, StringLiteralType, sameNumericLiteralRaw, FunctionType, InlineTupleType as InlineTupleT, InterfaceType, MemberInfo, MemberTable, MethodInfo, MixinType, NullType, OwnershipHandle, RecordType as RecordT, SymbolType, ThisType, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType, baseType, instantiateClassType, isAffineValue, isIntegerType, ownershipHandleInner, ownershipHandleOf, parseTupleIndexLiteral, typeCarriesOwner, typeToString, unwrapAliases
+  ArrayType, BoolLiteralType, ClassType, EnumType, ErrorType, FieldInfo, NumLiteralType, StringLiteralType, sameNumericLiteralRaw, FunctionType, InlineTupleType as InlineTupleT, InterfaceType, MemberInfo, MemberTable, MethodInfo, MixinType, NeverType, NullType, OwnershipHandle, RecordType as RecordT, SymbolType, ThisType, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType, baseType, instantiateClassType, isAffineValue, isIntegerType, ownershipHandleInner, ownershipHandleOf, parseTupleIndexLiteral, typeCarriesOwner, typeToString, unwrapAliases
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { noSymbolId } from '../scope/symbol.zena';
@@ -521,6 +521,13 @@ export function checkMemberExpression(
     let symbols = staticSymbolsOf(baseType(objectTypeRaw));
     if (symbols != null) {
       if (let (true, sym) = symbols.get(property.name)) {
+        if (optional) {
+          ctx.warning(
+            "Receiver of '?.' is not nullable; optional chaining is unnecessary.",
+            DiagnosticCode.UnnecessaryNullish,
+            loc
+          );
+        }
         return sym;
       }
     }
@@ -670,6 +677,16 @@ export function checkMemberExpression(
       loc
     );
     return new ErrorType();
+  }
+
+  if (optional && !isNullable && !(resultType is ErrorType) &&
+      !(objectType is ErrorType) && !(objectType is UnknownType) &&
+      !(objectType is NeverType)) {
+    ctx.warning(
+      "Receiver of '?.' is not nullable; optional chaining is unnecessary.",
+      DiagnosticCode.UnnecessaryNullish,
+      loc
+    );
   }
 
   if (narrowedPathType != null) {
@@ -1395,6 +1412,16 @@ export function checkIndexExpression(
   let (baseType_, isNullable) = stripNull(ctx, objectType);
 
   let resultType = resolveIndexType(ctx, baseType_, index, loc, node);
+
+  if (optional && !isNullable && !(resultType is ErrorType) &&
+      !(objectType is ErrorType) && !(objectType is UnknownType) &&
+      !(objectType is NeverType)) {
+    ctx.warning(
+      "Receiver of '?[' is not nullable; optional chaining is unnecessary.",
+      DiagnosticCode.UnnecessaryNullish,
+      loc
+    );
+  }
 
   if (isNullable && optional) {
     if (inChain) {
