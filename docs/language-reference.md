@@ -2290,6 +2290,8 @@ methods on values that may be `null`. If the value before the operator is
 class User {
   name: String;
   new(name: String) { this.name = name; }
+  greet(): String { return `Hi, ${this.name}`; }
+  log(): void {}
 }
 
 let user: User? = null;
@@ -2302,9 +2304,15 @@ let items: Items? = null;
 let first = items?[0];       // null
 
 // Method call
-let callback: ((a: i32) => i32)? = null;
+let greeting = user?.greet(); // null
+user?.log();                  // skipped when user is null
+
+// Call of a function value
+let callback: ((a: i32) => String)? = null;
 let result = callback?(42);  // null
 ```
+
+Calling a `void` method or function through `?.` or `?()` evaluates to `void`: it runs the call when the receiver or callee is non-null and skips it otherwise.
 
 Optional chaining can be combined with nullish coalescing to provide defaults:
 

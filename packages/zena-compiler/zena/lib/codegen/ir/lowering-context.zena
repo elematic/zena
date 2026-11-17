@@ -432,7 +432,11 @@ export final class LoweringContext {
     if (expr is IndexExpression) {
       return expr.object;
     }
-    return (expr as CallExpression).callee;
+    let call = expr as CallExpression;
+    if (isOptionalMethodCall(call)) {
+      return (call.callee as MemberExpression).object;
+    }
+    return call.callee;
   }
 
   /** Packs a class instance value into `it`'s fat pointer. */
@@ -2409,4 +2413,10 @@ export function repackInterfaceValue(wasm: WasmModule, b: IrBuilder, value: i32,
       new ValTypeRef(tgtFat) as ValType,
       b.pushArgList(twoValues(inst, tgtVt)),
       b.addRef(new IrRefType(tgtFat)));
+}
+
+/** Whether `call` is `recv?.method(args)` (`?.` on the member callee). */
+export function isOptionalMethodCall(call: CallExpression): boolean {
+  return !call.optional && call.callee is MemberExpression &&
+      (call.callee as MemberExpression).optional;
 }

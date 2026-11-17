@@ -18,7 +18,7 @@ import {
 } from '../../ast.zena';
 import {
   Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, InlineRecordType, TypeAliasType, TupleType, RecordType, EnumType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
-  ownershipHandleOf, OwnershipHandle, soleNonNullMember, NullType, BoolLiteralType, NumLiteralType, HoleType, isIntegerType,
+  ownershipHandleOf, OwnershipHandle, soleNonNullMember, NullType, BoolLiteralType, NumLiteralType, HoleType, isIntegerType, isNullableType,
   typeContainsTypeParameter, representsRestricted, parseTupleIndexLiteral, sameNumericLiteralRaw,
 } from '../../types.zena';
 import {
@@ -63,7 +63,7 @@ import { lowerContractClause } from './contracts.zena';
 import { lowerIntrinsic } from './intrinsics.zena';
 import {
   ExplodedRecord, InlineVar, LetCondBinds, LoweringContext, MergeState, ResultSlots,
-  ZirUnsupported, noValues, oneValue, repackInterfaceValue,
+  ZirUnsupported, isOptionalMethodCall, noValues, oneValue, repackInterfaceValue,
 } from './lowering-context.zena';
 import { lowerBigIntLiteral, lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
 import {
@@ -8850,7 +8850,10 @@ export final class FunctionLowerer {
    */
   #lowerMemberRead(member: MemberExpression): i32 {
     if (member.optional) {
-      return this.#lowerOptionalChainExpr(member as Expression);
+      let rawObj = this.#substitutedNodeType(member.object);
+      if (rawObj != null && isNullableType(unwrapAliases(rawObj))) {
+        return this.#lowerOptionalChainExpr(member as Expression);
+      }
     }
     // A field of a union of inline records, read from its slot: off a
     // binding that holds the slots, or a call that returns them.
@@ -9384,7 +9387,8 @@ export final class FunctionLowerer {
     let objectType = this.#substitutedNodeType(member.object);
     var extCt: ClassType | null = null;
     if (objectType != null) {
-      let selfR = this.#resolveSelfType(objectType);
+      let nonNull = if (member.optional) getNonNullableType(objectType) else objectType;
+      let selfR = this.#resolveSelfType(nonNull);
       if (selfR is ClassType && selfR.isExtension) {
         extCt = eraseTypeParameters(this.wasm, selfR) as ClassType;
       }
@@ -9541,6 +9545,16 @@ export final class FunctionLowerer {
             return this.#lowerRecordUnionReadOn(members, expr, receiver);
           }
         }
+        let selfResolved = eraseTypeParameters(this.wasm, this.#resolveSelfType(nonNull));
+        if (selfResolved is InterfaceType) {
+          if (this.func.model.isStaticAccess(expr)) {
+            this.#bail('static interface access');
+          }
+          let propName = accessKeyOf(this.func.model, expr);
+          let result = this.#lowerInterfaceDispatch(
+              selfResolved, 'get#' + propName, expr.object, null, null, receiver);
+          return this.#reassertNonNull(result, this.#exprValType(expr));
+        }
       }
       return this.#lowerMemberReadOn(expr, receiver);
     }
@@ -9551,49 +9565,139 @@ export final class FunctionLowerer {
       }
       let selfResolved = this.#resolveSelfType(
           getNonNullableType(objectType));
+      let erased = eraseTypeParameters(this.wasm, selfResolved);
+      if (erased is InterfaceType) {
+        let args = growable<Expression>([expr.index]);
+        let slotName = interfaceCallSlotName(this.wasm, erased, '[]',
+            this.func.model.getResolvedOverload(expr));
+        let result = this.#lowerInterfaceDispatch(
+            erased, slotName, expr.object, args, null, receiver);
+        return this.#reassertNonNull(result, this.#exprValType(expr));
+      }
       return this.#lowerIndexReadOn(expr, selfResolved, receiver);
     }
-    return this.#lowerClosureCallOn(expr as CallExpression, receiver);
+    let call = expr as CallExpression;
+    let callResult = if (isOptionalMethodCall(call)) {
+      this.#lowerMethodCallOn(call, call.callee as MemberExpression, receiver, null)
+    } else {
+      this.#lowerClosureCallOn(call, receiver)
+    };
+    let calleeT = this.#substitutedNodeType(call.callee);
+    if (calleeT != null) {
+      let baseCallee = unwrapAliases(getNonNullableType(calleeT));
+      if (baseCallee is FunctionType &&
+          unwrapAliases(baseCallee.returnType) is NeverType &&
+          this.#cx().reachable) {
+        this.b.unreachable();
+        this.#cx().reachable = false;
+        return NO_VALUE;
+      }
+    }
+    return callResult;
+  }
+
+  #lowerOptionalVoidChain(expr: Expression): i32 {
+    let receiver0 = this.#lowerChainReceiver(this.#cx().optionalChainObject(expr));
+    if (!this.#cx().reachable) {
+      return NO_VALUE;
+    }
+    let recvVt = this.#valueType(receiver0);
+    if (!isRefValType(recvVt)) {
+      this.#bail('optional receiver kind');
+    }
+    if (!isNullableAnyRef(recvVt) && !(recvVt is ValTypeExternRef)) {
+      this.#lowerOptionalHit(expr, receiver0);
+      return NO_VALUE;
+    }
+    let isNull = this.b.emit(
+        IrOp.ref_is_null, new ValTypeI32() as ValType, receiver0, -1);
+    let okB = this.b.newBlock();
+    let mergeB = this.b.newBlock();
+    let saved = this.#copyEnv();
+    let mergeSyms = this.#assignedEnvSyms(expr);
+    let mergeParams = this.#addParams(mergeB, mergeSyms);
+    this.b.brIf(isNull, mergeB, this.#envValues(mergeSyms), okB, this.#noArgs());
+
+    this.b.switchTo(okB);
+    this.#lowerOptionalHit(expr, this.#strippedNonNull(receiver0));
+    if (this.#cx().reachable) {
+      this.b.br(mergeB, this.#envValues(mergeSyms));
+    }
+
+    this.#cx().env = saved;
+    this.b.switchTo(mergeB);
+    this.#applyParams(mergeSyms, mergeParams);
+    this.#cx().reachable = true;
+    return NO_VALUE;
   }
 
   /**
    * A standalone optional-chain access (`obj?.prop`, `arr?[i]`,
-   * `fn?()`): the receiver evaluates once; null short-circuits to a
-   * null result of the access's checked (nullable) type. Accesses
-   * producing primitives would need a boxed `T | null`, which
-   * lowering does not model — those bail (a fused `?? rhs` handles
-   * them via #lowerNullishCoalesce instead).
+   * `fn?()`, `obj?.method()`): the receiver evaluates once; null
+   * short-circuits to a null result of the access's checked (nullable)
+   * type, or skips a void call. Accesses producing primitives would need
+   * a boxed `T | null`, which lowering does not model — those bail (a
+   * fused `?? rhs` handles them via #lowerNullishCoalesce instead).
    */
   #lowerOptionalChainExpr(expr: Expression): i32 {
-    let exprVt = this.#exprValType(expr);
+    if (this.#isZeroWidthExpr(expr)) {
+      return this.#lowerOptionalVoidChain(expr);
+    }
+    var exprVt = this.#exprValType(expr);
     if (!isRefValType(exprVt)) {
       this.#bail('optional primitive result');
     }
     let receiver0 = this.#lowerChainReceiver(this.#cx().optionalChainObject(expr));
-    if (!isRefValType(this.#valueType(receiver0))) {
+    if (!this.#cx().reachable) {
+      return NO_VALUE;
+    }
+    let recvVt = this.#valueType(receiver0);
+    if (!isRefValType(recvVt)) {
       this.#bail('optional receiver kind');
     }
+    if (!isNullableAnyRef(recvVt) && !(recvVt is ValTypeExternRef)) {
+      return this.#lowerOptionalHit(expr, receiver0);
+    }
+    // `checkCallExpressionInner` rewrites a callee's node type to the
+    // non-null `FunctionType`, so `a?.cb` inside `a?.cb?()` reads as
+    // `ValTypeRef` even though the chain itself produces `null` on miss.
+    exprVt = match (exprVt) {
+      case ValTypeRef as r: new ValTypeRefNull(r.target)
+      case ValTypeRefExtern: new ValTypeExternRef()
+      case _: exprVt
+    };
     let isNull = this.b.emit(
         IrOp.ref_is_null, new ValTypeI32() as ValType, receiver0, -1);
     let nullB = this.b.newBlock();
     let okB = this.b.newBlock();
     this.b.brIf(isNull, nullB, this.#noArgs(), okB, this.#noArgs());
 
+    let saved = this.#copyEnv();
+    let mergeSyms = this.#assignedEnvSyms(expr);
     let mergeB = this.b.newBlock();
+    let mergeParams = this.#addParams(mergeB, mergeSyms);
     let resultParam = this.b.blockParam(mergeB, exprVt);
 
     this.b.switchTo(okB);
     let value = this.#lowerOptionalHit(expr, this.#strippedNonNull(receiver0));
-    if (!isValSubtype(this.#valueType(value), exprVt)) {
-      this.#bail('optional chain type');
+    if (this.#cx().reachable) {
+      let conformed = this.#conformToSlot(value, exprVt, 'optional chain type');
+      let okArgs = this.#envValues(mergeSyms);
+      okArgs.push(conformed);
+      this.b.br(mergeB, okArgs);
     }
-    this.b.br(mergeB, this.#oneArg(value));
 
+    this.#cx().env = this.#copyOf(saved);
+    this.#cx().reachable = true;
     this.b.switchTo(nullB);
     let nullValue = this.#nullDefault(exprVt);
-    this.b.br(mergeB, this.#oneArg(nullValue));
+    let nullArgs = this.#envValues(mergeSyms);
+    nullArgs.push(nullValue);
+    this.b.br(mergeB, nullArgs);
 
+    this.#cx().env = saved;
     this.b.switchTo(mergeB);
+    this.#applyParams(mergeSyms, mergeParams);
     this.#cx().reachable = true;
     return resultParam;
   }
@@ -9610,26 +9714,74 @@ export final class FunctionLowerer {
    * and arity matches exactly. Everything else — statics, interfaces,
    * generic methods, optional calls, dynamic dispatch — bails.
    */
+  #isClosureMemberCallee(member: MemberExpression): boolean {
+    if (member.optional) {
+      return true;
+    }
+    let rawObj = this.#substitutedNodeType(member.object);
+    if (rawObj == null) {
+      return false;
+    }
+    let u = unwrapAliases(rawObj);
+    if (u is RecordType) {
+      return true;
+    }
+    if (u is UnionType && recordUnionMembers(u) != null) {
+      return true;
+    }
+    let selfR = eraseTypeParameters(this.wasm, this.#resolveSelfType(rawObj));
+    if (selfR is ClassType) {
+      let propName = accessKeyOf(this.func.model, member);
+      if (let (true, info) = selfR.members.get(propName)) {
+        return info is FieldInfo;
+      }
+    }
+    return false;
+  }
+
   #lowerMethodCall(call: CallExpression, member: MemberExpression,
       multiOut: GrowableArray<i32> | null = null): i32 {
-    if (member.optional || call.optional) {
-      this.#bail('optional method call');
+    if (call.optional && this.#isClosureMemberCallee(member)) {
+      if (multiOut != null) {
+        this.#bail('optional multi-value call');
+      }
+      return this.#lowerOptionalChainExpr(call as Expression);
     }
+    if (member.optional) {
+      let rawObj = this.#substitutedNodeType(member.object);
+      if (rawObj != null && isNullableType(unwrapAliases(rawObj))) {
+        if (multiOut != null) {
+          this.#bail('optional multi-value call');
+        }
+        return this.#lowerOptionalChainExpr(call as Expression);
+      }
+    }
+    return this.#lowerMethodCallOn(call, member, -1, multiOut);
+  }
+
+  #lowerMethodCallOn(call: CallExpression, member: MemberExpression,
+      givenReceiver: i32,
+      multiOut: GrowableArray<i32> | null = null): i32 {
     if (this.func.model.isStaticAccess(member)) {
       return this.#lowerStaticCall(call, member, multiOut);
     }
     if (member.object is SuperExpression) {
       return this.#lowerSuperMethodCall(call, member, multiOut);
     }
-    let objectType = this.#substitutedNodeType(member.object);
-    if (objectType == null) {
+    let rawObjectType = this.#substitutedNodeType(member.object);
+    if (rawObjectType == null) {
       this.#bail('untyped method receiver');
     }
+    let objectType = if (member.optional) {
+      getNonNullableType(rawObjectType)
+    } else {
+      rawObjectType
+    };
     // `hashCode()` on a record or tuple, through a `Hashable` bound: the
     // value's structural hash (ir/equality.zena), the one `hash<T>`
     // gives. A record field of that name is an ordinary member instead.
     if (isValueHashCodeCall(call, member, objectType as Type, this.func.model)) {
-      let recv = this.#lowerExpression(member.object);
+      let recv = if (givenReceiver >= 0) givenReceiver else this.#lowerExpression(member.object);
       return lowerValueHash(this.#cx(), objectType as Type, recv);
     }
     // Record-typed receivers (including namespace imports, which are
@@ -9637,9 +9789,17 @@ export final class FunctionLowerer {
     // holding a function value — read it, call the closure pair.
     if (unwrapAliases(objectType) is RecordType) {
       let rt = unwrapAliases(objectType) as RecordType;
-      let recv = this.#lowerExpression(member.object);
+      let recv = if (givenReceiver >= 0) givenReceiver else this.#lowerExpression(member.object);
       let fnValue = this.#lowerRecordReadOn(rt, member, recv);
       return this.#lowerClosureCallOn(call, fnValue);
+    }
+    if (unwrapAliases(objectType) is UnionType) {
+      let members = recordUnionMembers(unwrapAliases(objectType) as UnionType);
+      if (members != null) {
+        let recv = if (givenReceiver >= 0) givenReceiver else this.#lowerExpression(member.object);
+        let fnValue = this.#lowerRecordUnionReadOn(members, member, recv);
+        return this.#lowerClosureCallOn(call, fnValue);
+      }
     }
     // Erase before dispatching on the receiver's kind: a receiver typed
     // `Own<R>`/`Borrow<R>`/`Unmanaged<R>` is a distinct-type alias that erases
@@ -9670,7 +9830,7 @@ export final class FunctionLowerer {
       }
       let result = this.#lowerInterfaceDispatch(
           selfResolved, slotName, member.object,
-          call.args, multiOut);
+          call.args, multiOut, givenReceiver);
       if (multiOut != null && multiOut.length > 1) {
         // Multi-value results have no single checked type to
         // re-assert against; the projections carry their slot types.
@@ -9701,7 +9861,8 @@ export final class FunctionLowerer {
       case _: {}
     }
     if (arrayElem != null) {
-      return this.#lowerArrayExtensionCall(call, member, arrayElem, arrayElemsMutable);
+      return this.#lowerArrayExtensionCall(
+          call, member, arrayElem, arrayElemsMutable, givenReceiver);
     }
     if (!(selfResolved is ClassType)) {
       this.#bail('method receiver kind');
@@ -9709,7 +9870,7 @@ export final class FunctionLowerer {
     // Resolve against the class the receiver VALUE carries: checked
     // node types name the GENERIC class inside specialized-method
     // bodies, but specialized methods register under their own key.
-    var receiver = this.#lowerExpression(member.object);
+    var receiver = if (givenReceiver >= 0) givenReceiver else this.#lowerExpression(member.object);
     let checkedCt = eraseTypeParameters(this.wasm, selfResolved) as ClassType;
     var ct = checkedCt;
     let fromValue = this.#classTypeOfValue(receiver);
@@ -10009,7 +10170,10 @@ export final class FunctionLowerer {
    */
   #lowerIndexRead(idx: IndexExpression): i32 {
     if (idx.optional) {
-      return this.#lowerOptionalChainExpr(idx as Expression);
+      let rawObj = this.#substitutedNodeType(idx.object);
+      if (rawObj != null && isNullableType(unwrapAliases(rawObj))) {
+        return this.#lowerOptionalChainExpr(idx as Expression);
+      }
     }
     let objectType = this.#substitutedNodeType(idx.object);
     if (objectType == null) {
@@ -10246,7 +10410,8 @@ export final class FunctionLowerer {
    */
   #lowerInterfaceDispatch(it: InterfaceType, memberName: String,
       receiverExpr: Expression, argExprs: GrowableArray<Expression> | null,
-      multiOut: GrowableArray<i32> | null = null): i32 {
+      multiOut: GrowableArray<i32> | null = null,
+      givenReceiver: i32 = -1): i32 {
     let iName = getInterfaceKey(it);
     let vst = if (let (true, v) = this.wasm.interfaceVTableStructs.get(iName)) v else null;
     let fatPtr = if (let (true, st) = this.wasm.interfaceStructs.get(iName)) st else null;
@@ -10284,7 +10449,7 @@ export final class FunctionLowerer {
       this.#bail('interface call arity adaptation');
     }
 
-    let recv = this.#lowerExpression(receiverExpr);
+    let recv = if (givenReceiver >= 0) givenReceiver else this.#lowerExpression(receiverExpr);
     if (!isValSubtype(this.#valueType(recv),
         new ValTypeRefNull(fatPtr) as ValType)) {
       this.#bail('interface receiver type');
@@ -10502,7 +10667,8 @@ export final class FunctionLowerer {
     // VALUE is the underlying onType and never names the extension.
     let checkedType = this.#substitutedNodeType(member.object);
     if (checkedType != null) {
-      let selfR = this.#resolveSelfType(checkedType);
+      let nonNullChecked = if (member.optional) getNonNullableType(checkedType) else checkedType;
+      let selfR = this.#resolveSelfType(nonNullChecked);
       if (selfR is ClassType && selfR.isExtension) {
         return eraseTypeParameters(this.wasm, selfR) as ClassType;
       }
@@ -10515,7 +10681,8 @@ export final class FunctionLowerer {
     if (objectType == null) {
       this.#bail('untyped member receiver');
     }
-    let selfResolved = this.#resolveSelfType(objectType);
+    let nonNullObj = if (member.optional) getNonNullableType(objectType) else objectType;
+    let selfResolved = this.#resolveSelfType(nonNullObj);
     if (!(selfResolved is ClassType)) {
       this.#bail('member on non-class');
     }
@@ -11085,7 +11252,7 @@ export final class FunctionLowerer {
    * template when the element is a type parameter), mirroring the
    * streaming backend's matching. Receiver is argument 0.
    */
-  #lowerArrayExtensionCall(call: CallExpression, member: MemberExpression, elemType: Type, elemsMutable: boolean): i32 {
+  #lowerArrayExtensionCall(call: CallExpression, member: MemberExpression, elemType: Type, elemsMutable: boolean, givenReceiver: i32 = -1): i32 {
     let propName = accessKeyOf(this.func.model, member);
     // Overloaded extension methods (slice(start) / slice(start, end))
     // register under mangled names; the checker records the selected
@@ -11161,7 +11328,7 @@ export final class FunctionLowerer {
       this.#requireSupported(sig.returns[0], 'array extension result');
       resultType = sig.returns[0];
     }
-    var receiver = this.#lowerExpressionCtx(member.object, sig.params[0]);
+    var receiver = if (givenReceiver >= 0) givenReceiver else this.#lowerExpressionCtx(member.object, sig.params[0]);
     receiver = this.#conformToSlot(receiver, sig.params[0], 'array extension receiver');
     let args = growable<i32>([receiver]);
     var sIdx = 1;
@@ -11421,10 +11588,13 @@ export final class FunctionLowerer {
     if (call.callee is MemberExpression) {
       return this.#lowerMethodCall(call, call.callee as MemberExpression, multiOut);
     }
-    if (!(call.callee is Identifier)) {
-      if (call.optional) {
-        this.#bail('call callee kind');
+    if (call.optional) {
+      if (multiOut != null) {
+        this.#bail('optional multi-value call');
       }
+      return this.#lowerOptionalChainExpr(call as Expression);
+    }
+    if (!(call.callee is Identifier)) {
       // A computed callee — a call's result, a cast, a parenthesized
       // value — is an ordinary function value: call through its
       // closure pair (issue #448). A union-typed one dispatches by
@@ -11433,10 +11603,6 @@ export final class FunctionLowerer {
         return this.#lowerUnionCall(call);
       }
       return this.#lowerClosureCall(call, multiOut);
-    }
-    if (call.optional) {
-      // `fn?()`: a null closure value short-circuits to a null result.
-      return this.#lowerOptionalChainExpr(call as Expression);
     }
     // Prelude array builtins (__array_new_empty & co.) are checker-
     // registered values with no declaration and no compiled function;

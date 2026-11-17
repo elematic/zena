@@ -38,7 +38,7 @@ import { lowerContractClauses } from './contracts.zena';
 import { emitGeneratorDispose } from './generators.zena';
 import { boxInline, heldInline, lowerIntoSlots, memberTest, returnInlineTail, coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, pathElements, representativeMember, tupleRestIndexOf, unboxTuples, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
 import {
-  FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ResultSlots, ZirUnsupported, noValues,
+  FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ResultSlots, ZirUnsupported, isOptionalMethodCall, noValues,
 } from './lowering-context.zena';
 import {
   branchUnless, lowerPatternBindings, lowerPatternTest, maskBitTest,
@@ -3749,10 +3749,17 @@ export function lowerNullishCoalesce(cx: LoweringContext, bin: BinaryExpression)
   let overallVt = cx.exprVt(bin);
   let mergeSyms = cx.assignedEnvSyms(bin.right);
 
-  let leftIsOptionalChain =
+  // Fuse `chain ?? default` only when the chain produces a non-reference
+  // (primitive) value that cannot be represented as `T | null`. When the
+  // chain produces a reference, lowering `bin.left` normally yields a
+  // nullable reference and the null check below covers both a null
+  // receiver and a null member/result (#1031).
+  let leftIsOptionalNode =
       (bin.left is MemberExpression && (bin.left as MemberExpression).optional) ||
       (bin.left is IndexExpression && (bin.left as IndexExpression).optional) ||
-      (bin.left is CallExpression && (bin.left as CallExpression).optional);
+      (bin.left is CallExpression && ((bin.left as CallExpression).optional ||
+          isOptionalMethodCall(bin.left as CallExpression)));
+  let leftIsOptionalChain = leftIsOptionalNode && !isRefValType(cx.exprVt(bin.left));
   var testValue = -1;
   if (leftIsOptionalChain) {
     testValue = cx.chainReceiver(cx.optionalChainObject(bin.left));

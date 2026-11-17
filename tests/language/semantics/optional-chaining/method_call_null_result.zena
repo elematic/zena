@@ -1,0 +1,26 @@
+// @mode: check
+// Optional method calls wrap non-void return types in `| null`, require
+// immediate `??` coalescence on primitives, and preserve `void` (#1194).
+
+class Point {
+  x: i32 = 0;
+  new(this.x);
+  doubled(): i32 { return this.x * 2; }
+  describe(): String { return 'p'; }
+  poke(): void {}
+}
+
+export function main(): i32 {
+  let p: Point | null = null;
+  let badPrim = p?.doubled(); // @error: coalescence
+  let okPrim: i32 = p?.doubled() ?? -1;
+  let badRef: String = p?.describe(); // @error: Type mismatch
+  let okRef: String | null = p?.describe();
+  p?.poke();
+
+  let voidFn: (() => void) | null = null;
+  voidFn?();
+
+  if (okPrim == -1 && okRef == null) { return 1; }
+  return 0;
+}

@@ -28,7 +28,7 @@ import {
   scopedElementsExpected
 } from './ownership.zena';
 import { isAssignableTo, isBoxablePrimitive } from './relations.zena';
-import { createUnionType, stripNull } from './unions.zena';
+import { createUnionType, stripNull, subtractNullFromType } from './unions.zena';
 
 // ============================================================================
 // New Expression
@@ -429,10 +429,30 @@ export function checkCallExpression(
   // If optional and not nullable, proceed normally.
   // If optional and nullable, wrap result in union with null.
   let resultType = checkCallExpressionInner(ctx, call, baseCalleeType, expectedType);
-
   if (isNullable && call.optional) {
-    if (isBoxablePrimitive(resultType) &&
-        !ctx.nullishSanctioned.has((call as Node).id as i32)) {
+    // `checkCallExpressionInner` records the unwrapped `FunctionType` on
+    // `callee`; restore the nullable callee type for `?()` so lowering
+    // does not assert `callee` non-null before testing it.
+    ctx.setNodeType(call.callee, calleeType);
+  }
+
+  var optionalMemberOnNullable = false;
+  let callee = call.callee;
+  if (!call.optional && callee is MemberExpression && callee.optional) {
+    let recvType = ctx.model.getNodeType(callee.object);
+    if (recvType != null) {
+      let (_recvBase, recvNullable) = stripNull(ctx, recvType);
+      optionalMemberOnNullable = recvNullable;
+    }
+  }
+
+  if (isNullable && (call.optional || optionalMemberOnNullable)) {
+    // A skipped void call produces no value, so its type stays `void`.
+    if (unwrapAliases(resultType) is VoidType) {
+      return resultType;
+    }
+    let sanctioned = ctx.nullishSanctioned.has((call as Node).id as i32);
+    if (isBoxablePrimitive(resultType) && !sanctioned) {
       ctx.error(
         "Optional call yielding a primitive requires immediate coalescence: follow it with '?? <default>'.",
         DiagnosticCode.InvalidOperator,
@@ -441,7 +461,7 @@ export function checkCallExpression(
       return new ErrorType();
     }
     let types = growable<Type>([resultType, new NullType()]);
-    return createUnionType(types);
+    return if (sanctioned) createUnionType(types) else createUnionType(types, ctx, call.loc);
   }
 
   return resultType;
@@ -823,9 +843,12 @@ function checkCallExpressionInner(
             // again would be a second use of it, after a method that takes
             // `this: Own<this>` has moved it.
             let objectType = ctx.model.getNodeType(callee.object);
-            if (objectType is ClassType) {
-              ctx.model.setDefaultArgsOwner(call, objectType);
-            } else {}
+            if (objectType != null) {
+              let nonNullObj = subtractNullFromType(objectType);
+              if (nonNullObj is ClassType) {
+                ctx.model.setDefaultArgsOwner(call, nonNullObj);
+              }
+            }
           }
         }
       }

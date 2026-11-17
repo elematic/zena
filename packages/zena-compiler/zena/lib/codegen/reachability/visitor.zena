@@ -1892,7 +1892,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (objType == null) {
       return;
     }
-    let resolved = resolveType(objType);
+    let rawResolved = resolveType(objType);
+    let resolved = if (n.optional) getNonNullableType(rawResolved) else rawResolved;
     let propName = memberKeyOf(model, n.property as Node);
     if (propName == "") {
       return;
@@ -2481,7 +2482,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       resolveType: (t: Type) => Type): void {
     let objType = model.getNodeType(mem.object);
     if (objType == null) { return; }
-    let resolvedObj = resolveType(objType);
+    let rawResolvedObj = resolveType(objType);
+    let resolvedObj = if (mem.optional) getNonNullableType(rawResolvedObj) else rawResolvedObj;
     if (resolvedObj is InterfaceType) {
       this.registerGenericInterfaceMethodUse(mem, model, resolveType, resolvedObj);
       return;
@@ -3385,7 +3387,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         this.#noteMemberStaticTarget(n, model, resolveType);
         let objType = model.getNodeType(n.object);
         if (objType != null) {
-          let resolvedObj = resolveType(objType);
+          let rawResolvedObj = resolveType(objType);
+          let resolvedObj = if (n.optional) getNonNullableType(rawResolvedObj) else rawResolvedObj;
           let propName = if (n.isSymbolAccess) ":" + n.property.name else n.property.name;
           
           if (resolvedObj is InterfaceType) {
@@ -3508,7 +3511,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           let mem = n.left as MemberExpression;
           let objType = model.getNodeType(mem.object);
           if (objType != null) {
-            let resolvedObj = resolveType(objType);
+            let rawResolvedObj = resolveType(objType);
+            let resolvedObj = if (mem.optional) getNonNullableType(rawResolvedObj) else rawResolvedObj;
             if (resolvedObj is ClassType) {
               let propName = if (mem.isSymbolAccess) ":" + mem.property.name else mem.property.name;
               let setterName = "set#" + propName;

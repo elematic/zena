@@ -1,0 +1,156 @@
+// @mode: run
+// @result: 100
+// Optional chaining across interface properties/methods/indexing (#735),
+// extension-class properties/methods (#395), class/record/closure calls (#398),
+// and `??` when the non-null receiver yields `null` (#1031).
+
+interface Named {
+  label: String;
+  describe(): String;
+  echo<T>(v: T): T;
+}
+
+class Base implements Named {
+  var hits = 0;
+  cb: ((x: i32) => i32) | null;
+
+  new(this.cb = null);
+
+  label: String {
+    get { return 'base'; }
+  }
+
+  describe(): String {
+    return 'base-desc';
+  }
+
+  echo<T>(v: T): T {
+    return v;
+  }
+
+  score(): i32 {
+    return 10;
+  }
+
+  maybeTag(present: boolean): String | null {
+    return if (present) 'tag' else null;
+  }
+
+  poke(): void {
+    this.hits += 1;
+  }
+}
+
+class Sub extends Base {
+  new(cb: ((x: i32) => i32) | null = null) : super(cb);
+
+  describe(): String {
+    return 'sub';
+  }
+
+  score(): i32 {
+    return 15;
+  }
+}
+
+extension class PathExt on String {
+  stem: String {
+    get { return this as String; }
+  }
+  shout(): String {
+    return (this as String).toUpperCase();
+  }
+}
+
+extension class IntSliceExt on FixedArray<i32> {
+  headOrZero: i32 {
+    get {
+      let arr = this as FixedArray<i32>;
+      return if (arr.length > 0) arr[0] else 0;
+    }
+  }
+  sumFirstTwo(): i32 {
+    let arr = this as FixedArray<i32>;
+    return arr[0] + arr[1];
+  }
+}
+
+function arrayLen(a: Array<String> | null): i32 {
+  return a?.length ?? 0;
+}
+
+function arrayFirst(a: Array<String | null> | null): String {
+  return a?[0] ?? 'empty';
+}
+
+export function main(): i32 {
+  var total = 0;
+
+  // 1. Nullable interface property & index & method & generic method (#735, #398, #1031).
+  total += arrayLen(['a', 'b', 'c']); // 3
+  total += arrayLen(null);            // +0 = 3
+  if (arrayFirst(null) == 'empty' &&
+      arrayFirst([null]) == 'empty' &&
+      arrayFirst(['ok']) == 'ok') {
+    total += 7;                       // +7 = 10
+  }
+
+  let nPresent: Named | null = new Sub();
+  let nAbsent: Named | null = null;
+  total += (nPresent?.label ?? '').length;      // +4 ('base') = 14
+  total += (nAbsent?.label ?? 'x').length;      // +1 = 15
+  total += (nPresent?.describe() ?? '').length; // +3 ('sub') = 18
+  total += (nAbsent?.describe() ?? '').length;  // +0 = 18
+  total += nPresent?.echo<i32>(5) ?? 0;         // +5 = 23
+  total += nAbsent?.echo<i32>(99) ?? 2;         // +2 = 25
+
+  // 2. Virtual & primitive & void & nullable-returning class methods (#398, #1031).
+  let bPresent: Base | null = new Sub((x: i32) => x + 1);
+  let bAbsent: Base | null = null;
+  total += bPresent?.score() ?? 0;              // +15 = 40
+  total += bAbsent?.score() ?? 5;               // +5 = 45
+  bPresent?.poke();
+  bAbsent?.poke();
+  total += (bPresent as Base).hits * 5;         // +5 = 50
+  if ((bPresent?.maybeTag(true) ?? 'none') == 'tag' &&
+      (bPresent?.maybeTag(false) ?? 'none') == 'none' &&
+      (bAbsent?.maybeTag(true) ?? 'none') == 'none') {
+    total += 10;                                // +10 = 60
+  }
+
+  // 3. Void closure `fn?()`, member closure `obj.cb?()` & `obj?.cb?()`, and record method.
+  var side = 0;
+  let vPresent: (() => void) | null = () => { side += 4; };
+  let vAbsent: (() => void) | null = null;
+  vPresent?();
+  vAbsent?();
+  total += side;                                // +4 = 64
+
+  let bNoCb: Base = new Base(null);
+  total += bNoCb.cb?(10) ?? 3;                  // +3 = 67
+  total += bPresent?.cb?(6) ?? 0;               // +7 = 74
+  total += bAbsent?.cb?(6) ?? 1;                // +1 = 75
+
+  let recPresent: {run: () => i32} | null = {run: () => 5};
+  let recAbsent: {run: () => i32} | null = null;
+  total += recPresent?.run() ?? 0;              // +5 = 80
+  total += recAbsent?.run() ?? 2;               // +2 = 82
+
+  // 4. Extension class on String and on FixedArray<i32> (#395, #398).
+  let pPresent: PathExt | null = 'hi' as PathExt;
+  let pAbsent: PathExt | null = null;
+  if ((pPresent?.stem ?? '') == 'hi' &&
+      (pAbsent?.stem ?? 'z') == 'z' &&
+      (pPresent?.shout() ?? '') == 'HI' &&
+      (pAbsent?.shout() ?? 'NO') == 'NO') {
+    total += 8;                                 // +8 = 90
+  }
+
+  let sPresent: IntSliceExt | null = [4, 6] as FixedArray<i32> as IntSliceExt;
+  let sAbsent: IntSliceExt | null = null;
+  total += (sPresent?.headOrZero ?? 0);         // +4 = 94
+  total += (sAbsent?.headOrZero ?? 1);          // +1 = 95
+  total += ((sPresent?.sumFirstTwo() ?? 0) - 5); // +5 = 100
+
+  return total;
+}
