@@ -1,0 +1,36 @@
+// Support module for late-override-synthesized-ctor.zena: a class whose
+// first value is made here, and whose override constructs a generic
+// class with no constructor of its own.
+
+export class Base<T> {
+  read(): i32 {
+    return 0;
+  }
+}
+
+export class Holder<T> {
+  inner = new Base<T>();
+}
+
+final class Derived extends Base<u8> {
+  #source(): Base<u8> {
+    let holder = new Holder<u8>();
+    return holder.inner;
+  }
+
+  read(): i32 {
+    return this.#source().read() + 1;
+  }
+}
+
+var cached: Base<u8> | null = null;
+
+export function make(): Base<u8> {
+  let open = cached;
+  if (open != null) {
+    return open;
+  }
+  let made = new Derived();
+  cached = made;
+  return made;
+}
