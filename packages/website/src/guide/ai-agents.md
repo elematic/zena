@@ -141,6 +141,10 @@ without assembling third-party plugins:
 
 ## Practical tips
 
+- **Install the Zena agent skill**: Add [`skills/zena/`](https://github.com/elematic/zena/tree/main/skills/zena)
+  to your project or global agent configuration (for example,
+  `npx skills add elematic/zena`), and note in `AGENTS.md` or `CLAUDE.md` that
+  `.zena` files use Zena so sessions activate the skill before editing.
 - **Give agents a short Zena cheat sheet in `AGENTS.md` or `CLAUDE.md`**: Note
   the handful of differences from TypeScript up front—`let` vs `var`, `String`
   with a capital `S`, `function` for top-level non-closure declarations, `/`

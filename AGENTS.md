@@ -218,6 +218,7 @@ in the root `CLAUDE.md`.
 - **`packages/website`** & **`packages/website-client`**: Project website and documentation (`@zena-lang/website`).
 - **`packages/vscode-zena`**: VS Code extension providing syntax highlighting and language server client integration.
 - **`tests/language/`**: Portable language tests.
+- **`skills/zena/`**: Agent skill (`SKILL.md` and `references/`) for writing Zena in external projects.
 - **`docs/language-reference.md`**: Official language reference.
 - **`docs/design/`**: Design documents for complex features.
 - **`docs/agents/`**: The checks that run on agents' changes, and the loop that adds one when a mistake repeats.
@@ -734,6 +735,7 @@ When adding or modifying language features, update:
 
 1. `docs/language-reference.md`
 2. `packages/website/src/reference/quick-reference.md`
+3. `skills/zena/` (when syntax, idioms, or standard library modules change)
 
 Design documents live in `docs/design/`. See the directory listing for topics.
 
