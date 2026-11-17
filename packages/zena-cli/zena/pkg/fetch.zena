@@ -17,22 +17,40 @@ import { getEnv } from 'zena:cli';
 import { exists, readFile } from 'zena:fs';
 import { IdentityResolver } from 'atproto/identity';
 import { PackageCache } from 'package-manager/cache';
-import { fetchAll } from 'package-manager/fetch';
+import { FetchResult, fetchAll } from 'package-manager/fetch';
 import { Pin, readPins } from 'package-manager/resolution';
+import { StepKind } from 'zena-lang:terminal/layout';
+import { Output } from 'zena-lang:terminal/output';
 import { packageCacheDir } from '../compile.zena';
 import { Options } from '../env.zena';
 
 export async function fetchCommand(args: ParsedArgs, options: Options): Future<i32> {
+  let output = new Output();
+  output.intro('zena pkg fetch');
+  return await output.run(() => fetchPinned(options, output));
+}
+
+async function fetchPinned(options: Options, output: Output): Future<i32> {
   if (!(await exists('zena-lock.json'))) {
-    console.log('Nothing to fetch: there is no zena-lock.json here.');
+    output.outro('Nothing to fetch: there is no zena-lock.json here.');
     return 0;
   }
   let pins = readPins(await readFile('zena-lock.json'));
   if (pins.length == 0) {
-    console.log('Nothing to fetch: zena-lock.json pins no packages.');
+    output.outro('Nothing to fetch: zena-lock.json pins no packages.');
     return 0;
   }
-  return await fetchAndReport(pins, options);
+  let failed = await fetchAndReport(pins, options, output);
+  if (failed > 0) {
+    return output.fail(`${countOf(failed, 'package')} could not be fetched.`);
+  }
+  output.outro('The packages zena-lock.json pins are in the cache.');
+  return 0;
+}
+
+/** `count` and `noun`, plural unless `count` is 1: `2 packages`. */
+export function countOf(count: i32, noun: String): String {
+  return if (count == 1) `1 ${noun}` else `${count} ${noun}s`;
 }
 
 /**
@@ -54,29 +72,43 @@ export function packageResolver(): IdentityResolver {
 }
 
 /**
- * Fetches `pins` into the package cache, prints what happened, and
- * returns the exit code: 1 when any failed.
+ * Fetches `pins` into the package cache and prints what happened: a step
+ * counting them, the packages fetched under it (the cached ones too, with
+ * `--verbose`), and an error for each that failed. Returns how many
+ * failed.
  */
-export async function fetchAndReport(pins: GrowableArray<Pin>, options: Options): Future<i32> {
+export async function fetchAndReport(pins: GrowableArray<Pin>, options: Options,
+    output: Output): Future<i32> {
   let cache = new PackageCache(packageCacheDir());
-  let results = await fetchAll(pins, cache, packageResolver());
+  let results = await output.waitFor<GrowableArray<FetchResult>>(
+      `Fetching ${countOf(pins.length, 'package')}`, fetchAll(pins, cache, packageResolver()));
 
   var fetched = 0;
   var failed = 0;
+  var listed = '';
   for (let result in results) {
-    let error = result.error;
-    if (error != null) {
-      console.error(`Error: ${error}`);
+    let line = result.pin.key;
+    if (result.error != null) {
       failed += 1;
     } else if (result.fetched) {
-      console.log(`Fetched ${result.pin.key} ${result.pin.version.toString()}`);
+      listed = `${listed}Fetched ${line}\n`;
       fetched += 1;
     } else if (options.verbose) {
-      console.log(`Cached ${result.pin.key} ${result.pin.version.toString()}`);
+      listed = `${listed}Cached ${line}\n`;
     }
   }
   let cached = results.length - fetched - failed;
-  let noun = if (results.length == 1) 'package' else 'packages';
-  console.log(`${results.length} ${noun}: ${fetched} fetched, ${cached} already in the cache, ${failed} failed.`);
-  return if (failed > 0) 1 else 0;
+  output.step(`${countOf(results.length, 'package')}:`,
+      `${fetched} fetched, ${cached} already in the cache, ${failed} failed`,
+      if (failed > 0) StepKind.Error else StepKind.Success);
+  if (listed != '') {
+    output.lines(listed);
+  }
+  for (let result in results) {
+    let error = result.error;
+    if (error != null) {
+      output.error(error);
+    }
+  }
+  return failed;
 }

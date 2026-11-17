@@ -12,7 +12,11 @@ either program.
 - `src/layout.zena`: `RailLayout`, Clack's rail and step markers, log
   blocks and boxed notes.
 - `src/animation.zena`: `Spinner`, and `shouldAnimate`.
-- `test/terminal_test.zena`: tests of all three.
+- `src/output.zena`: `Output`, which prints a command's progress with the
+  other three: steps on stdout, warnings and failures on stderr, and a
+  spinner while it waits (`waitFor`), advanced by a timer.
+- `test/terminal_test.zena`: colors, layout and animation;
+  `test/output_test.zena`: `Output`, writing into strings.
 
 ## Rules
 
