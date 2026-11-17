@@ -79,10 +79,14 @@ export async function addCommand(args: ParsedArgs, options: Options): Future<i32
     version = parsePackageVersion(versionText);
   } else {
     let versions = await listVersions(document);
-    version = versions.latest();
+    version = versions.preferred();
     if (version == null) {
-      console.error(`Error: ${identifier} (${did}) has no release that is not retracted.`);
+      console.error(if (versions.releases.length == 0) `Error: ${identifier} (${did}) has no releases yet.`
+          else `Error: every release of ${identifier} (${did}) is retracted.`);
       return 1;
+    }
+    if (version.isPrerelease) {
+      console.log(`${identifier} has no stable release, so this adds its latest pre-release, ${version.toString()}.`);
     }
   }
   let chosen = version;

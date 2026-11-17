@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `zena pkg add` without a version takes a package's latest pre-release when it has no stable release, and says so. When it can add nothing, it says whether the package has no releases or every release is retracted.
 - `zena-lock.json` records `"lockfileVersion": 1`, the version of its format, and `zena` reads only that version. Delete a lockfile an earlier `zena` wrote, which has no `lockfileVersion`, and run `zena pkg update` to write it again; a lockfile of a newer version asks for a newer `zena`.
 
 ## [0.0.1-preview.1] - 2026-11-12

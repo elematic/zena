@@ -92,6 +92,39 @@ export let tests = suite('zena pkg add and zena pkg update', () => {
     }
   });
 
+  test('add the latest pre-release of a package with no stable release, and say why one cannot be added', async (ctx) => {
+    let scratch = await Scratch.create('add-preview');
+    let pds = await startFakePds(scratch, 'add-pds.zena');
+    try {
+      let plc = await fakePdsOrigin(scratch, pds);
+      let zena = new ZenaCommand(scratch.at('workspace'), scratch.host('cache'))
+          .set('ZENA_PLC_DIRECTORY', plc)
+          .set('ZENA_DNS_OVER_HTTPS', dnsBeside(plc));
+      let manifest = scratch.at('workspace/zena-package.json');
+      await write(manifest, '{"name": "app"}\n');
+
+      // preview has only pre-releases, and its newest is retracted.
+      let preview = await zena.run(['pkg', 'add', 'acme:preview']);
+      isTrue(preview.succeeded() && preview.stdout.contains(
+          'acme:preview has no stable release, so this adds its latest pre-release, 0.1.0-preview.2.'),
+          described(preview));
+      let text = await read(manifest);
+      isTrue(text.contains('"acme:preview"') && text.contains('^0.1.0-preview.2'), text);
+
+      // A package whose every release is retracted, and one with none.
+      let gone = await zena.run(['pkg', 'add', 'acme:gone']);
+      isTrue(!gone.succeeded() && gone.stderr.contains('every release of acme:gone') &&
+          gone.stderr.contains('is retracted'), described(gone));
+      let empty = await zena.run(['pkg', 'add', 'acme:empty']);
+      isTrue(!empty.succeeded() && empty.stderr.contains('acme:empty') && empty.stderr.contains('has no releases yet'),
+          described(empty));
+      equal(await read(manifest), text);
+    } finally {
+      await stopFakePds(pds);
+      await scratch.remove();
+    }
+  });
+
   test('report, warn about or refuse a package at two versions', async (ctx) => {
     let scratch = await Scratch.create('add-twice');
     let pds = await startFakePds(scratch, 'add-pds.zena');
