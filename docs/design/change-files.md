@@ -231,9 +231,14 @@ for that version has every entry since its own last release.
 
 Every other unit is independent: `semver`, `terminal`, `markdown`,
 `atproto`, `protobuf`, `google-cloud`, `workflow`, `wit-parser`, `zebra`,
-`package-manager`, `pds`, `registry`, `codemirror`, `wasm-web-ui`,
-`vscode-zena`. An independent unit is released when it has entries, at
-the version its own entries give.
+`package-manager`, `codemirror`, `wasm-web-ui`, `vscode-zena`. An
+independent unit is released when it has entries, at the version its own
+entries give.
+
+`pds` and `registry` are deployed and never published, so they have no
+version (`"versioned": false` in the configuration). Each keeps its
+changelog. A toolchain release moves their entries under a heading with
+the date, `## 2026-12-01`.
 
 ## Versions
 
@@ -249,23 +254,29 @@ does not use version ranges, so nothing reads the toolchain's version for
 compatibility. Moving the group to `0.1.0` or `1.0.0` is a decision about
 the project, and a person makes it with `version --as 0.1.0`.
 
-**Independent units.** Other packages depend on these by range, so the
-version has to say whether a release breaks its dependents. Below `1.0.0`
-that is the minor number:
-
-| Largest entry | From `0.0.3` | From `0.2.1` | From `1.4.2` |
-| ------------- | ------------ | ------------ | ------------ |
-| breaking      | `0.1.0`      | `0.3.0`      | `2.0.0`      |
-| feature       | `0.0.4`      | `0.2.2`      | `1.5.0`      |
-| fix           | `0.0.4`      | `0.2.2`      | `1.4.3`      |
+**Independent units at `0.0.x`.** Every release is the next patch here
+too, breaking or not. A `0.0.x` version promises its dependents nothing,
+and most releases will break something. A unit leaves `0.0.x` when a
+person decides it is ready, with `version --as 0.1.0`.
 
 A dependent's range on a `0.0.x` version is written with a tilde: `~0.0.3`
-matches `0.0.3` and every later `0.0.x`. The usual caret would not do,
-since `^0.0.3` matches `0.0.3` alone and every release of the dependency
-would leave it. From `0.1.0` on, ranges are carets: `^0.2.1` matches every
-later `0.2.x`.
+matches `0.0.3` and every later `0.0.x`. The usual caret, `^0.0.3`,
+matches `0.0.3` alone, so every release of the dependency would need a
+release of each dependent. The tilde range admits releases that break the
+dependent, which is the risk `0.0.x` states.
 
-A unit reaches `1.0.0` with `version --as 1.0.0`.
+**Independent units from `0.1.0`.** Other packages depend on these by
+range, so the version says whether a release breaks its dependents.
+Below `1.0.0` that is the minor number:
+
+| Largest entry | From `0.2.1` | From `1.4.2` |
+| ------------- | ------------ | ------------ |
+| breaking      | `0.3.0`      | `2.0.0`      |
+| feature       | `0.2.2`      | `1.5.0`      |
+| fix           | `0.2.2`      | `1.4.3`      |
+
+Ranges are carets: `^0.2.1` matches every later `0.2.x`. A unit reaches
+`1.0.0` with `version --as 1.0.0`.
 
 ### Preview releases
 
@@ -292,6 +303,11 @@ The toolchain has been released once, as `0.0.1-preview.1`, and
 2. `0.0.2`: the npm units come off the `held` list, and the whole group
    is at one version.
 
+`vscode-zena` does not wait for the second step. It bundles the npm
+packages it depends on until they are released. `wasm-web-ui` depends on
+the npm `runtime`, so its first release under this design follows
+`0.0.2`.
+
 The existing `## [0.0.1-preview.1]` sections in the changelogs become
 part of `## [0.0.1]`.
 
@@ -305,16 +321,21 @@ The more of those minimums there are, the more often an install has to
 hold two copies of `semver`, or cannot be solved.
 
 This design releases a dependent for a dependency's sake in one case
-only: the dependency's new version is outside the range the dependent
-states. With the rules in [Versions](#versions) that happens when the
-dependency has a breaking entry. The dependent's range is rewritten to
-admit the new version, `^0.1.0` say, and its changelog gets "Updated
-dependencies.". Inside the workspace the dependent is always built
-against the dependency's source, so by the time of the release it already
-works with the new version.
+only: the dependency's release has a breaking entry. The dependent's
+range is rewritten to start at the new version, and its changelog gets
+"Updated dependencies.". Inside the workspace the dependent is always
+built against the dependency's source, so by the time of the release it
+already works with the new version.
 
-A dependency's release that fits the dependent's range changes nothing
-in the dependent.
+From `0.1.0` on, a breaking release is exactly a release outside the
+dependent's range ([Versions](#versions)), so the dependent could not use
+it otherwise. At `0.0.x` the dependent's tilde range admits the breaking
+release, and the new release of the dependent is there so that its latest
+version works with the latest dependency. Its older releases may be
+installed with a dependency that breaks them.
+
+A dependency's release with no breaking entry changes nothing in the
+dependent.
 
 npm needs the same rule for a different reason. npm links a workspace
 package in place of the registry's copy only when the local version
@@ -509,18 +530,12 @@ later.
 Described under [Dependents](#dependents). It raises minimum versions
 with no need, and installs hold more copies of a package.
 
-## Open questions
+### A breaking release at `0.0.x` moves to `0.1.0`
 
-- Whether a breaking entry in an independent unit at `0.0.x` should move
-  it to `0.1.0`, as [Versions](#versions) has it. The alternative is to
-  stay on `0.0.x` and promise dependents nothing there, as the toolchain
-  group does.
-- Whether the independent npm packages (`codemirror`, `wasm-web-ui`) and
-  `vscode-zena` wait for `0.0.2` with the group's npm units.
-- Whether `wasm-web-ui` belongs in the group. It depends on the npm
-  `runtime` and on decorators the compiler supports.
-- Whether `pds` and `registry`, which are deployed and may never be
-  published, need versions, or only a dated changelog.
+An independent unit's first breaking release could take it to `0.1.0`,
+so that carets work from the start. Nearly every early release breaks
+something, and the minor number would climb while meaning little. Units
+stay on `0.0.x` until a person moves them.
 
 ## Work
 
