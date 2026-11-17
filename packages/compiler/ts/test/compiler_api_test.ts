@@ -13,14 +13,19 @@ import {readFile} from 'node:fs/promises';
 import {resolve, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {
+  compilerWasmUrl,
+  createCompiler,
   createLanguageService,
   createVirtualFileReader,
-  type ZenaLanguageService,
+  lspWasmUrl,
+  ZenaCompiler,
+  ZenaLanguageService,
 } from '../index.js';
+import {stdlibFiles} from '@zena-lang/compiler/stdlib';
 import {instantiate, run, createStringReader} from '@zena-lang/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const wasmPath = resolve(__dirname, '../lsp.wasm');
+const wasmPath = resolve(__dirname, '../compiler.wasm');
 const stdlibRoot = resolve(__dirname, '../../stdlib/zena');
 
 const PATH = '/test/main.zena';
@@ -607,5 +612,39 @@ suite('createVirtualFileReader', () => {
 
   test('returns undefined for an unknown path', () => {
     assert.strictEqual(read('/nope.zena'), undefined);
+  });
+});
+
+suite('@zena-lang/compiler primary exports and bundled stdlib', () => {
+  test('exposes createCompiler, ZenaCompiler, compilerWasmUrl, and language-service aliases', () => {
+    assert.strictEqual(createLanguageService, createCompiler);
+    assert.strictEqual(ZenaLanguageService, ZenaCompiler);
+    assert.strictEqual(lspWasmUrl, compilerWasmUrl);
+    assert.ok(compilerWasmUrl.endsWith('/compiler.wasm'));
+  });
+
+  test('compiles and checks stdlib imports purely from @zena-lang/compiler/stdlib', async () => {
+    const wasm = await readFile(wasmPath);
+    const compiler = await createCompiler({
+      wasm,
+      readFile: createVirtualFileReader(stdlibFiles),
+    });
+    assert.ok(compiler instanceof ZenaCompiler);
+    const source = [
+      "import { GrowableArray } from 'zena:core';",
+      'export let main = (): i32 => {',
+      '  let list = new GrowableArray<i32>();',
+      '  list.push(42);',
+      '  return list[0];',
+      '};',
+      '',
+    ].join('\n');
+    const diags = await compiler.check('/virtual/app.zena', source);
+    assert.deepStrictEqual(
+      diags.filter((d) => d.severity === 'error'),
+      [],
+    );
+    const bytes = await compiler.compileToWasm('/virtual/app.zena', source);
+    assert.ok(bytes && bytes.byteLength > 0);
   });
 });

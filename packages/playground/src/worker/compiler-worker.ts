@@ -9,11 +9,11 @@
 
 import {createStringReader, instantiate, run} from '@zena-lang/runtime';
 import {
-  createLanguageService,
+  createCompiler,
   createVirtualFileReader,
-  type ZenaLanguageService,
-} from '@zena-lang/language-service';
-import stdlibFiles from '../stdlib-data.json' with {type: 'json'};
+  type ZenaCompiler,
+} from '@zena-lang/compiler';
+import {stdlibFiles} from '@zena-lang/compiler/stdlib';
 import type {
   ConsoleLevel,
   WorkerRequest,
@@ -39,7 +39,7 @@ declare const self: {
 
 const STDLIB_FILES: Record<string, string> = stdlibFiles;
 
-let service: ZenaLanguageService | undefined;
+let service: ZenaCompiler | undefined;
 
 const post = (message: WorkerResponse) => self.postMessage(message);
 
@@ -68,7 +68,7 @@ async function init(request: InitRequest): Promise<void> {
   }
 
   try {
-    service = await createLanguageService({
+    service = await createCompiler({
       wasm: request.wasmBytes ?? request.wasmUrl!,
       readFile: createVirtualFileReader(STDLIB_FILES),
       console: {
@@ -94,7 +94,7 @@ async function init(request: InitRequest): Promise<void> {
  */
 async function withService(
   id: number,
-  run: (service: ZenaLanguageService) => Promise<void>,
+  run: (service: ZenaCompiler) => Promise<void>,
 ): Promise<void> {
   if (!service) {
     post({type: 'error', id, message: 'The compiler is not initialized yet.'});
@@ -113,7 +113,7 @@ const isZenaFile = (path: string): boolean =>
   path.endsWith('.zena') || !/\.[a-z0-9]+$/i.test(path);
 
 function syncFiles(
-  service: ZenaLanguageService,
+  service: ZenaCompiler,
   files?: Record<string, string>,
 ): void {
   if (files) {
@@ -247,7 +247,7 @@ function format(request: FormatRequest): void {
  * arrives only once nothing is outstanding.
  */
 async function runProgram(
-  service: ZenaLanguageService,
+  service: ZenaCompiler,
   path: string,
   source: string,
 ): Promise<void> {

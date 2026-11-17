@@ -5,11 +5,7 @@
  * Web Worker and everything crosses as a message.
  */
 
-import type {
-  CompletionItem,
-  Diagnostic,
-  HoverInfo,
-} from '@zena-lang/language-service';
+import type {CompletionItem, Diagnostic, HoverInfo} from '@zena-lang/compiler';
 
 export type {CompletionItem, Diagnostic, HoverInfo};
 

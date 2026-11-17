@@ -83,8 +83,8 @@ interface LspHandle {
 
 /** Load lsp.wasm and wire up imports. */
 async function loadLsp(): Promise<LspHandle> {
-  // lsp.wasm lives at packages/language-service/lsp.wasm after build
-  const wasmPath = resolve(__dirname, '../lsp.wasm');
+  // compiler.wasm lives at packages/compiler/compiler.wasm after build
+  const wasmPath = resolve(__dirname, '../compiler.wasm');
   const wasmBuffer = await readFile(wasmPath);
 
   let exports: LspExports | undefined;

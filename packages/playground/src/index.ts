@@ -30,7 +30,7 @@ export {
   type BackgroundInfo,
 } from './zena-code-export.js';
 
-export {default as STDLIB_FILES} from './stdlib-data.json' with {type: 'json'};
+export {stdlibFiles as STDLIB_FILES} from '@zena-lang/compiler/stdlib';
 export type {
   CompletionItem,
   ConsoleEntry,

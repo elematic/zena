@@ -1,6 +1,6 @@
 import {html, css, nothing, type PropertyValues} from 'lit';
 import {customElement, property, query} from 'lit/decorators.js';
-import {lspWasmUrl} from '@zena-lang/language-service';
+import {compilerWasmUrl} from '@zena-lang/compiler';
 import {PlaygroundConnectedElement} from './connected-element.js';
 import {ZenaProject} from './zena-project.js';
 import './zena-project.js';
@@ -336,9 +336,9 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
   @property({type: String})
   value?: string;
 
-  /** Where to load the compiler from. Defaults to `lsp.wasm`. */
+  /** Where to load the compiler from. Defaults to `compiler.wasm`. */
   @property({type: String, attribute: 'wasm-url'})
-  wasmUrl = lspWasmUrl;
+  wasmUrl = compilerWasmUrl;
 
   /** Selected CodeMirror theme name. */
   @property({type: String})

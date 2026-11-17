@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {
-  createLanguageService,
+  compilerWasmUrl,
+  createCompiler,
   createVirtualFileReader,
-  lspWasmUrl,
-} from '@zena-lang/language-service';
+} from '@zena-lang/compiler';
+import {stdlibFiles as STDLIB_FILES} from '@zena-lang/compiler/stdlib';
 import {BareModuleTransformer} from '../lib/service-worker/bare-module-transformer.js';
 import {CdnModuleRegistry} from '../lib/service-worker/cdn-module-registry.js';
 import {ZenaProject} from '../lib/zena-project.js';
-import STDLIB_FILES from '../src/stdlib-data.json' with {type: 'json'};
 
 describe('BareModuleTransformer & CdnModuleRegistry', () => {
   const createTestRegistry = () =>
@@ -261,8 +261,8 @@ describe('ZenaProject preview support', () => {
   });
 
   it('compiles a zena:web-elements module to Wasm using bundled STDLIB_FILES', async () => {
-    const wasmBytes = await readFile(fileURLToPath(lspWasmUrl));
-    const service = await createLanguageService({
+    const wasmBytes = await readFile(fileURLToPath(compilerWasmUrl));
+    const service = await createCompiler({
       wasm: wasmBytes,
       readFile: createVirtualFileReader(STDLIB_FILES),
     });

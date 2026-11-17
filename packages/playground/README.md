@@ -23,11 +23,11 @@ when you hit **Run** (or ⌘↵ / Ctrl+Enter).
 
 ## Attributes and properties
 
-| Property  | Attribute | Default                | What it does                    |
-| --------- | --------- | ---------------------- | ------------------------------- |
-| `value`   | `value`   | a hello-world program  | The initial source              |
-| `theme`   | `theme`   | `one-dark`             | CodeMirror theme                |
-| `wasmUrl` | `wasmurl` | the bundled `lsp.wasm` | Where to load the compiler from |
+| Property  | Attribute  | Default                     | What it does                    |
+| --------- | ---------- | --------------------------- | ------------------------------- |
+| `value`   | `value`    | a hello-world program       | The initial source              |
+| `theme`   | `theme`    | `one-dark`                  | CodeMirror theme                |
+| `wasmUrl` | `wasm-url` | the bundled `compiler.wasm` | Where to load the compiler from |
 
 Themes: `one-dark`, `dracula`, `github-dark`, `monokai`, `nord`,
 `vscode-dark`, `solarized-dark`.
@@ -37,17 +37,17 @@ button.
 
 ## Serving the Wasm
 
-The compiler is a ~3&nbsp;MB `lsp.wasm` from
-[`@zena-lang/language-service`](https://www.npmjs.com/package/@zena-lang/language-service).
-`wasmUrl` defaults to `new URL('./lsp.wasm', import.meta.url)`, which Vite,
+The compiler is a ~2.1&nbsp;MB `compiler.wasm` from
+[`@zena-lang/compiler`](https://www.npmjs.com/package/@zena-lang/compiler).
+`wasmUrl` defaults to `new URL('./compiler.wasm', import.meta.url)`, which Vite,
 webpack 5, Rollup, and Parcel resolve to an emitted asset with no extra
 configuration.
 
 **esbuild** does not rewrite that expression, so it resolves relative to the
-output bundle. Either copy `lsp.wasm` next to your bundle, or set the URL:
+output bundle. Either copy `compiler.wasm` next to your bundle, or set the URL:
 
 ```html
-<zena-playground wasmurl="/wasm/lsp.wasm"></zena-playground>
+<zena-playground wasm-url="/wasm/compiler.wasm"></zena-playground>
 ```
 
 The same goes for the worker, which the element starts with
@@ -70,5 +70,5 @@ zena-playground {
 
 - [`@zena-lang/codemirror`](https://www.npmjs.com/package/@zena-lang/codemirror)
   — just the CodeMirror language support, without the compiler.
-- [`@zena-lang/language-service`](https://www.npmjs.com/package/@zena-lang/language-service)
-  — the compiler and language service behind this, with a JavaScript API.
+- [`@zena-lang/compiler`](https://www.npmjs.com/package/@zena-lang/compiler)
+  — the compiler, language service, formatter, linter, and standard library behind this.

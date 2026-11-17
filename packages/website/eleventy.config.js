@@ -126,12 +126,12 @@ export default async function (eleventyConfig) {
   eleventyConfig.ignores.add('src/css/**');
 
   eleventyConfig.addPassthroughCopy({'src/public': '.'});
-  // The playground resolves the compiler with `new URL('./lsp.wasm',
+  // The playground resolves the compiler with `new URL('./compiler.wasm',
   // import.meta.url)`. Bundlers that understand that emit the binary
   // themselves; esbuild leaves the expression alone, so at runtime it resolves
   // against the bundle's own URL — which is why this lands in `js/`.
   eleventyConfig.addPassthroughCopy({
-    '../language-service/lsp.wasm': 'js/lsp.wasm',
+    '../compiler/compiler.wasm': 'js/compiler.wasm',
   });
 
   /* Search index & precompression ---------------------------------------- */

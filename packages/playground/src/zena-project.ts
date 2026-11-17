@@ -1,6 +1,6 @@
 import {LitElement, html, css, type PropertyValues} from 'lit';
 import {customElement, property, state} from 'lit/decorators.js';
-import {lspWasmUrl} from '@zena-lang/language-service';
+import {compilerWasmUrl} from '@zena-lang/compiler';
 import type {
   CompletionItem,
   ConsoleEntry,
@@ -156,9 +156,9 @@ export class ZenaProject extends LitElement {
     }
   }
 
-  /** Where to load the compiler from. Defaults to `lsp.wasm`. */
+  /** Where to load the compiler from. Defaults to `compiler.wasm`. */
   @property({type: String, attribute: 'wasm-url'})
-  wasmUrl = lspWasmUrl;
+  wasmUrl = compilerWasmUrl;
 
   /** Whether to suppress unused variable / never-mutated variable warnings. */
   @property({type: Boolean, attribute: 'allow-unused-variables'})
