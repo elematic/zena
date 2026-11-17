@@ -354,7 +354,7 @@ fn main() -> Result<()> {
             host_to_guest_path(&module_path),
         ),
         ("ZENA_AVAILABLE_PARALLELISM".to_string(), cpus.to_string()),
-        // The platform `zena` names itself on to registries (`clientAgent` in zena/publish.zena).
+        // The platform `zena` names itself on to registries (`clientAgent` in zena/pkg/publish.zena).
         (
             "ZENA_HOST_PLATFORM".to_string(),
             format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),

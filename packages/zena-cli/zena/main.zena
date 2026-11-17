@@ -30,24 +30,8 @@ import { runCommand } from './run.zena';
 import { lspCommand } from './lsp.zena';
 import { CliTestStepRunner, testCommand } from './test-run.zena';
 import { lintCommand } from './lint.zena';
-import { fetchCommand } from './fetch.zena';
-import { addCommand, updateCommand } from './add.zena';
-import { loginCommand, logoutCommand } from './login.zena';
-import { DEFAULT_REGISTRY, packageCreateCommand, publishCommand } from './publish.zena';
-import { scopeCreateCommand, scopeInfoCommand, scopeProfileCommand } from './scope.zena';
-import {
-  orgCommand, ownerCommand, scopeAddCommand, scopeMaintainersCommand, scopeOrganizationCommand, scopePolicyCommand,
-  scopeRemoveCommand, scopeSettingsCommand, scopeUpgradeCommand, teamCommand
-} from './members.zena';
-import { initCommand } from './init.zena';
-import { approveCommand } from './approve.zena';
-import { retractCommand } from './retract.zena';
-import { adminCommand } from './admin.zena';
 import { CLI_VERSION, COMPILER_VERSION, PACKAGE_MANAGER_VERSION } from './versions.zena';
-import { ciCommand } from './ci.zena';
-
-/** The help of every `zena pkg` command's `--registry`. */
-let REGISTRY_HELP = `The package registry (default $ZENA_REGISTRY, else ${DEFAULT_REGISTRY})`;
+import { describePkg, pkgCommand } from './pkg/command.zena';
 
 /** The whole command line, described once. */
 function describe() {
@@ -55,13 +39,6 @@ function describe() {
   let noCache = {
     type: OptionType.Flag,
     help: 'Compile even if the cache has an answer',
-  };
-  let allowChanged = {
-    type: OptionType.Flag,
-    help: 'Pin releases whose CIDs changed at the same version, instead of refusing',
-  };
-  let duplicates = {
-    help: 'When a package is selected at two versions: allow (the default), warn, or error, writing nothing',
   };
   let time = {type: OptionType.Flag, help: "Print the compiler's phase timings"};
   return new ArgParser({
@@ -281,150 +258,7 @@ function describe() {
       },
       // The commands about packages, which come up less often than building
       // and testing, under one noun: `zena pkg add`.
-      'pkg' => {
-        help: 'Add, fetch and publish packages, and change who maintains them',
-        options: {'help' => help},
-        commands: {
-          'init' => {
-            help: 'Make the current directory, or the one named, a package: write its zena-package.json',
-            options: {
-              'help' => help,
-              'name' => {help: "The package's name, instead of the directory's"},
-              'scope' => {help: 'The scope the package is published in'},
-            },
-          },
-          'add' => {
-            help: 'Add a package to the dependencies, pin it, and fetch it',
-            options: {
-              'help' => help,
-              'name' => {help: 'The local name for the package, a name or scope:name, instead of scope:name or the one it suggests'},
-              'allow-changed' => allowChanged,
-              'duplicates' => duplicates,
-            },
-          },
-          'update' => {
-            help: 'Select the latest versions the ranges allow, of the named dependencies or all, pin them, and fetch them',
-            options: {'help' => help, 'allow-changed' => allowChanged, 'duplicates' => duplicates},
-          },
-          'fetch' => {
-            help: 'Fetch the packages zena-lock.json pins into the package cache',
-            options: {'help' => help},
-          },
-          'login' => {
-            help: 'Sign in to your atproto account with an app password, to publish',
-            options: {
-              'help' => help,
-              'password-stdin' => {
-                type: OptionType.Flag,
-                help: 'Read the app password from stdin',
-              },
-            },
-          },
-          'logout' => {
-            help: 'End the session zena pkg login started',
-            options: {'help' => help},
-          },
-          'publish' => {
-            help: "Publish the package you are in, at its manifest's version, as you, or as CI with $ZENA_REGISTRY_TOKEN",
-            options: {
-              'help' => help,
-              'registry' => {help: REGISTRY_HELP},
-              'scope' => {help: 'The scope to create a new package in, when its manifest names none'},
-              'yes' => {type: OptionType.Flag, help: 'Create the package if it has no DID yet'},
-            },
-          },
-          'scope' => {
-            help: 'scope create <name> | info <scope> | maintainers <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope> | profile <scope> | upgrade <scope> | join <scope> <org> | leave <scope>',
-            options: {
-              'help' => help,
-              'registry' => {help: REGISTRY_HELP},
-              'yes' => {type: OptionType.Flag, help: 'With create and upgrade: do it'},
-              'role' => {help: 'With add: publisher (the default) or owner'},
-              'team' => {help: 'With add and remove: a team, <org>/<team>, in place of a person'},
-              'owner-threshold' => {help: "With settings: how many owners must approve a change to the scope"},
-              'minimum-threshold' => {help: 'With policy: the fewest approvals a release of any package in the scope needs'},
-              'minimum-humans' => {help: "With policy: the fewest of a release's approvals that must come from people"},
-              'default-teams' => {help: 'With policy: the teams new packages start maintained by, as <org>/<team>:<role>,...'},
-              'default-threshold' => {help: 'With policy: the release threshold new packages start with'},
-              'default-owner-threshold' => {help: 'With policy: the owner threshold new packages start with'},
-              'default-humans' => {help: 'With policy: the humans new packages start with'},
-              'name' => {help: "With profile: the scope's display name (empty clears it)"},
-              'description' => {help: 'With profile: what the scope is (empty clears it)'},
-              'website' => {help: "With profile: the scope's website, an http: or https: URL (empty clears it)"},
-            },
-          },
-          'org' => {
-            help: "org add|remove <org> <person> | members <org>: an organization's members, who its teams can have",
-            options: {
-              'help' => help,
-              'registry' => {help: REGISTRY_HELP},
-            },
-          },
-          'team' => {
-            help: 'team create|delete|members|settings <org>/<team> | add|remove <org>/<team> <person>',
-            options: {
-              'help' => help,
-              'registry' => {help: REGISTRY_HELP},
-              'role' => {help: 'With add: member (the default) or maintainer'},
-              'threshold' => {help: "With settings: how many of the team's maintainers must approve a change to it"},
-            },
-          },
-          'owner' => {
-            help: "owner add|remove <person> | add|remove --team <org>/<team> | list | settings: a package's maintainers",
-            options: {
-              'help' => help,
-              'registry' => {help: REGISTRY_HELP},
-              'role' => {help: 'With add: publisher (the default) or owner'},
-              'team' => {help: 'A team, <org>/<team>, in place of a person'},
-              'package' => {help: 'The package, by DID, handle or scope:name (default: the one you are in)'},
-              'automation' => {type: OptionType.Flag, help: 'With add: the person is an automation account, from zena pkg ci create'},
-              'threshold' => {help: 'With settings: how many maintainers must approve a release'},
-              'owner-threshold' => {help: 'With settings: how many owners must approve a change to the maintainers'},
-              'humans' => {help: "With settings: how many of a release's approvals must come from people, not automation"},
-            },
-          },
-          'ci' => {
-            help: 'ci create <scope>/<name>: an automation account for CI to publish as, and its token; ci token <scope>/<name>: a new token for it; ci retire <scope>/<name>: stop it publishing',
-            options: {
-              'help' => help,
-              'registry' => {help: REGISTRY_HELP},
-            },
-          },
-          'admin' => {
-            help: "admin allow|deny <person> | list: who may create scopes on a registry that lets only its admins and those they list. The registry's admins only",
-            options: {
-              'help' => help,
-              'registry' => {help: REGISTRY_HELP},
-            },
-          },
-          'approve' => {
-            help: 'approve [<package>@]<version> | <scope> | <package>: show a release, or changes to who belongs, waiting for approval, and with --yes, approve them',
-            options: {
-              'help' => help,
-              'registry' => {help: REGISTRY_HELP},
-              'yes' => {type: OptionType.Flag, help: 'Approve it'},
-            },
-          },
-          'retract' => {
-            help: 'Retract a published version: builds that pin it keep it, and choosing a version skips it',
-            options: {
-              'help' => help,
-              'registry' => {help: REGISTRY_HELP},
-              'reason' => {help: 'Why, for those who depend on it'},
-              'package' => {help: 'The package, by DID, handle or scope:name (default: the one you are in)'},
-            },
-          },
-          'create' => {
-            help: 'Create the package you are in on a registry, without publishing',
-            options: {
-              'help' => help,
-              'registry' => {help: REGISTRY_HELP},
-              'scope' => {help: 'The scope to create the package in, when its manifest names none'},
-              'yes' => {type: OptionType.Flag, help: 'Create it'},
-            },
-          },
-        },
-      },
+      'pkg' => describePkg(help),
     },
   });
 }
@@ -529,112 +363,6 @@ async function dispatch(
     return precompile(sub, options);
   }
   console.error('Error: no such command: ' + name);
-  return 2;
-}
-
-/** `zena pkg <command>`: the commands about packages, which `pkg` parses. */
-async function pkgCommand(pkg: ArgParser, args: ParsedArgs, options: Options): Future<i32> {
-  let name = args.commandName;
-  let sub = args.commandArgs;
-  if (name == null || sub == null) {
-    if (args.rest.length > 0) {
-      console.error(`Error: no such command: zena pkg ${args.rest[0]}`);
-      console.error('');
-    } else {
-      console.error('Error: zena pkg takes a command');
-      console.error('');
-    }
-    console.error(pkg.formatHelp());
-    return 2;
-  }
-  if (sub.getFlag('help')) {
-    console.log((pkg.command(name) ?? pkg).formatHelp());
-    return 0;
-  }
-  if (name == 'init') {
-    return await initCommand(sub, options);
-  }
-  if (name == 'fetch') {
-    return await fetchCommand(sub, options);
-  }
-  if (name == 'add') {
-    return await addCommand(sub, options);
-  }
-  if (name == 'update') {
-    return await updateCommand(sub, options);
-  }
-  if (name == 'login') {
-    return await loginCommand(sub, options);
-  }
-  if (name == 'logout') {
-    return await logoutCommand(sub, options);
-  }
-  if (name == 'publish') {
-    return await publishCommand(sub, options);
-  }
-  if (name == 'create') {
-    if (sub.rest.length != 0) {
-      console.error('Error: zena pkg create takes no arguments: it creates the package you are in');
-      return 2;
-    }
-    return await packageCreateCommand(sub, options);
-  }
-  if (name == 'scope') {
-    if (sub.rest.length > 0 && sub.rest[0] == 'create') {
-      return await scopeCreateCommand(sub, options);
-    }
-    if (sub.rest.length > 0 && sub.rest[0] == 'info') {
-      return await scopeInfoCommand(sub, options);
-    }
-    if (sub.rest.length > 0 && sub.rest[0] == 'maintainers') {
-      return await scopeMaintainersCommand(sub, options);
-    }
-    if (sub.rest.length > 0 && sub.rest[0] == 'upgrade') {
-      return await scopeUpgradeCommand(sub, options);
-    }
-    if (sub.rest.length > 0 && (sub.rest[0] == 'join' || sub.rest[0] == 'leave')) {
-      return await scopeOrganizationCommand(sub, options);
-    }
-    if (sub.rest.length > 0 && sub.rest[0] == 'add') {
-      return await scopeAddCommand(sub, options);
-    }
-    if (sub.rest.length > 0 && sub.rest[0] == 'remove') {
-      return await scopeRemoveCommand(sub, options);
-    }
-    if (sub.rest.length > 0 && sub.rest[0] == 'settings') {
-      return await scopeSettingsCommand(sub, options);
-    }
-    if (sub.rest.length > 0 && sub.rest[0] == 'policy') {
-      return await scopePolicyCommand(sub, options);
-    }
-    if (sub.rest.length > 0 && sub.rest[0] == 'profile') {
-      return await scopeProfileCommand(sub, options);
-    }
-    console.error('Error: zena pkg scope create <name> | info <scope> | maintainers <scope> | add <scope> <person> | remove <scope> <person> | settings <scope> | policy <scope> | profile <scope> | upgrade <scope> | join <scope> <org> | leave <scope>');
-    return 2;
-  }
-  if (name == 'org') {
-    return await orgCommand(sub, options);
-  }
-  if (name == 'team') {
-    return await teamCommand(sub, options);
-  }
-  if (name == 'retract') {
-    return await retractCommand(sub, options);
-  }
-  if (name == 'approve') {
-    return await approveCommand(sub, options);
-  }
-  if (name == 'ci') {
-    return await ciCommand(sub, options);
-  }
-  if (name == 'admin') {
-    return await adminCommand(sub, options);
-  }
-  if (name == 'owner') {
-    return await ownerCommand(sub, options);
-  }
-  console.error(`Error: no such command: zena pkg ${name}`);
   return 2;
 }
 

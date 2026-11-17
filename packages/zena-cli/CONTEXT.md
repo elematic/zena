@@ -16,10 +16,14 @@ the `zena` command. The design is in
      variants, `lsp.zena`, which connects the language server
      (`language-service/server`) to stdin and stdout, `lint.zena`,
      which runs zena-lint's rules (`zena-lint`) over files and
-     prints the findings or, with `--fix`, applies them, `fetch.zena`,
-     which fetches the packages `zena-lock.json` pins into the package
-     cache with `package-manager/fetch`, `init.zena`, for `zena pkg init`,
-     which writes a new package's `zena-package.json`, and `add.zena`, for `zena pkg add`
+     prints the findings or, with `--fix`, applies them.
+   - `zena/pkg/` holds the `zena pkg` commands. `command.zena` describes
+     their options (`describePkg`, which `main.zena`'s description
+     includes) and runs the one given (`pkgCommand`). Beside it:
+     `fetch.zena`, which fetches the packages `zena-lock.json` pins into
+     the package cache with `package-manager/fetch`, `init.zena`, for
+     `zena pkg init`, which writes a new package's `zena-package.json`,
+     `add.zena`, for `zena pkg add`
      and `zena pkg update`, which change the dependencies in
      `zena-package.json`, select versions (`package-manager/resolve`), pin
      them and fetch them, and `login.zena`, for `zena pkg login` and
