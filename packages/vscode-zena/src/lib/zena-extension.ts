@@ -562,9 +562,16 @@ export class ZenaExtension {
 
       this.#diagnosticCollection.set(document.uri, []);
 
+      const openUris = new Set(
+        vscode.workspace.textDocuments.map((d) => d.uri.toString()),
+      );
+      openUris.add(document.uri.toString());
+
       for (const [filePath, diagnostics] of byFile) {
         const uri = uriForCompilerPath(filePath, document.uri);
-        this.#diagnosticCollection.set(uri, diagnostics);
+        if (openUris.has(uri.toString())) {
+          this.#diagnosticCollection.set(uri, diagnostics);
+        }
       }
 
       const findings = await this.#compiler.lintDocument(path);

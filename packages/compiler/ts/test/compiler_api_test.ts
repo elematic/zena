@@ -735,6 +735,44 @@ suite('@zena-lang/compiler primary exports and bundled stdlib', () => {
       dnsHoverAfterOtherTab.doc,
       /immutable sequence of characters/i,
     );
+
+    // `lsp.zena` imports `zena:js`: even though `wsService` defaults to
+    // `zena-component`, `LanguageService` auto-selects `zena-js` for `lsp.zena`
+    // while keeping `dns.zena` live on `zena-component`!
+    const lspPath = resolve(repoRoot, 'packages/language-service/src/lsp.zena');
+    const lspSrc = readFileSync(lspPath, 'utf8');
+    const lspDiags = await wsService.check(lspPath, lspSrc);
+    assert.deepStrictEqual(
+      lspDiags.filter((d) => d.severity === 'error'),
+      [],
+      `expected lsp.zena to check with 0 errors via auto-selected zena-js target, got ${JSON.stringify(lspDiags.filter((d) => d.severity === 'error'))}`,
+    );
+
+    const toPromiseOff = lspSrc.indexOf('toPromise') + 2;
+    const toPromiseDef = await wsService.definition(lspPath, toPromiseOff);
+    assert.ok(toPromiseDef, 'expected definition for toPromise in lsp.zena');
+    assert.strictEqual(
+      toPromiseDef.file,
+      resolve(stdlibRoot, 'js/promise.zena'),
+    );
+
+    const toPromiseHover = await wsService.hover(lspPath, toPromiseOff);
+    assert.ok(toPromiseHover, 'expected hover for toPromise in lsp.zena');
+
+    // And `dns.zena` (`zena-component`) remains live simultaneously!
+    const dnsStillLive = await wsService.hover(dnsPath, strOffset);
+    assert.ok(dnsStillLive);
+
+    // JS-target stdlib files (`core/string-js.zena`) also check cleanly directly.
+    const strJsFile = resolve(stdlibRoot, 'core/string-js.zena');
+    const strJsDiags = await wsService.check(
+      strJsFile,
+      readFileSync(strJsFile, 'utf8'),
+    );
+    assert.deepStrictEqual(
+      strJsDiags.filter((d) => d.severity === 'error'),
+      [],
+    );
   });
 
   test('parser recovery terminates quickly on unclosed block followed by function signature', async () => {
