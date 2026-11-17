@@ -1,21 +1,26 @@
 // Bundles `packages/vscode-zena` into a self-contained `dist/` directory:
-// - `dist/extension.cjs`: CommonJS bundle with `@zena-lang/compiler`,
-//   `@zena-lang/compiler/stdlib`, and `@zena-lang/runtime` inlined, targeting
-//   both Desktop Node and Web Worker (`vscode.dev`) hosts.
+// - `dist/extension.cjs`: CommonJS bundle with `@zena-lang/compiler` and
+//   `@zena-lang/runtime`, targeting both Desktop Node and Web Worker hosts.
 // - `dist/compiler.wasm`: Copy of `packages/compiler/compiler.wasm`.
+// - `dist/stdlib/`: Individual `.zena` and `.wit` files from `packages/compiler/stdlib/`,
+//   read asynchronously via `vscode.workspace.fs`.
 
 import * as esbuild from 'esbuild';
-import {copyFileSync, mkdirSync} from 'node:fs';
+import {copyFileSync, cpSync, mkdirSync, rmSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, '..');
 const wasmSrc = resolve(pkgRoot, '../compiler/compiler.wasm');
+const stdlibSrc = resolve(pkgRoot, '../compiler/stdlib');
 const distDir = resolve(pkgRoot, 'dist');
+const distStdlib = join(distDir, 'stdlib');
 
 mkdirSync(distDir, {recursive: true});
 copyFileSync(wasmSrc, join(distDir, 'compiler.wasm'));
+rmSync(distStdlib, {recursive: true, force: true});
+cpSync(stdlibSrc, distStdlib, {recursive: true});
 
 await esbuild.build({
   entryPoints: [resolve(pkgRoot, 'src/extension.ts')],

@@ -28,9 +28,9 @@ const EXPECTED_PUBLIC_PACKAGES = new Map<string, string[]>([
       'README.md',
       'index.js',
       'index.d.ts',
-      'stdlib.js',
-      'stdlib.d.ts',
       'compiler.wasm',
+      'stdlib/core/index.zena',
+      'stdlib/core/growable-array.zena',
     ],
   ],
   [

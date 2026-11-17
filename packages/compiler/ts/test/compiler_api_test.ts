@@ -18,10 +18,10 @@ import {
   createLanguageService,
   createVirtualFileReader,
   lspWasmUrl,
+  stdlibUrl,
   ZenaCompiler,
   ZenaLanguageService,
 } from '../index.js';
-import {stdlibFiles} from '@zena-lang/compiler/stdlib';
 import {instantiate, run, createStringReader} from '@zena-lang/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -616,25 +616,25 @@ suite('createVirtualFileReader', () => {
 });
 
 suite('@zena-lang/compiler primary exports and bundled stdlib', () => {
-  test('exposes createCompiler, ZenaCompiler, compilerWasmUrl, and language-service aliases', () => {
+  test('exposes createCompiler, ZenaCompiler, compilerWasmUrl, stdlibUrl, and language-service aliases', () => {
     assert.strictEqual(createLanguageService, createCompiler);
     assert.strictEqual(ZenaLanguageService, ZenaCompiler);
     assert.strictEqual(lspWasmUrl, compilerWasmUrl);
     assert.ok(compilerWasmUrl.endsWith('/compiler.wasm'));
+    assert.ok(stdlibUrl.endsWith('/stdlib/'));
   });
 
-  test('compiles and checks stdlib imports purely from @zena-lang/compiler/stdlib', async () => {
-    const wasm = await readFile(wasmPath);
-    const compiler = await createCompiler({
-      wasm,
-      readFile: createVirtualFileReader(stdlibFiles),
-    });
+  test('createCompiler() with zero options loads compiler.wasm and reads individual stdlib files from disk', async () => {
+    const compiler = await createCompiler();
     assert.ok(compiler instanceof ZenaCompiler);
     const source = [
       "import { GrowableArray } from 'zena:core';",
+      "import { OrderedHashMap } from 'zena:collections';",
       'export let main = (): i32 => {',
       '  let list = new GrowableArray<i32>();',
-      '  list.push(42);',
+      '  let map = new OrderedHashMap<String, i32>();',
+      '  map["answer"] = 42;',
+      '  list.push(map["answer"]);',
       '  return list[0];',
       '};',
       '',

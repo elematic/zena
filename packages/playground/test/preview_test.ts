@@ -7,10 +7,10 @@ import {
   createCompiler,
   createVirtualFileReader,
 } from '@zena-lang/compiler';
-import {stdlibFiles as STDLIB_FILES} from '@zena-lang/compiler/stdlib';
 import {BareModuleTransformer} from '../lib/service-worker/bare-module-transformer.js';
 import {CdnModuleRegistry} from '../lib/service-worker/cdn-module-registry.js';
 import {ZenaProject} from '../lib/zena-project.js';
+import STDLIB_FILES from '../src/stdlib-data.json' with {type: 'json'};
 
 describe('BareModuleTransformer & CdnModuleRegistry', () => {
   const createTestRegistry = () =>

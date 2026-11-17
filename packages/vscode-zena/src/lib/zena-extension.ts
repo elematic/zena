@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import {formatError} from '@zena-lang/runtime';
 import {
-  getStdlibContent,
+  isStdlibPath,
   STDLIB_SCHEME,
   uriForCompilerPath,
   ZenaCompilerService,
@@ -98,7 +98,8 @@ export class ZenaExtension {
     // Virtual read-only documents for bundled `zena:*` standard library files.
     context.subscriptions.push(
       vscode.workspace.registerTextDocumentContentProvider(STDLIB_SCHEME, {
-        provideTextDocumentContent: (uri) => getStdlibContent(uri.path) ?? '',
+        provideTextDocumentContent: async (uri) =>
+          (await this.#compiler.readStdlibContent(uri.path)) ?? '',
       }),
     );
 
@@ -269,7 +270,12 @@ export class ZenaExtension {
               source,
             );
             if (!result) return null;
-            const targetUri = uriForCompilerPath(result.file, document.uri);
+            const targetUri = isStdlibPath(result.file)
+              ? vscode.Uri.from({
+                  scheme: STDLIB_SCHEME,
+                  path: await this.#compiler.resolveStdlibUriPath(result.file),
+                })
+              : uriForCompilerPath(result.file, document.uri);
             const pos = new vscode.Position(
               Math.max(0, result.line - 1),
               Math.max(0, result.column - 1),
