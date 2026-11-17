@@ -1,0 +1,305 @@
+/**
+ * Keys read from a terminal in raw mode.
+ *
+ * `KeyDecoder` turns the bytes a terminal sends into keys: text, Enter,
+ * the arrows and the other keys a prompt answers to, from the escape
+ * sequences xterm and its descendants send. `TerminalKeys` reads them
+ * from stdin, with the terminal in raw mode (`zena:host/terminal`) from
+ * `open` to `close`, so that each key arrives as it is pressed.
+ */
+
+import {Future} from 'zena:async';
+import {readStdin} from 'zena:cli';
+import {Disposable, Unmanaged, adopt, disown} from 'zena:core';
+import {RawMode} from 'zena:host/terminal';
+
+/** What a key is. */
+export enum KeyKind {
+  /** A character typed or pasted, in `Key.text`. */
+  Text,
+  Enter,
+  Escape,
+  Backspace,
+  Delete,
+  Tab,
+  /** Shift+Tab. */
+  BackTab,
+  Up,
+  Down,
+  Left,
+  Right,
+  Home,
+  End,
+  /** Ctrl+C. */
+  Interrupt,
+  /** Ctrl+D, or the end of the input. */
+  EndOfInput,
+  /** A control key or escape sequence none of the others names, in `Key.text`. */
+  Other,
+}
+
+/** A key pressed: its kind, and for text, the character. */
+export class Key(kind: KeyKind, text: String)
+
+/** A key of `kind` that carries no text. */
+export function keyOf(kind: KeyKind): Key {
+  return new Key(kind, '');
+}
+
+/** A key of text, one character. */
+export function textKey(text: String): Key {
+  return new Key(KeyKind.Text, text);
+}
+
+/** The bytes of the UTF-8 sequence whose first byte is `b`. */
+function sequenceLength(b: i32): i32 {
+  if (b >= 0xF0) {
+    return 4;
+  }
+  if (b >= 0xE0) {
+    return 3;
+  }
+  if (b >= 0xC0) {
+    return 2;
+  }
+  return 1;
+}
+
+/** Whether `b` ends a CSI sequence (`ESC [ ... final`). */
+function isFinalByte(b: i32) {
+  return b >= 0x40 && b <= 0x7E;
+}
+
+/** The key a CSI or SS3 sequence's final byte names, with `parameter` its first parameter. */
+function sequenceKey(final: i32, parameter: String, text: String) {
+  if (final == 65) {
+    return keyOf(KeyKind.Up);
+  }
+  if (final == 66) {
+    return keyOf(KeyKind.Down);
+  }
+  if (final == 67) {
+    return keyOf(KeyKind.Right);
+  }
+  if (final == 68) {
+    return keyOf(KeyKind.Left);
+  }
+  if (final == 72) {
+    return keyOf(KeyKind.Home);
+  }
+  if (final == 70) {
+    return keyOf(KeyKind.End);
+  }
+  if (final == 90) {
+    return keyOf(KeyKind.BackTab);
+  }
+  if (final == 126) {
+    if (parameter == '1' || parameter == '7') {
+      return keyOf(KeyKind.Home);
+    }
+    if (parameter == '4' || parameter == '8') {
+      return keyOf(KeyKind.End);
+    }
+    if (parameter == '3') {
+      return keyOf(KeyKind.Delete);
+    }
+  }
+  return new Key(KeyKind.Other, text);
+}
+
+/**
+ * Decodes the bytes a terminal in raw mode sends into keys.
+ *
+ * A read can end inside a character, so the bytes of an unfinished
+ * one are kept for the next `decode`. An escape sequence is taken to
+ * arrive whole, as terminals send one in a single write: an escape at
+ * the end of what was read is the Escape key. Modifiers on the arrows
+ * and the editing keys (`ESC [ 1 ; 5 A`) are dropped, so Ctrl+Up is Up.
+ */
+export class KeyDecoder {
+  var #carry = '';
+
+  /** The keys in `bytes`, after what the previous call left unfinished. */
+  decode(bytes: String): Array<Key> {
+    let text = this.#carry + bytes;
+    this.#carry = '';
+    let keys = new GrowableArray<Key>();
+    var i = 0;
+    while (i < text.length) {
+      let b = text.getByteAt(i);
+      if (b == 27) {
+        i = this.#escape(text, i, keys);
+      } else if (b == 13 || b == 10) {
+        keys.push(keyOf(KeyKind.Enter));
+        i += 1;
+      } else if (b == 127 || b == 8) {
+        keys.push(keyOf(KeyKind.Backspace));
+        i += 1;
+      } else if (b == 9) {
+        keys.push(keyOf(KeyKind.Tab));
+        i += 1;
+      } else if (b == 3) {
+        keys.push(keyOf(KeyKind.Interrupt));
+        i += 1;
+      } else if (b == 4) {
+        keys.push(keyOf(KeyKind.EndOfInput));
+        i += 1;
+      } else if (b < 32) {
+        keys.push(new Key(KeyKind.Other, text.sliceBytes(i, i + 1)));
+        i += 1;
+      } else {
+        let end = i + sequenceLength(b);
+        if (end > text.length) {
+          this.#carry = text.sliceBytes(i, text.length);
+          break;
+        }
+        keys.push(textKey(text.sliceBytes(i, end)));
+        i = end;
+      }
+    }
+    return keys;
+  }
+
+  /** Decodes the escape sequence at `start`, returning where it ends. */
+  #escape(text: String, start: i32, keys: GrowableArray<Key>): i32 {
+    if (start + 1 >= text.length) {
+      keys.push(keyOf(KeyKind.Escape));
+      return start + 1;
+    }
+    let introducer = text.getByteAt(start + 1);
+    if (introducer == 79 && start + 2 < text.length) {
+      // SS3 (`ESC O A`): the arrows, Home and End in application mode.
+      let end = start + 3;
+      keys.push(sequenceKey(text.getByteAt(start + 2), '', text.sliceBytes(start, end)));
+      return end;
+    }
+    if (introducer != 91) {
+      if (introducer == 27) {
+        keys.push(keyOf(KeyKind.Escape));
+        return start + 1;
+      }
+      // Alt and a key, which nothing here answers to.
+      let end = start + 1 + sequenceLength(introducer);
+      let stop = if (end > text.length) text.length else end;
+      keys.push(new Key(KeyKind.Other, text.sliceBytes(start, stop)));
+      return stop;
+    }
+    var i = start + 2;
+    while (i < text.length && !isFinalByte(text.getByteAt(i))) {
+      i += 1;
+    }
+    if (i >= text.length) {
+      keys.push(new Key(KeyKind.Other, text.sliceBytes(start, text.length)));
+      return text.length;
+    }
+    let parameters = text.sliceBytes(start + 2, i);
+    var firstEnd = 0;
+    while (firstEnd < parameters.length && parameters.getByteAt(firstEnd) != 59) {
+      firstEnd += 1;
+    }
+    keys.push(sequenceKey(text.getByteAt(i), parameters.sliceBytes(0, firstEnd),
+      text.sliceBytes(start, i + 1)));
+    return i + 1;
+  }
+}
+
+/** Where a prompt reads its keys from. */
+export interface KeyInput {
+  /** Starts reading keys. Throws when it cannot, as when stdin is not a terminal. */
+  open(): void;
+
+  /** The next key, once it is pressed. */
+  next(): Future<Key>;
+
+  /** Stops reading keys. */
+  close(): void;
+}
+
+/**
+ * The keys pressed in the terminal stdin is attached to. From `open` to
+ * `close` the terminal is in raw mode, so each key arrives as it is
+ * pressed and is not echoed; the host puts the terminal back if the
+ * program ends in between.
+ */
+export class TerminalKeys implements KeyInput {
+  var #raw: Unmanaged<RawMode> | null = null;
+  #decoder = new KeyDecoder();
+  var #pending: Array<Key> = [];
+  var #next = 0;
+
+  open(): void {
+    if (this.#raw != null) {
+      return;
+    }
+    match (RawMode.enter()) {
+      case (true, let raw): {
+        this.#raw = disown(raw);
+      }
+      case (false, let why): {
+        throw new Error(why);
+      }
+    }
+  }
+
+  async next(): Future<Key> {
+    while (this.#next >= this.#pending.length) {
+      let bytes = await readStdin();
+      if (bytes == '') {
+        return keyOf(KeyKind.EndOfInput);
+      }
+      this.#pending = this.#decoder.decode(bytes);
+      this.#next = 0;
+    }
+    let key = this.#pending[this.#next];
+    this.#next += 1;
+    return key;
+  }
+
+  close(): void {
+    let raw = this.#raw;
+    if (raw == null) {
+      return;
+    }
+    this.#raw = null;
+    // Keys typed ahead were meant for this prompt, not the next.
+    this.#pending = [];
+    this.#next = 0;
+    adopt(raw).[Disposable.dispose]();
+  }
+}
+
+/**
+ * Keys given in advance, for testing prompts: `next` returns them in
+ * order, and then the end of the input.
+ */
+export class ScriptedKeys implements KeyInput {
+  #keys: Array<Key>;
+  var #next = 0;
+  var #open = false;
+
+  new(keys: Array<Key>) : #keys = keys;
+
+  /** Whether a prompt has opened this and not yet closed it. */
+  isOpen: boolean {
+    get {
+      return this.#open;
+    }
+  }
+
+  open(): void {
+    this.#open = true;
+  }
+
+  async next(): Future<Key> {
+    if (this.#next >= this.#keys.length) {
+      return keyOf(KeyKind.EndOfInput);
+    }
+    let key = this.#keys[this.#next];
+    this.#next += 1;
+    return key;
+  }
+
+  close(): void {
+    this.#open = false;
+  }
+}

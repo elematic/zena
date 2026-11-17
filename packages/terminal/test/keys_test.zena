@@ -1,0 +1,86 @@
+import {suite, test} from 'zena:test';
+import {equal} from 'zena:assert';
+import {StringBuilder} from 'zena:core';
+import {Key, KeyDecoder, KeyKind, keyOf, textKey} from 'terminal/keys';
+
+/** `bytes` as a string of those bytes. */
+function bytesOf(bytes: Array<i32>) {
+  let sb = new StringBuilder();
+  for (let b in bytes) {
+    sb.appendByte(b);
+  }
+  return sb.toString();
+}
+
+/** The keys `bytes` decode to, each kind with its text after a colon. */
+function decoded(bytes: Array<i32>) {
+  let sb = new StringBuilder();
+  for (let key in new KeyDecoder().decode(bytesOf(bytes))) {
+    sb.append(describe(key));
+    sb.append(' ');
+  }
+  return sb.toString().trim();
+}
+
+function describe(key: Key): String {
+  let names = ['Text', 'Enter', 'Escape', 'Backspace', 'Delete', 'Tab', 'BackTab', 'Up',
+    'Down', 'Left', 'Right', 'Home', 'End', 'Interrupt', 'EndOfInput', 'Other'];
+  let name = names[key.kind as i32];
+  return if (key.kind == KeyKind.Text) `${name}:${key.text}` else name;
+}
+
+export let tests = suite('KeyDecoder', () => {
+  test('text, one key per character', (ctx) => {
+    equal(decoded([97, 32, 0xC3, 0xA9, 0xE2, 0x97, 0x86]), 'Text:a Text:  Text:é Text:◆');
+  });
+
+  test('the control keys', (ctx) => {
+    equal(decoded([13, 10, 127, 8, 9, 3, 4]),
+      'Enter Enter Backspace Backspace Tab Interrupt EndOfInput');
+  });
+
+  test('a control key nothing names is Other', (ctx) => {
+    let keys = new KeyDecoder().decode(bytesOf([21]));
+    equal(keys.length, 1);
+    equal(keys[0].kind == KeyKind.Other, true);
+    equal(keys[0].text, bytesOf([21]));
+  });
+
+  test('the arrows, in both modes, and with modifiers', (ctx) => {
+    equal(decoded([27, 91, 65, 27, 91, 66, 27, 91, 67, 27, 91, 68]), 'Up Down Right Left');
+    equal(decoded([27, 79, 65, 27, 79, 66, 27, 79, 67, 27, 79, 68]), 'Up Down Right Left');
+    // Ctrl+Up: `ESC [ 1 ; 5 A`.
+    equal(decoded([27, 91, 49, 59, 53, 65]), 'Up');
+  });
+
+  test('the editing keys', (ctx) => {
+    equal(decoded([27, 91, 72, 27, 91, 70, 27, 79, 72, 27, 79, 70]), 'Home End Home End');
+    equal(decoded([27, 91, 49, 126, 27, 91, 52, 126, 27, 91, 55, 126, 27, 91, 56, 126]),
+      'Home End Home End');
+    equal(decoded([27, 91, 51, 126, 27, 91, 90]), 'Delete BackTab');
+  });
+
+  test('an escape alone, or twice, is Escape', (ctx) => {
+    equal(decoded([27]), 'Escape');
+    equal(decoded([27, 27]), 'Escape Escape');
+    equal(decoded([27, 27, 91, 65]), 'Escape Up');
+  });
+
+  test('alt and a key, or a sequence nothing names, is Other', (ctx) => {
+    equal(decoded([27, 98]), 'Other');
+    equal(decoded([27, 91, 50, 48, 126]), 'Other');
+  });
+
+  test('a character split across reads waits for its last byte', (ctx) => {
+    let decoder = new KeyDecoder();
+    equal(decoder.decode(bytesOf([97, 0xE2, 0x97])).length, 1);
+    let rest = decoder.decode(bytesOf([0x86]));
+    equal(rest.length, 1);
+    equal(rest[0] == textKey('◆'), true);
+  });
+
+  test('keys compare by kind and text', (ctx) => {
+    equal(keyOf(KeyKind.Enter) == keyOf(KeyKind.Enter), true);
+    equal(textKey('a') == textKey('b'), false);
+  });
+});

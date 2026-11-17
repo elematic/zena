@@ -10,8 +10,10 @@
 
 import {getEnv} from 'zena:cli';
 import {Disposable, Some, StringBuilder} from 'zena:core';
+import {TerminalInput} from 'wasi:cli/terminal-input';
 import {TerminalOutput} from 'wasi:cli/terminal-output';
 import {getTerminalStderr} from 'wasi:cli/terminal-stderr';
+import {getTerminalStdin} from 'wasi:cli/terminal-stdin';
 import {getTerminalStdout} from 'wasi:cli/terminal-stdout';
 
 function makeEsc() {
@@ -26,6 +28,16 @@ export let ESC = makeEsc();
 /** Formats an ANSI SGR sequence (`ESC [ <code> m`). */
 export function sgr(code: String): String {
   return `${ESC}[${code}m`;
+}
+
+/** Whether standard input is connected to an interactive terminal. */
+export function isTerminalStdin(): boolean {
+  let term = getTerminalStdin();
+  if (term is Some<TerminalInput>) {
+    term.value.[Disposable.dispose]();
+    return true;
+  }
+  return false;
 }
 
 /** Whether standard output is connected to an interactive terminal. */

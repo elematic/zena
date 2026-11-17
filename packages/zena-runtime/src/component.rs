@@ -53,13 +53,14 @@ pub(crate) mod bindings {
             "zena:host/wasm.run": super::RunState,
             "zena:host/http-server.server": super::ServerState,
             "zena:host/http-server.response-writer": super::ResponseWriterState,
+            "zena:host/terminal.raw-mode": crate::terminal::RawMode,
             "wasi:http/types.request": wasmtime_wasi_http::p3::bindings::http::types::Request,
             "wasi:http/types.response": wasmtime_wasi_http::p3::bindings::http::types::Response,
         },
     });
 }
 
-use bindings::zena::host::{extensions, http_server, process, secrets, wasm};
+use bindings::zena::host::{extensions, http_server, process, secrets, terminal, wasm};
 
 /// The most output a captured run keeps from each stream.
 const CAPTURE_LIMIT: usize = 64 << 20;
@@ -177,6 +178,7 @@ pub fn linker(engine: &Engine) -> Result<Linker<ComponentState>> {
     wasm::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     http_server::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     secrets::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
+    terminal::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     extensions::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     // `capture` needs the store, for the backtrace: linked by hand
     // rather than through the generated trait.
@@ -1767,6 +1769,32 @@ fn read_hidden(_prompt: &str) -> std::io::Result<String> {
     Err(std::io::Error::other(
         "reading from the terminal without echo is not supported on this platform",
     ))
+}
+
+// ============================================================================
+// zena:host/terminal
+// ============================================================================
+
+impl terminal::Host for ComponentState {
+    fn stdout_size(&mut self) -> Result<Option<terminal::Size>> {
+        Ok(crate::terminal::stdout_size().map(|(columns, rows)| terminal::Size { columns, rows }))
+    }
+}
+
+impl terminal::HostRawMode for ComponentState {
+    fn enter(
+        &mut self,
+    ) -> Result<std::result::Result<Resource<crate::terminal::RawMode>, String>> {
+        Ok(match crate::terminal::RawMode::enter() {
+            Ok(raw) => Ok(self.table.push(raw)?),
+            Err(why) => Err(why),
+        })
+    }
+
+    fn drop(&mut self, raw: Resource<crate::terminal::RawMode>) -> Result<()> {
+        self.table.delete(raw)?;
+        Ok(())
+    }
 }
 
 impl http_server::HostResponseWriterWithStore<ComponentState> for HasSelf<ComponentState> {
