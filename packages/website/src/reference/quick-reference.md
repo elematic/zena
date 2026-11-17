@@ -697,6 +697,7 @@ receiver is `null`.
 ```zena
 let name = user?.name;       // Property access
 let first = items?[0];       // Index access
+let greeting = user?.greet(); // Method call
 let result = callback?(42);  // Call
 let display = user?.name ?? 'Anonymous'; // With fallback
 ```
