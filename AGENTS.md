@@ -335,6 +335,10 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   `--fix` rewrites the files, keeping each fix the type checker accepts.
   `--list-rules` prints the rules.
 - **`pkg <command>`**: The package commands, under one noun.
+  - **`pkg init [dir] [--name <name>] [--scope <scope>]`**: Make the
+    current directory, or `dir` (made if need be), a package: write its
+    `zena-package.json` with the directory's name, or `--name`, and
+    version 0.1.0. It refuses a directory that already has a manifest.
   - **`pkg add <package>[@version] [--name <local>]`**: Add a published
     package, by DID, handle or `scope:name`, to `zena-package.json`,
     under `scope:name` for a package in a scope (imports then read

@@ -4,6 +4,21 @@ title: CLI Commands
 
 The `zena` CLI includes all package manager commands alongside the compiler, test runner, formatter, and linter.
 
+## Starting a package
+
+### `zena pkg init`
+
+```sh
+zena pkg init [<dir>] [--name <name>] [--scope <scope>]
+```
+
+Makes the current directory, or `<dir>`, a package by writing its `zena-package.json`. It creates `<dir>` if it does not exist yet.
+
+- `--name <name>`: The package's name. Defaults to the directory's name, which must then be a valid package name: lowercase letters, digits and `-`, starting with a letter.
+- `--scope <scope>`: The scope the package is published in.
+
+The version starts at `0.1.0`. `zena pkg init` never overwrites an existing `zena-package.json`.
+
 ## Dependency management
 
 ### `zena pkg add`
