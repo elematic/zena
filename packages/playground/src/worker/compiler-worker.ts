@@ -13,7 +13,7 @@ import {
   createVirtualFileReader,
   type ZenaCompiler,
 } from '@zena-lang/compiler';
-import {stdlibFiles} from '@zena-lang/compiler/stdlib';
+import stdlibFiles from '../stdlib-data.json' with {type: 'json'};
 import type {
   ConsoleLevel,
   WorkerRequest,

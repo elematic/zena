@@ -1,6 +1,6 @@
 # `@zena-lang/compiler`
 
-The [Zena](https://zena-lang.dev) compiler, language service, formatter, linter, and standard library packaged as a WebAssembly-GC module (`compiler.wasm`) with a host-agnostic JavaScript/TypeScript API.
+The [Zena](https://zena-lang.dev) compiler, language service, formatter, linter, and standard library packaged as a WebAssembly-GC module (`compiler.wasm`) with individual `stdlib/` `.zena` files and an asynchronous JavaScript/TypeScript API.
 
 ## Installation
 
@@ -10,22 +10,22 @@ npm install @zena-lang/compiler @zena-lang/runtime
 
 ## Usage
 
-### In a Browser or Web Worker (bundled standard library)
+### Node.js or Static HTTP Hosts
 
-Import `stdlibFiles` from `@zena-lang/compiler/stdlib` and pass `createVirtualFileReader(stdlibFiles)` as `readFile`:
+`createCompiler()` loads `compiler.wasm` and reads standard library modules asynchronously on demand from `./stdlib/` (from disk in Node.js via `node:fs/promises`, or via `fetch()` when served over HTTP):
 
 ```ts
-import {createCompiler, createVirtualFileReader} from '@zena-lang/compiler';
-import {stdlibFiles} from '@zena-lang/compiler/stdlib';
+import {createCompiler} from '@zena-lang/compiler';
 import {instantiate, run} from '@zena-lang/runtime';
 
-const compiler = await createCompiler({
-  readFile: createVirtualFileReader(stdlibFiles),
-});
+const compiler = await createCompiler();
 
 const source = `
+  import { GrowableArray } from 'zena:core';
   export let main = () => {
-    console.log('Hello from Zena!');
+    let items = new GrowableArray<i32>();
+    items.push(42);
+    console.log(\`\${items[0]}\`);
   };
 `;
 
@@ -39,22 +39,14 @@ if (!diagnostics.some((d) => d.severity === 'error')) {
 }
 ```
 
-### In Node.js (filesystem imports + bundled stdlib)
+Pass `readFile` to resolve project-local imports alongside the standard library:
 
 ```ts
 import {readFile} from 'node:fs/promises';
-import {createCompiler, createVirtualFileReader} from '@zena-lang/compiler';
-import {stdlibFiles} from '@zena-lang/compiler/stdlib';
-
-const readStdlib = createVirtualFileReader(stdlibFiles);
+import {createCompiler} from '@zena-lang/compiler';
 
 const compiler = await createCompiler({
-  wasm: await readFile(
-    new URL('@zena-lang/compiler/compiler.wasm', import.meta.url),
-  ),
   readFile: async (path) => {
-    const stdlibSource = readStdlib(path);
-    if (stdlibSource !== undefined) return stdlibSource;
     try {
       return await readFile(path, 'utf8');
     } catch {
@@ -64,13 +56,26 @@ const compiler = await createCompiler({
 });
 ```
 
-## Subpath Exports
+### Bundled Browser Workers
 
-| Import specifier                    | Description                                                                                                                                                                                   |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@zena-lang/compiler`               | Compiler & language service API (`createCompiler`, `ZenaCompiler`, `createVirtualFileReader`, `compilerWasmUrl`, plus `createLanguageService` / `ZenaLanguageService` / `lspWasmUrl` aliases) |
-| `@zena-lang/compiler/stdlib`        | Prebuilt in-memory map (`Record<string, string>`) of Zena's standard library `.zena` sources                                                                                                  |
-| `@zena-lang/compiler/compiler.wasm` | Direct asset path to the compiled `compiler.wasm` binary                                                                                                                                      |
+For single-file browser workers without static `stdlib/` file serving, bundle a `Record<string, string>` map and pass `createVirtualFileReader`:
+
+```ts
+import {createCompiler, createVirtualFileReader} from '@zena-lang/compiler';
+
+const compiler = await createCompiler({
+  wasm: '/assets/compiler.wasm',
+  readFile: createVirtualFileReader(stdlibMap),
+});
+```
+
+## Package Exports
+
+| Export path                         | Description                                                                                                                                                                                                |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@zena-lang/compiler`               | Compiler & language service API (`createCompiler`, `ZenaCompiler`, `createVirtualFileReader`, `compilerWasmUrl`, `stdlibUrl`, plus `createLanguageService` / `ZenaLanguageService` / `lspWasmUrl` aliases) |
+| `@zena-lang/compiler/compiler.wasm` | Direct asset path to the `-O2` `compiler.wasm` binary                                                                                                                                                      |
+| `@zena-lang/compiler/stdlib/*`      | Individual Zena standard library `.zena` and `.wit` source files                                                                                                                                           |
 
 ## API Overview
 

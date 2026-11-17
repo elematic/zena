@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import {
   createCompiler,
-  createVirtualFileReader,
+  stdlibRelativeCandidates,
   type CompletionItem,
   type DefinitionInfo,
   type DocumentSymbolInfo,
@@ -9,7 +9,6 @@ import {
   type LintFinding,
   type ZenaCompiler,
 } from '@zena-lang/compiler';
-import {stdlibFiles} from '@zena-lang/compiler/stdlib';
 
 export type {
   CompletionItem,
@@ -22,7 +21,6 @@ export type {
 export const STDLIB_SCHEME = 'zena-stdlib';
 export const STDLIB_ROOT = '/stdlib';
 
-const stdlibReader = createVirtualFileReader(stdlibFiles, STDLIB_ROOT);
 const textDecoder = new TextDecoder('utf-8');
 
 export function isStdlibPath(file: string): boolean {
@@ -34,46 +32,7 @@ export function isStdlibPath(file: string): boolean {
 }
 
 /**
- * Maps a `zena:<module>` specifier or `/stdlib/...` compiler path to the
- * canonical `/stdlib/.../*.zena` key in `stdlibFiles` so virtual stdlib URIs
- * carry a `.zena` extension for syntax highlighting.
- */
-export function toStdlibUriPath(file: string): string {
-  const mod = file.startsWith('zena:')
-    ? file.slice('zena:'.length)
-    : file.startsWith(STDLIB_ROOT + '/')
-      ? file.slice(STDLIB_ROOT.length + 1)
-      : file;
-  const candidates = [
-    `${STDLIB_ROOT}/${mod}`,
-    `${STDLIB_ROOT}/${mod}.zena`,
-    `${STDLIB_ROOT}/${mod}/index.zena`,
-    `${STDLIB_ROOT}/${mod}/host.zena`,
-  ];
-  for (const candidate of candidates) {
-    if (stdlibFiles[candidate] !== undefined) {
-      return candidate;
-    }
-  }
-  const basename = mod.split('/').pop();
-  if (basename) {
-    const byBase = `${STDLIB_ROOT}/${basename.endsWith('.zena') ? basename : basename + '.zena'}`;
-    if (stdlibFiles[byBase] !== undefined) {
-      return byBase;
-    }
-  }
-  return mod.endsWith('.zena')
-    ? `${STDLIB_ROOT}/${mod}`
-    : `${STDLIB_ROOT}/${mod}.zena`;
-}
-
-export function getStdlibContent(path: string): string | undefined {
-  const content = stdlibReader(path);
-  return typeof content === 'string' ? content : undefined;
-}
-
-/**
- * Reconstructs a `vscode.Uri` from a POSIX path reported by `lsp.wasm`,
+ * Reconstructs a `vscode.Uri` from a POSIX path reported by `compiler.wasm`,
  * preserving workspace/document URI schemes (`file:`, `vscode-vfs:`, etc.)
  * and routing stdlib paths to `zena-stdlib:`.
  */
@@ -82,9 +41,14 @@ export function uriForCompilerPath(
   referenceUri?: vscode.Uri,
 ): vscode.Uri {
   if (isStdlibPath(compilerPath)) {
+    const path = compilerPath.startsWith(STDLIB_ROOT + '/')
+      ? compilerPath
+      : compilerPath.startsWith('zena:')
+        ? `${STDLIB_ROOT}/${compilerPath.slice('zena:'.length)}.zena`
+        : `${STDLIB_ROOT}/${compilerPath}`;
     return vscode.Uri.from({
       scheme: STDLIB_SCHEME,
-      path: toStdlibUriPath(compilerPath),
+      path,
     });
   }
   const normalized = compilerPath.startsWith('/')
@@ -110,19 +74,71 @@ export function uriForCompilerPath(
 }
 
 /**
- * Manages the WASM-based Zena language service instance for VS Code.
+ * Manages the WASM-based Zena compiler and language service instance for VS Code.
  */
 export class ZenaCompilerService {
   #service: ZenaCompiler | undefined;
   #outputChannel: vscode.OutputChannel;
+  #extensionUri: vscode.Uri | undefined;
   #lastDocumentUri: vscode.Uri | undefined;
   #checkedPaths = new Set<string>();
+  #stdlibCache = new Map<
+    string,
+    Promise<{relPath: string; content: string} | undefined>
+  >();
 
   constructor(outputChannel: vscode.OutputChannel) {
     this.#outputChannel = outputChannel;
   }
 
+  async #readStdlibEntry(
+    rawPath: string,
+  ): Promise<{relPath: string; content: string} | undefined> {
+    if (!this.#extensionUri) return undefined;
+    const candidates = stdlibRelativeCandidates(rawPath, STDLIB_ROOT);
+    if (candidates.length === 0) return undefined;
+
+    for (const relPath of candidates) {
+      let cached = this.#stdlibCache.get(relPath);
+      if (cached === undefined) {
+        const uri = vscode.Uri.joinPath(
+          this.#extensionUri,
+          'dist',
+          'stdlib',
+          ...relPath.split('/'),
+        );
+        cached = (async () => {
+          try {
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            return {relPath, content: textDecoder.decode(bytes)};
+          } catch {
+            return undefined;
+          }
+        })();
+        this.#stdlibCache.set(relPath, cached);
+      }
+      const entry = await cached;
+      if (entry !== undefined) {
+        return entry;
+      }
+    }
+    return undefined;
+  }
+
+  async readStdlibContent(path: string): Promise<string | undefined> {
+    return (await this.#readStdlibEntry(path))?.content;
+  }
+
+  async resolveStdlibUriPath(file: string): Promise<string> {
+    const entry = await this.#readStdlibEntry(file);
+    if (entry !== undefined) {
+      return `${STDLIB_ROOT}/${entry.relPath}`;
+    }
+    return uriForCompilerPath(file).path;
+  }
+
   async initialize(extensionUri: vscode.Uri): Promise<void> {
+    this.#extensionUri = extensionUri;
     const wasmUri = vscode.Uri.joinPath(extensionUri, 'dist', 'compiler.wasm');
     const wasmBytes = await vscode.workspace.fs.readFile(wasmUri);
 
@@ -133,18 +149,17 @@ export class ZenaCompilerService {
     this.#service = await createCompiler({
       wasm: wasmBytes.slice(),
       stdlibRoot: STDLIB_ROOT,
+      stdlibUrl: null,
       console: {
         log: (msg) => this.#outputChannel.appendLine(`[lsp] ${msg}`),
         warn: (msg) => this.#outputChannel.appendLine(`[lsp warn] ${msg}`),
         error: (msg) => this.#outputChannel.appendLine(`[lsp error] ${msg}`),
       },
       readFile: async (rawPath: string) => {
-        const fromStdlib = await stdlibReader(rawPath);
-        if (typeof fromStdlib === 'string') {
+        const fromStdlib = await this.readStdlibContent(rawPath);
+        if (fromStdlib !== undefined) {
           return fromStdlib;
         }
-        // Skip cwd manifest discovery during `init()`: `DocumentHost.listDir`
-        // returns null, so workspace globs cannot be expanded without a dir host.
         if (
           rawPath === 'zena-package.json' ||
           rawPath === '/zena-package.json'

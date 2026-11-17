@@ -2,19 +2,16 @@
  * JavaScript API for `compiler.wasm` — the Zena compiler, language service,
  * formatter, and linter, compiled to WebAssembly.
  *
- * The module is host-agnostic: it never touches the filesystem or the network
- * by itself. Callers supply the Wasm bytes and a `readFile` hook, so the same
- * code runs in a browser (bundled stdlib via `@zena-lang/compiler/stdlib` and
- * {@link createVirtualFileReader}), in a Web Worker, in Node, and in a VS Code
- * extension host.
+ * The module reads files asynchronously: by default it loads `compiler.wasm`
+ * and resolves `zena:*` / `/stdlib/*` standard library files from `./stdlib/`
+ * (from disk on `file:` URLs or via `fetch()` on HTTP URLs), while callers may
+ * supply `readFile` (or {@link createVirtualFileReader}) for project files or
+ * in-memory stdlib bundles.
  *
  * ```ts
- * import {createCompiler, createVirtualFileReader} from '@zena-lang/compiler';
- * import {stdlibFiles} from '@zena-lang/compiler/stdlib';
+ * import {createCompiler} from '@zena-lang/compiler';
  *
- * const compiler = await createCompiler({
- *   readFile: createVirtualFileReader(stdlibFiles),
- * });
+ * const compiler = await createCompiler();
  * const diagnostics = await compiler.check('main.zena', 'export let main = () => 0;');
  * ```
  */
@@ -44,6 +41,12 @@ export const compilerWasmUrl =
 
 /** Alias of {@link compilerWasmUrl}. */
 export const lspWasmUrl = compilerWasmUrl;
+
+/** Base URL of the `stdlib/` directory shipped alongside `index.js`. */
+export const stdlibUrl =
+  typeof import.meta.url === 'string'
+    ? new URL('./stdlib/', import.meta.url).href
+    : './stdlib/';
 
 /** A diagnostic reported by the checker. */
 export interface Diagnostic {
@@ -141,8 +144,8 @@ export type WasmSource =
  *
  * Called for every import the compiler resolves that is not an open document.
  * Return `undefined` or `null` when the path does not exist, and the compiler
- * reports it as a missing module. It may return a promise, so a browser host
- * can fetch a library when the compiler first asks for it.
+ * reports it as a missing module. It may return a promise, so a host can read
+ * from disk or fetch over HTTP when the compiler asks for a file.
  */
 export type FileReader = (
   path: string,
@@ -164,6 +167,12 @@ export interface CompilerOptions {
   readFile?: FileReader;
   /** Root the compiler resolves `zena:` imports against. Defaults to `/stdlib`. */
   stdlibRoot?: string;
+  /**
+   * Base URL (`file://.../` or `https://.../`) of individual stdlib `.zena`
+   * files used as fallback when `stdlibRoot` is `/stdlib`. Defaults to
+   * {@link stdlibUrl}; pass `null` to disable fallback stdlib loading.
+   */
+  stdlibUrl?: string | URL | null;
   /** Where `console.*` from Zena code goes. Defaults to the global console. */
   console?: ConsoleSink;
 }
@@ -267,6 +276,107 @@ const cleanPath = (path: string): string => {
   return p;
 };
 
+// Kept in a variable so browser/worker bundlers (Vite, Rollup, esbuild) do not
+// rewrite or attempt to bundle `node:fs/promises` statically.
+const nodeFsPromisesSpecifier = 'node:fs/promises';
+let nodeFsPromise: Promise<any> | undefined;
+const getNodeFs = (): Promise<any> =>
+  (nodeFsPromise ??= import(/* webpackIgnore: true */ nodeFsPromisesSpecifier));
+
+const stdlibFileCache = new Map<string, Promise<string | undefined>>();
+
+const readUrlText = (url: URL): Promise<string | undefined> => {
+  const key = url.href;
+  let pending = stdlibFileCache.get(key);
+  if (pending === undefined) {
+    pending = (async () => {
+      try {
+        if (url.protocol === 'file:') {
+          const fs = await getNodeFs();
+          return (await fs.readFile(url, 'utf8')) as string;
+        }
+        const res = await fetch(url);
+        return res.ok ? await res.text() : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    stdlibFileCache.set(key, pending);
+  }
+  return pending;
+};
+
+/**
+ * Candidate relative paths inside `stdlib/` for a `zena:*` or `/stdlib/*` path,
+ * ordered so already-resolved `.zena` paths hit on the first probe.
+ */
+export function stdlibRelativeCandidates(
+  rawPath: string,
+  stdlibRoot = '/stdlib',
+): string[] {
+  const path = normalizePath(rawPath);
+  const isStdlib =
+    rawPath.startsWith('zena:') ||
+    rawPath.startsWith(stdlibRoot + '/') ||
+    path.startsWith(stdlibRoot + '/');
+  if (!isStdlib) {
+    return [];
+  }
+  const rel = rawPath.startsWith('zena:')
+    ? rawPath.slice('zena:'.length)
+    : rawPath.startsWith(stdlibRoot + '/')
+      ? rawPath.slice(stdlibRoot.length + 1)
+      : path.slice(stdlibRoot.length + 1);
+  if (!rel || rel.includes('..')) {
+    return [];
+  }
+  const out: string[] = [];
+  const push = (c: string) => {
+    if (!out.includes(c)) out.push(c);
+  };
+  if (rel.endsWith('.zena') || rel.endsWith('.wit')) {
+    push(rel);
+  } else {
+    push(`${rel}.zena`);
+    push(`${rel}/index.zena`);
+    push(`${rel}/host.zena`);
+    push(rel);
+  }
+  const base = rel.split('/').pop();
+  if (base && base !== rel) {
+    push(base.endsWith('.zena') ? base : `${base}.zena`);
+  }
+  return out;
+}
+
+const createBundledStdlibReader = (
+  baseUrl: string | URL | null,
+  stdlibRoot: string,
+): FileReader | undefined => {
+  if (baseUrl === null || stdlibRoot !== '/stdlib') {
+    return undefined;
+  }
+  const baseHref = typeof baseUrl === 'string' ? baseUrl : baseUrl.href;
+  const normalizedBase = baseHref.endsWith('/') ? baseHref : `${baseHref}/`;
+  if (
+    !normalizedBase.startsWith('file:') &&
+    !normalizedBase.startsWith('http:') &&
+    !normalizedBase.startsWith('https:')
+  ) {
+    return undefined;
+  }
+  return async (rawPath: string): Promise<string | undefined> => {
+    const candidates = stdlibRelativeCandidates(rawPath, stdlibRoot);
+    for (const candidate of candidates) {
+      const content = await readUrlText(new URL(candidate, normalizedBase));
+      if (content !== undefined) {
+        return content;
+      }
+    }
+    return undefined;
+  };
+};
+
 /**
  * Loads `compiler.wasm` and returns a compiler and language service bound to it.
  *
@@ -281,8 +391,14 @@ export async function createCompiler(
     wasm = compilerWasmUrl,
     readFile,
     stdlibRoot = '/stdlib',
+    stdlibUrl: customStdlibUrl = stdlibUrl,
     console: consoleSink,
   } = options;
+
+  const fallbackStdlibReader = createBundledStdlibReader(
+    customStdlibUrl,
+    stdlibRoot,
+  );
 
   let exports: CompilerExports | undefined;
   let readString: ((ref: unknown, len?: number) => string) | undefined;
@@ -304,7 +420,8 @@ export async function createCompiler(
       openDocuments.get('./' + cleaned) ??
       (await readFile?.(rawPath)) ??
       (await readFile?.(cleaned)) ??
-      (await readFile?.(normalized));
+      (await readFile?.(normalized)) ??
+      (await fallbackStdlibReader?.(rawPath));
     if (contents == null) {
       throw new Error(`File not found: ${rawPath}`);
     }
@@ -354,6 +471,7 @@ export async function createCompiler(
     writeString,
     openDocuments,
     readFile,
+    fallbackStdlibReader,
   });
 }
 
@@ -374,6 +492,17 @@ async function instantiate(
   }
 
   if (typeof wasm === 'string' || wasm instanceof URL) {
+    const href = typeof wasm === 'string' ? wasm : wasm.href;
+    if (href.startsWith('file:')) {
+      const fs = await getNodeFs();
+      const bytes = await fs.readFile(new URL(href));
+      const {instance} = await (WebAssembly.instantiate as any)(
+        bytes,
+        imports,
+        compileOptions,
+      );
+      return instance;
+    }
     const response = await fetch(wasm);
     if (!response.ok) {
       throw new Error(
@@ -438,6 +567,7 @@ export class ZenaCompiler {
   readonly #writeString: (s: string) => unknown;
   readonly #openDocuments: Map<string, string>;
   readonly #readFile: FileReader | undefined;
+  readonly #fallbackStdlibReader: FileReader | undefined;
 
   /** @internal Use {@link createCompiler}. */
   constructor(init: {
@@ -446,12 +576,14 @@ export class ZenaCompiler {
     writeString: (s: string) => unknown;
     openDocuments: Map<string, string>;
     readFile?: FileReader;
+    fallbackStdlibReader?: FileReader;
   }) {
     this.#exports = init.exports;
     this.#readString = init.readString;
     this.#writeString = init.writeString;
     this.#openDocuments = init.openDocuments;
     this.#readFile = init.readFile;
+    this.#fallbackStdlibReader = init.fallbackStdlibReader;
   }
 
   /** The raw Wasm exports — an escape hatch for APIs not wrapped here. */
@@ -741,6 +873,7 @@ export class ZenaCompiler {
       this.#openDocuments.get(path) ??
       this.#openDocuments.get(normalizePath(path)) ??
       (await this.#readFile?.(path)) ??
+      (await this.#fallbackStdlibReader?.(path)) ??
       ''
     );
   }
@@ -749,8 +882,8 @@ export class ZenaCompiler {
 export {ZenaCompiler as ZenaLanguageService};
 
 /**
- * A {@link FileReader} over an in-memory file map — what a browser host uses
- * to serve `@zena-lang/compiler/stdlib` (or any custom virtual file set).
+ * A {@link FileReader} over an in-memory file map — what a bundled browser
+ * worker (like `<zena-playground>`) uses to serve an inlined stdlib map.
  */
 export function createVirtualFileReader(
   files: Record<string, string>,
@@ -760,33 +893,8 @@ export function createVirtualFileReader(
     const path = normalizePath(rawPath);
     const candidates = [rawPath, path, rawPath + '.zena', path + '.zena'];
 
-    if (
-      rawPath.startsWith('zena:') ||
-      rawPath.startsWith(stdlibRoot) ||
-      path.startsWith(stdlibRoot)
-    ) {
-      const module = rawPath.startsWith('zena:')
-        ? rawPath.slice('zena:'.length)
-        : rawPath.startsWith(stdlibRoot)
-          ? rawPath.slice(stdlibRoot.length).replace(/^\//, '')
-          : path.slice(stdlibRoot.length).replace(/^\//, '');
-      candidates.push(
-        `${stdlibRoot}/${module}`,
-        `${stdlibRoot}/${module}.zena`,
-      );
-      if (!module.endsWith('.zena')) {
-        candidates.push(
-          `${stdlibRoot}/${module}/index.zena`,
-          `${stdlibRoot}/${module}/host.zena`,
-        );
-      }
-
-      const basename = path.split('/').pop();
-      if (basename) {
-        candidates.push(
-          `${stdlibRoot}/${basename.endsWith('.zena') ? basename : basename + '.zena'}`,
-        );
-      }
+    for (const rel of stdlibRelativeCandidates(rawPath, stdlibRoot)) {
+      candidates.push(`${stdlibRoot}/${rel}`);
     }
 
     for (const candidate of candidates) {
