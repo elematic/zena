@@ -32,13 +32,17 @@ async function readOrNull(path: String): Future<String | null> {
   }
 }
 
-/** Reads the workspace's manifests for `loadWorkspace`. */
+/** A directory's entry names, or null when `path` is not a directory. */
+async function listDirOrNull(path: String): Future<Array<String> | null> {
+  return await directoryNames(path);
+}
+
+/** Reads the workspace's manifests and directories for `loadWorkspace`. */
 class ManifestHost implements CompilerHost {
   async readFile(path: String): Future<String> {
     return await readFile(path);
   }
 
-  /** Null: this host reads only the manifest. */
   async listDir(path: String): Future<Array<String> | null> {
     return await directoryNames(path);
   }
@@ -62,6 +66,7 @@ export async function lspCommand(args: ParsedArgs, options: Options): Future<i32
     readOrNull,
     'zena-component',
     await packageMap(),
+    listDirOrNull,
   );
   // Only the protocol's messages may reach stdout: anything else the
   // server has to say goes to stderr.

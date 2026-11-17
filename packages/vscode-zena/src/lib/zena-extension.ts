@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import {formatError} from '@zena-lang/runtime';
 import {
-  isStdlibPath,
   STDLIB_SCHEME,
   uriForCompilerPath,
   ZenaCompilerService,
@@ -72,6 +71,14 @@ export class ZenaExtension {
   #statusBarItem: vscode.StatusBarItem;
   /** The lint findings of each document's last check, keyed by `uri.path`. */
   #lintFindings = new Map<string, LintFindingInfo[]>();
+  /** Per-document edit debounce timers, keyed by `uri.toString()`. */
+  #debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Documents currently running `#checkDocument`, keyed by `uri.toString()`. */
+  #inFlightChecks = new Set<string>();
+  /** Coalesced follow-up check queued while a check is already running. */
+  #queuedChecks = new Map<string, vscode.TextDocument>();
+  /** Last published source per document URI when no workspace edits occurred since. */
+  #publishedSources = new Map<string, string>();
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -151,7 +158,8 @@ export class ZenaExtension {
           e.document.languageId === 'zena' &&
           e.document.uri.scheme !== STDLIB_SCHEME
         ) {
-          void this.#checkDocument(e.document);
+          this.#publishedSources.clear();
+          this.#scheduleCheckDocument(e.document);
         }
       }),
     );
@@ -162,18 +170,54 @@ export class ZenaExtension {
           editor?.document.languageId === 'zena' &&
           editor.document.uri.scheme !== STDLIB_SCHEME
         ) {
-          void this.#checkDocument(editor.document);
+          void this.#checkDocument(editor.document, true);
         }
       }),
     );
 
     context.subscriptions.push(
       vscode.workspace.onDidCloseTextDocument((doc) => {
+        const key = doc.uri.toString();
+        const timer = this.#debounceTimers.get(key);
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          this.#debounceTimers.delete(key);
+        }
+        this.#queuedChecks.delete(key);
+        this.#publishedSources.clear();
         this.#diagnosticCollection.delete(doc.uri);
         this.#lintFindings.delete(doc.uri.path);
         this.#compiler.closeDocument(doc.uri.path);
       }),
     );
+
+    if (typeof vscode.workspace.onDidChangeConfiguration === 'function') {
+      context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(async (e) => {
+          if (!e.affectsConfiguration('zena.target')) {
+            return;
+          }
+          try {
+            await this.#compiler.initialize(context.extensionUri);
+            this.#publishedSources.clear();
+            this.#diagnosticCollection.clear();
+            this.#lintFindings.clear();
+            for (const doc of vscode.workspace.textDocuments) {
+              if (
+                doc.languageId === 'zena' &&
+                doc.uri.scheme !== STDLIB_SCHEME
+              ) {
+                void this.#checkDocument(doc);
+              }
+            }
+          } catch (err) {
+            outputChannel.appendLine(
+              `Failed to reload compiler:\n${formatError(err)}`,
+            );
+          }
+        }),
+      );
+    }
 
     context.subscriptions.push(
       vscode.commands.registerCommand('zena.helloWorld', () => {
@@ -257,8 +301,10 @@ export class ZenaExtension {
     // Go to Definition (workspace files + `zena-stdlib:` virtual files).
     context.subscriptions.push(
       vscode.languages.registerDefinitionProvider('zena', {
-        provideDefinition: async (document, position) => {
-          if (!this.#compiler.isReady) return null;
+        provideDefinition: async (document, position, token) => {
+          if (!this.#compiler.isReady || token?.isCancellationRequested) {
+            return null;
+          }
           try {
             const source = document.getText();
             const wordRange = document.getWordRangeAtPosition(position);
@@ -268,14 +314,13 @@ export class ZenaExtension {
               document.uri,
               offset,
               source,
+              token,
             );
-            if (!result) return null;
-            const targetUri = isStdlibPath(result.file)
-              ? vscode.Uri.from({
-                  scheme: STDLIB_SCHEME,
-                  path: await this.#compiler.resolveStdlibUriPath(result.file),
-                })
-              : uriForCompilerPath(result.file, document.uri);
+            if (!result || token?.isCancellationRequested) return null;
+            const targetUri = await this.#compiler.resolveDefinitionUri(
+              result.file,
+              document.uri,
+            );
             const pos = new vscode.Position(
               Math.max(0, result.line - 1),
               Math.max(0, result.column - 1),
@@ -303,8 +348,10 @@ export class ZenaExtension {
     // Hover.
     context.subscriptions.push(
       vscode.languages.registerHoverProvider('zena', {
-        provideHover: async (document, position) => {
-          if (!this.#compiler.isReady) return null;
+        provideHover: async (document, position, token) => {
+          if (!this.#compiler.isReady || token?.isCancellationRequested) {
+            return null;
+          }
           try {
             const source = document.getText();
             const wordRange = document.getWordRangeAtPosition(position);
@@ -314,8 +361,9 @@ export class ZenaExtension {
               document.uri,
               offset,
               source,
+              token,
             );
-            if (!result) return null;
+            if (!result || token?.isCancellationRequested) return null;
 
             const contents = new vscode.MarkdownString();
             contents.appendCodeblock(result.label || result.type, 'zena');
@@ -336,8 +384,10 @@ export class ZenaExtension {
       vscode.languages.registerCompletionItemProvider(
         'zena',
         {
-          provideCompletionItems: async (document, position) => {
-            if (!this.#compiler.isReady) return [];
+          provideCompletionItems: async (document, position, token) => {
+            if (!this.#compiler.isReady || token?.isCancellationRequested) {
+              return [];
+            }
             try {
               const source = document.getText();
               const offset = document.offsetAt(position);
@@ -345,7 +395,9 @@ export class ZenaExtension {
                 document.uri,
                 offset,
                 source,
+                token,
               );
+              if (token?.isCancellationRequested) return [];
               return items.map((info) => {
                 const item = new vscode.CompletionItem(
                   info.label,
@@ -374,13 +426,13 @@ export class ZenaExtension {
     // Document formatting.
     context.subscriptions.push(
       vscode.languages.registerDocumentFormattingEditProvider('zena', {
-        provideDocumentFormattingEdits: (document) => {
+        provideDocumentFormattingEdits: async (document) => {
           if (!this.#compiler.isReady) {
             return [];
           }
           try {
             const source = document.getText();
-            const formatted = this.#compiler.formatDocument(source);
+            const formatted = await this.#compiler.formatDocument(source);
             if (formatted === null) {
               this.#setStatusBarError('Format error');
               return [];
@@ -407,14 +459,17 @@ export class ZenaExtension {
     // Document symbols / outline.
     context.subscriptions.push(
       vscode.languages.registerDocumentSymbolProvider('zena', {
-        provideDocumentSymbols: async (document) => {
-          if (!this.#compiler.isReady) return [];
+        provideDocumentSymbols: async (document, token) => {
+          if (!this.#compiler.isReady || token?.isCancellationRequested) {
+            return [];
+          }
           try {
             const source = document.getText();
             const symbols = await this.#compiler.getDocumentSymbols(
               document.uri,
               source,
             );
+            if (token?.isCancellationRequested) return [];
 
             const toDocumentSymbol = (
               info: DocumentSymbolInfo,
@@ -450,15 +505,60 @@ export class ZenaExtension {
     );
   }
 
-  async #checkDocument(document: vscode.TextDocument): Promise<void> {
+  #scheduleCheckDocument(document: vscode.TextDocument, delayMs = 50): void {
+    const key = document.uri.toString();
+    const existing = this.#debounceTimers.get(key);
+    if (existing !== undefined) {
+      clearTimeout(existing);
+    }
+    const timer = setTimeout(() => {
+      this.#debounceTimers.delete(key);
+      void this.#checkDocument(document);
+    }, delayMs);
+    this.#debounceTimers.set(key, timer);
+  }
+
+  async #checkDocument(
+    document: vscode.TextDocument,
+    skipIfUnchanged = false,
+  ): Promise<void> {
     if (!this.#compiler.isReady || document.uri.scheme === STDLIB_SCHEME) {
       return;
     }
 
+    const key = document.uri.toString();
+    if (
+      skipIfUnchanged &&
+      !this.#debounceTimers.has(key) &&
+      this.#publishedSources.get(key) === document.getText()
+    ) {
+      return;
+    }
+    const pendingTimer = this.#debounceTimers.get(key);
+    if (pendingTimer !== undefined) {
+      clearTimeout(pendingTimer);
+      this.#debounceTimers.delete(key);
+    }
+
+    if (this.#inFlightChecks.has(key)) {
+      this.#queuedChecks.set(key, document);
+      return;
+    }
+
+    this.#inFlightChecks.add(key);
     try {
+      const versionAtStart = document.version;
       const source = document.getText();
       const path = document.uri.path;
       const byFile = await this.#compiler.checkDocument(source, document.uri);
+
+      if (
+        (document as {isClosed?: boolean}).isClosed ||
+        this.#queuedChecks.has(key) ||
+        (versionAtStart !== undefined && document.version !== versionAtStart)
+      ) {
+        return;
+      }
 
       this.#diagnosticCollection.set(document.uri, []);
 
@@ -468,6 +568,13 @@ export class ZenaExtension {
       }
 
       const findings = await this.#compiler.lintDocument(path);
+      if (
+        (document as {isClosed?: boolean}).isClosed ||
+        this.#queuedChecks.has(key) ||
+        (versionAtStart !== undefined && document.version !== versionAtStart)
+      ) {
+        return;
+      }
       this.#lintFindings.set(path, findings);
       if (findings.length > 0) {
         const own = (this.#diagnosticCollection.get(document.uri) ?? []).filter(
@@ -496,10 +603,18 @@ export class ZenaExtension {
         }
         this.#diagnosticCollection.set(document.uri, own);
       }
+      this.#publishedSources.set(key, source);
     } catch (e) {
       outputChannel.appendLine(
         `Check failed for ${document.uri.toString()}: ${formatError(e)}`,
       );
+    } finally {
+      this.#inFlightChecks.delete(key);
+      const nextDoc = this.#queuedChecks.get(key);
+      if (nextDoc !== undefined) {
+        this.#queuedChecks.delete(key);
+        void this.#checkDocument(nextDoc);
+      }
     }
   }
 
@@ -548,6 +663,13 @@ export class ZenaExtension {
 
   async deactivate(): Promise<void> {
     outputChannel.appendLine('Deactivating Zena language extension');
+    for (const timer of this.#debounceTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.#debounceTimers.clear();
+    this.#queuedChecks.clear();
+    this.#publishedSources.clear();
     this.#diagnosticCollection.clear();
+    await this.#compiler.dispose();
   }
 }

@@ -44,6 +44,9 @@ import { pending, toPromise } from 'zena:js';
 @external("compiler", "read_file")
 declare function __read_file(handle: i32, path: String, len: i32): void;
 
+@external("compiler", "list_dir")
+declare function __list_dir(handle: i32, path: String, len: i32): void;
+
 /**
  * Reads a file through the JS host's `read_file` import; null when
  * there is no such file.
@@ -53,6 +56,27 @@ async function readHostFile(path: String): Future<String | null> {
   __read_file(p.handle, path, path.length);
   try {
     return await p.future;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Lists directory entry names through the JS host's `list_dir` import
+ * (newline-joined); null when the path is not a directory.
+ */
+async function readHostDir(path: String): Future<Array<String> | null> {
+  let p = pending<String>();
+  __list_dir(p.handle, path, path.length);
+  try {
+    let raw = await p.future;
+    let out = new Array<String>();
+    if (raw != '') {
+      for (let part in raw.split('\n')) {
+        out.push(part);
+      }
+    }
+    return out;
   } catch (e) {
     return null;
   }
@@ -79,21 +103,63 @@ var __ls: LanguageService | null = null;
  * service is ready.
  */
 export function init(stdlibRoot: String): anyref {
-  return toPromise(initService(stdlibRoot));
+  return toPromise(initService(stdlibRoot, 'zena-js', '.', ''));
 }
 
-async function initService(stdlibRoot: String): Future<void> {
+/**
+ * Initialize the language service with explicit target, workspace root,
+ * and package cache directory (empty string for none).
+ */
+export function initWithOptions(
+  stdlibRoot: String,
+  target: String,
+  workspaceRoot: String,
+  packageCache: String,
+): anyref {
+  return toPromise(initService(stdlibRoot, target, workspaceRoot, packageCache));
+}
+
+async function initService(
+  stdlibRoot: String,
+  target: String,
+  workspaceRoot: String,
+  packageCache: String,
+): Future<void> {
   // The workspace's packages, when the host can read its manifests from
-  // the working directory, so that imports like `zena-lang:wit-parser` resolve
-  // the way they do for `zena build`. Without them a library of a
-  // package in this repository reports every such import missing.
-  let manifest = await readHostFile("zena-package.json");
+  // `workspaceRoot`, so that imports like `zena-lang:wit-parser` or
+  // `protobuf/runtime` resolve the way they do for `zena build`.
+  let root = if (workspaceRoot == '') { '.' } else { workspaceRoot };
+  let cache = if (packageCache == '') { null } else { packageCache };
+  let manifestPath = if (root == '.') {
+    'zena-package.json'
+  } else if (root == '/') {
+    '/zena-package.json'
+  } else {
+    `${root}/zena-package.json`
+  };
+  let manifest = await readHostFile(manifestPath);
   let packageMap: Map<String, PackageConfig> | null = if (manifest != null) {
-    await loadWorkspace(new DocumentHost(stdlibRoot, readHostFile), ".")
+    try {
+      await loadWorkspace(
+        new DocumentHost(stdlibRoot, readHostFile, readHostDir),
+        root,
+        null,
+        cache,
+      )
+    } catch (e) {
+      console.error(`Failed to load workspace at ${root}: ${e.message}`);
+      null
+    }
   } else {
     null
   };
-  __ls = createLanguageService(stdlibRoot, readHostFile, 'zena-js', packageMap);
+  __ls = createLanguageService(
+    stdlibRoot,
+    readHostFile,
+    if (target == '') { 'zena-js' } else { target },
+    packageMap,
+    readHostDir,
+  );
 }
 
 /**

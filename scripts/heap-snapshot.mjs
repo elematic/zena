@@ -77,7 +77,7 @@ const instantiate = async (onClock) => {
   let clockReads = 0;
   const imports = {
     console: createConsoleImports(() => exports),
-    compiler: {read_file: readFileImport},
+    compiler: {read_file: readFileImport, list_dir: () => {}},
     time: {
       now_ms: () => {
         clockReads += 1;

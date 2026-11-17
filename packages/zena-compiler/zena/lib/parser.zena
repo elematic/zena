@@ -247,6 +247,9 @@ export final class Parser {
           this.#recordSyntaxError(e);
           this.#synchronizeTopLevel(posBefore);
         }
+        if (this.#current == posBefore && !this.#isAtEnd()) {
+          this.#advance();
+        }
       } else {
         body.push(this.#parseImportDeclaration());
       }
@@ -267,6 +270,9 @@ export final class Parser {
         } catch (e) {
           this.#recordSyntaxError(e);
           this.#synchronizeTopLevel(posBefore);
+        }
+        if (this.#current == posBefore && !this.#isAtEnd()) {
+          this.#advance();
         }
       } else {
         let stmt = this.#parseStatement(true);
@@ -1457,6 +1463,9 @@ export final class Parser {
           this.#recordSyntaxError(e);
           this.#synchronizeStatement(posBefore);
         }
+        if (this.#current == posBefore && !this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+          this.#advance();
+        }
       } else {
         body.push(this.#parseStatement());
       }
@@ -1480,41 +1489,42 @@ export final class Parser {
         // Check for keywords that definitely start statements
         if (this.#check(TokenType.Let) || this.#check(TokenType.Var) || this.#check(TokenType.Return) || this.#check(TokenType.Yield) || this.#check(TokenType.While) || this.#check(TokenType.For) || this.#check(TokenType.Break) || this.#check(TokenType.Continue) || this.#check(TokenType.Class) || this.#check(TokenType.Using) || this.#isTailReturnAhead()) {
           body.push(this.#parseStatement());
-          continue;
-        }
-        
-        // If we're at a semicolon, skip it (e.g. empty statement or trailing ; after block-ended stmt)
-        if (this.#check(TokenType.Semi)) {
-          this.#advance();
-          continue;
-        }
-        
-        // Try to parse as expression
-        let expr = this.#parseExpression();
-        
-        // If next token is '}', this is the trailing expression (no semicolon needed)
-        if (this.#check(TokenType.RBrace)) {
-          body.push(new ExpressionStatement(expr, expr.loc));
-          break;
-        }
-        
-        body.push(new ExpressionStatement(expr, expr.loc));
-        if (!this.#isBlockEndedExpression(expr)) {
-          if (this.#check(TokenType.Semi)) {
-            this.#advance();
-          } else if (!this.#check(TokenType.RBrace)) {
-            if (this.#recover) {
-              if (this.#atLineBreak() || this.#isAtEnd()) {
-                this.#recordSyntaxError(this.#error("Expected ';' after expression"));
-              } else {
-                this.#consume(TokenType.Semi, "Expected ';' after expression");
-              }
-            } else {
-              this.#error("Expected ';' after expression");
-            }
-          }
         } else if (this.#check(TokenType.Semi)) {
+          // If we're at a semicolon, skip it (e.g. empty statement or trailing ; after block-ended stmt)
           this.#advance();
+        } else {
+          // Try to parse as expression
+          let exprStart = this.#current;
+          let expr = this.#parseExpression();
+          if (this.#recover && this.#current == exprStart &&
+              !this.#check(TokenType.Semi) && !this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+            this.#advance();
+          }
+
+          // If next token is '}', this is the trailing expression (no semicolon needed)
+          if (this.#check(TokenType.RBrace)) {
+            body.push(new ExpressionStatement(expr, expr.loc));
+            break;
+          }
+
+          body.push(new ExpressionStatement(expr, expr.loc));
+          if (!this.#isBlockEndedExpression(expr)) {
+            if (this.#check(TokenType.Semi)) {
+              this.#advance();
+            } else if (!this.#check(TokenType.RBrace)) {
+              if (this.#recover) {
+                if (this.#atLineBreak() || this.#isAtEnd()) {
+                  this.#recordSyntaxError(this.#error("Expected ';' after expression"));
+                } else {
+                  this.#consume(TokenType.Semi, "Expected ';' after expression");
+                }
+              } else {
+                this.#error("Expected ';' after expression");
+              }
+            }
+          } else if (this.#check(TokenType.Semi)) {
+            this.#advance();
+          }
         }
       } catch (e) {
         if (!this.#recover) {
@@ -1522,6 +1532,9 @@ export final class Parser {
         }
         this.#recordSyntaxError(e);
         this.#synchronizeStatement(posBefore);
+      }
+      if (this.#recover && this.#current == posBefore && !this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+        this.#advance();
       }
     }
     
@@ -1875,7 +1888,12 @@ export final class Parser {
   
   #parseExpressionStatement(): ExpressionStatement {
     let startToken = this.#peek();
+    let exprStart = this.#current;
     let expr = this.#parseExpression();
+    if (this.#recover && this.#current == exprStart &&
+        !this.#check(TokenType.Semi) && !this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      this.#advance();
+    }
     if (this.#isBlockEndedExpression(expr)) {
       if (this.#check(TokenType.Semi)) {
         this.#advance();
@@ -3949,6 +3967,9 @@ export final class Parser {
             this.#recordSyntaxError(e);
             this.#synchronizeClassMember(posBefore);
           }
+          if (this.#current == posBefore && !this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+            this.#advance();
+          }
         } else {
           if (isSealed && this.#check(TokenType.Case)) {
             this.#parseSealedVariants(sealedVariants);
@@ -4731,6 +4752,9 @@ export final class Parser {
           this.#recordSyntaxError(e);
           this.#synchronizeClassMember(posBefore);
         }
+        if (this.#current == posBefore && !this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+          this.#advance();
+        }
       } else {
         body.push(this.#parseInterfaceMember());
       }
@@ -4984,6 +5008,9 @@ export final class Parser {
         } catch (e) {
           this.#recordSyntaxError(e);
           this.#synchronizeClassMember(posBefore);
+        }
+        if (this.#current == posBefore && !this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+          this.#advance();
         }
       } else {
         body.push(this.#parseClassMember());

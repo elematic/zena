@@ -151,6 +151,15 @@ export type FileReader = (
   path: string,
 ) => string | undefined | null | Promise<string | undefined | null>;
 
+/**
+ * Lists the entry names in a directory for the compiler (used to expand
+ * `workspace.packages` globs and read WIT directories). Return `undefined`
+ * or `null` when the path is not a directory.
+ */
+export type DirReader = (
+  path: string,
+) => string[] | undefined | null | Promise<string[] | undefined | null>;
+
 /** Sink for `console.*` calls made by checked or compiled Zena code. */
 export interface ConsoleSink {
   log?(message: string): void;
@@ -165,6 +174,8 @@ export interface CompilerOptions {
   wasm?: WasmSource;
   /** Resolves imports the service does not have as an open document. */
   readFile?: FileReader;
+  /** Lists directory entry names for workspace globs and WIT directories. */
+  listDir?: DirReader;
   /** Root the compiler resolves `zena:` imports against. Defaults to `/stdlib`. */
   stdlibRoot?: string;
   /**
@@ -173,6 +184,12 @@ export interface CompilerOptions {
    * {@link stdlibUrl}; pass `null` to disable fallback stdlib loading.
    */
   stdlibUrl?: string | URL | null;
+  /** Compilation target (`'zena-component'`, `'component'`, `'core'`, `'js'`, `'zena-js'`). Defaults to `'zena-js'`. */
+  target?: string;
+  /** Workspace root directory containing `zena-package.json`. */
+  workspaceRoot?: string;
+  /** Package cache directory containing `sources/<cid>` for `zena-lock.json` pins. */
+  packageCache?: string;
   /** Where `console.*` from Zena code goes. Defaults to the global console. */
   console?: ConsoleSink;
 }
@@ -188,6 +205,12 @@ export type LanguageServiceOptions = CompilerOptions;
  */
 export interface CompilerExports extends WebAssembly.Exports {
   init(stdlibRoot: unknown): Promise<void>;
+  initWithOptions?(
+    stdlibRoot: unknown,
+    target: unknown,
+    workspaceRoot: unknown,
+    packageCache: unknown,
+  ): Promise<void>;
   check(path: unknown, source: unknown): Promise<unknown>;
   checkForTarget?(
     path: unknown,
@@ -339,6 +362,7 @@ export function stdlibRelativeCandidates(
   } else {
     push(`${rel}.zena`);
     push(`${rel}/index.zena`);
+    push(`${rel}/component.zena`);
     push(`${rel}/host.zena`);
     push(rel);
   }
@@ -377,6 +401,37 @@ const createBundledStdlibReader = (
   };
 };
 
+const createBundledStdlibDirReader = (
+  baseUrl: string | URL | null,
+  stdlibRoot: string,
+): DirReader | undefined => {
+  if (baseUrl === null || stdlibRoot !== '/stdlib') {
+    return undefined;
+  }
+  const baseHref = typeof baseUrl === 'string' ? baseUrl : baseUrl.href;
+  const normalizedBase = baseHref.endsWith('/') ? baseHref : `${baseHref}/`;
+  if (!normalizedBase.startsWith('file:')) {
+    return undefined;
+  }
+  return async (rawPath: string): Promise<string[] | undefined> => {
+    const path = normalizePath(rawPath).replace(/\/+$/, '');
+    if (path !== stdlibRoot && !path.startsWith(stdlibRoot + '/')) {
+      return undefined;
+    }
+    const rel =
+      path === stdlibRoot ? '' : path.slice(stdlibRoot.length + 1) + '/';
+    if (rel.includes('..')) {
+      return undefined;
+    }
+    try {
+      const fs = await getNodeFs();
+      return (await fs.readdir(new URL(rel, normalizedBase))) as string[];
+    } catch {
+      return undefined;
+    }
+  };
+};
+
 /**
  * Loads `compiler.wasm` and returns a compiler and language service bound to it.
  *
@@ -390,12 +445,20 @@ export async function createCompiler(
   const {
     wasm = compilerWasmUrl,
     readFile,
+    listDir,
     stdlibRoot = '/stdlib',
     stdlibUrl: customStdlibUrl = stdlibUrl,
+    target,
+    workspaceRoot,
+    packageCache,
     console: consoleSink,
   } = options;
 
   const fallbackStdlibReader = createBundledStdlibReader(
+    customStdlibUrl,
+    stdlibRoot,
+  );
+  const fallbackStdlibDirReader = createBundledStdlibDirReader(
     customStdlibUrl,
     stdlibRoot,
   );
@@ -427,6 +490,23 @@ export async function createCompiler(
     }
     return contents;
   };
+  const listDirImport = async (
+    pathRef: unknown,
+    pathLen: number,
+  ): Promise<string> => {
+    const rawPath = readString!(pathRef, pathLen);
+    const cleaned = cleanPath(rawPath);
+    const normalized = normalizePath(rawPath);
+    const entries =
+      (await listDir?.(rawPath)) ??
+      (await listDir?.(cleaned)) ??
+      (await listDir?.(normalized)) ??
+      (await fallbackStdlibDirReader?.(rawPath));
+    if (entries == null) {
+      throw new Error(`Directory not found: ${rawPath}`);
+    }
+    return [...entries].sort().join('\n');
+  };
   const hostAsync = createHostAsync(() => exports);
   const promiseHost = createPromiseHost(() => exports);
 
@@ -442,7 +522,10 @@ export async function createCompiler(
 
   const imports: WebAssembly.Imports = {
     console: consoleImports,
-    compiler: {read_file: hostAsync.wrap(readFileImport, 'string')},
+    compiler: {
+      read_file: hostAsync.wrap(readFileImport, 'string'),
+      list_dir: hostAsync.wrap(listDirImport, 'string'),
+    },
     js: promiseHost.imports as WebAssembly.ModuleImports,
     time: {
       now_ms: () => performance.now(),
@@ -463,7 +546,21 @@ export async function createCompiler(
   readString = createStringReader(exports);
   writeString = createStringWriter(exports);
 
-  await exports.init(writeString(stdlibRoot));
+  if (
+    exports.initWithOptions &&
+    (target !== undefined ||
+      workspaceRoot !== undefined ||
+      packageCache !== undefined)
+  ) {
+    await exports.initWithOptions(
+      writeString(stdlibRoot),
+      writeString(target ?? 'zena-js'),
+      writeString(workspaceRoot ?? '.'),
+      writeString(packageCache ?? ''),
+    );
+  } else {
+    await exports.init(writeString(stdlibRoot));
+  }
 
   return new ZenaCompiler({
     exports,
@@ -904,5 +1001,32 @@ export function createVirtualFileReader(
       }
     }
     return undefined;
+  };
+}
+
+/**
+ * A {@link DirReader} over an in-memory file map — lists direct entry names
+ * under `rawPath` (for bundled WIT directories like `/stdlib/wit`).
+ */
+export function createVirtualDirReader(
+  files: Record<string, string>,
+): DirReader {
+  const keys = Object.keys(files);
+  return (rawPath: string): string[] | undefined => {
+    const norm = normalizePath(rawPath).replace(/\/+$/, '');
+    const prefix = norm === '' ? '/' : norm + '/';
+    const entries = new Set<string>();
+    for (const key of keys) {
+      const normKey = normalizePath(key);
+      if (normKey.startsWith(prefix)) {
+        const rest = normKey.slice(prefix.length);
+        const slash = rest.indexOf('/');
+        const name = slash < 0 ? rest : rest.slice(0, slash);
+        if (name.length > 0) {
+          entries.add(name);
+        }
+      }
+    }
+    return entries.size > 0 ? [...entries].sort() : undefined;
   };
 }

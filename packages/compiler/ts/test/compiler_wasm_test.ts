@@ -8,7 +8,7 @@
 import {suite, test, beforeEach} from 'node:test';
 import assert from 'node:assert';
 import {readFile} from 'node:fs/promises';
-import {readFileSync} from 'node:fs';
+import {readdirSync, readFileSync} from 'node:fs';
 import {resolve, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {
@@ -105,6 +105,13 @@ async function loadLsp(): Promise<LspHandle> {
           return openDocs.get(filePath)!;
         }
         return readFileSync(filePath, 'utf8');
+      },
+      'string',
+    ),
+    list_dir: hostAsync.wrap(
+      async (pathRef: unknown, pathLen: number): Promise<string> => {
+        const dirPath = readString!(pathRef, pathLen);
+        return readdirSync(dirPath).sort().join('\n');
       },
       'string',
     ),

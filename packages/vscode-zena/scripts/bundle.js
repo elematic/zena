@@ -1,6 +1,8 @@
 // Bundles `packages/vscode-zena` into a self-contained `dist/` directory:
 // - `dist/extension.cjs`: CommonJS bundle with `@zena-lang/compiler` and
 //   `@zena-lang/runtime`, targeting both Desktop Node and Web Worker hosts.
+// - `dist/compiler-worker.cjs`: Node `worker_threads` bundle used on Desktop
+//   hosts so WASM compilation and type checking never block the Extension Host.
 // - `dist/compiler.wasm`: Copy of `packages/compiler/compiler.wasm`.
 // - `dist/stdlib/`: Individual `.zena` and `.wit` files from `packages/compiler/stdlib/`,
 //   read asynchronously via `vscode.workspace.fs`.
@@ -33,6 +35,19 @@ await esbuild.build({
   target: 'es2022',
   sourcemap: true,
   external: ['vscode'],
+  logOverride: {
+    'empty-import-meta': 'silent',
+  },
+});
+
+await esbuild.build({
+  entryPoints: [resolve(pkgRoot, 'src/compiler-worker.ts')],
+  outfile: join(distDir, 'compiler-worker.cjs'),
+  bundle: true,
+  format: 'cjs',
+  platform: 'node',
+  target: 'es2022',
+  sourcemap: true,
   logOverride: {
     'empty-import-meta': 'silent',
   },

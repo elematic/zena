@@ -5,7 +5,7 @@
  * test files. The host imports the service needs come from the runtime,
  * a development dependency of this package.
  */
-import {readFileSync} from 'node:fs';
+import {readdirSync, readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {
@@ -83,6 +83,10 @@ const languageService = async (): Promise<LspExports> => {
       read_file: hostAsync.wrap(async (path: unknown): Promise<string> => {
         const exports = service!;
         return readFileSync(exports.$stringGetHandle(path), 'utf8');
+      }, 'string'),
+      list_dir: hostAsync.wrap(async (path: unknown): Promise<string> => {
+        const exports = service!;
+        return readdirSync(exports.$stringGetHandle(path)).sort().join('\n');
       }, 'string'),
     },
     js: createPromiseImports(() => service) as WebAssembly.ModuleImports,
