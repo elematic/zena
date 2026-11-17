@@ -1,0 +1,161 @@
+{
+  "name": "@zena-lang/compiler",
+  "version": "0.0.2-preview.1",
+  "description": "The Zena compiler, language service, formatter, linter, and standard library for JavaScript and WebAssembly hosts.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elematic/zena.git",
+    "directory": "packages/compiler"
+  },
+  "homepage": "https://zena-lang.dev",
+  "bugs": {
+    "url": "https://github.com/elematic/zena/issues"
+  },
+  "keywords": [
+    "zena",
+    "compiler",
+    "language-service",
+    "lsp",
+    "webassembly",
+    "wasm-gc"
+  ],
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./stdlib": {
+      "types": "./stdlib.d.ts",
+      "default": "./stdlib.js"
+    },
+    "./compiler.wasm": "./compiler.wasm"
+  },
+  "files": [
+    "index.js",
+    "index.js.map",
+    "index.d.ts",
+    "index.d.ts.map",
+    "stdlib.js",
+    "stdlib.d.ts",
+    "compiler.wasm"
+  ],
+  "scripts": {
+    "build": "wireit",
+    "build:ts": "wireit",
+    "build:stdlib": "wireit",
+    "build:wasm": "wireit",
+    "test": "wireit"
+  },
+  "wireit": {
+    "build": {
+      "dependencies": [
+        "build:ts",
+        "build:stdlib",
+        "build:wasm"
+      ]
+    },
+    "build:stdlib": {
+      "command": "node scripts/build-stdlib.js",
+      "dependencies": [
+        "../stdlib:lib"
+      ],
+      "files": [
+        "scripts/build-stdlib.js",
+        "../stdlib/zena/**/*.zena"
+      ],
+      "output": [
+        "stdlib.js",
+        "stdlib.d.ts"
+      ]
+    },
+    "build:ts": {
+      "command": "tsc",
+      "dependencies": [
+        "build:stdlib",
+        "../runtime:build"
+      ],
+      "files": [
+        "ts/**/*.ts",
+        "stdlib.d.ts",
+        "tsconfig.json"
+      ],
+      "output": [
+        "index.{js,d.ts,js.map,d.ts.map}",
+        "test/*.{js,d.ts,js.map,d.ts.map}",
+        "tsconfig.tsbuildinfo"
+      ],
+      "clean": "if-file-deleted"
+    },
+    "build:wasm": {
+      "#command": "Compiled at -O2 for --target zena-js: shrinks the binary to ~2.1 MB (~904 KB gzip) while speeding up browser and editor checks.",
+      "command": "cd ../.. && ZENA_GC_RESERVE_MB=512 ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/zena/out/cli.wasm packages/language-service/src/lsp.zena --target zena-js -O2 -o packages/compiler/compiler.wasm",
+      "files": [
+        "package.json",
+        "../language-service/src/**/*.zena",
+        "../zena-compiler/zena/lib/**/*.zena",
+        "../wit-parser/src/**/*.zena",
+        "../zena-formatter/src/**/*.zena",
+        "../zena-lint/src/**/*.zena",
+        "../stdlib/zena/**/*.zena",
+        "../stdlib/zena/wit/*.wit",
+        "../stdlib/zena/host-wit/*.wit",
+        "../zena-compiler/zena/out/cli.wasm",
+        "../../zena-package.json",
+        "../language-service/zena-package.json",
+        "../zena-compiler/zena-package.json",
+        "../zena-formatter/zena-package.json",
+        "../zena-lint/zena-package.json",
+        "../wit-parser/zena-package.json"
+      ],
+      "output": [
+        "compiler.wasm"
+      ],
+      "dependencies": [
+        "../zena-run:build",
+        {
+          "script": "../zena-compiler:build:cli",
+          "cascade": false
+        }
+      ]
+    },
+    "test": {
+      "command": "node --test test/*_test.js",
+      "dependencies": [
+        "build:ts",
+        "build:stdlib",
+        {
+          "script": "build:wasm",
+          "cascade": false
+        },
+        "../codemirror:build",
+        "../playground:build",
+        "../wasm-web-ui:build"
+      ],
+      "files": [
+        "test/*_test.js",
+        "index.js",
+        "stdlib.js",
+        "compiler.wasm",
+        "package.json",
+        "../stdlib/zena/**/*.zena",
+        "../runtime/package.json",
+        "../codemirror/package.json",
+        "../playground/package.json",
+        "../wasm-web-ui/package.json"
+      ],
+      "output": []
+    }
+  },
+  "dependencies": {
+    "@zena-lang/runtime": "^0.0.2-preview.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.9",
+    "typescript": "^7.0.2",
+    "wireit": "^0.14.12"
+  }
+}

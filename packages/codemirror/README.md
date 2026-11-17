@@ -45,7 +45,7 @@ hover.hoverProvider = (offset) => service.hover('main.zena', offset);
 ```
 
 The provider returns `{label, type, doc}` — structurally what
-[`@zena-lang/language-service`](https://www.npmjs.com/package/@zena-lang/language-service)'s
+[`@zena-lang/compiler`](https://www.npmjs.com/package/@zena-lang/compiler)'s
 `hover()` returns — or `null` for nothing to show.
 
 Style the tooltip with the `.cm-zena-hover-tooltip`, `.cm-zena-hover-label`,

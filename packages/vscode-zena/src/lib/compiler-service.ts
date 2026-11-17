@@ -1,15 +1,15 @@
 import * as vscode from 'vscode';
 import {
-  createLanguageService,
+  createCompiler,
   createVirtualFileReader,
   type CompletionItem,
   type DefinitionInfo,
   type DocumentSymbolInfo,
   type HoverInfo,
   type LintFinding,
-  type ZenaLanguageService,
-} from '@zena-lang/language-service';
-import stdlibFiles from 'virtual:stdlib-data';
+  type ZenaCompiler,
+} from '@zena-lang/compiler';
+import {stdlibFiles} from '@zena-lang/compiler/stdlib';
 
 export type {
   CompletionItem,
@@ -113,7 +113,7 @@ export function uriForCompilerPath(
  * Manages the WASM-based Zena language service instance for VS Code.
  */
 export class ZenaCompilerService {
-  #service: ZenaLanguageService | undefined;
+  #service: ZenaCompiler | undefined;
   #outputChannel: vscode.OutputChannel;
   #lastDocumentUri: vscode.Uri | undefined;
   #checkedPaths = new Set<string>();
@@ -123,14 +123,14 @@ export class ZenaCompilerService {
   }
 
   async initialize(extensionUri: vscode.Uri): Promise<void> {
-    const wasmUri = vscode.Uri.joinPath(extensionUri, 'dist', 'lsp.wasm');
+    const wasmUri = vscode.Uri.joinPath(extensionUri, 'dist', 'compiler.wasm');
     const wasmBytes = await vscode.workspace.fs.readFile(wasmUri);
 
     this.#outputChannel.appendLine(
       `Initializing Zena language service from ${wasmUri.toString()}`,
     );
 
-    this.#service = await createLanguageService({
+    this.#service = await createCompiler({
       wasm: wasmBytes.slice(),
       stdlibRoot: STDLIB_ROOT,
       console: {

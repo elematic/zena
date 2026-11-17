@@ -38,8 +38,9 @@ import {
 
 const root = resolve(fileURLToPath(import.meta.url), '..', '..');
 const lspWasm =
+  process.env.ZENA_COMPILER_WASM ??
   process.env.ZENA_LSP_WASM ??
-  join(root, 'packages', 'language-service', 'lsp.wasm');
+  join(root, 'packages', 'compiler', 'compiler.wasm');
 const stdlibDir = join(root, 'packages', 'stdlib', 'zena');
 
 const args = process.argv.slice(2);

@@ -1,17 +1,21 @@
 /**
- * JavaScript API for `lsp.wasm` — the Zena language service and compiler,
- * compiled to WebAssembly.
+ * JavaScript API for `compiler.wasm` — the Zena compiler, language service,
+ * formatter, and linter, compiled to WebAssembly.
  *
  * The module is host-agnostic: it never touches the filesystem or the network
  * by itself. Callers supply the Wasm bytes and a `readFile` hook, so the same
- * code runs in a browser (bundled stdlib, see {@link createVirtualFileReader}),
- * in a Web Worker, in Node, and in a VS Code extension host.
+ * code runs in a browser (bundled stdlib via `@zena-lang/compiler/stdlib` and
+ * {@link createVirtualFileReader}), in a Web Worker, in Node, and in a VS Code
+ * extension host.
  *
  * ```ts
- * import {createLanguageService, lspWasmUrl} from '@zena-lang/language-service';
+ * import {createCompiler, createVirtualFileReader} from '@zena-lang/compiler';
+ * import {stdlibFiles} from '@zena-lang/compiler/stdlib';
  *
- * const service = await createLanguageService({wasm: lspWasmUrl});
- * const diagnostics = service.check('main.zena', 'export let main = () => 0;');
+ * const compiler = await createCompiler({
+ *   readFile: createVirtualFileReader(stdlibFiles),
+ * });
+ * const diagnostics = await compiler.check('main.zena', 'export let main = () => 0;');
  * ```
  */
 
@@ -26,17 +30,20 @@ import {
 } from '@zena-lang/runtime';
 
 /**
- * URL of the `lsp.wasm` shipped with this package.
+ * URL of the `compiler.wasm` shipped with this package.
  *
  * Bundlers that understand `new URL(..., import.meta.url)` — Vite, webpack 5,
  * Rollup, Parcel — emit the binary as an asset and rewrite this to its final
  * URL. esbuild leaves the expression alone, so an esbuild-based site has to
- * copy `lsp.wasm` next to its output bundle (or pass an explicit URL).
+ * copy `compiler.wasm` next to its output bundle (or pass an explicit URL).
  */
-export const lspWasmUrl =
+export const compilerWasmUrl =
   typeof import.meta.url === 'string'
-    ? new URL('./lsp.wasm', import.meta.url).href
-    : './lsp.wasm';
+    ? new URL('./compiler.wasm', import.meta.url).href
+    : './compiler.wasm';
+
+/** Alias of {@link compilerWasmUrl}. */
+export const lspWasmUrl = compilerWasmUrl;
 
 /** A diagnostic reported by the checker. */
 export interface Diagnostic {
@@ -48,7 +55,7 @@ export interface Diagnostic {
   column: number;
   /** 0-based offset into the file. */
   start: number;
-  /** Length of the highlighted range, in bytes. */
+  /** Length of the highlighted range. */
   length: number;
   severity: DiagnosticSeverity;
   message: string;
@@ -105,8 +112,7 @@ export interface DocumentSymbolInfo {
 
 /**
  * A lint finding: a range of the document and the text that fixes it.
- * Offsets are bytes into the document's UTF-8 source. `rule` is the
- * zena-lint rule's name, `message` its one-line description.
+ * `rule` is the zena-lint rule's name, `message` its one-line description.
  */
 export interface LintFinding {
   start: number;
@@ -121,7 +127,7 @@ export interface LintFinding {
   shared: boolean;
 }
 
-/** Anything {@link createLanguageService} can instantiate. */
+/** Anything {@link createCompiler} can instantiate. */
 export type WasmSource =
   | WebAssembly.Module
   | BufferSource
@@ -151,8 +157,8 @@ export interface ConsoleSink {
   debug?(message: string): void;
 }
 
-export interface LanguageServiceOptions {
-  /** Wasm module, bytes, `Response`, or URL. Defaults to {@link lspWasmUrl}. */
+export interface CompilerOptions {
+  /** Wasm module, bytes, `Response`, or URL. Defaults to {@link compilerWasmUrl}. */
   wasm?: WasmSource;
   /** Resolves imports the service does not have as an open document. */
   readFile?: FileReader;
@@ -162,18 +168,31 @@ export interface LanguageServiceOptions {
   console?: ConsoleSink;
 }
 
+/** Alias of {@link CompilerOptions}. */
+export type LanguageServiceOptions = CompilerOptions;
+
 /**
- * The subset of `lsp.wasm`'s exports this package uses.
+ * The subset of `compiler.wasm`'s exports this package uses.
  *
  * Handles (`unknown`) are Wasm GC objects held as externrefs: opaque to JS,
  * collected once JS drops them. Field access goes through the getters.
  */
-export interface LspExports extends WebAssembly.Exports {
+export interface CompilerExports extends WebAssembly.Exports {
   init(stdlibRoot: unknown): Promise<void>;
   check(path: unknown, source: unknown): Promise<unknown>;
+  checkForTarget?(
+    path: unknown,
+    source: unknown,
+    target: unknown,
+  ): Promise<unknown>;
   openDocument?(path: unknown, source: unknown): void;
   closeDocument?(path: unknown): void;
   compileToWasm(path: unknown, source: unknown): Promise<unknown>;
+  compileToWasmForTarget?(
+    path: unknown,
+    source: unknown,
+    target: unknown,
+  ): Promise<unknown>;
   format(source: unknown): unknown;
   getByteArrayLength(bytes: unknown): number;
   getByteArrayByte(bytes: unknown, index: number): number;
@@ -220,6 +239,7 @@ export interface LspExports extends WebAssembly.Exports {
   getSymbolSelStart(sym: unknown): number;
   getSymbolSelEnd(sym: unknown): number;
   getSymbolChildCount(sym: unknown): number;
+  getSymbolChild(sym: unknown, index: number): unknown;
   $stringGetByte?(str: unknown, index: number): number;
   $stringGetLength?(str: unknown): number;
   $stringCreate?(lenOrHandle: number | string): unknown;
@@ -227,6 +247,9 @@ export interface LspExports extends WebAssembly.Exports {
   $stringGetHandle?(str: unknown): string;
   [key: string]: any;
 }
+
+/** Alias of {@link CompilerExports}. */
+export type LspExports = CompilerExports;
 
 /** Normalizes paths to leading slash (e.g. '/math.zena') for absolute compiler lookups. */
 const normalizePath = (path: string): string => {
@@ -245,34 +268,28 @@ const cleanPath = (path: string): string => {
 };
 
 /**
- * Loads `lsp.wasm` and returns a service bound to it.
+ * Loads `compiler.wasm` and returns a compiler and language service bound to it.
  *
- * Each service owns one Wasm instance and one set of open documents, so
- * separate instances are fully independent. Instantiation is not cheap
- * (the binary is a few megabytes) — create one and keep it.
+ * Each instance owns one Wasm module and one set of open documents, so
+ * separate instances are independent. Instantiation is a few megabytes — create
+ * one and reuse it.
  */
-export async function createLanguageService(
-  options: LanguageServiceOptions = {},
-): Promise<ZenaLanguageService> {
+export async function createCompiler(
+  options: CompilerOptions = {},
+): Promise<ZenaCompiler> {
   const {
-    wasm = lspWasmUrl,
+    wasm = compilerWasmUrl,
     readFile,
     stdlibRoot = '/stdlib',
     console: consoleSink,
   } = options;
 
-  // Bound after instantiation; the imports close over these lazily because
-  // the module can call back into the host during its own start function.
-  let exports: LspExports | undefined;
+  let exports: CompilerExports | undefined;
   let readString: ((ref: unknown, len?: number) => string) | undefined;
   let writeString: ((s: string) => unknown) | undefined;
 
   const openDocuments = new Map<string, string>();
 
-  // The compiler's file reads are host-async imports: the module hands
-  // over a handle, the promise below settles it with the text, and a
-  // rejection fails it, which the compiler reports as a missing module.
-  // `readFile` may itself return a promise.
   const readFileImport = async (
     pathRef: unknown,
     pathLen: number,
@@ -310,8 +327,6 @@ export async function createLanguageService(
     console: consoleImports,
     compiler: {read_file: hostAsync.wrap(readFileImport, 'string')},
     js: promiseHost.imports as WebAssembly.ModuleImports,
-    // The compiler times its own phases through `zena:time`, which on
-    // the host target is this clock. It never sleeps.
     time: {
       now_ms: () => performance.now(),
       sleep_ms: () => {},
@@ -327,13 +342,13 @@ export async function createLanguageService(
   };
 
   const instance = await instantiate(wasm, imports);
-  exports = instance.exports as LspExports;
+  exports = instance.exports as CompilerExports;
   readString = createStringReader(exports);
   writeString = createStringWriter(exports);
 
   await exports.init(writeString(stdlibRoot));
 
-  return new ZenaLanguageService({
+  return new ZenaCompiler({
     exports,
     readString,
     writeString,
@@ -341,6 +356,9 @@ export async function createLanguageService(
     readFile,
   });
 }
+
+/** Alias of {@link createCompiler}. */
+export const createLanguageService = createCompiler;
 
 /** Instantiates from whichever of the accepted Wasm sources was given. */
 async function instantiate(
@@ -385,8 +403,6 @@ async function instantiateResponse(
     builtins: ['js-string'],
     importedStringConstants: '_',
   };
-  // Streaming needs an `application/wasm` content type, which not every static
-  // server sends. Buffering always works, so fall back to it rather than fail.
   if (response.headers.get('content-type')?.startsWith('application/wasm')) {
     const {instance} = await (WebAssembly.instantiateStreaming as any)(
       response,
@@ -410,27 +426,22 @@ const isThenable = (value: unknown): value is Promise<Response> =>
   typeof (value as {then?: unknown} | null)?.then === 'function';
 
 /**
- * The language service bound to one `lsp.wasm` instance.
+ * Compiler and language service bound to one `compiler.wasm` instance.
  *
  * Analysis is stateful: `check()` (or passing `source` to a query) parses and
  * types a document, and the position queries read back from that analysis. A
  * query for a document that was never checked returns nothing.
- *
- * The methods that analyze a document return promises, because the
- * compiler reads files through an asynchronous host. The Wasm module still
- * runs on the calling thread, and a full check of a large file takes long
- * enough to drop frames, so browsers should run this in a Web Worker.
  */
-export class ZenaLanguageService {
-  readonly #exports: LspExports;
+export class ZenaCompiler {
+  readonly #exports: CompilerExports;
   readonly #readString: (ref: unknown, len?: number) => string;
   readonly #writeString: (s: string) => unknown;
   readonly #openDocuments: Map<string, string>;
   readonly #readFile: FileReader | undefined;
 
-  /** @internal Use {@link createLanguageService}. */
+  /** @internal Use {@link createCompiler}. */
   constructor(init: {
-    exports: LspExports;
+    exports: CompilerExports;
     readString: (ref: unknown, len?: number) => string;
     writeString: (s: string) => unknown;
     openDocuments: Map<string, string>;
@@ -444,7 +455,7 @@ export class ZenaLanguageService {
   }
 
   /** The raw Wasm exports — an escape hatch for APIs not wrapped here. */
-  get exports(): LspExports {
+  get exports(): CompilerExports {
     return this.#exports;
   }
 
@@ -505,9 +516,6 @@ export class ZenaLanguageService {
    *
    * Pass `source` to check unsaved contents; without it the document's open
    * copy is used, or the `readFile` hook when it was never opened.
-   *
-   * This is also what makes the position queries below meaningful: they read
-   * the analysis this call leaves behind.
    */
   async check(path: string, source?: string): Promise<Diagnostic[]> {
     if (source !== undefined) {
@@ -543,10 +551,6 @@ export class ZenaLanguageService {
 
   /**
    * What the lint rules find in a document, each with its fix.
-   *
-   * Pass `source` to lint unsaved contents; without it the analysis the last
-   * {@link check} left behind is read. A document with errors has no
-   * findings: the rules read types the checker could not give.
    */
   async lint(path: string, source?: string): Promise<LintFinding[]> {
     if (source !== undefined) {
@@ -572,22 +576,27 @@ export class ZenaLanguageService {
    * Compiles a document to a WebAssembly binary.
    *
    * Returns `null` when compilation failed; call {@link check} for the reason.
-   *
-   * The `ArrayBuffer` in the return type is not decoration: `BufferSource`
-   * excludes views over a `SharedArrayBuffer`, so a plain `Uint8Array` would
-   * not be accepted by `WebAssembly.instantiate`.
    */
   async compileToWasm(
     path: string,
     source?: string,
+    target?: string,
   ): Promise<Uint8Array<ArrayBuffer> | null> {
     if (source !== undefined) {
       this.openDocument(path, source);
     }
-    const handle = await this.#exports.compileToWasm(
-      this.#writeString(path),
-      this.#writeString(await this.#sourceOf(path)),
-    );
+    const srcText = await this.#sourceOf(path);
+    const handle =
+      target !== undefined && this.#exports.compileToWasmForTarget
+        ? await this.#exports.compileToWasmForTarget(
+            this.#writeString(path),
+            this.#writeString(srcText),
+            this.#writeString(target),
+          )
+        : await this.#exports.compileToWasm(
+            this.#writeString(path),
+            this.#writeString(srcText),
+          );
     if (!handle) {
       return null;
     }
@@ -599,7 +608,7 @@ export class ZenaLanguageService {
     return bytes;
   }
 
-  /** Type information at a byte offset, or `null` if there is nothing there. */
+  /** Type information at an offset, or `null` if there is nothing there. */
   async hover(
     path: string,
     offset: number,
@@ -619,7 +628,7 @@ export class ZenaLanguageService {
     };
   }
 
-  /** Completion proposals for a byte offset. */
+  /** Completion proposals for an offset. */
   async completions(
     path: string,
     offset: number,
@@ -649,7 +658,7 @@ export class ZenaLanguageService {
     return items;
   }
 
-  /** Where the symbol at a byte offset is declared. */
+  /** Where the symbol at an offset is declared. */
   async definition(
     path: string,
     offset: number,
@@ -721,18 +730,12 @@ export class ZenaLanguageService {
     };
   }
 
-  /** Reads a Zena `String` handle, whose length only Wasm knows. */
   #readRef(ref: unknown): string {
     return ref
       ? this.#readString(ref, this.#exports.$stringGetLength?.(ref))
       : '';
   }
 
-  /**
-   * The current contents of a document: the open copy if there is one, else
-   * whatever the `readFile` hook has. Empty when neither knows the path — the
-   * compiler then reports it the way it reports any missing module.
-   */
   async #sourceOf(path: string): Promise<string> {
     return (
       this.#openDocuments.get(path) ??
@@ -743,15 +746,11 @@ export class ZenaLanguageService {
   }
 }
 
+export {ZenaCompiler as ZenaLanguageService};
+
 /**
  * A {@link FileReader} over an in-memory file map — what a browser host uses
- * to serve a bundled copy of the stdlib.
- *
- * Keys are paths as the compiler asks for them (`/stdlib/string.zena`) or
- * module specifiers (`zena:collections`). Lookup also tries the obvious
- * variants of a path — leading slash, `.zena` suffix, `zena:` mapped under the
- * stdlib root, and `index.zena`/`host.zena` for a directory — so a map keyed
- * either way resolves.
+ * to serve `@zena-lang/compiler/stdlib` (or any custom virtual file set).
  */
 export function createVirtualFileReader(
   files: Record<string, string>,
@@ -782,7 +781,6 @@ export function createVirtualFileReader(
         );
       }
 
-      // Last resort for stdlib: basename lookup within stdlib root.
       const basename = path.split('/').pop();
       if (basename) {
         candidates.push(
