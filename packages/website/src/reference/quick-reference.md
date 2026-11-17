@@ -18,7 +18,7 @@ export function main() {
 
 > **Note**: Zena is not yet released. The CLI examples below assume you've built
 > the Zena tools locally from the [GitHub
-> repository](https://github.com/porfirioribeiro/zena).
+> repository](https://github.com/elematic/zena).
 
 ```bash
 # Compile for a JavaScript host (@zena-lang/runtime in Node.js or the browser)
@@ -126,10 +126,7 @@ export let add = (a: i32, b: i32) => a + b;
 export class Point {
   x: i32;
   y: i32;
-  new(x: i32, y: i32) {
-    this.x = x;
-    this.y = y;
-  }
+  new(this.x, this.y);
 }
 
 // Private (not exported)
@@ -154,7 +151,7 @@ x = 2; // ❌ Error: cannot reassign immutable binding
 
 Type annotations are optional—the compiler infers types from initializers.
 Literals are widened to their base type: integer literals become `i32`, float
-literals become `f32`, and string literals become `String` (not literal types
+literals become `f64`, and string literals become `String` (not literal types
 like `1` or `"hello"`).
 
 ```zena
@@ -225,8 +222,8 @@ needed. They come from the _prelude_, which is implicitly imported.
 | `None`                  | Variant of `Option` representing no value                    |
 | `Array<T>`              | Universal read-only array interface (`length`, `[i]`, `map`) |
 | `MutableArray<T>`       | Mutable array interface (`[i] = v`)                          |
-| `GrowableArray<T>`      | Resizable array (`growable([1, 2, 3])`, `push`)              |
-| `FixedArray<T>`         | Fixed-size mutable array (`fixed([1, 2, 3])`)                |
+| `GrowableArray<T>`      | Resizable array (`new Array<T>()`, `push`)                   |
+| `FixedArray<T>`         | Fixed-size mutable array (`new FixedArray<T>(n, fill)`)      |
 | `ImmutableArray<T>`     | Immutable array — what a `[1, 2, 3]` literal is              |
 | `Map<K, V>`             | Hash map (literal syntax: `{"a" => 1}`)                      |
 | `Box<T>`                | Wraps a primitive for use in a union or `anyref`             |
@@ -238,7 +235,7 @@ needed. They come from the _prelude_, which is implicitly imported.
 | `FullRange<T = i32>`    | Unbounded range (`..`)                                       |
 | `console`               | Console output (`console.log(...)`)                          |
 
-Helper functions `some(value)` and `none()` are also available for creating
+The helper `some(value)` and the value `none` are also available for creating
 `Option` values.
 
 ## Functions
@@ -511,8 +508,10 @@ good performance since stack values are prime candidates for register
 allocation.
 
 ```zena
+import {div} from 'zena:math';
+
 let divide = (a: i32, b: i32): inline (i32, i32) => {
-  return (a / b, a % b);
+  return (div(a, b), a % b);
 };
 
 let (quot, rem) = divide(17, 5);  // quot=3, rem=2
@@ -620,7 +619,7 @@ typed—you cannot mix `i32` and `u32` without explicit casting.
 let a = 1 + 2; // Addition
 let b = 5 - 3; // Subtraction
 let c = 2 * 3; // Multiplication
-let d = 10 / 3; // Division (float: 3.333...)
+let d = 10 / 3; // Division (always a float: 3.333..., an f32 for two i32s)
 let e = 10 % 3; // Modulo (1)
 let f = 2 ** 10; // Exponentiation (1024)
 ```
@@ -877,7 +876,7 @@ condition succeeds if the pattern matches.
 
 ```zena
 // if-let
-if (let Some(value) = maybeValue) {
+if (let Some {value} = maybeValue) {
   // value is bound here
 }
 
@@ -1082,24 +1081,26 @@ let word = r.sliceFrom(start); // "hello"
 ### Tagged Template Literals
 
 Template literals can be _tagged_ with a function that processes the template.
-The tag function receives the static string parts and interpolated values
-separately.
+The tag function receives the static string parts and the interpolated
+values separately, the values as a `FixedArray` of the type the tag accepts.
 
 ```zena
-let highlight = (
+import {StringBuilder, TemplateStringsArray} from 'zena:core';
+
+function highlight(
   strings: TemplateStringsArray,
-  ...values: Array<any>
-): String => {
+  values: FixedArray<String>
+): String {
   let result = new StringBuilder();
-  for (var i = 0; i < values.length; i = i + 1) {
+  for (let i in 0..values.length) {
     result.append(strings[i]);
     result.append('**');
-    result.append(values[i] as String);
+    result.append(values[i]);
     result.append('**');
   }
   result.append(strings[strings.length - 1]);
   return result.toString();
-};
+}
 
 let name = 'Zena';
 highlight`Hello, ${name}!`; // "Hello, **Zena**!"
@@ -1120,9 +1121,12 @@ Tag functions can access unprocessed string content (with escape sequences
 intact) via the `raw` property:
 
 ```zena
-let showEscapes = (strings: TemplateStringsArray): String => {
+function showEscapes(
+  strings: TemplateStringsArray,
+  values: FixedArray<String>
+): String {
   return strings.raw[0]; // Escape sequences not processed
-};
+}
 
 showEscapes`line1\nline2`; // "line1\\nline2" (literal backslash-n)
 ```
@@ -1481,17 +1485,14 @@ multiple [interfaces](#interfaces), and can include [mixins](#mixins).
 
 ```zena
 class Point {
-  x: i32;
-  y: i32;
+  var x: i32;
+  var y: i32;
 
-  new(x: i32, y: i32) {
-    this.x = x;
-    this.y = y;
-  }
+  new(this.x, this.y);
 
   move(dx: i32, dy: i32): void {
-    this.x = this.x + dx;
-    this.y = this.y + dy;
+    this.x += dx;
+    this.y += dy;
   }
 
   distanceFromOrigin(): f32 {
@@ -1536,14 +1537,10 @@ not inherited, and have no virtual dispatch overhead.
 
 ```zena
 class Counter {
-  #count: i32; // Private, direct access
-
-  new() {
-    this.#count = 0;
-  }
+  var #count: i32 = 0; // Private, direct access
 
   increment(): void {
-    this.#count = this.#count + 1;
+    this.#count += 1;
   }
 
   get(): i32 {
@@ -1604,10 +1601,7 @@ class User {
   name: String;
   bio: String?;  // String or null
 
-  new(name: String) {
-    this.name = name;
-    // bio defaults to null
-  }
+  new(this.name);  // bio defaults to null
 }
 
 interface Configurable {
@@ -1633,9 +1627,10 @@ class Cache {
 
 ### Initializer Lists
 
-For immutable fields that need constructor parameters, use Dart-style
-initializer lists. The initializer list appears after `:` and before the
-constructor body.
+An immutable field is set by a `this.` parameter (`new(this.x, this.y);`), by
+its own initializer, or in a Dart-style initializer list, which appears after
+`:` and before the constructor body. A constructor body cannot assign one:
+`this.x = x` there is an error unless the field is `var`.
 
 ```zena
 class Point {
@@ -1724,9 +1719,7 @@ fields and methods, and can override methods.
 class Animal {
   name: String;
 
-  new(name: String) {
-    this.name = name;
-  }
+  new(this.name);
 
   speak(): String {
     return '...';
@@ -1734,9 +1727,7 @@ class Animal {
 }
 
 class Dog extends Animal {
-  new(name: String) {
-    super(name);
-  }
+  new(name: String) : super(name);
 
   speak(): String {
     return 'Woof!';
@@ -1753,9 +1744,7 @@ Classes can have type parameters. Zena uses monomorphization—`Box<i32>` and
 class Box<T> {
   value: T;
 
-  new(value: T) {
-    this.value = value;
-  }
+  new(this.value);
 
   map<U>(fn: (val: T) => U): Box<U> {
     return new Box<U>(fn(this.value));
@@ -1817,9 +1806,7 @@ abstract class Shape {
 final class Circle extends Shape {
   radius: f32;
 
-  new(radius: f32) {
-    this.radius = radius;
-  }
+  new(this.radius) : super();
 
   area(): f32 {
     return 3.14159 * this.radius * this.radius;
@@ -1829,25 +1816,32 @@ final class Circle extends Shape {
 
 ### Extension Classes
 
-Add methods to existing types:
+An extension class is a typed view of an existing type, with its own methods.
+It is erased at run time, and `as` converts a value to the view at no cost.
+Its methods are called on the view, not on the underlying type:
 
 ```zena
-extension class StringExt on String {
-  isEmpty(): boolean {
-    return this.length == 0;
+extension class Path on String {
+  new(text: String) : super(text);
+
+  segments(): i32 {
+    return (this as String).split('/').length;
   }
 }
 
-"hello".isEmpty();  // false
-"".isEmpty();       // true
+new Path('usr/local/bin').segments();  // 3
+('/tmp' as Path).segments();           // 2
+'/tmp'.segments();                     // ❌ Error: not a member of String
 ```
 
 An extension class can extend another one declared on the same type. The `on`
 clause then comes from the superclass:
 
 ```zena
-extension class TrimmedString extends StringExt {
-  trimmed(): String { return this.trim(); }
+extension class FilePath extends Path {
+  new(text: String) : super(text);
+
+  isHidden(): boolean { return (this as String).startsWith('.'); }
 }
 ```
 
@@ -1871,7 +1865,7 @@ Case classes can have a body for additional members, and support `extends`,
 
 ```zena
 class Point(x: f64, y: f64) {
-  distance(): f64 { return sqrt(x * x + y * y); }
+  distance(): f64 { return sqrt(this.x * this.x + this.y * this.y); }
 }
 
 class Counter(name: String, var count: i32)  // var for mutable fields
@@ -1974,32 +1968,29 @@ Objects of different classes are never equal, in either order.
 
 #### operator []
 
-Define index access for custom collections. Implement `get` for reading and
-`set` for writing.
+Define index access for custom collections. `operator []` reads an index and
+`operator []=` writes one.
 
 ```zena
-class Grid {
-  #data: FixedArray<i32>;
-  #width: i32;
+class Histogram {
+  #buckets = new FixedArray<i32>(10, 0);
 
-  operator [](x: i32, y: i32): i32 {
-    get {
-      return this.#data[y * this.#width + x];
-    }
-    set(value) {
-      this.#data[y * this.#width + x] = value;
-    }
+  operator [](bucket: i32): i32 {
+    return this.#buckets[bucket];
+  }
+
+  operator []=(bucket: i32, count: i32): void {
+    this.#buckets[bucket] = count;
   }
 }
 
-let grid = new Grid(10, 10);
-grid[3, 4] = 42;      // calls operator [] set
-let v = grid[3, 4];   // calls operator [] get
+let histogram = new Histogram();
+histogram[3] = 42;      // calls operator []=
+let v = histogram[3];   // calls operator []
+histogram[3] += 1;      // calls both
 ```
 
-The index operator can take any number of parameters. For single-index access
-(like arrays), use one parameter. For multi-dimensional access (like matrices or
-grids), use multiple parameters.
+An index expression takes one value.
 
 ### Method Overloading
 
@@ -2010,7 +2001,7 @@ based on argument types.
 ```zena
 class Printer {
   print(val: i32): void {
-    console.log('Integer: ' + val);
+    console.log(`Integer: ${val}`);
   }
 
   print(val: String): void {
@@ -2076,11 +2067,9 @@ interface Resizable {
 }
 
 class Circle implements Drawable, Resizable {
-  radius: f32;
+  var radius: f32;
 
-  new(radius: f32) {
-    this.radius = radius;
-  }
+  new(this.radius);
 
   draw(): void {
     // ...
@@ -2134,7 +2123,7 @@ multiple mixins using the `with` clause.
 
 ```zena
 mixin Timestamped {
-  createdAt: i64;
+  var createdAt: i64 = 0;
 
   touch(): void {
     this.createdAt = getCurrentTime();
@@ -2148,9 +2137,7 @@ mixin Named {
 class Document with Timestamped, Named {
   content: String;
 
-  new(name: String, content: String) {
-    this.name = name;
-    this.content = content;
+  new(name: String, this.content) : name = name {
     this.createdAt = getCurrentTime();
   }
 }
@@ -2188,7 +2175,7 @@ For example, `HashMap` implements `Map<K, V>` (which extends `Iterable`) by mixi
 // HashMap satisfies 'on Iterable' via 'implements Map'
 export class HashMap<K, V> with IterableUtils<MapEntry<K, V>> implements Map<K, V> {
   // Directly implements the core iterator method
-  :Iterable.iterator(): Iterator<MapEntry<K, V>> {
+  [Iterable.iterator](): Iterator<MapEntry<K, V>> {
     return new HashMapEntryIterator<K, V>(this.#buckets);
   }
 
@@ -2267,7 +2254,7 @@ Zena provides universal interfaces for indexed collections (`Array<T>` and `Muta
 
 ### Array Hierarchy
 
-- **`Array<T>`**: The universal indexed read-only interface (`length`, `operator [](i32): T`, `map`, `:Iterable.iterator()`). Implemented by `FixedArray<T>`, `GrowableArray<T>`, and `ImmutableArray<T>`.
+- **`Array<T>`**: The universal indexed read-only interface (`length`, `operator [](i32): T`, `map`, `[Iterable.iterator]()`). Implemented by `FixedArray<T>`, `GrowableArray<T>`, and `ImmutableArray<T>`.
 - **`MutableArray<T>`**: The mutable indexed interface extending `Array<T>` (`operator []=(i32, T): void`). Implemented by `FixedArray<T>` and `GrowableArray<T>`.
 
 ### Literals
@@ -2275,10 +2262,12 @@ Zena provides universal interfaces for indexed collections (`Array<T>` and `Muta
 An array literal is an `ImmutableArray<T>` — Wasm's immutable `(array T)` —
 unless the context wants mutable elements (a `FixedArray`, `MutableArray`, or
 `array<var T>` expected type), in which case it builds directly as a
-`FixedArray<T>`. The `fixed(...)` and `growable(...)` helpers supply that
-context in expression position:
+`FixedArray<T>`. The `fixed(...)` and `growable(...)` helpers from `zena:core`
+supply that context in expression position:
 
 ```zena
+import {fixed, growable} from 'zena:core';
+
 let nums = [1, 2, 3];                     // ImmutableArray<i32>
 let buf: FixedArray<i32> = [1, 2, 3];     // FixedArray via the annotation
 let inline = fixed([1, 2, 3]);            // FixedArray, no annotation, no copy
@@ -2369,17 +2358,21 @@ Or constructed explicitly:
 
 ```zena
 let map = new Map<String, i32>();
-map.set('one', 1);
+map['one'] = 1;
 map['two'] = 2;
+map.size;          // 2
+map.has('one');    // true
+map.delete('two'); // true
 ```
 
 Use `get()` for safe lookups. It returns `(true, value)` when the key is
-present and `(false, _)` when it is not:
+present and `(false, _)` when it is not. `getOr()` returns a default instead:
 
 ```zena
 if (let (true, val) = map.get('one')) {
   // use val
 }
+let count = map.getOr('three', 0);
 ```
 
 The index operator `map[key]` throws `KeyNotFoundError` if the key doesn't exist.
@@ -2396,8 +2389,8 @@ for (let item in arr) {
 }
 
 let map = new Map<String, i32>();
-for (let (key, value) in map) {
-  // iterate over entries
+for (let {key, value} in map) {
+  // each entry is a MapEntry
 }
 ```
 
@@ -2454,18 +2447,13 @@ extending `Error`.
 ```zena
 class Error {
   message: String;
-  new(message: String) {
-    this.message = message;
-  }
+  new(this.message);
 }
 
 // Custom errors
 class ValidationError extends Error {
   field: String;
-  new(field: String, message: String) {
-    super(message);
-    this.field = field;
-  }
+  new(this.field, message: String) : super(message);
 }
 ```
 
@@ -2591,7 +2579,7 @@ distinct type ID = i32;
 let id = 42 as ID;
 
 // Reference types (checked at runtime)
-let obj: any = getObject();
+let obj: anyref = getObject();
 let p = obj as Point;         // Throws if not a Point
 
 // A cast to a reference type also types its operand
@@ -2829,8 +2817,8 @@ JSON parsing with typed accessors and optional comment support.
 import {parseJson, JsonObject, JsonArray} from 'zena:json';
 
 let obj = parseJson('{"name": "Zena", "version": 1}') as JsonObject;
-obj['name']; // "Zena" (as any)
-obj['version']; // 1 (as any, boxed)
+obj['name'] as String; // "Zena"
+obj['version']; // 1, as a Box<f64>
 
 // With options
 let config = parseJson(text, {
@@ -2856,7 +2844,7 @@ let doubled = new Computed<i32>((): i32 => count.get() * 2);
 
 // Runs now, and again after anything it read changes.
 let e = effect((): void => {
-  console.log(i32ToString(doubled.get()));
+  console.log(doubled.get());
 });
 
 count.set(1); // prints 2
