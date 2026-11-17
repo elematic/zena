@@ -1,0 +1,65 @@
+/**
+ * The part of `skills/zena/SKILL.md` that `AGENTS.md` repeats, so that
+ * agents working in this repository always have it: `npm run skill`
+ * (`dev/sync-skill.zena`) writes it, and `tests/skill_test.zena` fails
+ * while it is out of date. Change the skill, never the copy.
+ */
+
+import {StringBuilder} from 'zena:core';
+import {join} from 'zena:string';
+
+export let SKILL_FILE = 'skills/zena/SKILL.md';
+export let AGENTS_FILE = 'AGENTS.md';
+
+/** The lines the copy sits between in `AGENTS.md`. */
+export let BEGIN = '<!-- skills/zena/SKILL.md: begin (npm run skill) -->';
+export let END = '<!-- skills/zena/SKILL.md: end -->';
+
+/** The sections of the skill that are copied, by their headings. */
+let SECTIONS = ['## The language in brief', '## Features to reach for', '## TypeScript that is not Zena'];
+
+/**
+ * The copy for `AGENTS.md`: the skill's sections two heading levels down,
+ * with their links to the skill's references made relative to the
+ * repository.
+ */
+export function agentsSection(skill: String): String {
+  let out = new StringBuilder();
+  var copying = false;
+  for (let line in skill.split('\n')) {
+    if (line.startsWith('## ')) {
+      copying = SECTIONS.contains(line);
+      if (copying) {
+        out.append(`##${line}\n`);
+      }
+    } else if (copying) {
+      out.append(join(line.split('](references/'), '](skills/zena/references/'));
+      out.append('\n');
+    }
+  }
+  return out.toString().trim();
+}
+
+/** `agents` with `section` between the marker lines. */
+export function withSection(agents: String, section: String): String {
+  let out = new StringBuilder();
+  var skipping = false;
+  var found = false;
+  for (let line in agents.split('\n')) {
+    if (line == BEGIN) {
+      out.append(`${BEGIN}\n\n${section}\n\n`);
+      skipping = true;
+      found = true;
+    } else if (line == END) {
+      skipping = false;
+    }
+    if (!skipping) {
+      out.append(line);
+      out.append('\n');
+    }
+  }
+  if (!found || skipping) {
+    throw new Error(`${AGENTS_FILE} has no '${BEGIN}' … '${END}' lines`);
+  }
+  return out.toString().trim() + '\n';
+}

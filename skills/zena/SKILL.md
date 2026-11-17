@@ -1,219 +1,329 @@
 ---
 name: zena
-description: >-
-  Write, review, test, and debug code in the Zena programming language (`.zena`
-  files, `zena-package.json`, `zebra.json`, and WebAssembly GC or WASI targets).
-  Use whenever a task involves Zena source code, Zena packages, or the `zena`
-  CLI toolchain.
+description: Write, read, review and debug Zena, a statically typed language that compiles to WebAssembly GC. Use whenever a task touches `.zena` files, a `zena-package.json`, or the `zena` command (build, run, test, fmt, lint, doc, pkg), including when asked to port TypeScript to Zena.
 ---
 
-# Zena Programming Language
+# Zena
 
-## Language Overview
+Zena reads like TypeScript, and most TypeScript habits produce Zena that
+compiles. They also produce Zena that ignores most of the language. Read
+"The language in brief" for the model, then "Features to reach for" before
+writing code.
 
-Start with TypeScript's module, generic (`<T extends U>`), union (`T | U`), arrow (`(x) => ...`), `#private`, `?.`/`??`, and template literal (`` `${x}` ``) syntax. Remove all JavaScript dynamic behavior (`any`, `undefined`, truthiness, implicit coercion, unbound `this`, mutable object shapes) and enforce a **sound**, **non-nullable-by-default** static type system compiled ahead-of-time to **WebAssembly GC**:
+Zena changes quickly. This skill describes the toolchain it shipped with;
+when it disagrees with the compiler, the compiler is right.
 
-- **Nominal vs. structural and value types**: `class` and `interface` are nominal; records `{x: 1, y: 2}` and tuples `(1, 'a')` are immutable structural values (`==` compares contents, `===` is a compile error, and optional record fields `k?: T` track presence rather than nullability).
-- **True primitives and explicit boxing**: Fixed-width Wasm scalars (`i32`, `i64`, `u32`, `u64`, `i8`–`u16`, `f32`, `f64`, `boolean`, `v128`); `/` always returns a float (`div(a, b)` in `zena:math` performs integer division), and `anyref` holds references only (`new Box(x)` boxes a primitive explicitly).
-- **Dart-style classes, mixins, and extensions + Swift mutability**: Two-phase constructors (`new(this.x, this.y) : super(...)`), named constructors (`new origin()`), linearized `mixin M on Base` (`with M`), and zero-cost erased `extension class Meters on f64` (plus `distinct type` and `opaque type`). Variables (`let` vs `var`) and class fields are immutable by default (`var(#x) x` gives a public getter and private setter).
-- **Scala-style ADTs + Rust/Dart 3 pattern matching**: Closed `sealed class` hierarchies and concise case classes (`class Pair<A, B>(first: A, second: B)`, inline `case Lit(value: i32)`) with synthesized `==` and `hashCode`, paired with exhaustive `match (x) { case Lit {value} if value > 0: ... }` expressions and `if (let P = x)` / `while (let P = x)` bindings.
-- **Unicode-safe `String`**: `'...'`, `"..."`, `` `${x}` ``, and cached tagged templates (`` regex`...` ``, `` dedent`...` ``) create immutable UTF-8/WTF-8 `String` instances with no `str[i]` integer indexing (scan with `StringReader`, build with `StringBuilder`).
-- **Zero-allocation multi-value returns**: Functions return unboxed Wasm-stack tuples and tagged unions (`inline (i32, i32)`, `inline (true, V) | (false, _)`, `inline Result<T, E>`), consumed via `if (let (true, v) = ...)` or unwrapped directly by `??` (`map.get(k) ?? fallback`).
-- **Zero-allocation iteration and compile-time symbols**: Static `symbol` declarations (`static symbol iterator;`), declared `[Sym]()` and called via `.[Sym]()` (distinct from `xs[i]` indexing); `for (let x in xs)` drives `Iterator.next()`, returning an unboxed `Step<T>` inline tuple with zero per-step allocation, and sync `Iterator<T>` subtypes `AsyncIterator<T>`.
-- **Affine resources and stack-bound borrows**: Wasm GC manages ordinary objects; external handles and linear memory use lexical `using` (`[Disposable.dispose]()`) or `resource class` with erased `Own<R>` (single-owner moves, compiler-inserted drop) and second-class stack-bound `Borrow<R>` (never escapes to heap fields or closures, requiring no lifetime annotations).
-- **First-class async cancellation**: Structured concurrency via `TaskGroup` (`zena:async`) unwinds cancellation on a third channel separate from `return` and `Error` (`catch` ignores cancellation; `cancel` clauses and `shielded` blocks run cleanup).
-- **Contracts**: Function, method, and constructor `requires` and `ensures` (`result`, `old(e)`) and loop `invariant` clauses run as assertions (always-on, `debug` under `zena test` and `-g`, or `static` specifications for in-progress static verification), and unmarked `requires` narrows types in the body.
+## The language in brief
 
-## Idiomatic Example
+Start from TypeScript's syntax: `let`, arrow functions, classes, generics,
+`import`/`export`, template literals, `?.` and `??`, flow narrowing.
+
+Remove everything dynamic. There is no `any`, `undefined`, truthiness,
+implicit coercion, prototype, `this` rebinding or structural class typing.
+The type system is sound, and types exist at run time: `is` and `as` are
+checked, and `Box<i32>` is a different type from `Box<f64>`.
+
+Split values into three kinds:
+
+- **Primitives** are WebAssembly value types (`i32`, `i64`, `u32`, `u64`,
+  `f32`, `f64`, `boolean`, and the narrow `i8`/`u8`/`i16`/`u16`). They are
+  never boxed implicitly and never `null`.
+- **Records and tuples** (`{x: 1, y: 2}`, `(1, 'a')`) are structural,
+  immutable and compared by value.
+- **Classes and interfaces** are nominal.
+
+Then add, each from a language that does it well:
+
+- **Swift's mutability defaults.** `let` is immutable and `var` is mutable,
+  for variables and for class fields. `var(#count) count: i32 = 0` is a
+  field with a public getter and a private setter.
+- **Dart's classes.** Every field is initialized before a constructor's
+  body runs: by a `this.` parameter, `new(this.x, this.y);`, or in an
+  initializer list, `new(w: f64) : width = w, super(w);`, where `super`
+  goes last. Named constructors: `new Point.origin()`. Mixins:
+  `class Button with Clickable`. Extension classes:
+  `extension class Path on String`, a typed view of a value, erased at run
+  time.
+- **Scala's data types.** A case class, `class Point(x: f64, y: f64)`, gets
+  its fields, constructor, `==` and `hashCode`. A `sealed class` with
+  `case Circle(radius: f64)` variants is a sum type.
+- **Scala's `match`, Rust's `if let`.**
+  `match (shape) { case Circle {radius} if radius > 0.0: … }` destructures,
+  takes guards and must cover every case. `if (let P = x)` and
+  `while (let P = x)` test and bind. `if`, `match` and `try` are
+  expressions, so there is no ternary and no `switch`.
+- **Go's multiple returns, on the stack.** `inline (i32, i32)` returns two
+  values with no allocation. `inline (true, T) | (false, _)` is a value or
+  nothing, and `??` unwraps it: `map.get(key) ?? fallback`.
+- **Swift's strings.** A `String` is Unicode text with no integer index.
+  `for (let g in s)` iterates graphemes; `s.codePoints`, `s.utf8` and
+  `s.utf16` are views; a slice takes a `StringIndex` range.
+- **Dafny's contracts, checked at run time.** `requires (n > 0)`,
+  `ensures (result >= 0)`, `old(e)` and a loop's `invariant (…)` are part of
+  a signature. A `debug` clause runs only in tests. A `static` clause is
+  for proof, which is in progress.
+- **Nim's distinct types.** `distinct type Meters = f64` is a nominal type
+  at no cost. An `opaque type` can be cast into only by its own library.
+- **Rust's ownership, without lifetimes.** `using file = open(path);`
+  releases a `Disposable` when the block ends, as in C#. A handle that
+  outlives a block is a `resource class`, held as `Own<T>`, which moves,
+  or `Borrow<T>`, which cannot leave the stack.
+- **Trio's cancellation.** `async` and `await` over `Future<T>`. A
+  `TaskGroup` cancels what it started, cancellation unwinds past `catch`,
+  and `try … cancel { … }` and `shielded { … }` are for cleanup.
+- **JavaScript's symbols and iterators, resolved at compile time.** A
+  member named by a symbol: `static symbol dispose;`, declared as
+  `[Disposable.dispose]()` and called as `x.[Disposable.dispose]()`.
+  `for (let x in xs)` drives an `Iterator` whose `next()` allocates
+  nothing, and a `gen` function is one.
+- **Also:** Hack's pipeline, `x |> f($) |> g($, 1)`; operator and method
+  overloading, resolved statically; generics compiled once per type
+  argument, as in Rust.
+
+## A tour
+
+Every block in this skill is a complete library that compiles.
 
 ```zena
+import {HashMap} from 'zena:collections';
 import {div} from 'zena:math';
 
-distinct type Score = i32;
+// A zero-cost nominal type over a primitive. Cents and i64 do not mix.
+distinct type Cents = i64;
 
-sealed class Expr {
-  case Lit(value: i32)
-  case Div(left: Expr, right: Expr)
+// A record type: structural, immutable, compared by value.
+type Line = {sku: String, quantity: i32, unit: Cents};
+
+// A case class: fields, constructor, `==` and `hashCode` are generated.
+// Fields are immutable unless marked `var`.
+class Customer(name: String, var orders: i32)
+
+// A sealed class is a sum type. Its cases are case classes.
+sealed class Payment {
+  case Card(last4: String)
+  case Transfer(iban: String)
+  case Voucher(code: String, value: Cents)
 }
 
-function evaluate(expr: Expr): inline (true, i32) | (false, _) {
-  return match (expr) {
-    case Lit {value}: (true, value)
-    case Div {left, right}: {
-      if (let (true, l) = evaluate(left)) {
-        if (let (true, r) = evaluate(right)) {
-          if (r != 0) {
-            return (true, div(l, r));
-          }
-        }
-      }
-      (false, _)
-    }
+// `function` declares a top-level function. It is hoisted and never a
+// closure. Closures are arrows.
+function describe(payment: Payment): String {
+  // `match` is an expression and must cover every case.
+  return match (payment) {
+    case Card {last4}: `card ending ${last4}`
+    case Transfer {iban}: `transfer from ${iban}`
+    case Voucher {code, value} if (value as i64) == 0: `spent voucher ${code}`
+    case Voucher {code}: `voucher ${code}`
   };
 }
 
-class Counter {
-  step: i32;
-  var(#count) count = 0;
+// Contracts state what the types cannot. They run in every build and throw
+// ContractError; `debug requires` runs only in tests and `-g` builds.
+function total(lines: Array<Line>): Cents ensures ((result as i64) >= 0) {
+  var sum: i64 = 0;
+  for (let {quantity, unit} in lines) {
+    sum += (quantity as i64) * (unit as i64);
+  }
+  return sum as Cents;
+}
 
-  new(this.step) requires (step > 0);
+// Two results on the stack, with no allocation. `/` always gives a float;
+// integer division is `div`.
+function split(amount: Cents, ways: i32): inline (Cents, Cents)
+  requires (ways > 0)
+{
+  let each = div(amount as i64, ways as i64);
+  return (each as Cents, ((amount as i64) - each * (ways as i64)) as Cents);
+}
 
-  advance(): i32
-    ensures (this.count == old(this.count) + this.step)
-    ensures (result == this.count)
-  {
-    this.#count += this.step;
-    return this.count;
+// A class with Dart-style constructors and a private field.
+class Ledger {
+  #entries = new HashMap<String, Cents>();
+  var(#count) count: i32 = 0;   // public getter, private setter
+
+  record(customer: Customer, amount: Cents): void {
+    this.#entries[customer.name] = amount;
+    this.#count += 1;
+    customer.orders += 1;
+  }
+
+  // `get` answers (true, value) or (false, _), so a missing key needs no
+  // null and no boxing. `??` unwraps the value or takes the default.
+  owed(name: String): Cents {
+    return this.#entries.get(name) ?? (0 as Cents);
   }
 }
 
 export function main(): i32 {
-  let weights = {'alpha' => 10 as Score, 'beta' => 20 as Score};
-  let bonus = (weights.get('gamma') ?? (5 as Score)) as i32;
-  let tree = new Div(new Lit(84), new Lit(2));
-  return (evaluate(tree) ?? 0) |> $ + bonus;
+  let lines = [
+    {sku: 'tea', quantity: 2, unit: 450 as Cents},
+    {sku: 'pot', quantity: 1, unit: 2_100 as Cents},
+  ];
+  let (each, rest) = split(total(lines), 2);
+
+  let ledger = new Ledger();
+  let ada = new Customer('Ada', 0);
+  ledger.record(ada, each);
+
+  console.log(describe(new Card('4242')));
+  console.log(`Ada owes ${ledger.owed('Ada') as i64}, remainder ${rest as i64}`);
+  return ledger.count;
 }
 ```
 
-## Idiomatic Zena Patterns
+## Features to reach for
 
-Agents trained heavily on TypeScript often write TypeScript-shaped code in Zena and miss Zena's stronger, lower-cost constructs. Prefer these Zena idioms:
+Agents write TypeScript-shaped Zena by default. Each row is a place where
+the TypeScript habit compiles, or nearly compiles, and Zena has something
+better. Check your diff against this table before you finish.
+[references/idioms.md](references/idioms.md) has a compiled example of each.
 
-### Top-level `function` vs. arrow closures
+| When you are about to write                                                                  | Write                                                                                                                  |
+| :------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------- |
+| A `kind: 'a' \| 'b'` field and an `if` chain over it                                         | A `sealed class` with `case` variants and an exhaustive `match`                                                        |
+| `export let add = (a: i32, b: i32) => a + b;` at the top level                               | `function add(a: i32, b: i32): i32 { … }`: hoisted, and never a closure. Arrows are for callbacks and captures         |
+| A class that only holds data, with a hand-written constructor                                | A case class: `class Point(x: f64, y: f64)`                                                                            |
+| An `interface` describing a bag of fields                                                    | A record type: `type Options = {port: i32, host: String}`                                                              |
+| An options object read as `opts.timeout ?? 5000`                                             | An optional field, `{timeout?: i32}`, read with a default: `let {timeout = 5000} = opts;`                              |
+| `T \| null` for a primitive, a sentinel like `-1`, or a thrown error for an expected failure | `inline (true, T) \| (false, _)`, `inline Result<T, E>`, or `Option<T>` to store it                                    |
+| An object or array returned to carry two results                                             | `inline (A, B)`, destructured at the call: `let (a, b) = f();`                                                         |
+| `if (x.kind == …) … else if …`, nested `if`s that pick a value                               | `match`, with patterns and guards; `if`/`match` as the expression itself                                               |
+| A null check then a cast, or `has` then a second lookup                                      | `map.get(k) ?? d` (`??` unwraps `(true, v)`), `if (let (true, v) = map.get(k))`, `if (let Some {value} = opt)`, `x?.y` |
+| `if (!ok) throw …` at the top of a function, or a comment "n must be positive"               | `requires (n > 0)`; `ensures (…)` for what the result promises; `invariant (…)` on a loop                              |
+| `type UserId = String`, or a bare `i32` standing for a unit                                  | `distinct type UserId = String`; `opaque type` when a value must come from a validating function                       |
+| `try { … } finally { x.close(); }`                                                           | `using x = open();`                                                                                                    |
+| A wrapper class around one value, to give it a type and methods                              | `extension class Path on String`: the wrapper is erased, and `as` converts for free                                    |
+| A base class that exists to share a few methods                                              | A `mixin`, applied with `with`                                                                                         |
+| `a.plus(b)`, `a.equals(b)`, `a.compareTo(b) < 0`, `table.get(i)`                             | `operator +`, `operator ==`, `compareTo` (gives `<`), `operator []` and `operator []=`                                 |
+| `h(g(f(x)))`                                                                                 | `x \|> f($) \|> g($) \|> h($)`                                                                                         |
+| `for (var i = 0; i < xs.length; i += 1) { xs[i] … }`                                         | `for (let x in xs)`; `for (let i in 0..n)`; `for (let {key, value} in map)`                                            |
+| An `AbortSignal`-style flag passed down to stop async work                                   | A `TaskGroup` and its `cancel()`; `try … cancel { … }` for cleanup                                                     |
+| `s[i]`, `s.length` or a loop over UTF-16 units                                               | `for (let g in s)`, `s.codePoints`, `s.utf8.length`, `StringIndex` ranges, `StringReader`                              |
+| A mutable field or `var`, by habit                                                           | `let` and plain fields; `var` only where the value changes                                                             |
+| `xs: Array<T>` or `m: Map<K, V>` on a field or parameter                                     | The class: `GrowableArray<T>`, `HashMap<K, V>`. An interface type costs a wrapper per use                              |
+| A `number`                                                                                   | The type the value has: `i32` for counts and indexes, `i64`, `f64`, `u8` for bytes                                     |
 
-Write top-level functions as `function name(...) { ... }`. They are hoisted (supporting mutual recursion) and never allocate closure structs. Use arrow functions `(x) => ...` when capturing enclosing locals or passing inline callbacks, and omit callback parameter types when contextually typed:
+## TypeScript that is not Zena
 
-```zena
-function sumPositive(xs: FixedArray<i32>): i32 {
-  return xs.fold(0, (acc, x) => if (x > 0) acc + x else acc);
-}
+- **Names.** `const`, `string`, `number`, `Promise`, `undefined`,
+  `instanceof`, `for … of`, `switch`, `?:`, `++` and `x!` do not exist.
+  Write `let`, `String`, a numeric type, `Future`, `null`, `is`,
+  `for … in`, `match`, `if (c) a else b`, `+= 1`, and `x as T` after a null
+  check.
+- **Conditions and operators.** A condition is a `boolean`: `if (text)` and
+  `if (count)` are errors. `/` on integers gives a float; integer division
+  is `div(a, b)` from `zena:math`. `+` does not convert to a string; write
+  `` `n=${n}` ``. `==` compares records, tuples, strings and case classes
+  by value. `===` compares references, and is an error on records and
+  tuples.
+- **Numbers.** An integer literal is an `i32` and a float literal an `f64`
+  unless the context says otherwise. An `i32` widens to `i64` or `f64` by
+  itself. Narrowing, and mixing signed with unsigned, needs `as`, and a
+  cast before a binary operator needs parentheses: `(n as i64) - 1`.
+- **Null and unions.** A primitive is never `null`, and cannot share a union
+  with a reference: `i32 | null` is an error. Use `Option<i32>`,
+  `Box<i32>?` or an inline tuple.
+- **Functions.** `function` is only for top-level declarations; inside a
+  function, or as a callback, write an arrow. A method body is a block,
+  never `=>`. An optional parameter has a default
+  (`name: String? = null`), never `?`. There are no rest parameters.
+- **Libraries.** A library body holds declarations only: code runs from
+  `main`, or from a function something calls. Nothing is global except the
+  prelude (`console`, `String`, `Error`, `Option`, `Future`, the array
+  types, `Map`, `Box`, ranges). Everything else is imported.
+- **Classes.** A field without `var` cannot be assigned anywhere, the
+  constructor's body included: `new(x: i32) { this.x = x; }` is an error.
+  Write `new(this.x);` or `new(x: i32) : x = x;`, with `super(…)` last in
+  that list and never in the body. A field is always `this.x`, also in a
+  case class. A getter is `area: f64 { get { return …; } }`. A `var` field
+  does not narrow after a null check; copy it to a `let`. A symbol-keyed
+  member is called with a dot, `x.[Disposable.dispose]()`: `x[sym]()` is an
+  index.
+- **Records.** Destructuring renames with `as`: `let {x as left} = point;`.
+  A field marked `?` may be absent, which is different from `null`:
+  `opts.timeout` is an error, so write `let {timeout = 5000} = opts;` or
+  `if (let {timeout} = opts)`. A class field cannot be marked `?`.
+- **Collections.** An array literal is an `ImmutableArray`. For a mutable
+  one write `new GrowableArray<T>()`, or `growable([1, 2])` or
+  `fixed([1, 2])`, both imported from `zena:core`. A `Map` is written with
+  `map[k] = v` and read with `map.get(k)`, which returns `(true, v)` or
+  `(false, _)`, or with `map[k]`, which throws when the key is missing. Its
+  size is `map.size`, and iterating it gives `{key, value}` entries.
+- **Strings.** A `String` has no integer index and no useful `length`. See
+  "Strings" in [references/idioms.md](references/idioms.md).
+- **Errors.** Only an `Error` can be thrown, and `catch (e)` binds one. An
+  uncaught error prints `thrown Wasm exception` without its message: catch
+  it in `main` and log `e.message`, or reproduce it in a test.
+
+[references/pitfalls.md](references/pitfalls.md) has the longer list, with
+the compiler's message for each mistake.
+
+## The work loop
+
+```sh
+zena run main.zena [args]        # compile and run; --dir . before the file grants files
+zena test                        # the package's tests; or: zena test path/ -f substring
+zena build main.zena -o out.wasm # also the type check; -t component | js | zena-js | core
+zena lint --fix <paths>          # idiom fixes, each one type-checked
+zena -g run main.zena            # readable stack traces, debug contracts on
 ```
 
-### `sealed class`, `match`, and expression control flow
+Run `zena lint` on what you wrote: its rules cover several rows of
+"Features to reach for". Annotate the return type of a `function` or a
+method, and leave the types off a callback that is passed where a function
+type is expected.
 
-Model sum types as `sealed class` hierarchies with `case` variants (instead of string-tagged object unions or boolean flag bags) and branch with exhaustive `match` expressions. `if`, `match`, and `try` all evaluate to values. For one or two branches, prefer `if`, `if (x is Sub)`, or `if (let P = x)` over a one- or two-arm `match` (`zena lint` rewrites small matches to `if`).
-
-### Unboxed `inline` multi-value returns
-
-Avoid allocating heap `Option<T>` wrappers, sentinel `null`s, or double `has()`/`get()` lookups on hot paths. Return stack-resident `inline` tuples or tagged unions:
-
-```zena
-import {Result, parseI32} from 'zena:core';
-
-function minMax(a: i32, b: i32): inline (i32, i32) {
-  return if (a <= b) (a, b) else (b, a);
-}
-
-function parsePort(text: String): inline Result<i32, String> {
-  if (let (true, n) = parseI32(text)) {
-    return if (n >= 1 && n <= 65535) (true, n) else (false, 'out of range');
-  }
-  return (false, 'invalid integer');
-}
-
-let (lo, hi) = minMax(20, 10);
-let port = parsePort(raw) ?? 8080; // `??` unwraps `(true, v)` directly
-if (let (true, hit) = cache.get(key)) {
-  use(hit);
-}
-```
-
-### Zero-cost domain types and case classes
-
-- **`distinct type UserId = i32;`**: Nominal type safety at zero runtime cost (`42 as UserId`).
-- **`export opaque type SafePath = String;`**: Like `distinct`, and restricts `as SafePath` casts to the declaring file so validation invariants hold across callers.
-- **`extension class Meters on f64`**: Zero-cost typed view adding statically dispatched methods, operators, and constructors (`new(v: f64) : super(v);`, or `x as Meters`) to primitives, classes, or Wasm GC arrays with zero boxing.
-- **Case classes (`class Key(ns: String, id: i32)`)**: Auto-generate immutable fields, constructor, `operator ==`, and `hashCode()`, making them ready to use directly as `Map` and `HashSet` keys.
-
-See [classes-and-types.md](./references/classes-and-types.md) for full details.
-
-### Collections, literals, and concrete annotations
-
-- `[1, 2, 3]` creates a genuinely immutable `ImmutableArray<i32>`. Use `fixed([1, 2, 3])` or `growable([1, 2, 3])` (from `zena:core` / `zena:collections`), `new FixedArray<i32>(len, 0)`, `new Array<i32>()` (empty `GrowableArray`), `{'a' => 1}` for `Map<String, i32>`, and `new HashSet<T>()` (`zena:collections`) instead of `Map<T, boolean>`.
-- Slice arrays with half-open ranges: `xs[1..4]`, `xs[2..]`, `xs[..3]`.
-- Annotate locals, fields, and parameters with concrete collection classes (`GrowableArray<T>`, `FixedArray<T>`, `HashMap<K, V>`, `HashSet<T>`) unless the binding accepts multiple implementations; `Array<T>` and `Iterable<T>` interface values carry fat pointers and indirect dispatch.
-
-### Contracts on boundaries and algorithms
-
-Add `requires`, `ensures` (`result`, `old(expr)`), and loop `invariant` clauses to state preconditions, postconditions, and index bounds directly on signatures. Put expensive checks behind `debug` (`debug requires (isSorted(xs))`) so `zena test` and `zena -g` verify them while release builds emit zero code. Unmarked `requires` clauses narrow nullable and union parameters throughout the body. See [contracts.md](./references/contracts.md).
-
-### Resources (`using`, `Own`, `Borrow`) and async cancellation
-
-WebAssembly GC has no finalizers. Bind lexical `Disposable` values with `using f = open(path);`, and model transferable external handles as `resource class` with `Own<R>` and stack-bound `Borrow<R>`. Use `TaskGroup` (`zena:async`), `cancel { ... }`, and `shielded { ... }` for structured concurrency and async cleanup. See [ownership-and-async.md](./references/ownership-and-async.md).
-
-### Pipelines, tagged templates, `for-in`, and symbols
-
-- Left-to-right data flow: `input |> trim($) |> parse($)` (`$` marks the piped value in any argument slot).
-- Tagged templates: `` regex`^[a-z]+$` `` (`zena:regex`) and `` dedent`...` `` (`zena:core`).
-- Iteration: `for (let item in items)` and `for (let {key, value} in map)` (note `in`, never `of`; `Map` yields `MapEntry`).
-- Protocol methods: declare `static symbol s;` on an interface, implement `[Iface.s]()`, and call `value.[Iface.s]()`.
-
-## Differences from TypeScript
-
-- **Variables**: `let` is immutable; `var` is mutable. There is no `const` and no `++`/`--` (`x += 1`).
-- **Strings**: Type is `String` (capital `S`). Direct `str[i]` indexing is a compile error; scan UTF-8 code points or safe byte offsets with `StringReader` and assemble strings in loops with `StringBuilder`.
-- **Numbers and division**: Integer literals default to `i32`, floats to `f64`, bigints to `100n` (`zena:bigint`). `/` always returns a float (`div(a, b)` from `zena:math` divides `i32`/`i64`/`u32`/`u64`). Narrow integers (`i8`, `u8`, `i16`, `u16`) promote to `i32`/`u32` on arithmetic and narrow explicitly via `as u8`.
-- **Nullability and soundness**: No `any` and no `undefined`. Nullable references use `T?` (`T | null`). Primitives cannot be nullable directly (`Box<i32>?` boxes explicitly). Conditions require `boolean` (no truthy `if (x)` on numbers, strings, or nullable refs).
-- **Equality and type tests**: `==` compares structural/value equality (`operator ==`). `===` checks reference identity on classes and is a compile error on records and tuples. Runtime type checks use `x is MyType` (narrowing `x`), and `x as MyType` traps at runtime if invalid.
-- **Optional record fields**: `{timeout?: i32}` tracks field _presence_, distinct from `{timeout: i32 | null}`. Direct `opts.timeout` is a compile error; read with a default (`let {timeout = 5000} = opts`) or match presence/absence (`if (let {timeout} = opts)`, `case {!timeout}:`).
-- **Destructuring syntax**: Field renaming uses `as` (`let {x as xPos} = pt`), so `:` writes type annotations inside destructured parameters (`({x: i32, y as yPos: i32}) => x + yPos`).
-- **Libraries and functions**: Every `.zena` file is a library whose top level allows declarations only (no top-level expression statements). Optional parameters require default values (`limit: i32 = 10`); rest parameters (`...args`) are not supported. Omit empty constructors (`new() {}`) when all fields have initializers.
-
-## Toolchain and CLI
-
-Run `zena --help` or `zena <command> --help` to inspect all flags on the installed binary.
-
-| Command                                       | Usage                                                                                                                                                             |
-| :-------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `zena run <file.zena> [-- args...]`           | Compile (cached) and execute on Wasmtime. Pass `--dir HOST[::GUEST]`, `--allow-spawn`, or `--allow-extensions` before `<file.zena>` to grant capabilities.        |
-| `zena build <entry.zena> -o <out.wasm\|.wat>` | Compile to binary `.wasm` or text `.wat`. `--target`: `zena-component` (default), `component` (WASI 0.3 / `--wit`), `js`, `zena-js`, or `core`.                   |
-| `zena -g build` / `zena -g run`               | Global `-g` (`--debug`) emits the Wasm name section for readable trap backtraces and enables `debug` contract clauses. `-O <0\|1\|2\|s>` sets optimization level. |
-| `zena test [paths...]`                        | Run package tests or `*_test.zena` files in parallel (`debug` contracts active automatically). Filter by path substring with `zena test -f <substr>`.             |
-| `zena fmt -w <paths...>`                      | Format `.zena` source files canonically (`--check` to verify without writing).                                                                                    |
-| `zena lint [--fix] <paths...>`                | Report non-idiomatic patterns (`zena lint --list-rules`); `--fix` applies type-checked rewrites.                                                                  |
-| `zena doc <dir> [-o api.json]`                | Extract a package's public declarations, types, and JSDoc comments as JSON.                                                                                       |
-| `zena pkg <subcommand>`                       | Manage `zena-package.json` and `zena-lock.json` (`init`, `add`, `update`, `fetch`, `publish`).                                                                    |
-| `zena bench` / `zena lsp`                     | Run statistical benchmark suites (`bench`) or start the stdio language server (`lsp`).                                                                            |
-
-### Writing unit tests (`*_test.zena`)
+A test file is named `*_test.zena` and exports `tests`:
 
 ```zena
 import {suite, test} from 'zena:test';
-import {equal, equalText, isTrue, throws} from 'zena:assert';
+import {equal} from 'zena:assert';
 
-export let tests = suite('Parser', () => {
-  test('parses header', (ctx) => {
-    equalText(parseHeader('k: v'), 'v');
-    throws(() => { parseHeader('invalid'); });
+export let tests = suite('arithmetic', () => {
+  test('adds', () => {
+    equal(1 + 1, 2);
   });
 
-  test('async workflow', async (ctx) => {
-    equal(await computeAsync(), 42);
+  test('awaits', async () => {
+    equal(await Future.of(3), 3);
   });
 });
 ```
 
-Run `zena fmt -w` and `zena lint --fix` after edits, and verify behavior with `zena test -f <name>`. When setting up a new Zena repository, add a brief note in `AGENTS.md` (or `CLAUDE.md`) stating that `.zena` files are written in Zena and pointing to this skill so future sessions activate it before editing.
+[references/tools.md](references/tools.md) covers packages
+(`zena-package.json`, `zena pkg`), build targets, and debugging a trap.
 
-## Standard Library Map
+## Finding more
 
-Search the standard library before writing custom helpers:
+- `zena --help` and `zena <command> --help` list every command and flag.
+- `zena doc <package directory> -o api.json` writes a package's public API,
+  with doc comments, as JSON. Use it on a dependency before guessing a
+  signature.
+- The standard library is imported as `zena:<library>`. Search it before
+  writing a helper. Its libraries, by area:
+  - Language: `core`, `collections`, `string`, `math`, `bigint`, `decimal`,
+    `simd`, `memory`
+  - Async: `async`, `task`, `stream`, `time`, `signals`
+  - Data and text: `json`, `regex`, `encoding`, `crypto`, `random`, `url`,
+    `path`, `glob`
+  - Programs and hosts: `cli`, `args`, `fs`, `fetch`, `http`, `process`,
+    `wasm`, `extensions`, `js`, `web-templates`, `web-elements`
+  - Testing: `test`, `assert`, `bench`
 
-- **Prelude (always in scope)**: `String`, `Option`/`Some`/`None` (`some(v)`, `none`), `Array`/`MutableArray`/`ImmutableArray`/`FixedArray`/`GrowableArray`, `Map`, `Box`, `Range` (`BoundedRange`, `FromRange`, `ToRange`, `FullRange`), `Error`, `ContractError`, `IndexOutOfBoundsError`, `console`.
-- **Core & Numerics**: `zena:core` (`Result`, `fixed`, `growable`, `parseI32`, `parseI64`, `parseF64`, `StringBuilder`, `StringReader`, `ByteArray`, `ByteBuffer`, `DataView`, `Hashable`, `Disposable`, `Resource`, `Own`, `Borrow`, `Unmanaged`, `Scoped`, `disown`, `adopt`, `dedent`, `TemplateStringsArray`), `zena:collections` (`HashMap`, `OrderedHashMap`, `HashSet`, `OrderedHashSet`, `Set`, `zip`), `zena:math` (`div`, trig, exp/log, roots, float bits), `zena:bigint`, `zena:decimal`, `zena:simd`.
-- **Text, Formats & Crypto**: `zena:string`, `zena:regex` (`` regex`...` ``), `zena:json` (`parseJson`, `stringify`, `JsonValue`), `zena:encoding` (UTF-8, hex, base64), `zena:url` (`URL`, `URLSearchParams`, `URLPattern`), `zena:crypto` (SHA-256, HMAC, ECDSA), `zena:random`.
-- **Async, Streams, Reactivity & Testing**: `zena:async` (`Future`, `TaskGroup`, `CancelScope`, `currentScope`, `checkCancellation`), `zena:stream`, `zena:task`, `zena:signals`, `zena:test` (`suite`, `test`), `zena:assert` (`equal`, `equalText`, `isTrue`, `isNull`, `throws`), `zena:bench`.
-- **System, Host & Web**: `zena:fs`, `zena:path`, `zena:glob`, `zena:cli`, `zena:args` (`ArgParser`), `zena:process`, `zena:time`, `zena:http` (router, server, middleware, HTML/cookies), `zena:fetch`, `zena:memory`, `zena:wasi`, `zena:wasm`, `zena:extensions`, `zena:js`, `zena:web-elements`, `zena:web-templates`.
+  [references/stdlib.md](references/stdlib.md) says what each one holds and
+  which targets have it. The API reference is at
+  `https://zena-lang.dev/api/<library>/` (for example
+  `https://zena-lang.dev/api/collections/`).
 
-## Further Reference
-
-- **Detailed skill references** (read on demand when working with these features):
-  - [classes-and-types.md](./references/classes-and-types.md) — constructors, initializer lists, mixins, extension classes, sealed/case classes, records, inline tuples, operator overloading, and symbols.
-  - [ownership-and-async.md](./references/ownership-and-async.md) — `Disposable`, `using`, `resource class`, `Own`/`Borrow`/`Unmanaged`/`Scoped`, `<scoped T>`, `TaskGroup`, cancellation, and `shielded`.
-  - [contracts.md](./references/contracts.md) — `requires`, `ensures` (`result`, `old()`), `invariant`, `debug` and `static` clauses, purity rules, and narrowing.
-- **Local stdlib sources & API extraction**:
-  - Standalone `zena` unpacks the exact stdlib `.zena` sources for its version into `~/.cache/zena/stdlib/<version>/` (or `$XDG_CACHE_HOME/zena/stdlib/<version>/`); inside a Zena compiler checkout, read `packages/stdlib/zena/`.
-  - Run `zena doc <package-path>` to dump any local package's public signatures as JSON.
-- **Online documentation**:
-  - Language Reference & Quick Reference: `https://zena-lang.dev/reference/` and `https://zena-lang.dev/reference/quick-reference/`
-  - Standard Library API Docs: `https://zena-lang.dev/api/` (per library at `https://zena-lang.dev/api/<name>/`, such as `https://zena-lang.dev/api/core/`, `https://zena-lang.dev/api/collections/`, `https://zena-lang.dev/api/async/`).
+- The standard library's sources, for the installed version, are in
+  `~/.cache/zena/stdlib/<version>/` (under `$XDG_CACHE_HOME/zena` when that
+  is set) once `zena` has run. Each library opens with a doc comment and
+  examples. In a checkout of Zena they are in `packages/stdlib/zena/`.
+- One page with every language feature:
+  `https://zena-lang.dev/reference/quick-reference/`. Per-topic pages are
+  under `https://zena-lang.dev/reference/` (`pattern-matching`, `contracts`,
+  `ownership`, `cancellation`, `strings`, `records`, `tuples`, `classes/`).
+- The specification is `docs/language-reference.md` in
+  `https://github.com/elematic/zena`.
+- When the documentation and the compiler disagree, write a five-line
+  program and run it.

@@ -1,0 +1,88 @@
+/**
+ * The agent skill in `skills/zena`: every `zena` code block in its
+ * Markdown files is a complete library, compiles with this command, and
+ * has nothing for `zena lint` to report. The skill tells agents what Zena
+ * accepts and how to write it, so a block that stops compiling, or that
+ * the linter would rewrite, is a wrong instruction. Also: the copy of the
+ * skill's sections in `AGENTS.md` is up to date.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {StringBuilder} from 'zena:core';
+import {AGENTS_FILE, SKILL_FILE, agentsSection, withSection} from '../dev/skill-section.zena';
+import {Scratch, described, read, write, zenaIn} from './cli-support.zena';
+
+let FILES = [
+  'SKILL.md',
+  'references/idioms.md',
+  'references/pitfalls.md',
+  'references/stdlib.md',
+  'references/tools.md',
+];
+
+/** A `zena` code block: the line its fence is on, and its text. */
+type Block = {line: i32, source: String};
+
+function zenaBlocks(markdown: String) {
+  let blocks = new GrowableArray<Block>();
+  var source: StringBuilder? = null;
+  var start = 0;
+  var number = 0;
+  for (let line in markdown.split('\n')) {
+    number += 1;
+    if (source == null) {
+      if (line == '```zena') {
+        source = new StringBuilder();
+        start = number;
+      }
+    } else if (line == '```') {
+      blocks.push({line: start, source: source.toString()});
+      source = null;
+    } else {
+      source.append(line);
+      source.append('\n');
+    }
+  }
+  return blocks;
+}
+
+export let tests = suite('the zena skill', () => {
+  test('has code blocks that compile', async (ctx) => {
+    let scratch = await Scratch.create('skill');
+    try {
+      await write(scratch.at('ws/zena-package.json'), '{"name": "skill", "version": "0.1.0"}\n');
+      let zena = zenaIn(scratch, 'ws');
+      let failures = new StringBuilder();
+      var count = 0;
+      for (let file in FILES) {
+        for (let {line, source} in zenaBlocks(await read(`skills/zena/${file}`))) {
+          count += 1;
+          await write(scratch.at(`ws/src/block${count}.zena`), source);
+          let built = await zena.run(['build', `src/block${count}.zena`, '-o', `block${count}.wasm`]);
+          if (!built.succeeded()) {
+            failures.append(`skills/zena/${file}:${line}\n${described(built)}\n`);
+          }
+        }
+      }
+      isTrue(count > 10, `found only ${count} zena blocks in the skill`);
+      let report = failures.toString();
+      isTrue(report.isEmpty, report);
+
+      // TODO(#1236): drop the --skip once the rule leaves the return types
+      // of declarations alone; the examples keep theirs.
+      let linted = await zena.run(['lint', '--skip', 'unnecessary-annotation', 'src']);
+      isTrue(linted.succeeded(), described(linted));
+    } finally {
+      await scratch.remove();
+    }
+  });
+
+  test('is copied into AGENTS.md as npm run skill writes it', async (ctx) => {
+    let agents = await read(AGENTS_FILE);
+    let section = agentsSection(await read(SKILL_FILE));
+    isTrue(section.contains('#### Features to reach for'), 'the skill has lost a section AGENTS.md copies');
+    equal(withSection(agents, section) == agents, true,
+        `${AGENTS_FILE} does not match ${SKILL_FILE}: run npm run skill`);
+  });
+});
