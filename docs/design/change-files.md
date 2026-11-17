@@ -475,8 +475,10 @@ the next toolchain release's notes.
 ## Commands
 
 The tool is a Zena package in the workspace, `packages/changes`, run as
-`npm run changes -- <command>`. It uses `semver` for versions, `markdown`
-to read change files and `terminal` for prompts.
+`npm run changes -- <command>`. It uses `semver` for versions and
+`terminal` for prompts. It reads a change file line by line: the format
+is a small subset of Markdown, and a release copies each entry's source
+text into a changelog, which a syntax tree does not keep.
 
 - `add` asks which units changed, the section and the text of each entry,
   and writes a change file. Writing the file by hand is as good.
