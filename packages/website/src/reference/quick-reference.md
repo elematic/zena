@@ -695,10 +695,11 @@ Safe access on potentially `null` values. Short-circuits to `null` if the
 receiver is `null`.
 
 ```zena
-let name = user?.name;       // Property access
-let first = items?[0];       // Index access
-let greeting = user?.greet(); // Method call
-let result = callback?(42);  // Call
+let name = user?.name;                 // Property access
+let upper = user?.name.toUpperCase();  // Short-circuits the postfix chain
+let first = items?[0];                 // Index access
+let greeting = user?.greet();          // Method call
+let result = callback?(42);            // Call
 let display = user?.name ?? 'Anonymous'; // With fallback
 ```
 

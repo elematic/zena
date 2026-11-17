@@ -1001,3 +1001,79 @@ export function isSymbolFieldDeclaration(field: FieldDefinition): boolean {
   }
   return false;
 }
+
+/**
+ * Whether `inner` is an unparenthesized postfix receiver or callee of
+ * `outer` in the same `#parseCall` chain. Every postfix node in an
+ * unparenthesized chain starts at `callStart.start`, whereas `(a?.b).c`
+ * starts the outer node at `(` and `a?.b` at `a`.
+ */
+export function samePostfixChain(outer: Expression, inner: Expression): boolean {
+  let outerLoc = outer.loc;
+  let innerLoc = inner.loc;
+  return outerLoc != null && innerLoc != null && outerLoc.start == innerLoc.start;
+}
+
+/**
+ * Whether `expr` is a method-call step `recv.m(args)` or `recv?.m(args)`
+ * (as opposed to `(recv?.m)(args)` or `recv.cb?(args)`).
+ */
+export function isMethodCallStep(expr: CallExpression): boolean {
+  return !expr.optional && expr.callee is MemberExpression &&
+      samePostfixChain(expr, expr.callee);
+}
+
+/**
+ * The immediate target expression one postfix step inward from `expr`, or
+ * null when `expr` is not a postfix access or call.
+ */
+export function postfixStepTarget(expr: Expression): Expression | null {
+  if (expr is MemberExpression) {
+    return expr.object;
+  }
+  if (expr is IndexExpression) {
+    return expr.object;
+  }
+  if (expr is CallExpression) {
+    if (isMethodCallStep(expr)) {
+      return (expr.callee as MemberExpression).object;
+    }
+    return expr.callee;
+  }
+  return null;
+}
+
+/** Whether the single postfix step at `expr` uses `?.`, `?[`, or `?(`. */
+export function isOptionalPostfixStep(expr: Expression): boolean {
+  if (expr is MemberExpression) {
+    return expr.optional;
+  }
+  if (expr is IndexExpression) {
+    return expr.optional;
+  }
+  if (expr is CallExpression) {
+    if (isMethodCallStep(expr)) {
+      return (expr.callee as MemberExpression).optional;
+    }
+    return expr.optional;
+  }
+  return false;
+}
+
+/**
+ * Whether `expr`'s unparenthesized postfix chain contains at least one
+ * optional step (`?.`, `?[`, `?(`).
+ */
+export function hasOptionalChainStep(expr: Expression): boolean {
+  var cur = expr;
+  while (true) {
+    if (isOptionalPostfixStep(cur)) {
+      return true;
+    }
+    let next = postfixStepTarget(cur);
+    if (next == null || !samePostfixChain(cur, next)) {
+      return false;
+    }
+    cur = next;
+  }
+}

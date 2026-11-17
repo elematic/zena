@@ -15,6 +15,7 @@ import { findDeclaration, collectValueExports, isArrayIntrinsic } from '../looku
  */
 import {
   Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ShieldedStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, MixinDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, ArrayPattern, RestPattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression, SymbolPropertyName, ContractClause, ContractKind, isOldCallee,
+  hasOptionalChainStep, isMethodCallStep, isOptionalPostfixStep, postfixStepTarget, samePostfixChain,
 } from '../../ast.zena';
 import {
   Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, InlineRecordType, TypeAliasType, TupleType, RecordType, EnumType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
@@ -63,7 +64,7 @@ import { lowerContractClause } from './contracts.zena';
 import { lowerIntrinsic } from './intrinsics.zena';
 import {
   ExplodedRecord, InlineVar, LetCondBinds, LoweringContext, MergeState, ResultSlots,
-  ZirUnsupported, isOptionalMethodCall, noValues, oneValue, repackInterfaceValue,
+  ZirUnsupported, noValues, oneValue, repackInterfaceValue,
 } from './lowering-context.zena';
 import { lowerBigIntLiteral, lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
 import {
@@ -8849,11 +8850,8 @@ export final class FunctionLowerer {
    * anything needing dynamic dispatch bail.
    */
   #lowerMemberRead(member: MemberExpression): i32 {
-    if (member.optional) {
-      let rawObj = this.#substitutedNodeType(member.object);
-      if (rawObj != null && isNullableType(unwrapAliases(rawObj))) {
-        return this.#lowerOptionalChainExpr(member as Expression);
-      }
+    if (hasOptionalChainStep(member as Expression)) {
+      return this.#lowerOptionalChainExpr(member as Expression);
     }
     // A field of a union of inline records, read from its slot: off a
     // binding that holds the slots, or a call that returns them.
@@ -9577,7 +9575,7 @@ export final class FunctionLowerer {
       return this.#lowerIndexReadOn(expr, selfResolved, receiver);
     }
     let call = expr as CallExpression;
-    let callResult = if (isOptionalMethodCall(call)) {
+    let callResult = if (isMethodCallStep(call)) {
       this.#lowerMethodCallOn(call, call.callee as MemberExpression, receiver, null)
     } else {
       this.#lowerClosureCallOn(call, receiver)
@@ -9596,48 +9594,107 @@ export final class FunctionLowerer {
     return callResult;
   }
 
-  #lowerOptionalVoidChain(expr: Expression): i32 {
-    let receiver0 = this.#lowerChainReceiver(this.#cx().optionalChainObject(expr));
-    if (!this.#cx().reachable) {
-      return NO_VALUE;
+  /**
+   * Splits an unparenthesized postfix chain `expr` into `(baseExpr, steps)`,
+   * where `steps[0]` is the innermost optional step (`?.`, `?[`, `?(`) and
+   * `steps[steps.length - 1]` is `expr`. Any non-optional prefix inward of
+   * `steps[0]` (such as `getRoot()` in `getRoot()?.a.b`) stays in `baseExpr`.
+   */
+  #collectOptionalChain(expr: Expression): (Expression, GrowableArray<Expression>) {
+    let rev = new Array<Expression>();
+    var cur = expr;
+    while (true) {
+      let next = postfixStepTarget(cur);
+      if (next == null) {
+        break;
+      }
+      rev.push(cur);
+      if (!samePostfixChain(cur, next)) {
+        break;
+      }
+      cur = next;
     }
-    let recvVt = this.#valueType(receiver0);
-    if (!isRefValType(recvVt)) {
-      this.#bail('optional receiver kind');
+    var firstOptRev = 0;
+    for (var i = rev.length - 1; i >= 0; i -= 1) {
+      if (isOptionalPostfixStep(rev[i])) {
+        firstOptRev = i;
+        break;
+      }
     }
-    if (!isNullableAnyRef(recvVt) && !(recvVt is ValTypeExternRef)) {
-      this.#lowerOptionalHit(expr, receiver0);
-      return NO_VALUE;
+    let baseExpr = postfixStepTarget(rev[firstOptRev]) as Expression;
+    let steps = new Array<Expression>();
+    for (var i = firstOptRev; i >= 0; i -= 1) {
+      steps.push(rev[i]);
     }
-    let isNull = this.b.emit(
-        IrOp.ref_is_null, new ValTypeI32() as ValType, receiver0, -1);
-    let okB = this.b.newBlock();
-    let mergeB = this.b.newBlock();
+    return (baseExpr, steps);
+  }
+
+  /**
+   * Evaluates `baseExpr` and runs `steps` in order, branching to a lazily
+   * allocated `missB` block (carrying `missSyms`) whenever an optional step
+   * encounters `null`. Returns `(finalValue, missB, missParams, savedEnv)`.
+   */
+  #lowerOptionalChainSteps(baseExpr: Expression,
+      steps: GrowableArray<Expression>,
+      missSyms: GrowableArray<SymbolId>): (i32, i32, GrowableArray<i32>, HashMap<SymbolId, i32>) {
+    var cur = this.#lowerChainReceiver(baseExpr);
     let saved = this.#copyEnv();
-    let mergeSyms = this.#assignedEnvSyms(expr);
-    let mergeParams = this.#addParams(mergeB, mergeSyms);
-    this.b.brIf(isNull, mergeB, this.#envValues(mergeSyms), okB, this.#noArgs());
-
-    this.b.switchTo(okB);
-    this.#lowerOptionalHit(expr, this.#strippedNonNull(receiver0));
-    if (this.#cx().reachable) {
-      this.b.br(mergeB, this.#envValues(mergeSyms));
+    var missB = -1;
+    var missParams = new Array<i32>();
+    if (!this.#cx().reachable) {
+      return (NO_VALUE, -1, missParams, saved);
     }
+    for (let step in steps) {
+      if (isOptionalPostfixStep(step)) {
+        let curVt = this.#valueType(cur);
+        if (!isRefValType(curVt)) {
+          this.#bail('optional receiver kind');
+        }
+        if (isNullableAnyRef(curVt) || curVt is ValTypeExternRef) {
+          if (missB < 0) {
+            missB = this.b.newBlock();
+            missParams = this.#addParams(missB, missSyms);
+          }
+          let isNull = this.b.emit(
+              IrOp.ref_is_null, new ValTypeI32() as ValType, cur, -1);
+          let okB = this.b.newBlock();
+          this.b.brIf(isNull, missB, this.#envValues(missSyms), okB, this.#noArgs());
+          this.b.switchTo(okB);
+          cur = this.#strippedNonNull(cur);
+        }
+      }
+      cur = this.#lowerOptionalHit(step, cur);
+      if (!this.#cx().reachable) {
+        break;
+      }
+    }
+    return (cur, missB, missParams, saved);
+  }
 
+  #lowerOptionalVoidChain(expr: Expression): i32 {
+    let (baseExpr, steps) = this.#collectOptionalChain(expr);
+    let mergeSyms = this.#assignedEnvSyms(expr);
+    let (_, missB, missParams, saved) =
+        this.#lowerOptionalChainSteps(baseExpr, steps, mergeSyms);
+    if (missB < 0) {
+      return NO_VALUE;
+    }
+    if (this.#cx().reachable) {
+      this.b.br(missB, this.#envValues(mergeSyms));
+    }
     this.#cx().env = saved;
-    this.b.switchTo(mergeB);
-    this.#applyParams(mergeSyms, mergeParams);
+    this.b.switchTo(missB);
+    this.#applyParams(mergeSyms, missParams);
     this.#cx().reachable = true;
     return NO_VALUE;
   }
 
   /**
-   * A standalone optional-chain access (`obj?.prop`, `arr?[i]`,
-   * `fn?()`, `obj?.method()`): the receiver evaluates once; null
-   * short-circuits to a null result of the access's checked (nullable)
-   * type, or skips a void call. Accesses producing primitives would need
-   * a boxed `T | null`, which lowering does not model — those bail (a
-   * fused `?? rhs` handles them via #lowerNullishCoalesce instead).
+   * A standalone optional-chain expression (`obj?.prop.sub`, `arr?[i].x`,
+   * `fn?()`, `obj?.method()`): each optional hop tests for `null` and
+   * short-circuits the rest of the unparenthesized postfix chain to `null`
+   * (or skips a `void` tail). Chains producing primitives are handled via
+   * `hostOptionalChainCoalesce` under `??`.
    */
   #lowerOptionalChainExpr(expr: Expression): i32 {
     if (this.#isZeroWidthExpr(expr)) {
@@ -9647,39 +9704,25 @@ export final class FunctionLowerer {
     if (!isRefValType(exprVt)) {
       this.#bail('optional primitive result');
     }
-    let receiver0 = this.#lowerChainReceiver(this.#cx().optionalChainObject(expr));
-    if (!this.#cx().reachable) {
+    let (baseExpr, steps) = this.#collectOptionalChain(expr);
+    let mergeSyms = this.#assignedEnvSyms(expr);
+    let (value, missB, missParams, saved) =
+        this.#lowerOptionalChainSteps(baseExpr, steps, mergeSyms);
+    if (!this.#cx().reachable && missB < 0) {
       return NO_VALUE;
     }
-    let recvVt = this.#valueType(receiver0);
-    if (!isRefValType(recvVt)) {
-      this.#bail('optional receiver kind');
+    if (missB < 0) {
+      return value;
     }
-    if (!isNullableAnyRef(recvVt) && !(recvVt is ValTypeExternRef)) {
-      return this.#lowerOptionalHit(expr, receiver0);
-    }
-    // `checkCallExpressionInner` rewrites a callee's node type to the
-    // non-null `FunctionType`, so `a?.cb` inside `a?.cb?()` reads as
-    // `ValTypeRef` even though the chain itself produces `null` on miss.
     exprVt = match (exprVt) {
       case ValTypeRef as r: new ValTypeRefNull(r.target)
       case ValTypeRefExtern: new ValTypeExternRef()
       case _: exprVt
     };
-    let isNull = this.b.emit(
-        IrOp.ref_is_null, new ValTypeI32() as ValType, receiver0, -1);
-    let nullB = this.b.newBlock();
-    let okB = this.b.newBlock();
-    this.b.brIf(isNull, nullB, this.#noArgs(), okB, this.#noArgs());
-
-    let saved = this.#copyEnv();
-    let mergeSyms = this.#assignedEnvSyms(expr);
     let mergeB = this.b.newBlock();
     let mergeParams = this.#addParams(mergeB, mergeSyms);
     let resultParam = this.b.blockParam(mergeB, exprVt);
 
-    this.b.switchTo(okB);
-    let value = this.#lowerOptionalHit(expr, this.#strippedNonNull(receiver0));
     if (this.#cx().reachable) {
       let conformed = this.#conformToSlot(value, exprVt, 'optional chain type');
       let okArgs = this.#envValues(mergeSyms);
@@ -9689,7 +9732,8 @@ export final class FunctionLowerer {
 
     this.#cx().env = this.#copyOf(saved);
     this.#cx().reachable = true;
-    this.b.switchTo(nullB);
+    this.b.switchTo(missB);
+    this.#applyParams(mergeSyms, missParams);
     let nullValue = this.#nullDefault(exprVt);
     let nullArgs = this.#envValues(mergeSyms);
     nullArgs.push(nullValue);
@@ -9698,6 +9742,50 @@ export final class FunctionLowerer {
     this.#cx().env = saved;
     this.b.switchTo(mergeB);
     this.#applyParams(mergeSyms, mergeParams);
+    this.#cx().reachable = true;
+    return resultParam;
+  }
+
+  hostOptionalChainCoalesce(bin: BinaryExpression, overallVt: ValType): i32 {
+    let (baseExpr, steps) = this.#collectOptionalChain(bin.left);
+    let leftSyms = this.#assignedEnvSyms(bin.left);
+    let allSyms = this.#assignedEnvSyms(bin as Expression);
+    let (value, missB, missParams, saved) =
+        this.#lowerOptionalChainSteps(baseExpr, steps, leftSyms);
+    if (!this.#cx().reachable && missB < 0) {
+      return NO_VALUE;
+    }
+    if (missB < 0) {
+      return this.#conformToSlot(
+          this.hostCoalesceArmAdaptation(bin, value), overallVt, 'nullish arm type');
+    }
+    let mergeB = this.b.newBlock();
+    let mergeParams = this.#addParams(mergeB, allSyms);
+    let resultParam = this.b.blockParam(mergeB, overallVt);
+
+    if (this.#cx().reachable) {
+      let okValue = this.#conformToSlot(
+          this.hostCoalesceArmAdaptation(bin, value), overallVt, 'nullish arm type');
+      let okArgs = this.#envValues(allSyms);
+      okArgs.push(okValue);
+      this.b.br(mergeB, okArgs);
+    }
+
+    this.#cx().env = this.#copyOf(saved);
+    this.#cx().reachable = true;
+    this.b.switchTo(missB);
+    this.#applyParams(leftSyms, missParams);
+    let rightValue = this.#lowerExpressionCtx(bin.right, overallVt);
+    if (this.#cx().reachable) {
+      let conformedRight = this.#conformToSlot(rightValue, overallVt, 'nullish arm type');
+      let rightArgs = this.#envValues(allSyms);
+      rightArgs.push(conformedRight);
+      this.b.br(mergeB, rightArgs);
+    }
+
+    this.#cx().env = saved;
+    this.b.switchTo(mergeB);
+    this.#applyParams(allSyms, mergeParams);
     this.#cx().reachable = true;
     return resultParam;
   }
@@ -9741,20 +9829,16 @@ export final class FunctionLowerer {
 
   #lowerMethodCall(call: CallExpression, member: MemberExpression,
       multiOut: GrowableArray<i32> | null = null): i32 {
-    if (call.optional && this.#isClosureMemberCallee(member)) {
+    if (call.optional && !this.#isClosureMemberCallee(member)) {
+      if (!hasOptionalChainStep(member as Expression)) {
+        return this.#lowerMethodCallOn(call, member, -1, multiOut);
+      }
+    }
+    if (hasOptionalChainStep(call as Expression)) {
       if (multiOut != null) {
         this.#bail('optional multi-value call');
       }
       return this.#lowerOptionalChainExpr(call as Expression);
-    }
-    if (member.optional) {
-      let rawObj = this.#substitutedNodeType(member.object);
-      if (rawObj != null && isNullableType(unwrapAliases(rawObj))) {
-        if (multiOut != null) {
-          this.#bail('optional multi-value call');
-        }
-        return this.#lowerOptionalChainExpr(call as Expression);
-      }
     }
     return this.#lowerMethodCallOn(call, member, -1, multiOut);
   }
@@ -10169,11 +10253,8 @@ export final class FunctionLowerer {
    * generic-source walk) and call it directly.
    */
   #lowerIndexRead(idx: IndexExpression): i32 {
-    if (idx.optional) {
-      let rawObj = this.#substitutedNodeType(idx.object);
-      if (rawObj != null && isNullableType(unwrapAliases(rawObj))) {
-        return this.#lowerOptionalChainExpr(idx as Expression);
-      }
+    if (hasOptionalChainStep(idx as Expression)) {
+      return this.#lowerOptionalChainExpr(idx as Expression);
     }
     let objectType = this.#substitutedNodeType(idx.object);
     if (objectType == null) {
@@ -11428,9 +11509,6 @@ export final class FunctionLowerer {
   hostMultiSource(init: Expression): MultiValues {
     return this.#lowerMultiSource(init);
   }
-  hostOptionalHit(expr: Expression, recv: i32): i32 {
-    return this.#lowerOptionalHit(expr, recv);
-  }
   hostRepackRecordUnion(ra: RecordUnionAdaptation, value: i32): i32 {
     return this.#applyRecordUnionAdaptation(ra, value);
   }
@@ -11588,7 +11666,7 @@ export final class FunctionLowerer {
     if (call.callee is MemberExpression) {
       return this.#lowerMethodCall(call, call.callee as MemberExpression, multiOut);
     }
-    if (call.optional) {
+    if (hasOptionalChainStep(call as Expression)) {
       if (multiOut != null) {
         this.#bail('optional multi-value call');
       }
@@ -13666,11 +13744,6 @@ function sameNumberLiteral(a: String, b: String): boolean {
   return sameNumericLiteralRaw(a, b);
 }
 
-/** Optional-chain hit arm (member machinery). */
-export function optionalHit(cx: LoweringContext, expr: Expression, recv: i32): i32 {
-  return hostOf(cx).hostOptionalHit(expr, recv);
-}
-
 /**
  * Repacks a record-union value to one record shape, picking the member
  * at run time (patterns, which destructure the repacked value).
@@ -13714,6 +13787,12 @@ export function suspendOnFuture(cx: LoweringContext, ct: ClassType,
 export function coalesceArmAdaptation(cx: LoweringContext,
     bin: BinaryExpression, value: i32): i32 {
   return hostOf(cx).hostCoalesceArmAdaptation(bin, value);
+}
+
+/** Fused primitive optional-chain `chain ?? default` lowering (control-flow). */
+export function lowerOptionalChainCoalesce(cx: LoweringContext,
+    bin: BinaryExpression, overallVt: ValType): i32 {
+  return hostOf(cx).hostOptionalChainCoalesce(bin, overallVt);
 }
 
 function getNodeMemberName(model: SemanticModel, node: Node): String {

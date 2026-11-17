@@ -2296,8 +2296,9 @@ class User {
 
 let user: User? = null;
 
-// Property access
-let name = user?.name;       // null (not a runtime error)
+// Property access and short-circuiting across the postfix chain
+let name = user?.name;                 // null (not a runtime error)
+let upper = user?.name.toUpperCase();  // null (skips .toUpperCase() when user is null)
 
 // Index access
 let items: Items? = null;

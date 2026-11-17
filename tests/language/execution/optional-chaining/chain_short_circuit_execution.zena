@@ -1,0 +1,116 @@
+// @mode: run
+// @result: 100
+// Postfix chain short-circuiting after `?.`, `?[`, and `?(` (#396).
+
+class Leaf {
+  var pokes = 0;
+  label: String;
+  code: i32;
+
+  new(this.label, this.code);
+
+  describe(suffix: String): String {
+    return `${this.label}:${suffix}`;
+  }
+
+  scaled(mult: i32): i32 {
+    return this.code * mult;
+  }
+
+  poke(delta: i32): void {
+    this.pokes += delta;
+  }
+}
+
+class Middle {
+  leaf: Leaf;
+  maybeLeaf: Leaf | null;
+  items: FixedArray<Leaf>;
+
+  new(this.leaf, this.maybeLeaf = null) : items = [leaf];
+
+  makeAdder(base: i32): (x: i32) => i32 {
+    return (x: i32) => base + x + this.leaf.code;
+  }
+
+  step(ignored: i32): Leaf | null {
+    return this.maybeLeaf;
+  }
+}
+
+class Root {
+  middle: Middle;
+
+  new(this.middle);
+
+  next(ignored: i32): Middle | null {
+    return this.middle;
+  }
+}
+
+export function main(): i32 {
+  var score = 0;
+  let leaf = new Leaf('ok', 7);
+  let midWithNull = new Middle(leaf, null);
+  let midWithLeaf = new Middle(leaf, new Leaf('sub', 4));
+  let present: Root | null = new Root(midWithNull);
+  let present2: Root | null = new Root(midWithLeaf);
+  let absent: Root | null = null;
+
+  // 1. `a?.b.m(arg)` reference result (#396 original shape).
+  if ((present?.middle.leaf.describe('1') ?? 'none') == 'ok:1' &&
+      absent?.middle.leaf.describe('1') == null) {
+    score += 10; // 10
+  }
+
+  // 2. `a?.b.c` and `a?.b.m()` primitive results fused with `??`.
+  score += present?.middle.leaf.code ?? 100;       // +7 = 17
+  score += absent?.middle.leaf.code ?? 3;          // +3 = 20
+  score += present?.middle.leaf.scaled(2) ?? 100;  // +14 = 34
+  score += absent?.middle.leaf.scaled(2) ?? 6;     // +6 = 40
+
+  // 3. `a?.items[0].label` and `a?.items[0].code ?? d` (index + member).
+  if ((present?.middle.items[0].label ?? '') == 'ok' &&
+      absent?.middle.items[0].label == null) {
+    score += (present?.middle.items[0].code ?? 0) + (absent?.middle.items[0].code ?? 3); // +10 = 50
+  }
+
+  // 4. `a?.makeAdder(b)(c) ?? d` (method returning closure, then plain call).
+  score += present?.middle.makeAdder(2)(1) ?? 0;   // 2 + 1 + 7 = +10 -> 60
+  score += absent?.middle.makeAdder(2)(1) ?? 5;    // +5 -> 65
+
+  // 5. Void tail `a?.b.c.poke(...)` skips side effects on null receiver.
+  var argRuns = 0;
+  absent?.middle.leaf.poke((argRuns += 1) + 98);
+  present?.middle.leaf.poke((argRuns += 1) + 4);
+  if (argRuns == 1 && leaf.pokes == 5) {
+    score += 10; // 75
+  }
+
+  // 6. Base expression `getRoot()?.middle.leaf.code ?? d` evaluates once.
+  var baseCalls = 0;
+  let getRoot = (retNull: boolean): Root | null => {
+    baseCalls += 1;
+    return if (retNull) null else present;
+  };
+  let v1 = getRoot(false)?.middle.leaf.code ?? 0;
+  let v2 = getRoot(true)?.middle.leaf.code ?? 3;
+  if (baseCalls == 2 && v1 == 7 && v2 == 3) {
+    score += 10; // 85
+  }
+
+  // 7. Mixed multi-`?.` + plain tail `a?.next(...)?.step(...)?.describe(...)`
+  //    and `a?.next(...)?.leaf.describe(...)` + SSA side effects.
+  var trace = 0;
+  let m1 = absent?.next(trace += 1)?.step(trace += 10)?.describe('x');
+  // `trace` stays 0 when `absent` is null.
+  let m2 = present?.next(trace += 1)?.step(trace += 10)?.describe('y');
+  // `present.next` returns `midWithNull`, `step` returns `null`: `trace` becomes 11, `describe` skipped.
+  let m3 = present2?.next(trace += 100)?.leaf.describe('z');
+  // Non-null `next`, then plain `.describe` after `?.leaf`: `trace` becomes 111, `m3` is `'ok:z'`.
+  if (m1 == null && m2 == null && (m3 ?? '') == 'ok:z' && trace == 111) {
+    score += 15; // 100
+  }
+
+  return score;
+}

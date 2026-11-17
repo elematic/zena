@@ -1,0 +1,49 @@
+// @mode: check
+// An unparenthesized optional chain short-circuits the rest of its postfix
+// chain (#396), while still rejecting nullable intermediate hops without `?.`,
+// parenthesized chains, primitive results without `??`, and assignment targets.
+
+class Symbols {
+  var tag: String = 'sym';
+  getByNode(n: i32): String { return this.tag; }
+  count(): i32 { return 3; }
+  clear(): void {}
+}
+
+class Scopes {
+  var symbols: Symbols;
+  nullableSymbols: Symbols | null;
+  fnField: () => String = () => 'fn';
+
+  new(this.symbols, this.nullableSymbols = null);
+}
+
+export function main(): i32 {
+  let scopes: Scopes | null = null;
+
+  // Short-circuited reference result has type `String | null`.
+  let okRef: String | null = scopes?.symbols.getByNode(1);
+  let badRef: String = scopes?.symbols.getByNode(1); // @error: Type mismatch
+
+  // Short-circuited primitive result requires immediate `??`.
+  let badPrim = scopes?.symbols.count(); // @error: coalescence
+  let okPrim: i32 = scopes?.symbols.count() ?? 0;
+
+  // Void tail in an optional chain stays `void`.
+  scopes?.symbols.clear();
+
+  // A nullable intermediate member still requires its own `?.`.
+  let badMid = scopes?.nullableSymbols.getByNode(1); // @error: Object may be null
+  let okMid: String | null = scopes?.nullableSymbols?.getByNode(1);
+
+  // Parentheses close the optional chain (including nested parentheses).
+  let badParen = (scopes?.symbols).getByNode(1); // @error: Object may be null
+  let badParenNested = ((scopes?.symbols)).count(); // @error: Object may be null
+
+  // Optional chains cannot be assigned to.
+  scopes?.symbols = new Symbols(); // @error: optional chain
+  scopes?.symbols.tag = 'nope'; // @error: optional chain
+
+  if (okPrim == 0 && okRef == null && okMid == null) { return 1; }
+  return 0;
+}

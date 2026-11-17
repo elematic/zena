@@ -7,7 +7,7 @@ import {
   MixinDeclaration, Node, NumberLiteral, PropertySignature, RecordPattern,
   BooleanLiteral, StringLiteral, PropertyAssignment, LiteralPattern,
   SourceLocation, SymbolDeclaration, SymbolPropertyName, ThisExpression,
-  isSymbolFieldDeclaration, syntacticMemberName
+  isSymbolFieldDeclaration, samePostfixChain, syntacticMemberName
 } from '../ast.zena';
 import {
   ArrayType, BoolLiteralType, ClassType, EnumType, ErrorType, FieldInfo, NumLiteralType, StringLiteralType, sameNumericLiteralRaw, FunctionType, InlineTupleType as InlineTupleT, InterfaceType, MemberInfo, MemberTable, MethodInfo, MixinType, NullType, OwnershipHandle, RecordType as RecordT, SymbolType, ThisType, TupleType as TupleT, Type, TypeAliasType, TypeParameterType, UnionType as UnionT, UnknownType, baseType, instantiateClassType, isAffineValue, isIntegerType, ownershipHandleInner, ownershipHandleOf, parseTupleIndexLiteral, typeCarriesOwner, typeToString, unwrapAliases
@@ -496,8 +496,12 @@ export function checkMemberExpression(
   property: Identifier,
   optional: boolean,
   isSymbolAccess: boolean,
-  loc: SourceLocation | null
+  loc: SourceLocation | null,
+  inChain: boolean = false
 ): Type {
+  if (inChain && samePostfixChain(expr, object)) {
+    ctx.chainInteriorNode = object as Node;
+  }
   let objectTypeRaw = checkExpression(ctx, object, null);
   var objectType = objectTypeRaw;
   if (objectType is ThisType) {
@@ -678,6 +682,10 @@ export function checkMemberExpression(
   // legal as the immediate left operand of `??` — where the miss is
   // the coalesce arm and no `primitive | null` value ever exists.
   if (isNullable && optional) {
+    if (inChain) {
+      ctx.chainShortCircuits = true;
+      return resultType;
+    }
     if (isBoxablePrimitive(resultType) &&
         !ctx.nullishSanctioned.has(expr.id as i32)) {
       ctx.error(
@@ -1375,8 +1383,12 @@ export function checkIndexExpression(
   index: Expression,
   optional: boolean,
   loc: SourceLocation | null,
-  node: Node | null = null
+  node: Node | null = null,
+  inChain: boolean = false
 ): Type {
+  if (inChain && node is IndexExpression && samePostfixChain(node, object)) {
+    ctx.chainInteriorNode = object as Node;
+  }
   let objectType = checkExpression(ctx, object, null);
 
   // Handle optional chaining on nullable object.
@@ -1385,6 +1397,10 @@ export function checkIndexExpression(
   let resultType = resolveIndexType(ctx, baseType_, index, loc, node);
 
   if (isNullable && optional) {
+    if (inChain) {
+      ctx.chainShortCircuits = true;
+      return resultType;
+    }
     if (isBoxablePrimitive(resultType) && (node == null ||
         !ctx.nullishSanctioned.has(node.id as i32))) {
       ctx.error(
