@@ -813,6 +813,18 @@ export function reset(): boolean { return true; }
       `a handle spelling leaked into a Disposable-class interface:\n${source}`);
   });
 
+  test('the terminal raw mode renders as a resource class', async (ctx) => {
+    // `zena:host/terminal` joined the list when it was added: raw mode
+    // lasts as long as its owner holds it.
+    let terminal = await synthesizeWitModule(disk,
+        `wit:${stdlibRoot}/host-wit#zena:host/terminal`,
+        await readWitSource(disk, `${stdlibRoot}/host-wit`));
+    isTrue(terminal.contains('export resource class RawMode {'),
+      `raw-mode is not a resource class:\n${terminal}`);
+    isTrue(terminal.contains('static enter(): inline Result<Own<RawMode>, String> {'),
+      `enter does not hand back an owner:\n${terminal}`);
+  });
+
   test('the HTTP resources render as resource classes, with owners in tuples',
       async (ctx) => {
     // `wasi:http/types` and `zena:host/http-server` joined the list

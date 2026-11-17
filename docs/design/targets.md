@@ -180,6 +180,8 @@ WIT interfaces (`packages/stdlib/zena/host-wit/host.wit`) supplied by the Rust
 - `zena:host/extensions@1.0.0`: Long-lived component extensions
   (`zena:extensions`, gated on `Grant::extensions` / `--allow-extensions`).
 - `zena:host/http-server@1.0.0`: Inbound HTTP/1.1 server (`zena:http`).
+- `zena:host/terminal@1.0.0`: Raw mode for stdin's terminal and the size of
+  stdout's (`zena-lang:terminal`'s prompts).
 
 ---
 

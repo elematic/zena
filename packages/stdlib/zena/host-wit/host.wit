@@ -317,6 +317,34 @@ interface secrets {
   read-hidden: func(prompt: string) -> result<string, string>;
 }
 
+/// The terminal the command runs in, for programs that ask their user
+/// questions: reading keys as they are pressed, and the terminal's size.
+/// Every command has it, since it reads only what stdin already gives.
+interface terminal {
+  /// Stdin's terminal in raw mode, as long as this is held: each key
+  /// reaches stdin as it is pressed, without echo or line editing, and
+  /// Ctrl+C, Ctrl+Z and Ctrl+\ reach it as bytes rather than as
+  /// signals. Output is unchanged, so a line feed still starts a new
+  /// line. Dropping it puts the terminal back as it was, and so does the
+  /// command's end, however it ends.
+  resource raw-mode {
+    /// Puts stdin's terminal in raw mode. The error says why it could
+    /// not: stdin is not a terminal, the terminal is already in raw mode,
+    /// or the platform has no raw mode.
+    enter: static func() -> result<raw-mode, string>;
+  }
+
+  /// A terminal's size, in character cells.
+  record size {
+    columns: u16,
+    rows: u16,
+  }
+
+  /// The size of stdout's terminal, or none when stdout is not a
+  /// terminal.
+  stdout-size: func() -> option<size>;
+}
+
 world command {
   import stack-trace;
   import process;
@@ -324,4 +352,5 @@ world command {
   import extensions;
   import http-server;
   import secrets;
+  import terminal;
 }

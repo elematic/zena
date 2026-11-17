@@ -92,6 +92,14 @@ Bad Request` before reaching the guest. Binary and streaming responses
     non-`1xx` response arrives (with a TCP write half-close and bounded
     250 ms / 512 KiB read drain when closing the connection) so early
     responses do not stall HTTP/1.1 keep-alive or race with a TCP `RST`.
+  - `terminal`: the `raw-mode` resource, which puts stdin's terminal in
+    raw mode while it is held, with libuv's settings (the ones Node.js's
+    `setRawMode` uses), and `stdout-size` (`src/terminal.rs`). A program
+    reads the keys through `wasi:cli/stdin`. There is one raw mode at a
+    time, and the settings it replaced are restored when it is dropped
+    and by an `atexit` handler, since the binaries end with
+    `std::process::exit` while the store is alive. Every command has it.
+    Raw mode is Unix only; elsewhere `enter` returns an error.
 
 A component's `main` is lifted async with a callback, so calling it goes
 through wasmtime's concurrent machinery: `component::run_main` builds a

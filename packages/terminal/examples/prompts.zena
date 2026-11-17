@@ -1,0 +1,48 @@
+/**
+ * Asks one question of each kind, and prints the answers.
+ *
+ * ```sh
+ * ./target/release/zena-cli run packages/terminal/examples/prompts.zena
+ * ```
+ */
+
+import {Choice, PromptCancelled, Prompts} from 'terminal/prompts';
+import {RailLayout} from 'terminal/layout';
+
+async function ask(prompts: Prompts, rail: RailLayout): Future<void> {
+  let name = await prompts.text('What is the package called?', 'my-package', '', '',
+    (value) => if (value == '') 'A package needs a name.' else null);
+  let kind = await prompts.select<String>('What kind of package is it?', [
+    new Choice<String>('library', 'Library', 'imported by others'),
+    new Choice<String>('command', 'Command', 'run with zena run'),
+    new Choice<String>('both', 'Both'),
+  ]);
+  let targets = await prompts.multiselect<String>('Which targets does it build for?', [
+    new Choice<String>('zena-component', 'zena-component'),
+    new Choice<String>('component', 'component'),
+    new Choice<String>('js', 'js'),
+  ], [0]);
+  let publish = await prompts.confirm('Publish it now?', false);
+  console.log(rail.bar());
+  console.log(rail.outro(`${name}: ${kind}, ${targets.length} targets, ${if (publish) 'published' else 'not published'}`));
+}
+
+export async function main(): Future<i32> {
+  let prompts = new Prompts();
+  let rail = new RailLayout();
+  if (!prompts.interactive) {
+    console.error('This example needs a terminal.');
+    return 1;
+  }
+  console.log(rail.intro('zena pkg init'));
+  try {
+    await ask(prompts, rail);
+  } catch (e) {
+    if (e is PromptCancelled) {
+      console.log(rail.outro('Cancelled'));
+      return 1;
+    }
+    throw e;
+  }
+  return 0;
+}

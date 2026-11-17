@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Programs that `zena run` and `zena-run` start can put the terminal in raw mode and read keys as they are pressed (`zena:host/terminal`), which `zena-lang:terminal`'s prompts do. The terminal is put back when the program ends, however it ends.
+
 ### Changed
 
 - `zena pkg add` without a version takes a package's latest pre-release when it has no stable release, and says so. When it can add nothing, it says whether the package has no releases or every release is retracted.
