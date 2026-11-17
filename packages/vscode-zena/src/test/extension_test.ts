@@ -1531,6 +1531,34 @@ suite('packaged vscode-zena extension (.vsix)', () => {
         1,
         `expected concurrent cold-start burst to check/read helper.zena only once, got ${helperReads}`,
       );
+
+      // A file importing `zena:js` in the same `zena-component` workspace
+      // auto-selects `zena-js`, checks with 0 errors, and resolves `toPromise`
+      // to the real `dist/stdlib/js/index.zena` file on disk.
+      const jsEntryPath = join(desktopWorkspaceDir, 'web_entry.zena');
+      const jsEntrySrc = [
+        "import { toPromise } from 'zena:js';",
+        'async function work(): Future<i32> { return 42; }',
+        'export function run(): anyref { return toPromise(work()); }',
+        '',
+      ].join('\n');
+      writeFileSync(jsEntryPath, jsEntrySrc);
+      const jsEntryDoc = new MockTextDocument(
+        MockUri.file(jsEntryPath),
+        jsEntrySrc,
+      );
+      desktopDocs.push(jsEntryDoc);
+      const toPromiseCol = jsEntrySrc.indexOf('toPromise') + 2;
+      const jsDefs = await desktopDefProvider.provideDefinition(
+        jsEntryDoc,
+        new MockPosition(0, toPromiseCol),
+      );
+      assert.ok(Array.isArray(jsDefs) && jsDefs.length > 0);
+      assert.strictEqual(jsDefs[0].targetUri.scheme, 'file');
+      assert.strictEqual(
+        jsDefs[0].targetUri.fsPath,
+        join(extDir, 'dist', 'stdlib', 'js', 'promise.zena'),
+      );
     } finally {
       await desktopEntry.deactivate();
     }

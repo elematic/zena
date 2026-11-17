@@ -21,7 +21,12 @@ import {
   Compiler, CompilerTarget, createCompiler, checkCompilation, ProgramCheckResult, findNodeAtOffset, resolveMemberDefinition, CompilationResult,
   CheckResult,
 } from 'zena-compiler/compiler';
-import { parse as parseSource, ParseCompleteness } from 'zena-compiler/parser';
+import {
+  Module, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration,
+} from 'zena-compiler/ast';
+import {
+  parse as parseSource, parseRecovering, ParseCompleteness,
+} from 'zena-compiler/parser';
 import { PackageConfig } from 'zena-compiler/module-resolver';
 import {
   Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity, SyntaxError, spanOf
@@ -104,6 +109,78 @@ function diagnosticFromError(message: String, source: String) {
 }
 
 /**
+ * If `entry` is a stdlib module that only compiles on a JS target (`zena-js`
+ * or `js`), returns that target name; otherwise null.
+ */
+function stdlibJsTarget(entry: String): String | null {
+  if (!entry.startsWith('zena:')) {
+    return null;
+  }
+  if (entry == 'zena:core/string-js-pure.zena') {
+    return 'js';
+  }
+  if (
+    entry == 'zena:js' ||
+    entry.startsWith('zena:js/') ||
+    entry == 'zena:console/js.zena' ||
+    entry == 'zena:console/host.zena' ||
+    entry == 'zena:core/js-string-builtins.zena' ||
+    entry == 'zena:core/error/stack-host.zena' ||
+    entry == 'zena:fetch/host.zena' ||
+    entry == 'zena:time/host.zena' ||
+    entry.endsWith('-js.zena') ||
+    entry.endsWith('-js-host.zena')
+  ) {
+    return 'zena-js';
+  }
+  return null;
+}
+
+function isComponentOnlyModule(spec: String) {
+  return spec == 'zena:fs' ||
+      spec == 'zena:cli' ||
+      spec == 'zena:process' ||
+      spec == 'zena:wasm' ||
+      spec == 'zena:wasi' ||
+      spec == 'zena:extensions' ||
+      spec == 'zena:host-setup';
+}
+
+function moduleSpecOfStatement(stmt: anyref): String | null {
+  return match (stmt) {
+    case ImportDeclaration {moduleSpecifier}: moduleSpecifier.value
+    case ExportAllDeclaration {moduleSpecifier}: moduleSpecifier.value
+    case ExportFromDeclaration {moduleSpecifier}: moduleSpecifier.value
+    case _: null
+  };
+}
+
+function astNeedsZenaJs(ast: Module): (boolean, boolean) {
+  var hasZenaJs = false;
+  var hasComponentOnly = false;
+  for (let stmt in ast.body) {
+    let spec = moduleSpecOfStatement(stmt);
+    if (spec == null) {
+      continue;
+    }
+    if (spec == 'zena:js') {
+      hasZenaJs = true;
+    } else if (isComponentOnlyModule(spec)) {
+      hasComponentOnly = true;
+    }
+  }
+  return (hasZenaJs, hasComponentOnly);
+}
+
+class TargetState {
+  targetName: String;
+  var checked: ProgramCheckResult | null = null;
+  scopes = new Map<String, ScopeResult>();
+  compilations = new Map<String, CompilationResult>();
+  new(this.targetName);
+}
+
+/**
  * Stateful language service backed by a persistent Compiler.
  *
  * Owns the compiler host, compiler instance, and cached analysis
@@ -122,13 +199,12 @@ export class LanguageService {
   #host: DocumentHost;
   var #compiler: Compiler;
   #makeCompiler: (() => Compiler) | null;
-  /** The target the editor's code is analyzed for; fixed for the service's life. */
+  /** Default target for files that do not require a specific JS target. */
   #targetName: String;
-  var #checked: ProgramCheckResult | null = null;
-  /** Scopes of every library the last compiles reached, by normalized path. */
-  #scopes = new Map<String, ScopeResult>();
-  /** The last compile of each document checked, by normalized path. */
-  #compilations = new Map<String, CompilationResult>();
+  /** Per-target analysis state (`checked`, `scopes`, `compilations`). */
+  #states = new Map<String, TargetState>();
+  /** Target name under which each checked entry (`#keyOf(path)`) was analyzed. */
+  #entryTargets = new Map<String, String>();
   /** Stdlib modules whose open editor buffer differs from what was first loaded. */
   #dirtyStdlib = new Map<String, boolean>();
   /** The last compile queued, which the next waits for; null when none is in flight. */
@@ -188,13 +264,77 @@ export class LanguageService {
     return normalizePath(this.#host.canonicalizePath(path));
   }
 
+  #stateFor(target: String): TargetState {
+    if (let (true, existing) = this.#states.get(target)) {
+      return existing;
+    }
+    let created = new TargetState(target);
+    this.#states[target] = created;
+    return created;
+  }
+
+  #targetNameOf(key: String): String {
+    if (let (true, entryTarget) = this.#entryTargets.get(key)) {
+      return entryTarget;
+    }
+    let jsStdlib = stdlibJsTarget(key);
+    if (jsStdlib != null) {
+      return jsStdlib;
+    }
+    if (let (true, primary) = this.#states.get(this.#targetName)) {
+      if (primary.scopes.has(key) || primary.compilations.has(key)) {
+        return this.#targetName;
+      }
+    }
+    for (let tName in this.#states.keys()) {
+      let st = this.#states[tName];
+      if (st.scopes.has(key) || st.compilations.has(key)) {
+        return tName;
+      }
+    }
+    return this.#targetName;
+  }
+
+  #inferTarget(entry: String, source: String): String {
+    if (this.#targetName == 'js' || this.#targetName == 'zena-js') {
+      return this.#targetName;
+    }
+    let jsStdlib = stdlibJsTarget(entry);
+    if (jsStdlib != null) {
+      return jsStdlib;
+    }
+    if (source.contains('zena:js')) {
+      let parsed = try {
+        parseRecovering(source, entry).ast
+      } catch (e) {
+        null
+      };
+      if (parsed != null) {
+        let (hasZenaJs, hasComponentOnly) = astNeedsZenaJs(parsed);
+        if (hasZenaJs && !hasComponentOnly) {
+          return 'zena-js';
+        }
+      }
+    }
+    return this.#targetName;
+  }
+
+  #findLoadedSource(key: String): String | null {
+    for (let tName in this.#compiler.compiledTargets) {
+      let sf = this.#compiler.forTarget(tName).getSourceFile(key);
+      if (sf != null) {
+        return sf.source;
+      }
+    }
+    return null;
+  }
+
   #resetCompiler(): void {
     let make = this.#makeCompiler;
     if (make != null) {
       this.#compiler = make();
-      this.#checked = null;
-      this.#compilations.clear();
-      this.#scopes.clear();
+      this.#states.clear();
+      this.#entryTargets.clear();
     }
   }
 
@@ -204,17 +344,17 @@ export class LanguageService {
   openDocument(path: String, source: String): void {
     let normalized = normalizePath(path);
     let key = this.#keyOf(path);
-    let existing = this.#target.getSourceFile(key);
+    let existingSource = this.#findLoadedSource(key);
     this.#host.setDocument(path, source);
     this.#host.setDocument(normalized, source);
     if (key.startsWith('zena:')) {
-      if (existing != null && existing.source != source) {
+      if (existingSource != null && existingSource != source) {
         this.#dirtyStdlib[key] = true;
         this.#resetCompiler();
       }
       return;
     }
-    if (existing != null && existing.source == source) {
+    if (existingSource != null && existingSource == source) {
       return;
     }
     this.#compiler.delete(path);
@@ -229,7 +369,14 @@ export class LanguageService {
     let key = this.#keyOf(path);
     this.#host.deleteDocument(path);
     this.#host.deleteDocument(normalized);
-    this.#compilations.delete(key);
+    this.#entryTargets.delete(key);
+    for (let tName in this.#states.keys()) {
+      let st = this.#states[tName];
+      st.compilations.delete(key);
+      if (!key.startsWith('zena:')) {
+        st.scopes.delete(key);
+      }
+    }
     if (key.startsWith('zena:')) {
       if (this.#dirtyStdlib.has(key)) {
         this.#dirtyStdlib.delete(key);
@@ -239,7 +386,6 @@ export class LanguageService {
     }
     this.#compiler.delete(path);
     this.#compiler.delete(normalized);
-    this.#scopes.delete(key);
   }
 
   /**
@@ -251,7 +397,28 @@ export class LanguageService {
    * starting from `path` as the root of the dependency tree.
    */
   async check(path: String, source: String): Future<Array<Diagnostic>> {
-    return await this.checkForTarget(path, source, this.#targetName);
+    let entry = this.#keyOf(path);
+    let target = this.#inferTarget(entry, source);
+    let diagnostics = await this.checkForTarget(path, source, target);
+    if (target != 'zena-js' && target != 'js') {
+      let state = this.#stateFor(target);
+      if (let (true, compilation) = state.compilations.get(entry)) {
+        var transitiveZenaJs = false;
+        var transitiveComponentOnly = false;
+        for (let file in compilation.files) {
+          if (file.isStdlib) {
+            continue;
+          }
+          let (hasJs, hasComp) = astNeedsZenaJs(file.ast);
+          if (hasJs) { transitiveZenaJs = true; }
+          if (hasComp) { transitiveComponentOnly = true; }
+        }
+        if (transitiveZenaJs && !transitiveComponentOnly) {
+          return await this.checkForTarget(path, source, 'zena-js');
+        }
+      }
+    }
+    return diagnostics;
   }
 
   #remapEntryDiagnostic(diag: Diagnostic, entry: String, fsPath: String): Diagnostic {
@@ -268,14 +435,14 @@ export class LanguageService {
 
   /**
    * Preserves still-valid CheckResults from earlier checks of other open
-   * entry files so hovering in an inactive split pane or switching tabs
-   * does not lose already-checked modules.
+   * entry files on the same `target` so hovering in an inactive split pane
+   * or switching tabs does not lose already-checked modules.
    */
-  #mergeCarried(previous: ProgramCheckResult | null, current: ProgramCheckResult): void {
+  #mergeCarried(targetName: String, previous: ProgramCheckResult | null, current: ProgramCheckResult): void {
     if (previous == null || previous.sharedState != current.sharedState) {
       return;
     }
-    let target = this.#target;
+    let target = this.#compiler.forTarget(targetName);
     for (let prevPath in previous.results.keys()) {
       if (current.results.has(prevPath)) {
         continue;
@@ -314,26 +481,23 @@ export class LanguageService {
       let entry = this.#keyOf(path);
       let result = await this.#compiler.compile({entry, target});
 
-      if (target == this.#targetName) {
-        // Scopes for every file the compile reached, so that definition
-        // and hover work in a dependency the editor navigates into.
-        for (let file in result.files) {
-          let scopes = file.scopeResult;
-          if (scopes != null) {
-            this.#scopes[normalizePath(file.path)] = scopes;
-          }
+      let state = this.#stateFor(target);
+      this.#entryTargets[entry] = target;
+      // Scopes for every file the compile reached, so that definition
+      // and hover work in a dependency the editor navigates into.
+      for (let file in result.files) {
+        let scopes = file.scopeResult;
+        if (scopes != null) {
+          state.scopes[normalizePath(file.path)] = scopes;
         }
-        this.#compilations[entry] = result;
       }
+      state.compilations[entry] = result;
 
-      // Type-check all modules, carrying forward unchanged results when
-      // checking on the service's primary target.
-      let previous = if (target == this.#targetName) { this.#checked } else { null };
+      // Type-check all modules, carrying forward unchanged results on `target`.
+      let previous = state.checked;
       let checked = checkCompilation(result, previous);
-      if (target == this.#targetName) {
-        this.#mergeCarried(previous, checked);
-        this.#checked = checked;
-      }
+      this.#mergeCarried(target, previous, checked);
+      state.checked = checked;
 
       // Recovering from a parse error does not excuse it. The file was
       // analyzed anyway, so report what the parser had to work around
@@ -365,7 +529,8 @@ export class LanguageService {
    * or null when it has errors. `compile.zena` generates the code.
    */
   async checkProgram(path: String, source: String): Future<Program | null> {
-    return await this.checkProgramForTarget(path, source, this.#targetName);
+    let target = this.#inferTarget(this.#keyOf(path), source);
+    return await this.checkProgramForTarget(path, source, target);
   }
 
   /**
@@ -388,11 +553,11 @@ export class LanguageService {
         }
       }
 
-      let previous = if (target == this.#targetName) { this.#checked } else { null };
+      let state = this.#stateFor(target);
+      let previous = state.checked;
       let checked = checkCompilation(compiled, previous);
-      if (target == this.#targetName) {
-        this.#checked = checked;
-      }
+      this.#mergeCarried(target, previous, checked);
+      state.checked = checked;
       for (let diagnostic in checked.diagnostics) {
         if (diagnostic.severity == DiagnosticSeverity.Error) {
           return null;
@@ -429,9 +594,10 @@ export class LanguageService {
    */
   lint(path: String): GrowableArray<Edit> {
     let key = this.#keyOf(path);
-    let checked = this.#checked;
+    let state = this.#stateFor(this.#targetNameOf(key));
+    let checked = state.checked;
     var compilation: CompilationResult | null = null;
-    if (let (true, c) = this.#compilations.get(key)) {
+    if (let (true, c) = state.compilations.get(key)) {
       compilation = c;
     }
     if (compilation == null || checked == null) {
@@ -473,8 +639,9 @@ export class LanguageService {
 
   #rules: GrowableArray<NamedRule> = allRules();
 
-  #scopesOf(key: String): ScopeResult | null {
-    if (let (true, scopes) = this.#scopes.get(key)) {
+  #scopesOf(key: String, targetName: String): ScopeResult | null {
+    let state = this.#stateFor(targetName);
+    if (let (true, scopes) = state.scopes.get(key)) {
       return scopes;
     }
     return null;
@@ -484,19 +651,20 @@ export class LanguageService {
    * The analysis of a checked file: the entry of a compile, or a file one
    * reached, which an editor opens by going to a definition in it.
    */
-  #analysis(key: String): FileAnalysis | null {
-    let checked = this.#checked;
+  #analysis(key: String, targetName: String): FileAnalysis | null {
+    let state = this.#stateFor(targetName);
+    let checked = state.checked;
     if (checked == null) {
       return null;
     }
-    let scopes = this.#scopesOf(key);
-    if (let (true, compilation) = this.#compilations.get(key)) {
+    let scopes = this.#scopesOf(key, targetName);
+    if (let (true, compilation) = state.compilations.get(key)) {
       if (let (true, result) = checked.results.get(compilation.entry.path)) {
         return {ast: compilation.entry.ast, model: result.model, scopes: scopes};
       }
     }
     if (let (true, result) = checked.results.get(key)) {
-      let source = this.#target.getSourceFile(key);
+      let source = this.#compiler.forTarget(targetName).getSourceFile(key);
       if (source != null) {
         return {ast: source.ast, model: result.model, scopes: scopes};
       }
@@ -540,11 +708,12 @@ export class LanguageService {
   /** The definition of what is at a byte offset in a checked file. */
   getDefinition(path: String, offset: i32): SourceSpan | null {
     let key = this.#keyOf(path);
-    let scopes = this.#scopesOf(key);
+    let targetName = this.#targetNameOf(key);
+    let scopes = this.#scopesOf(key, targetName);
     if (scopes == null) {
       return null;
     }
-    let file = this.#analysis(key);
+    let file = this.#analysis(key, targetName);
     let node = if (file == null) { null } else { findNodeAtOffset(file.ast, offset) };
     let sym = symbolUnder(scopes, node, offset);
     if (sym != null) {
@@ -555,7 +724,13 @@ export class LanguageService {
     if (file == null) {
       return null;
     }
-    let memberSpan = resolveMemberDefinition(file.ast, offset, file.model, scopes, this.#target);
+    let memberSpan = resolveMemberDefinition(
+      file.ast,
+      offset,
+      file.model,
+      scopes,
+      this.#compiler.forTarget(targetName),
+    );
     if (memberSpan == null || memberSpan.file.startsWith('wit:')) {
       return null;
     }
@@ -565,26 +740,29 @@ export class LanguageService {
 
   /** Hover for a byte offset in a checked file, or null for none. */
   getHover(path: String, offset: i32): HoverResult | null {
-    let checked = this.#checked;
-    let file = this.#analysis(this.#keyOf(path));
+    let key = this.#keyOf(path);
+    let targetName = this.#targetNameOf(key);
+    let checked = this.#stateFor(targetName).checked;
+    let file = this.#analysis(key, targetName);
     if (checked == null || file == null) {
       return null;
     }
-    return hoverAt(file, offset, checked, this.#target);
+    return hoverAt(file, offset, checked, this.#compiler.forTarget(targetName));
   }
 
   /** Completions at a byte offset. */
   getCompletions(path: String, offset: i32): Array<CompletionItem> {
     let key = this.#keyOf(path);
-    let checked = this.#checked;
-    let file = this.#analysis(key);
+    let targetName = this.#targetNameOf(key);
+    let checked = this.#stateFor(targetName).checked;
+    let file = this.#analysis(key, targetName);
     if (checked != null && file != null) {
       let members = memberCompletions(file, offset, checked);
       if (members != null) {
         return members;
       }
     }
-    return scopeCompletions(this.#scopesOf(key));
+    return scopeCompletions(this.#scopesOf(key, targetName));
   }
 
   /**
