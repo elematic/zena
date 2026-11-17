@@ -35,8 +35,10 @@ It differs in four ways:
 ## Terms
 
 - **Unit**: a directory under `packages/` that is versioned and has a
-  changelog. `packages/zena-cli` is one unit, though it holds a Zena
-  package, an npm package and a Rust crate.
+  changelog. `packages/zena-cli` is one unit, though it has a
+  `zena-package.json`, a `package.json` and a `Cargo.toml`. A unit need
+  not be published: `zena-cli` is a program, released as the `zena`
+  binary, and its version is what `zena --version` prints.
 - **Change file**: a Markdown file in `.changes/`, added by a pull
   request, that holds the changelog entries for that pull request.
 - **Entry**: one bullet in a change file or a changelog.
@@ -57,8 +59,11 @@ It differs in four ways:
 
 The repository holds three kinds of package. A Zena package has a
 `zena-package.json`, an npm package a `package.json`, and a Rust crate a
-`Cargo.toml`. Many directories have two of the three, and
-`packages/zena-cli` has all three.
+`Cargo.toml`. A manifest does not always mean a published package. Most
+directories have a private `package.json` that only holds the Wireit
+scripts, and `packages/zena-cli` has all three manifests while being
+published as none of the three: it is a program, built and released as
+the `zena` binary.
 
 Twenty-one packages have a `CHANGELOG.md` in the Keep a Changelog format.
 A pull request adds its entries under `## [Unreleased]` by hand. Two pull
@@ -94,7 +99,9 @@ needs no table of names.
 
 A unit has one version and one changelog. A release writes the version to
 every manifest in the directory: `version` in `zena-package.json` and
-`package.json`, and `version` under `[package]` in `Cargo.toml`. It then
+`package.json`, and `version` under `[package]` in `Cargo.toml`. The
+private `package.json` files get it too, so that a directory never states
+two versions. It then
 refreshes `package-lock.json` and `Cargo.lock`, and regenerates
 `packages/zena-cli/zena/versions.zena`.
 
