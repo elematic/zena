@@ -2102,12 +2102,17 @@ export final class AppView {
    * (package-manager.md, "Private membership").
    */
   async attesters(pkg: String): Future<Array<String>> {
-    let dids = new GrowableArray<String>();
     let record = await this.#current(pkg, MAINTAINERS_TYPE, 'self');
     if (record == null) {
-      return dids;
+      return new GrowableArray<String>();
     }
-    for (let attester in await this.#attesterList(pkg, Maintainers.fromValue(record.value))) {
+    return await this.attestersOf(pkg, Maintainers.fromValue(record.value));
+  }
+
+  /** `attesters`, from `record`, `pkg`'s maintainers record, which the caller has read. */
+  async attestersOf(pkg: String, record: Maintainers): Future<Array<String>> {
+    let dids = new GrowableArray<String>();
+    for (let attester in await this.#attesterList(pkg, record)) {
       dids.push(attester.did);
     }
     return dids;
@@ -2432,19 +2437,24 @@ export final class AppView {
     }
     let did = account.did;
     let detail = new PackageDetail(did, account.handle, account.scope);
-    let profile = await this.#current(did, PROFILE_TYPE, PROFILE_KEY);
+    // The four reads are independent, so the PDS is asked for them at once.
+    let profileRead = this.#current(did, PROFILE_TYPE, PROFILE_KEY);
+    let maintainersRead = this.#current(did, MAINTAINERS_TYPE, 'self');
+    let retractionsRead = this.#pds.listRecords(did, RETRACTION_TYPE);
+    let releasesRead = this.#pds.listRecords(did, RELEASE_TYPE);
+    let profile = await profileRead;
     if (profile != null) {
       detail.profile = Profile.fromValue(profile.value);
     }
-    let maintainers = await this.#current(did, MAINTAINERS_TYPE, 'self');
+    let maintainers = await maintainersRead;
     if (maintainers != null) {
       detail.maintainers = Maintainers.fromValue(maintainers.value);
     }
-    for (let record in await this.#pds.listRecords(did, RETRACTION_TYPE)) {
+    for (let record in await retractionsRead) {
       let retraction = Retraction.fromValue(record.value);
       detail.retractions[retraction.version.toString()] = retraction;
     }
-    for (let record in await this.#pds.listRecords(did, RELEASE_TYPE)) {
+    for (let record in await releasesRead) {
       let release = Release.fromValue(record.value);
       detail.releaseCids[release.version.toString()] = record.cid;
       detail.releases.push(release);
@@ -2459,10 +2469,11 @@ export final class AppView {
    * has no such release, or its archive cannot be read. They are read from
    * `derived`, and derived from the archive on the package's PDS, and kept
    * there, when they are missing, of an older format or from another
-   * archive.
+   * archive. A caller that has the release record passes it as `release`,
+   * which saves reading it again.
    */
-  async releaseContents(did: String, version: String): Future<ReleaseContents | null> {
-    let blob = await this.#sourceOf(did, version);
+  async releaseContents(did: String, version: String, release: Release | null = null): Future<ReleaseContents | null> {
+    let blob = if (release != null) release.artifact(SOURCE)?.blob else await this.#sourceOf(did, version);
     if (blob == null) {
       return null;
     }
