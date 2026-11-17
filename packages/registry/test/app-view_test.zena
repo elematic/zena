@@ -1997,7 +1997,11 @@ export let tests = suite('registry/app-view', () => {
 
     // The package page shows the README of the latest release that is not
     // retracted, without the raw HTML in it, and links each version.
-    let packageHtml = pageOf(await fixture.get('/packages/router.acme.pkg.test'));
+    let packageResponse = await fixture.get('/packages/router.acme.pkg.test');
+    // Its reads' times are in a Server-Timing header, for the browser's network panel.
+    let timings = join(packageResponse.getHeaders('server-timing'), ', ');
+    isTrue(timings.startsWith('package;dur=') && timings.contains(', reads;dur='), timings);
+    let packageHtml = pageOf(packageResponse);
     isTrue(packageHtml.contains('<strong>requests</strong>') && !packageHtml.contains('<script>alert') &&
         !packageHtml.contains('fewer'), packageHtml);
     isTrue(packageHtml.contains('href="/packages/router.acme.pkg.test/versions/1.1.0"'), 'a link to 1.1.0');

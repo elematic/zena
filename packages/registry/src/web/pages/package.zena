@@ -16,9 +16,10 @@ import {HashMap, HashSet} from 'zena:collections';
 import {GrowableArray, join} from 'zena:core';
 import {isValidUtf8} from 'zena:encoding';
 import {HTMLPartial, Response, Router, TemplateValue, html, unsafeHTML} from 'zena:http';
+import {monotonic} from 'zena:time';
 import {percentDecode} from 'zena:url';
 import {Dependency, Maintainers, RELEASE_TYPE, Release} from 'package-manager/records';
-import {PackageDetail, AppView, Publication} from '../../app-view.zena';
+import {AppView, AppViewAccount, PackageDetail, Publication, Waiting} from '../../app-view.zena';
 import {MAX_README_BYTES, ReleaseContents, ReleaseFile, fileUrl, rawUrl, renderMarkdown} from '../../release-contents.zena';
 import {Approvals} from '../approvals.zena';
 import {page} from '../layout.zena';
@@ -95,7 +96,10 @@ export function packagePage(router: Router, appView: AppView, people: People, ap
  */
 async function packageView(context: PageContext, res: Response, appView: AppView, approvals: Approvals,
     handle: String, version: String | null, path: String | null, source: boolean): Future<void> {
+  // Each step's time goes in a Server-Timing header, for the browser's network panel.
+  var started = monotonic();
   let detail = await appView.getPackage(handle);
+  res.addTiming('package', monotonic() - started);
   if (detail == null) {
     notFound(res, context, `No package here has the handle ${handle}.`);
     return;
@@ -112,19 +116,40 @@ async function packageView(context: PageContext, res: Response, appView: AppView
     notFound(res, context, `${handle} has no release ${version}.`);
     return;
   }
-  // The handles of the dependencies this App View holds, to link to them.
-  let handles = new HashMap<String, String>();
+  started = monotonic();
+  let name = found.profile?.name ?? found.handle;
+  let record = found.maintainers;
+  // What follows needs only the package's records, so it is all read at once,
+  // and awaited below.
+  let dependencies = new GrowableArray<String>();
+  let accountReads = new GrowableArray<Future<AppViewAccount | null>>();
+  let seen = new HashSet<String>();
   for (let listed in found.releases) {
     for (let dependency in listed.dependencies) {
-      let account = await appView.accountOf(dependency.did);
-      if (account != null) {
-        handles[dependency.did] = account.handle;
+      if (!seen.has(dependency.did)) {
+        seen.add(dependency.did);
+        dependencies.push(dependency.did);
+        accountReads.push(appView.accountOf(dependency.did));
       }
     }
   }
-  let name = found.profile?.name ?? found.handle;
+  let attestersRead = if (record != null) appView.attestersOf(found.did, record) else null;
+  let entriesRead = visibleEntries(context, found.did, null);
+  let contentsRead = if (wanted != null) appView.releaseContents(found.did, wanted, release) else null;
+  let who = context.who;
+  let pendingRead = if (who != null) pendingOf(appView, who.did, found.did) else null;
+  // The App View's admins see which clients published each release.
+  let publicationsRead = if (who != null && context.isAdmin) appView.publications(who.did, found.did) else null;
+
+  // The handles of the dependencies this App View holds, to link to them.
+  let handles = new HashMap<String, String>();
+  for (var i = 0; i < dependencies.length; i += 1) {
+    let account = await accountReads[i];
+    if (account != null) {
+      handles[dependencies[i]] = account.handle;
+    }
+  }
   let named = new GrowableArray<String>();
-  let record = found.maintainers;
   if (record != null) {
     for (let maintainer in record.maintainers) {
       if (maintainer.did != null) {
@@ -133,50 +158,55 @@ async function packageView(context: PageContext, res: Response, appView: AppView
     }
   }
   // Who approved the newest releases, and the one shown: each attester's
-  // repository is asked once per release, so the oldest are left out.
-  let attesters = await appView.attesters(found.did);
-  let approvedBy = new HashMap<String, Array<String>>();
+  // repository is asked once per release, so the oldest are left out. The
+  // releases are asked about at once.
+  let attesters = if (attestersRead != null) await attestersRead else new GrowableArray<String>();
+  let approvalVersions = new GrowableArray<String>();
+  let approvalReads = new GrowableArray<Future<Array<String>>>();
   var checked = 0;
   for (let candidate in found.releases) {
     let candidateVersion = candidate.version.toString();
     if (checked < APPROVALS_SHOWN || candidateVersion == wanted) {
       if (let (true, cid) = found.releaseCids.get(candidateVersion)) {
-        let approvers = await approvals.of(`at://${found.did}/${RELEASE_TYPE}/${candidateVersion}`, cid, attesters);
-        approvedBy[candidateVersion] = approvers;
-        for (let did in approvers) {
-          named.push(did);
-        }
+        approvalVersions.push(candidateVersion);
+        approvalReads.push(approvals.of(`at://${found.did}/${RELEASE_TYPE}/${candidateVersion}`, cid, attesters));
       }
     }
     checked += 1;
   }
-  // The App View's admins see which clients published each release.
+  let approvedBy = new HashMap<String, Array<String>>();
+  for (var i = 0; i < approvalVersions.length; i += 1) {
+    let approvers = await approvalReads[i];
+    approvedBy[approvalVersions[i]] = approvers;
+    for (let did in approvers) {
+      named.push(did);
+    }
+  }
   var publications: HashMap<String, Publication> | null = null;
-  let admin = context.who;
-  if (admin != null && context.isAdmin) {
+  if (publicationsRead != null) {
     let byVersion = new HashMap<String, Publication>();
-    for (let publication in await appView.publications(admin.did, found.did)) {
+    for (let publication in await publicationsRead) {
       byVersion[publication.version] = publication;
     }
     publications = byVersion;
   }
-  let shown = await shownWith(context, await visibleEntries(context, found.did, null), named);
+  let shown = await shownWith(context, await entriesRead, named);
   if (record != null) {
     await addTeamScopes(shown, record.maintainers);
   }
   // A maintainer sees the releases waiting for approval.
   var waiting: HTMLPartial | null = null;
-  let who = context.who;
-  if (who != null) {
+  if (pendingRead != null) {
     let rows = new GrowableArray<PendingRow>();
-    for (let held in await pendingOf(appView, who.did, found.did)) {
+    for (let held in await pendingRead) {
       rows.push(new PendingRow(found.handle, name, held));
     }
     if (rows.length > 0) {
       waiting = await pendingTable(context, rows, false);
     }
   }
-  let contents = if (wanted != null) await appView.releaseContents(found.did, wanted) else null;
+  let contents = if (contentsRead != null) await contentsRead else null;
+  res.addTiming('reads', monotonic() - started);
   var opened: HTMLPartial | null = null;
   var shownPath: String | null = null;
   if (path != null) {
@@ -196,7 +226,9 @@ async function packageView(context: PageContext, res: Response, appView: AppView
     if (listed != null) {
       // An image is shown from its bytes' URL, and a file too large to show is linked to; only text is read.
       let read = !IMAGE_TYPES.has(extensionOf(trimmed)) && listed.size <= MAX_FILE_SHOWN as i64;
+      started = monotonic();
       let bytes = if (read) await appView.releaseFile(found.did, wanted as String, trimmed) else null;
+      res.addTiming('file', monotonic() - started);
       opened = fileView(found.handle, found.did, name, wanted as String, contents as ReleaseContents, listed, bytes, source);
       shownPath = trimmed;
     } else if (directory) {

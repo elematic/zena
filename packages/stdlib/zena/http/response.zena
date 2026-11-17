@@ -6,7 +6,8 @@ import { Option, Some } from 'zena:core';
 import { Stream } from 'zena:stream';
 import { HTMLPartial } from './html.zena';
 import { CookieOptions, serializeCookie } from './cookie.zena';
-import { nanoseconds } from 'zena:time';
+import { Duration, nanoseconds } from 'zena:time';
+import { div } from 'zena:math';
 
 /**
  * Valid body representations for a response.
@@ -109,6 +110,16 @@ export class Response {
     let values = new GrowableArray<String>(1);
     values.push(value);
     headers[key] = values;
+  }
+
+  /**
+   * Appends a `Server-Timing` entry: `name`, which took `duration`, in
+   * milliseconds to a tenth (`name;dur=12.3`), which a browser's network
+   * panel shows beside the request.
+   */
+  addTiming(name: String, duration: Duration): void {
+    let tenths = div(duration as i64, 100000 as i64);
+    this.appendHeader('server-timing', `${name};dur=${div(tenths, 10 as i64)}.${tenths % (10 as i64)}`);
   }
 
   /**
