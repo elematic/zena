@@ -14,7 +14,8 @@ of its own.
 
 The source is `packages/zena-cli/zena/`: `main.zena` reads the command
 line and dispatches to `compile.zena`, `run.zena`, `test-run.zena` and
-`bench-run.zena`, and `env.zena` holds what the host tells the module.
+`bench-run.zena`, and to `pkg/command.zena` for the `zena pkg` commands
+in `pkg/`, and `env.zena` holds what the host tells the module.
 
 ## The command before
 
