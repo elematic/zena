@@ -21,7 +21,7 @@ with Zena-hosted variants for JavaScript and the Component Model:
 | **`zena-component`** (default) | Component    | UTF-8/WTF-8 `ByteArray` views (lowered via Canonical ABI) | `zena-runtime` (`zena-cli`, `zena-run`) |
 
 Target definitions and capability predicates live in
-`packages/zena-compiler/zena/lib/targets.zena`.
+`packages/compiler/zena/lib/targets.zena`.
 
 ---
 
@@ -205,7 +205,7 @@ Measured at `-O2` across minimal workloads:
 ## 6. Test Coverage
 
 - **`zena-js` & `js` in Node.js**:
-  - `packages/zena-compiler/zena/test/portable_semantics.zena` checks all
+  - `packages/compiler/zena/test/portable_semantics.zena` checks all
     `tests/language/semantics/` files against `zena-js`.
   - `packages/language-service/` compiles `lsp.wasm` with `--target zena-js` and
     exposes `compileToWasmForTarget` / `checkForTarget`.
@@ -213,18 +213,18 @@ Measured at `-O2` across minimal workloads:
     and zero-import `WebAssembly.instantiate(bytes, {}, ...)` execution on `js`
     (`pure_js_target_test.ts`).
 - **`zena-component`**:
-  - `packages/zena-compiler/zena/test/portable_execution.zena` compiles and runs
+  - `packages/compiler/zena/test/portable_execution.zena` compiles and runs
     all `tests/language/execution/` tests with `zena-component`.
   - `packages/stdlib/tests/` and `packages/zena-cli/tests/` exercise WASI 0.3
     and `zena:host@1.0.0` interfaces.
-  - `npm run test:fixpoint -w @zena-lang/zena-compiler` verifies Stage B ≡
+  - `npm run test:fixpoint -w @zena-lang/compiler-zena` verifies Stage B ≡
     Stage C self-hosted compiler parity.
 - **`component`**:
-  - `packages/zena-compiler/src/scripts/component-e2e.ts` compiles WIT fixtures
+  - `packages/compiler/src/scripts/component-e2e.ts` compiles WIT fixtures
     with `--target component` and runs them under `wasmtime`.
 - **`core`**:
   - `benchmarks/zena/` compiles all benchmark workloads with `-O2 --target core`.
-  - `packages/zena-compiler/src/scripts/external-functions-test.ts` and
-    `packages/zena-compiler/zena/test/binary-size_test.zena` verify core module
+  - `packages/compiler/src/scripts/external-functions-test.ts` and
+    `packages/compiler/zena/test/binary-size_test.zena` verify core module
     imports and binary sizes across `core`, `js`, `zena-js`, `component`, and
     `zena-component`.

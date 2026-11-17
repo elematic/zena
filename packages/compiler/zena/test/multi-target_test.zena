@@ -1,0 +1,342 @@
+/**
+ * One compiler, several targets.
+ *
+ * A target is a property of a compile, not of a compiler: `compile`
+ * takes it, and the compiler keeps a `CompilerTarget` — a resolver, a
+ * library set and the scopes over it — for each target it is asked for.
+ *
+ * What makes that more than bookkeeping is that a specifier does not
+ * name one library. `zena:memory` is the free-list allocator on
+ * `core` and the library that delegates to the component's
+ * memory on `component`; `zena:console` is a no-op on `js`, the host's
+ * on `zena-js`, and the component's elsewhere; `zena:fs` exists on
+ * `component` and `zena-component` and nowhere else. So the same path
+ * means a different library on each target, and the library sets must
+ * not share a cache entry.
+ *
+ * These tests use the real standard library, because the virtual
+ * libraries are what is under test.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue, isFalse, equal } from 'zena:assert';
+import { SourceFile } from '../lib/library-loader.zena';
+import {
+  Compiler, ProgramCheckResult, checkCompilation, createCompiler,
+} from '../lib/compiler.zena';
+import { loadWorkspace } from '../lib/package-manifest.zena';
+import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { PlainHost, stdlibRoot } from './test-utils.zena';
+import { bytesEqual } from 'zena:core';
+
+let fixtures = 'packages/compiler/test-files/multi-target';
+
+async function newCompiler() {
+  let host = new PlainHost();
+  return createCompiler(host, {
+    stdlibRoot,
+    packages: await loadWorkspace(host, '.'),
+  });
+}
+
+function errorsOf(checked: ProgramCheckResult) {
+  let messages = new Array<String>();
+  for (let diagnostic in checked.diagnostics) {
+    if (diagnostic.severity == DiagnosticSeverity.Error) {
+      messages.push(diagnostic.message);
+    }
+  }
+  return messages;
+}
+
+/** The first error, for a failure message, or '' when there is none. */
+function firstError(checked: ProgramCheckResult) {
+  let messages = errorsOf(checked);
+  return if (messages.length == 0) { '' } else { messages[0] };
+}
+
+async function compileAndCheck(
+  compiler: Compiler,
+  entry: String,
+  target: String
+) {
+  return checkCompilation(await compiler.compile({entry, target}));
+}
+
+/** The module bytes for an entry on a target, throwing on a check error. */
+async function wasmFor(compiler: Compiler, entry: String, target: String) {
+  let result = await compiler.compile({entry, target});
+  let checked = checkCompilation(result);
+  let failure = firstError(checked);
+  if (failure != '') {
+    throw new Error(`${entry} on ${target}: ${failure}`);
+  }
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in result.files) {
+    let res = checked.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == result.entry.ast.path) { entryUnit = unit; }
+    }
+  }
+  return new BinaryGenerator(target, false)
+      .generate(new Program(units, entryUnit))
+      .toByteArray();
+}
+
+let allocating = `${fixtures}/allocating.zena`;
+let usesFs = `${fixtures}/uses-fs.zena`;
+
+export let tests = suite('one compiler, several targets', () => {
+  test('a virtual specifier resolves to each target\'s own file', async (ctx) => {
+    let compiler = await newCompiler();
+
+    equal(compiler.forTarget('js').resolve('zena:console', '').path,
+        'zena:console/none.zena');
+    equal(compiler.forTarget('zena-js').resolve('zena:console', '').path,
+        'zena:console/js.zena');
+    equal(compiler.forTarget('component').resolve('zena:console', '').path,
+        'zena:console/component.zena');
+    equal(compiler.forTarget('core').resolve('zena:memory', '').path,
+        'zena:memory.zena');
+    equal(compiler.forTarget('component').resolve('zena:memory', '').path,
+        'zena:memory/component.zena');
+
+    // `zena:host/*` resolves to the stdlib's `host-wit` WIT package without
+    // intercepting ordinary `zena:*` stdlib modules.
+    equal(compiler.forTarget('zena-component').resolve('zena:host/stack-trace', '').path,
+        `wit:${stdlibRoot}/host-wit#zena:host/stack-trace`);
+    equal(compiler.forTarget('zena-component').resolve('zena:core', '').path,
+        'zena:core/index.zena');
+  });
+
+  test('an unknown or retired target is rejected by name', async (ctx) => {
+    let compiler = await newCompiler();
+    for (let bad in ['freestandng', 'freestanding', 'host', 'zena-cli']) {
+      var message = '';
+      try {
+        await compiler.compile({entry: allocating, target: bad});
+      } catch (e) {
+        message = e.message;
+      }
+      isTrue(message.contains(bad),
+          `expected '${bad}' to be named, got: ${message}`);
+    }
+  });
+
+  test('one compiler checks the same program on five targets', async (ctx) => {
+    let compiler = await newCompiler();
+    for (let target in ['core', 'js', 'zena-js', 'component', 'zena-component']) {
+      let checked = await compileAndCheck(compiler, allocating, target);
+      let failure = firstError(checked);
+      equal(failure, '', `${target}: ${failure}`);
+      equal(checked.settings.target, target);
+    }
+    // Five library sets, built on demand and kept.
+    equal(compiler.compiledTargets.length, 5);
+  });
+
+  test('each target keeps its own library for a shared path', async (ctx) => {
+    let compiler = await newCompiler();
+    await compileAndCheck(compiler, allocating, 'zena-js');
+    await compileAndCheck(compiler, allocating, 'component');
+
+    let zenaJs = compiler.forTarget('zena-js');
+    let component = compiler.forTarget('component');
+
+    // The virtual library each target picked is loaded on that target
+    // and absent from the other.
+    isTrue(zenaJs.getSourceFile('zena:console/js.zena') != null,
+        'zena-js loaded the host console');
+    isTrue(component.getSourceFile('zena:console/js.zena') == null,
+        'the component target did not load the host console');
+    isTrue(component.getSourceFile('zena:console/component.zena') != null,
+        'the component target loaded the component console');
+
+    // A path both targets do load is two distinct files: same source,
+    // separately scoped, because what it imports differs by target.
+    let jsEntry = zenaJs.getSourceFile(allocating) as SourceFile;
+    let componentEntry = component.getSourceFile(allocating) as SourceFile;
+    equal(jsEntry.source, componentEntry.source);
+    isFalse(jsEntry === componentEntry,
+        'the entry is a separate SourceFile per target');
+    isFalse(jsEntry.ast === componentEntry.ast,
+        'each target parsed its own AST');
+  });
+
+  test('a library only one target has resolves only there', async (ctx) => {
+    let compiler = await newCompiler();
+
+    let onComponent = await compileAndCheck(compiler, usesFs, 'component');
+    let failure = firstError(onComponent);
+    equal(failure, '', failure);
+
+    // `zena:fs` has no entry for `js`, so the import names nothing.
+    // The same compiler reports it, having just checked the file clean
+    // on the target that does have it.
+    let onJs = await compileAndCheck(compiler, usesFs, 'js');
+    isTrue(errorsOf(onJs).length > 0,
+        'expected zena:fs to be unavailable on js');
+  });
+
+  test('a target emits the same bytes whatever else was compiled', async (ctx) => {
+    // Symbol and node ids are per target, so a compile must not depend
+    // on which other targets the compiler was asked for first.
+    let alone = await wasmFor(await newCompiler(), allocating, 'core');
+
+    let shared = await newCompiler();
+    await compileAndCheck(shared, allocating, 'component');
+    await compileAndCheck(shared, usesFs, 'zena-component');
+    // Two whole library sets' worth of work before the one under test, or
+    // there would be nothing for it to have been perturbed by.
+    equal(shared.compiledTargets.length, 2);
+    let after = await wasmFor(shared, allocating, 'core');
+
+    isTrue(bytesEqual(alone, after),
+        `core output changed: ${i32ToString(alone.length)} bytes alone, ` +
+        `${i32ToString(after.length)} after compiling other targets`);
+  });
+
+  test('targets load different files even when they emit the same bytes', async (ctx) => {
+    // `allocating.zena` reaches nothing target-specific, so `js`, `zena-js`,
+    // and `core` emit the same module — they differ only in the prelude's
+    // `zena:console`, which none of the compiles call.
+    let compiler = await newCompiler();
+    let js = await wasmFor(compiler, allocating, 'js');
+    let zenaJs = await wasmFor(compiler, allocating, 'zena-js');
+    let core = await wasmFor(compiler, allocating, 'core');
+    isTrue(bytesEqual(js, core),
+        'js and core should emit identical bytes for a hostless program');
+    isTrue(bytesEqual(zenaJs, core),
+        'zena-js and core should emit identical bytes for a hostless program');
+
+    let jsFiles = compiler.forTarget('js');
+    let zenaJsFiles = compiler.forTarget('zena-js');
+    let coreFiles = compiler.forTarget('core');
+    isTrue(jsFiles.getSourceFile('zena:console/none.zena') != null,
+        'js loaded the no-op console');
+    isTrue(jsFiles.getSourceFile('zena:console/js.zena') == null,
+        'js did not load the host console');
+    isTrue(zenaJsFiles.getSourceFile('zena:console/js.zena') != null,
+        'zena-js loaded the host console');
+    isTrue(coreFiles.getSourceFile('zena:console/js.zena') == null,
+        'core did not load the host console');
+    isTrue(coreFiles.getSourceFile('zena:console/component.zena') != null,
+        'core loaded the component console');
+  });
+
+  test('a check result carries forward within a target', async (ctx) => {
+    let compiler = await newCompiler();
+    let first = checkCompilation(
+        await compiler.compile({entry: allocating, target: 'js'}));
+    let second = checkCompilation(
+        await compiler.compile({entry: usesFs, target: 'js'}), first);
+
+    // The standard library was checked once: every file the second
+    // compile shares with the first carries its CheckResult forward,
+    // which is the same object.
+    var carried = 0;
+    for (let path in first.results.keys()) {
+      if (let (true, later) = second.results.get(path)) {
+        if (later === first.results[path]) { carried += 1; }
+      }
+    }
+    isTrue(carried > 20,
+        `expected the stdlib to carry forward, ${i32ToString(carried)} files did`);
+  });
+
+  test('a check result does not carry across targets', async (ctx) => {
+    // Both targets key their results by file path and mean different
+    // libraries by the same path, so threading one into the other has to
+    // be refused rather than mixed in.
+    let compiler = await newCompiler();
+    let onJs = checkCompilation(await compiler.compile({entry: allocating, target: 'js'}));
+    let onComponent = checkCompilation(
+        await compiler.compile({entry: allocating, target: 'component'}), onJs);
+
+    let failure = firstError(onComponent);
+    equal(failure, '', failure);
+    equal(onComponent.settings.target, 'component');
+    // A carried result would have been reused; a dropped one is checked
+    // afresh, so no result object is shared with the js compile.
+    for (let path in onComponent.results.keys()) {
+      if (let (true, earlier) = onJs.results.get(path)) {
+        isFalse(earlier === onComponent.results[path],
+            `${path} was carried across targets`);
+      }
+    }
+    isFalse(onComponent.sharedState === onJs.sharedState,
+        'the two targets share no checker state');
+  });
+
+  test('a check result does not carry across checking flags', async (ctx) => {
+    // `warnUnnecessaryCasts` changes the diagnostics a check produces,
+    // so it belongs to the compiler and its results are not
+    // interchangeable with another compiler's.
+    let host = new PlainHost();
+    let packages = await loadWorkspace(host, '.');
+    let quiet = createCompiler(host, {stdlibRoot, packages});
+    let warning = createCompiler(host, {
+      stdlibRoot,
+      packages,
+      warnUnnecessaryCasts: true,
+    });
+
+    let fromQuiet = checkCompilation(
+        await quiet.compile({entry: allocating, target: 'js'}));
+    isFalse(fromQuiet.settings.warnUnnecessaryCasts);
+
+    let fromWarning = checkCompilation(
+        await warning.compile({entry: allocating, target: 'js'}), fromQuiet);
+    isTrue(fromWarning.settings.warnUnnecessaryCasts);
+    isFalse(fromWarning.sharedState === fromQuiet.sharedState,
+        'the warning compile reused the other setting\'s checker state');
+  });
+
+  test('a virtual library resolves to the implementation this compile linked',
+      async (ctx) => {
+    // What a shared check result will need from codegen. A Symbol
+    // carries the implementation its own compile resolved
+    // (`zena:console/host.zena`), and a compile for another target has
+    // a different library under that name. `Program.unitFor` maps the
+    // path id back through the manifest to the library, so the unit
+    // it answers with is this compile's.
+    let compiler = await newCompiler();
+    let checked = await compileAndCheck(compiler, allocating, 'component');
+    let result = await compiler.compile({entry: allocating, target: 'component'});
+
+    let units = new Array<CompilationUnit>();
+    for (let file in result.files) {
+      let res = checked.results[file.path];
+      if (res != null) {
+        units.push({ast: file.ast, model: res.model});
+      }
+    }
+    let program = new Program(units, null);
+
+    // The component target linked the component console, so that is
+    // what it answers with — asked by its own path, by the library name,
+    // and by the path of the implementation it did *not* link.
+    let own = program.unitFor('zena:console/component.zena');
+    isTrue(own != null, 'the linked implementation resolves by its own path');
+    equal((own as CompilationUnit).ast.path, 'zena:console/component.zena');
+
+    let byModule = program.unitFor('zena:console');
+    isTrue(byModule != null, 'the library name resolves');
+    equal((byModule as CompilationUnit).ast.path, 'zena:console/component.zena');
+
+    let byOtherImpl = program.unitFor('zena:console/js.zena');
+    isTrue(byOtherImpl != null,
+        'the other target\'s implementation path resolves to this one');
+    equal((byOtherImpl as CompilationUnit).ast.path,
+        'zena:console/component.zena');
+
+    // A library that is not virtual still answers for itself only.
+    isTrue(program.unitFor('zena:nonexistent/thing.zena') == null,
+        'an unknown path resolves to nothing');
+  });
+});

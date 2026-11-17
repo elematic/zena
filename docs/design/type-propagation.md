@@ -146,7 +146,7 @@ Three checks find the rewrite correct:
   normally compiles at `-O1`; this runs it at `-O2`:
 
   ```sh
-  ZENA_TEST_OPT_LEVEL=2 npm run test:execution -w @zena-lang/zena-compiler
+  ZENA_TEST_OPT_LEVEL=2 npm run test:execution -w @zena-lang/compiler-zena
   ```
 
 - `zena/test/type-propagation_test.zena` checks a dispatch that only

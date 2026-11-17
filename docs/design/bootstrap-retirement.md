@@ -3,7 +3,9 @@
 ## Status
 
 - **Status**: **Complete (2026-08-06)** — historical; the standing
-  architecture is [bootstrapping.md](./bootstrapping.md)
+  architecture is [bootstrapping.md](./bootstrapping.md). The paths are as
+  they were: the self-hosted compiler has since moved from
+  `packages/zena-compiler` to `packages/compiler`.
 - **Date**: 2026-08-04
 - **Goal**: PLAN.md Phase 1 — retire `packages/compiler` (TypeScript) and build
   Zena only with Zena.

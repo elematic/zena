@@ -131,7 +131,7 @@ export default async function (eleventyConfig) {
   // themselves; esbuild leaves the expression alone, so at runtime it resolves
   // against the bundle's own URL — which is why this lands in `js/`.
   eleventyConfig.addPassthroughCopy({
-    '../compiler/compiler.wasm': 'js/compiler.wasm',
+    '../compiler-js/compiler.wasm': 'js/compiler.wasm',
   });
 
   /* Search index & precompression ---------------------------------------- */

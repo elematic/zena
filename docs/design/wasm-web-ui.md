@@ -701,7 +701,7 @@ import { html, svg, nothing, TemplateResult, TemplateValue } from 'zena:web-temp
 `html` and `svg` are template tags returning a `TemplateResult`, which holds
 the `TemplateStringsArray` and a `FixedArray<TemplateValue>` of the
 interpolated values. The compiler already caches a `TemplateStringsArray`
-per tagged-template call site ([templates.zena](../../packages/zena-compiler/zena/lib/codegen/ir/templates.zena)),
+per tagged-template call site ([templates.zena](../../packages/compiler/zena/lib/codegen/ir/templates.zena)),
 which is the template identity the protocol needs, so the library adds no
 registry.
 

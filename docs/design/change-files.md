@@ -73,7 +73,7 @@ to rebase.
 Versions are also written by hand, and the manifests in one directory
 disagree. `packages/zena-cli` is `0.0.1-preview.1` in `zena-package.json`,
 `0.0.1` in `package.json` and `0.1.0` in `Cargo.toml`. The five npm
-packages that are published (`compiler`, `runtime`, `playground`,
+packages that are published (`compiler-js`, `runtime`, `playground`,
 `codemirror`, `wasm-web-ui`) are at `0.0.2-preview.1` in the repository,
 and `@zena-lang/compiler` is on npm as `0.0.1`.
 
@@ -112,12 +112,12 @@ A configuration file, `.changes/config.json`, lists the units:
   "groups": {
     "toolchain": {
       "versions": "patch",
-      "units": ["zena-cli", "zena-compiler", "zena-runtime", "..."],
-      "held": ["compiler", "runtime", "playground"]
+      "units": ["zena-cli", "compiler", "zena-runtime", "..."],
+      "held": ["compiler-js", "runtime", "playground"]
     }
   },
   "units": {
-    "zena-compiler": {
+    "compiler": {
       "paths": [
         "packages/stdlib",
         "docs/language-reference.md",
@@ -145,7 +145,7 @@ as `.changes/raw-mode-keys.md`. It has a `##` heading for each unit and,
 under that, the Keep a Changelog sections that have entries:
 
 ```md
-## zena-compiler
+## compiler
 
 ### Removed
 
@@ -206,12 +206,12 @@ version (language-versions.md).
 The group holds the units with a strong dependency on the compiler or on
 its output:
 
-- `zena-compiler`, with the standard library
+- `compiler`, with the standard library
 - `zena-cli`
 - `zena-runtime`, and the hosts built on it: `zena-run`, `zenafx`
 - `zena-formatter`, `zena-lint`, `zenadoc`, `language-service`, which
   read the compiler's syntax tree
-- the npm packages `compiler` and `runtime`, which are the compiler and
+- the npm packages `compiler-js` and `runtime`, which are the compiler and
   the runtime for its JavaScript target, and `playground`, which bundles
   both
 
@@ -304,7 +304,7 @@ The toolchain has been released once, as `0.0.1-preview.1`, and
 `@zena-lang/compiler` is on npm as `0.0.1` from before that. The plan:
 
 1. `0.0.1`, after as many preview releases as testing needs: the
-   toolchain group with its npm units (`compiler`, `runtime`,
+   toolchain group with its npm units (`compiler-js`, `runtime`,
    `playground`) held, and the independent Zena packages. The held units'
    manifests go back to the versions npm has.
 2. `0.0.2`: the npm units come off the `held` list, and the whole group
@@ -423,7 +423,7 @@ A program can now ask a question and read the answer key by key. ...
 
 ## Toolchain
 
-### zena-compiler
+### compiler
 
 #### Removed
 

@@ -141,7 +141,7 @@ resource gpu-adapter {
 
 Zena's component lowering currently supports free async functions
 (`async func(...) -> T`), but async methods defined on resources are marked as
-pending in `packages/zena-compiler/zena/lib/wit-module-synth.zena`:
+pending in `packages/compiler/zena/lib/wit-module-synth.zena`:
 
 ```zena
 if (func.isAsync) {

@@ -216,7 +216,7 @@ comparisons, `min`/`max`, and the shifts.
 
 ### One table
 
-`packages/zena-compiler/zena/lib/simd.zena` holds every instruction's
+`packages/compiler/zena/lib/simd.zena` holds every instruction's
 opcode, operand shape, result type and natural alignment. Two consumers
 read it: `isValidIntrinsic`, which decides whether an `@intrinsic` name
 is real, and the ZIR lowering router. A name that type-checks is

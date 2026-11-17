@@ -647,7 +647,7 @@ Everything before (parsing, checking) is untouched.
 > **Status (2026-08): done, not planned.** Both shipped and are self-hosted.
 > `packages/zena-formatter/zena/` is the formatter; and
 > `packages/language-service/zena/lsp.zena` is the language server, written in
-> Zena against `zena-compiler`, `zena-formatter` and the stdlib — see
+> Zena against `compiler`, `zena-formatter` and the stdlib — see
 > [lsp.md](lsp.md). The TypeScript in `packages/language-service` is a JS shim
 > exposing a JS API to the VS Code extension; it depends on
 > `@zena-lang/runtime`, not on the bootstrap compiler. The section below is
@@ -1317,7 +1317,7 @@ than discovering instantiations on its own.
   self-hosted compilers. A comprehensive porting plan maps ~278 tests from the
   bootstrap checker's unit tests to portable format. See
   `tests/language/semantics/PLAN.md`.
-- **Checker API tests** (`packages/zena-compiler/zena/test/checker_test.zena`) —
+- **Checker API tests** (`packages/compiler/zena/test/checker_test.zena`) —
   self-hosted unit tests that exercise the `checkModule()` API, `SemanticModel`
   queries, and `Diagnostic` output directly.
 
