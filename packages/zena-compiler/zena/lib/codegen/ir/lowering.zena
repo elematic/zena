@@ -9700,10 +9700,6 @@ export final class FunctionLowerer {
     if (this.#isZeroWidthExpr(expr)) {
       return this.#lowerOptionalVoidChain(expr);
     }
-    var exprVt = this.#exprValType(expr);
-    if (!isRefValType(exprVt)) {
-      this.#bail('optional primitive result');
-    }
     let (baseExpr, steps) = this.#collectOptionalChain(expr);
     let mergeSyms = this.#assignedEnvSyms(expr);
     let (value, missB, missParams, saved) =
@@ -9713,6 +9709,10 @@ export final class FunctionLowerer {
     }
     if (missB < 0) {
       return value;
+    }
+    var exprVt = this.#exprValType(expr);
+    if (!isRefValType(exprVt)) {
+      this.#bail('optional primitive result');
     }
     exprVt = match (exprVt) {
       case ValTypeRef as r: new ValTypeRefNull(r.target)
