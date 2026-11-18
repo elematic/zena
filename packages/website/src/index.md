@@ -36,30 +36,6 @@ title: Home
             <a class="button medium alt" href="https://github.com/elematic/zena" target="_blank" rel="noreferrer">View on GitHub</a>
           </div>
         </div>
-        <div class="hero-install">
-          <p class="hero-install-label">Install the CLI <a href="/guide/install/">(more ways)</a></p>
-<zena-code-group class="code-group">
-
-<figure>
-<figcaption>macOS &amp; Linux</figcaption>
-
-```sh
-curl -fsSL https://zena-lang.dev/install.sh | sh
-```
-
-</figure>
-
-<figure>
-<figcaption>Windows</figcaption>
-
-```powershell
-irm https://zena-lang.dev/install.ps1 | iex
-```
-
-</figure>
-
-</zena-code-group>
-        </div>
       </div>
       <div class="hero-code">
         <zena-code-carousel>
@@ -315,6 +291,42 @@ console.log(`Remaining: ${acct.withdraw(35)}`);
         </a>
       </div>
     </div>
+  </div>
+</div>
+
+<div class="home-section home-install">
+  <div class="container prose">
+
+## Install
+
+One command installs the `zena` CLI, with the compiler, standard library,
+test runner, formatter, linter, package manager and language server in it:
+
+<zena-code-group class="code-group">
+
+<figure>
+<figcaption>macOS &amp; Linux</figcaption>
+
+```sh
+curl -fsSL https://zena-lang.dev/install.sh | sh
+```
+
+</figure>
+
+<figure>
+<figcaption>Windows (PowerShell)</figcaption>
+
+```powershell
+irm https://zena-lang.dev/install.ps1 | iex
+```
+
+</figure>
+
+</zena-code-group>
+
+[More ways to install](/guide/install/), including the VS Code extension, or
+[get started](/guide/getting-started/).
+
   </div>
 </div>
 
