@@ -11,15 +11,15 @@ Partly built, in `packages/changes`:
   (`packages/cli/dev/check-release-version.zena`) takes a release's
   notes from the notes file. A path dependency states the range it is
   published with, `zena pkg publish` writes it, and `check` fails on a
-  range that leaves out the version at its path.
+  range that leaves out the version at its path. `version` changes the
+  ranges as [Dependents](#dependents) describes, releases the dependents
+  of a breaking release, and acts on `Requires:`.
 - Not built: `add`; in the release notes, the links to pull requests and
   the packages released between two toolchain releases; `status` listing
-  breaking entries with no prose; `version` changing dependents' ranges,
-  so a release leaves the exact ranges inside the toolchain group behind
-  until they are edited by hand, and `Requires:`, which is read and not
-  acted on; the lockfiles and `versions.zena`,
-  which `version` asks the person to refresh; the check that a pull
-  request adds a change file.
+  breaking entries with no prose; ranges in `package.json` and
+  `Cargo.toml`, which `version` does not change; the lockfiles and
+  `versions.zena`, which `version` asks the person to refresh; the check
+  that a pull request adds a change file.
 
 Changes are recorded in change files. The changelogs have no
 `## [Unreleased]` heading, and `version` refuses to release a unit whose
@@ -432,6 +432,17 @@ version its ranges admit.
 Units in a group depend on each other at the group's version, and each
 release rewrites those ranges. They are released together in any case, so
 this adds no releases.
+
+### Preview releases of a dependency
+
+A range admits a pre-release only when it names one of the same version,
+so `terminal`'s `~0.0.3` on `semver` leaves out `0.0.5-preview.1`. A
+preview release of `semver` therefore adds the preview to the range as an
+alternative, `~0.0.3 || 0.0.5-preview.1`: `terminal` works with the
+preview and with everything it worked with before. A later preview takes
+the earlier one's place, and the release of `0.0.5` removes the
+alternative. The entries are pending during a preview, so a breaking
+entry starts the range again only at that release.
 
 ## Release notes
 

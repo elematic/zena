@@ -1,0 +1,366 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {HashMap} from 'zena:collections';
+import {Version} from 'zena-lang:semver';
+import {
+  ChangeFile,
+  Problem,
+  parseChangeFile,
+} from 'zena-lang:changes/change-file';
+import {Config} from 'zena-lang:changes/config';
+import {
+  DependencyLink,
+  rangeFrom,
+  setDependencyRange,
+} from 'zena-lang:changes/dependencies';
+import {ReleasePlan, formatStatus, planReleases} from 'zena-lang:changes/plan';
+import {RangeUpdate, rangeUpdates} from 'zena-lang:changes/ranges';
+
+let CONFIG = '{"groups": {"toolchain": {"versions": "patch", "units": ["compiler", "formatter", "lint"]}},'
+  + ' "units": {"semver": {}, "terminal": {}, "zebra": {}, "wit-parser": {}}}';
+
+/** Who depends on whom, with the ranges before a release. */
+let LINKS = [
+  new DependencyLink('formatter', 'compiler', 'compiler', '0.0.2'),
+  new DependencyLink('lint', 'compiler', 'compiler', '0.0.2'),
+  new DependencyLink(
+    'compiler',
+    'zena-lang:wit-parser',
+    'wit-parser',
+    '~0.0.2'
+  ),
+  new DependencyLink('terminal', 'zena-lang:semver', 'semver', '~0.0.2'),
+  new DependencyLink('zebra', 'terminal', 'terminal', '~0.0.2')
+];
+
+function versions(pairs: Array<(String, String)>) {
+  let map = new HashMap<String, Version>();
+  for (let (unit, version) in pairs) {
+    map[unit] = Version.parse(version);
+  }
+  return map;
+}
+
+let NOW = [
+  ('compiler', '0.0.2'),
+  ('formatter', '0.0.2'),
+  ('lint', '0.0.2'),
+  ('semver', '0.0.4'),
+  ('terminal', '0.0.3'),
+  ('zebra', '0.0.2'),
+  ('wit-parser', '0.0.2')
+];
+
+function plan(text: String) {
+  let problems = new GrowableArray<Problem>();
+  let files = new GrowableArray<ChangeFile>();
+  files.push(parseChangeFile('.changes/0.md', text, problems));
+  equal(problems.length, 0);
+  return planReleases(Config.parse(CONFIG), files, versions(NOW), LINKS);
+}
+
+/** The updates a release of `text`'s entries makes, as `unit name range` lines. */
+function updates(text: String, released: Array<(String, String)>, preview: boolean = false) {
+  let found = rangeUpdates(
+    Config.parse(CONFIG),
+    LINKS,
+    plan(text),
+    versions(released),
+    versions(NOW),
+    preview
+  );
+  var out = '';
+  for (let update in found) {
+    out = `${out}${update.unit} ${update.name} ${update.range}\n`;
+  }
+  return out;
+}
+
+let MANIFEST = '{\n'
+  + '  "name": "terminal",\n'
+  + '  "version": "0.0.3",\n'
+  + '  "dependencies": {\n'
+  + '    "zena-lang:semver": {\n'
+  + '      "path": "../semver",\n'
+  + '      "version": "~0.0.2"\n'
+  + '    },\n'
+  + '    "markdown": {\n'
+  + '      "version": "~0.0.1",\n'
+  + '      "path": "../markdown"\n'
+  + '    },\n'
+  + '    "tools": {\n'
+  + '      "path": "../tools"\n'
+  + '    }\n'
+  + '  }\n'
+  + '}\n';
+
+export let tests = suite(
+  'zena-lang:changes/ranges',
+  () => {
+    test(
+      'a range starts with a tilde at 0.0.x and a caret from 0.1.0',
+      () => {
+        equal(rangeFrom(Version.parse('0.0.3')), '~0.0.3');
+        equal(rangeFrom(Version.parse('0.0.3-preview.2')), '~0.0.3-preview.2');
+        equal(rangeFrom(Version.parse('0.2.1')), '^0.2.1');
+        equal(rangeFrom(Version.parse('1.4.2')), '^1.4.2');
+      }
+    );
+
+    test(
+      'sets one dependency\'s range in a manifest and nothing else',
+      () => {
+        let set = setDependencyRange(MANIFEST, 'zena-lang:semver', '~0.0.5')
+          ?? '';
+        equal(set.split('\n')[6], '      "version": "~0.0.5"');
+        equal(set.split('\n')[2], '  "version": "0.0.3",');
+        equal(set.split('\n')[9], '      "version": "~0.0.1",');
+        equal(set.split('\n').length, MANIFEST.split('\n').length);
+
+        // The comma after a version that is not the entry's last line stays.
+        let other = setDependencyRange(MANIFEST, 'markdown', '^0.1.0') ?? '';
+        equal(other.split('\n')[9], '      "version": "^0.1.0",');
+        equal(other.split('\n')[6], '      "version": "~0.0.2"');
+
+        equal(
+          setDependencyRange(MANIFEST, 'tools', '~0.0.5') ?? 'none',
+          'none'
+        );
+        equal(
+          setDependencyRange(MANIFEST, 'nothing', '~0.0.5') ?? 'none',
+          'none'
+        );
+        equal(
+          setDependencyRange(
+            '{"dependencies": {"a": {"path": "../a", "version": "~0.0.1"}}}',
+            'a',
+            '~0.0.2'
+          )
+            ?? 'none',
+          'none'
+        );
+      }
+    );
+
+    test(
+      'a group\'s units depend on each other at the group\'s new version',
+      () => {
+        equal(
+          updates(
+            '## lint\n\n### Fixed\n\n- a\n',
+            [('compiler', '0.0.3'), ('formatter', '0.0.3'), ('lint', '0.0.3')]
+          ),
+          'formatter compiler 0.0.3\nlint compiler 0.0.3\n'
+        );
+        // A preview moves them too, since the manifests state the preview.
+        equal(
+          updates(
+            '## lint\n\n### Fixed\n\n- a\n',
+            [
+              ('compiler', '0.0.3-preview.1'),
+              ('formatter', '0.0.3-preview.1'),
+              ('lint', '0.0.3-preview.1')
+            ],
+            true
+          ),
+          'formatter compiler 0.0.3-preview.1\nlint compiler 0.0.3-preview.1\n'
+        );
+      }
+    );
+
+    test(
+      'a release inside a dependent\'s range changes nothing',
+      () => {
+        equal(
+          updates('## semver\n\n### Added\n\n- a\n', [('semver', '0.0.5')]),
+          ''
+        );
+        equal(
+          updates(
+            '## wit-parser\n\n### Fixed\n\n- a\n',
+            [('wit-parser', '0.0.3')]
+          ),
+          ''
+        );
+      }
+    );
+
+    test(
+      'a breaking release starts its dependents\' ranges again, and releases them',
+      () => {
+        let text = '## semver\n\n### Changed\n\n- **Breaking:** Ranges.\n';
+        let releases = plan(text);
+        equal(releases.length, 2);
+        equal(releases[0].name, 'semver');
+        equal(releases[1].name, 'terminal');
+        equal(releases[1].units[0].entries.length, 0);
+        equal((releases[1].next as Version).toString(), '0.0.4');
+        equal(
+          updates(text, [('semver', '0.0.5'), ('terminal', '0.0.4')]),
+          'terminal zena-lang:semver ~0.0.5\n'
+        );
+        equal(
+          formatStatus(releases),
+          'semver 0.0.4 -> 0.0.5\n  Changed\n    - **Breaking:** Ranges.\n\n'
+            + 'terminal 0.0.3 -> 0.0.4\n  Updated dependencies.\n\n'
+        );
+      }
+    );
+
+    test(
+      'a preview joins a dependent\'s range, and the release takes it out again',
+      () => {
+        let text = '## semver\n\n### Changed\n\n- **Breaking:** Ranges.\n';
+        // The entries are pending in a preview, so the range keeps its start.
+        equal(
+          updates(
+            text,
+            [('semver', '0.0.5-preview.1'), ('terminal', '0.0.4-preview.1')],
+            true
+          ),
+          'terminal zena-lang:semver ~0.0.2 || 0.0.5-preview.1\nzebra terminal ~0.0.2 || 0.0.4-preview.1\n'
+        );
+
+        let config = Config.parse(CONFIG);
+        let after = [
+          new DependencyLink(
+            'terminal',
+            'zena-lang:semver',
+            'semver',
+            '~0.0.2 || 0.0.5-preview.1'
+          ),
+          new DependencyLink(
+            'zebra',
+            'terminal',
+            'terminal',
+            '~0.0.2 || 0.0.4-preview.1'
+          ),
+          new DependencyLink(
+            'compiler',
+            'zena-lang:wit-parser',
+            'wit-parser',
+            '~0.0.1-preview.1'
+          )
+        ];
+        // A second preview takes the first one's place.
+        let second = rangeUpdates(
+          config,
+          after,
+          plan(text),
+          versions([('semver', '0.0.5-preview.2')]),
+          versions(NOW),
+          true
+        );
+        equal(second.length, 1);
+        equal(second[0].range, '~0.0.2 || 0.0.5-preview.2');
+
+        // The releases: a breaking one starts the range again, and one
+        // inside the range leaves the range as it was before the preview.
+        let final = rangeUpdates(
+          config,
+          after,
+          plan(text),
+          versions(
+            [
+              ('semver', '0.0.5'),
+              ('terminal', '0.0.4'),
+              ('wit-parser', '0.0.3')
+            ]
+          ),
+          versions(NOW),
+          false
+        );
+        equal(final.length, 3);
+        isTrue(
+          final[0]
+            == new RangeUpdate(
+              'terminal',
+              'zena-lang:semver',
+              'semver',
+              '~0.0.5'
+            )
+        );
+        isTrue(
+          final[1] == new RangeUpdate('zebra', 'terminal', 'terminal', '~0.0.2')
+        );
+        // A range that named only a preview starts at the release.
+        isTrue(
+          final[2]
+            == new RangeUpdate(
+              'compiler',
+              'zena-lang:wit-parser',
+              'wit-parser',
+              '~0.0.3'
+            )
+        );
+      }
+    );
+
+    test(
+      'a breaking release of an independent unit releases the group that depends on it',
+      () => {
+        let releases = plan(
+          '## wit-parser\n\n### Removed\n\n- **Breaking:** A function.\n'
+        );
+        equal(releases.length, 2);
+        equal(releases[0].name, 'toolchain');
+        equal(releases[0].units.length, 1);
+        equal(releases[0].units[0].unit.name, 'compiler');
+        equal(releases[0].unchanged.length, 2);
+        equal(releases[1].name, 'wit-parser');
+      }
+    );
+
+    test(
+      'a breaking release inside a group releases no one else for it',
+      () => {
+        let releases = plan(
+          '## compiler\n\n### Removed\n\n- **Breaking:** A node.\n'
+        );
+        equal(releases.length, 1);
+        equal(releases[0].units.length, 1);
+        equal(releases[0].unchanged.length, 2);
+      }
+    );
+
+    test(
+      'Requires starts the range at the version the dependency is released at, or is at',
+      () => {
+        equal(
+          updates(
+            '## terminal\n\nRequires: semver\n\n### Added\n\n- a\n\n## semver\n\n### Added\n\n- b\n',
+            [('semver', '0.0.5'), ('terminal', '0.0.4')]
+          ),
+          'terminal zena-lang:semver ~0.0.5\n'
+        );
+        equal(
+          updates(
+            '## terminal\n\nRequires: semver\n\n### Added\n\n- a\n',
+            [('terminal', '0.0.4')]
+          ),
+          'terminal zena-lang:semver ~0.0.4\n'
+        );
+        // A unit released for the requirement alone says so.
+        let releases = plan('## zebra\n\nRequires: terminal\n');
+        equal(
+          formatStatus(releases),
+          'zebra 0.0.2 -> 0.0.3\n  Updated dependencies.\n  Requires: terminal\n\n'
+        );
+        equal(
+          updates('## zebra\n\nRequires: terminal\n', [('zebra', '0.0.3')]),
+          'zebra terminal ~0.0.3\n'
+        );
+      }
+    );
+
+    test(
+      'a version outside a dependent\'s range starts the range again',
+      () => {
+        equal(
+          updates('## semver\n\n### Added\n\n- a\n', [('semver', '0.1.0')]),
+          'terminal zena-lang:semver ^0.1.0\n'
+        );
+      }
+    );
+  }
+);
