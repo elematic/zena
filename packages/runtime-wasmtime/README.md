@@ -1,7 +1,7 @@
 # zena-runtime
 
 The host side of the `zena-component` compilation target, as a Rust library on
-wasmtime. It is the counterpart of `packages/runtime`, which does the same
+wasmtime. It is the counterpart of `packages/runtime-js`, which does the same
 job for the `zena-js` target in JavaScript.
 
 A component compiled for `zena-component` imports two things from whatever runs

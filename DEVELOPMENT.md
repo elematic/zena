@@ -122,7 +122,7 @@ matches one of these:
 - `packages/runtime-wasmtime` — Rust library: what a compiled Zena module
   needs from its wasmtime host (engine flags, `.cwasm` cache, the
   stack-trace and `zena:process` imports). The Rust counterpart of
-  `packages/runtime`.
+  `packages/runtime-js`.
 - `packages/cli` — Rust host that executes the compiler and Zena
   programs under wasmtime; also the test, bench and doc runners.
 - `packages/zena-run` — Rust host that runs one compiled module and

@@ -25,7 +25,7 @@ import {
 } from '../index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// Compiled test files live in packages/runtime/test/.
+// Compiled test files live in packages/runtime-js/test/.
 const pkgRoot = join(__dirname, '..');
 const repoRoot = join(pkgRoot, '..', '..');
 const lspWasmPath =

@@ -126,7 +126,7 @@ string passing works via the import/export pattern.
 `@zena-lang/runtime` already provides string reading utilities:
 
 ```typescript
-// packages/runtime/src/index.ts
+// packages/runtime-js/src/index.ts
 export function createStringReader(exports: WebAssembly.Exports) {
   const getByte = exports.$stringGetByte as (str: unknown, i: number) => number;
   return (strRef: unknown, length: number): string => {

@@ -273,7 +273,7 @@ Workspace {
     "packages/compiler",
     "packages/stdlib",
     "packages/cli",
-    "packages/runtime",
+    "packages/runtime-js",
   ]
 }
 

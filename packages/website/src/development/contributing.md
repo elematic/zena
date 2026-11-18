@@ -121,7 +121,7 @@ An npm monorepo managed with [Wireit](https://github.com/google/wireit).
 | `packages/formatter`        | Zena formatter, written in Zena          |
 | `packages/stdlib`           | Standard library                         |
 | `packages/cli`              | Native Rust CLI, runs Zena via Wasmtime  |
-| `packages/runtime`          | JS runtime helpers                       |
+| `packages/runtime-js`       | JS runtime helpers                       |
 | `packages/language-service` | Language server                          |
 | `packages/website`          | This site                                |
 | `packages/wit-parser`       | The WIT parser used by the compiler      |

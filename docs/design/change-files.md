@@ -92,7 +92,7 @@ and the toolchain are at `0.0.1-preview.1`, in every manifest of their
 directories. The only package published anywhere is
 `@zena-lang/compiler` (`packages/compiler-js`), which is on npm as
 `0.0.1`. That package and the other four npm packages meant for
-publishing (`runtime`, `playground`, `codemirror`, `wasm-web-ui`) are at
+publishing (`runtime-js`, `playground`, `codemirror`, `wasm-web-ui`) are at
 `0.0.2-preview.1` in the repository.
 
 The one release that exists is the toolchain's
@@ -131,7 +131,7 @@ A configuration file, `.changes/config.json`, lists the units:
     "toolchain": {
       "versions": "patch",
       "units": ["cli", "compiler", "runtime-wasmtime", "..."],
-      "held": ["compiler-js", "runtime", "playground"]
+      "held": ["compiler-js", "runtime-js", "playground"]
     }
   },
   "units": {
@@ -229,7 +229,7 @@ its output:
 - `runtime-wasmtime`, and the hosts built on it: `zena-run`, `zenafx`
 - `formatter`, `lint`, `zenadoc`, `language-service`, which
   read the compiler's syntax tree
-- the npm packages `compiler-js` and `runtime`, which are the compiler and
+- the npm packages `compiler-js` and `runtime-js`, which are the compiler and
   the runtime for its JavaScript target, and `playground`, which bundles
   both
 
@@ -322,7 +322,7 @@ The toolchain has been released once, as `0.0.1-preview.1`, and
 `@zena-lang/compiler` is on npm as `0.0.1` from before that. The plan:
 
 1. `0.0.1`, after as many preview releases as testing needs: the
-   toolchain group with its npm units (`compiler-js`, `runtime`,
+   toolchain group with its npm units (`compiler-js`, `runtime-js`,
    `playground`) held, and the independent Zena packages. The held units
    stay at `0.0.2-preview.1`.
 2. `0.0.2`: the npm units come off the `held` list. The group's version
@@ -332,7 +332,7 @@ The toolchain has been released once, as `0.0.1-preview.1`, and
 
 `vscode-zena` does not wait for the second step. It bundles the npm
 packages it depends on until they are released. `wasm-web-ui` depends on
-the npm `runtime`, so its first release under this design follows
+`runtime-js`, so its first release under this design follows
 `0.0.2`.
 
 The changelogs had `## [0.0.1-preview.1]` sections, written by hand
