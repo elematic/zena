@@ -282,6 +282,16 @@ export final class FakeAuthorizationServer {
         if (grant.clientId == clientId) {
           this.#refresh.delete(token);
           this.revoked.push(token);
+          // Revoking ends the session, so its access tokens stop working too.
+          let ended = new GrowableArray<String>();
+          for (let {key, value} in this.#access) {
+            if (value === grant) {
+              ended.push(key);
+            }
+          }
+          for (let access in ended) {
+            this.#access.delete(access);
+          }
         }
       }
       res.body = '';

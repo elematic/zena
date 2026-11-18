@@ -107,15 +107,25 @@ against the CIDs the lockfile pins and the signed proofs its package's PDS
 serves.
 
 Publishing acts as you, through your own atproto account: the one you
-use for Bluesky or any other app. `zena pkg login` signs in with an app
-password, which your PDS issues and can revoke on its own (on bsky.social:
-Settings, Privacy and security, App passwords). It reads the password from
-`--password-stdin`, then `ZENA_APP_PASSWORD`, then the terminal without
-showing it, and keeps the session in `session.json` in the configuration
-directory, readable only by you. `zena pkg logout` ends the session.
+use for Bluesky or any other app. `zena pkg login` signs in with atproto
+OAuth: it opens your browser at your PDS, where you approve, and your PDS
+sends the browser on to the registry's sign-in page, which hands the
+answer to `zena` on your machine. Where there is no browser to open, as
+over SSH, or with `--no-browser`, it prints the address to open in a
+browser elsewhere, and you paste the line the page shows into the
+terminal. `zena` asks to write release attestations to your repository
+and to call the registry as you, and nothing else. A session lasts up to
+two weeks, and then `zena` asks you to sign in again.
+
+With `--password-stdin` or `ZENA_APP_PASSWORD`, it signs in with an app
+password instead, which your PDS issues and can revoke on its own (on
+bsky.social: Settings, Privacy and security, App passwords), for scripts.
+Either way it keeps the session in `session.json` in the configuration
+directory, readable only by you. `zena pkg logout` revokes the session.
 
 ```bash
 zena pkg login alice.bsky.social
+zena pkg login alice.bsky.social --no-browser
 echo "$APP_PASSWORD" | zena pkg login alice.bsky.social --password-stdin
 ```
 

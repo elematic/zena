@@ -6,19 +6,23 @@ To publish, sign in, create a scope for your packages, describe the package in i
 
 ## 1. Sign in to the CLI
 
-Create an app password in your account's settings (on Bluesky, Settings → Privacy and security → App passwords) and sign in with `zena pkg login`:
+Sign in with `zena pkg login` and your handle:
 
 ```sh
 zena pkg login alice.bsky.social
 ```
 
-For scripts or non-interactive shells, pipe the app password over standard input or set `ZENA_APP_PASSWORD`:
+It opens your browser at your account's PDS, where you approve `zena`. Your PDS sends the browser on to this site, which hands the sign-in back to `zena`. On a machine with no browser, as over SSH, or with `--no-browser`, `zena pkg login` prints the address to open in a browser elsewhere, and you paste the line the page then shows into the terminal.
+
+`zena` asks to write release attestations to your repository and to call the registry as you, and nothing else. A session lasts up to two weeks; then `zena` asks you to sign in again.
+
+For scripts, sign in with an app password instead (on Bluesky, Settings → Privacy and security → App passwords), over standard input or in `ZENA_APP_PASSWORD`:
 
 ```sh
 echo "$APP_PASSWORD" | zena pkg login alice.bsky.social --password-stdin
 ```
 
-`zena pkg login` stores the session in `$ZENA_CONFIG_DIR/session.json` (default `~/.config/zena/session.json`) with owner-only file permissions (`0600`). Run `zena pkg logout` at any time to end the session and remove the file.
+`zena pkg login` stores the session in `$ZENA_CONFIG_DIR/session.json` (default `~/.config/zena/session.json`) with owner-only file permissions (`0600`). Run `zena pkg logout` at any time to revoke the session and remove the file.
 
 ## 2. Create a scope
 

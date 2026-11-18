@@ -37,12 +37,23 @@ export interface AccountSession {
   did: String;
   /** The PDS's origin. */
   pds: String;
+  /**
+   * Whether the tokens changed since the session was made or read, so that
+   * whoever keeps it knows to write it again.
+   */
+  refreshed: boolean;
+
+  /** The account's handle, for messages, or its DID when it has none. */
+  handleOrDid(): String;
 
   /** An XRPC client for the PDS that authorizes its requests as the account. */
   client(): XrpcClient;
 
   /** Replaces the session's tokens with new ones from its PDS. */
   refresh(): Future<void>;
+
+  /** The session as JSON, for keeping. It holds the tokens, so it is a secret. */
+  toJson(): JsonObject;
 }
 
 /** An account signed in with a password, and its tokens. */
@@ -69,6 +80,10 @@ export final class Session implements AccountSession {
     let client = new XrpcClient(this.pds);
     client.authorization = `Bearer ${this.accessJwt}`;
     return client;
+  }
+
+  handleOrDid(): String {
+    return this.handle;
   }
 
   refresh(): Future<void> {

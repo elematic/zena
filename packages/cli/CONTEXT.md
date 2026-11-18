@@ -27,8 +27,11 @@ the `zena` command. The design is in
      and `zena pkg update`, which change the dependencies in
      `zena-package.json`, select versions (`package-manager/resolve`), pin
      them and fetch them, and `login.zena`, for `zena pkg login` and
-     `zena pkg logout`, which keep the maintainer's atproto session
-     (`atproto/session`) in the configuration directory, and
+     `zena pkg logout`, which sign the maintainer in with OAuth
+     (`atproto/oauth`, as the client `package-manager/cli-client`
+     describes) or an app password (`atproto/session`), and keep the
+     session in the configuration directory, refreshing an OAuth session
+     under a lock on its file, and
      `publish.zena`, for `zena pkg publish` and `zena pkg create`, which
      call a registry's `dev.zena-lang.registry.*` methods with service-auth
      tokens from that session, `scope.zena`, for `zena pkg scope create` and
@@ -189,7 +192,11 @@ the `zena` command. The design is in
      test's event loop. They compile into one cache that every test and
      run shares (`.zena/test-fixture-cache`), so a fixture compiles again
      only when it, its imports or the compiler change; the commands a test
-     runs get caches of their own in its scratch directory. `cargo test` (`test:cargo`) covers the Rust
+     runs get caches of their own in its scratch directory. A program
+     `zena run` starts sees only the directories `--dir` gives it, so a
+     fixture that writes, such as `tests/fixtures/fake-browser.zena`, which
+     `zena pkg login` opens as `BROWSER`, gets the scratch directory that
+     way. `cargo test` (`test:cargo`) covers the Rust
      crates' own unit tests.
    - A spawn whose `cwd` does not exist fails with
      `could not start <program>: … No such file or directory`, and the

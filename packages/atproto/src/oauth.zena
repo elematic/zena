@@ -425,6 +425,19 @@ export async function finishAuthorization(pending: PendingAuthorization, code: S
 }
 
 /**
+ * What keeps a refresh from racing another program's refresh of the same
+ * session, such as a lock on the file it is kept in. A refresh token can
+ * be used once, so of two programs that refresh at once, one would spend
+ * the token the other then offers. `guard` runs `refresh` while it holds
+ * the lock, unless another program has refreshed the session meanwhile,
+ * in which case it gives the session that program's tokens (`takeTokens`)
+ * instead.
+ */
+export interface RefreshGuard {
+  guard(session: OAuthSession, refresh: () => Future<void>): Future<void>;
+}
+
+/**
  * An account signed in with OAuth. Its access token and refresh token are
  * bound to its DPoP key, and every request it makes carries a proof.
  */
@@ -443,6 +456,8 @@ export final class OAuthSession implements AccountSession, RequestSigner {
   var expiresAt: i64;
   /** Whether the tokens changed since the session was made or read, so that whoever keeps it writes it again. */
   var refreshed = false;
+  /** What each refresh runs under, or null to refresh at once. */
+  var refreshGuard: RefreshGuard | null = null;
   #key: DpopKey;
   #nonces: Nonces;
 
@@ -451,6 +466,10 @@ export final class OAuthSession implements AccountSession, RequestSigner {
       : did = did, handle = handle, pds = pds, server = server, clientId = clientId, #key = key,
         accessToken = accessToken, refreshToken = refreshToken, expiresAt = expiresAt, scope = scope,
         #nonces = nonces;
+
+  handleOrDid(): String {
+    return this.handle ?? this.did;
+  }
 
   /** An XRPC client for the PDS that signs each request with the session's DPoP key. */
   client(): XrpcClient {
@@ -480,8 +499,30 @@ export final class OAuthSession implements AccountSession, RequestSigner {
     return false;
   }
 
-  /** Replaces the tokens with new ones from the authorization server. The old refresh token stops working. */
+  /**
+   * Replaces the tokens with new ones from the authorization server, under
+   * the refresh guard if there is one. The old refresh token stops working.
+   */
   async refresh(): Future<void> {
+    let guard = this.refreshGuard;
+    if (guard == null) {
+      await this.refreshNow();
+    } else {
+      await guard.guard(this, () => this.refreshNow());
+    }
+  }
+
+  /** Takes the tokens of `other`, the same session as another program refreshed and kept it. */
+  takeTokens(other: OAuthSession): void {
+    this.accessToken = other.accessToken;
+    this.refreshToken = other.refreshToken;
+    this.expiresAt = other.expiresAt;
+    this.scope = other.scope;
+    this.refreshed = true;
+  }
+
+  /** `refresh`, without the guard: for the guard to call. */
+  async refreshNow(): Future<void> {
     let form = new GrowableArray<(String, String)>();
     form.push(('grant_type', 'refresh_token'));
     form.push(('refresh_token', this.refreshToken));

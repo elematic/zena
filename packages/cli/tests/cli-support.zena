@@ -149,6 +149,23 @@ export final class ZenaCommand {
     return spawnWith(argv, {cwd: this.#cwd, env, envRemove: INHERITED_SETTINGS,
         input: input});
   }
+
+  /**
+   * Starts the shell script `script` where the command would run, with its
+   * variables, for a test that connects `zena` to another program. `$1` is
+   * the `zena` binary, and `args` follow it.
+   */
+  spawnShell(script: String, args: Array<String>): Own<Process> {
+    let argv = new GrowableArray<String>();
+    for (let arg in ['/bin/sh', '-c', script, 'sh', zenaBinary()]) {
+      argv.push(arg);
+    }
+    for (let arg in args) {
+      argv.push(arg);
+    }
+    let env = this.#env;
+    return spawnWith(argv, {cwd: this.#cwd, env, envRemove: INHERITED_SETTINGS, input: ''});
+  }
 }
 
 /** `zena` in `workspace`, a directory of `scratch`, with its cache in `cache/`. */
@@ -178,7 +195,7 @@ export function described(result: ProcessResult): String {
  * sources, and concurrent writers rename their entries into place, so
  * tests can share it.
  */
-function fixtureCache() {
+export function fixtureCache(): String {
   return `${repoRoot()}/.zena/test-fixture-cache`;
 }
 

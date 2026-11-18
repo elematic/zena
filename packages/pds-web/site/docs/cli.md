@@ -58,10 +58,10 @@ Downloads and unpacks every package archive pinned in `zena-lock.json` into the 
 ### `zena pkg login`
 
 ```sh
-zena pkg login <handle-or-did> [--password-stdin]
+zena pkg login <handle-or-did> [--no-browser] [--password-stdin]
 ```
 
-Signs in to an AT Protocol account using an app password (prompted on the terminal, read from stdin with `--password-stdin`, or read from `ZENA_APP_PASSWORD`). Saves the session to `$ZENA_CONFIG_DIR/session.json`.
+Signs in to an AT Protocol account with OAuth. It opens the browser at the account's PDS, where you approve, and the registry's sign-in page hands the answer back to `zena`. With `--no-browser`, or where there is no browser to open, as over SSH, it prints the address to open, and reads the line the page shows from the terminal. With `--password-stdin` or `ZENA_APP_PASSWORD`, it signs in with an app password instead. Saves the session to `$ZENA_CONFIG_DIR/session.json`.
 
 ### `zena pkg logout`
 
@@ -69,7 +69,7 @@ Signs in to an AT Protocol account using an app password (prompted on the termin
 zena pkg logout
 ```
 
-Ends the current session and removes `$ZENA_CONFIG_DIR/session.json`.
+Revokes the current session at the PDS and removes `$ZENA_CONFIG_DIR/session.json`.
 
 ---
 
@@ -195,13 +195,14 @@ Lists and changes a package's maintainers (`publisher` and `owner`) and its appr
 
 ## Environment variables
 
-| Variable              | Default                                | Description                                                                   |
-| --------------------- | -------------------------------------- | ----------------------------------------------------------------------------- |
-| `ZENA_REGISTRY`       | `https://pkg.zena-lang.dev`            | The registry `publish`, `scope`, `org`, `team` and `owner` call               |
-| `ZENA_CONFIG_DIR`     | `~/.config/zena`                       | Directory where `session.json` is stored                                      |
-| `ZENA_CACHE_DIR`      | `~/.cache/zena`                        | Base directory for the unpacked package cache (`packages/sources/<cid>`)      |
-| `ZENA_PROJECT_CACHE`  | _(unset)_                              | When set, stores the package cache in `.zena/packages` inside the workspace   |
-| `ZENA_APP_PASSWORD`   | _(unset)_                              | App password used by `zena pkg login` when not reading from terminal or stdin |
-| `ZENA_REGISTRY_TOKEN` | _(unset)_                              | An automation account's token, which `zena pkg publish` uses in CI            |
-| `ZENA_PLC_DIRECTORY`  | `https://plc.directory`                | PLC directory URL used to resolve `did:plc:` identities                       |
-| `ZENA_DNS_OVER_HTTPS` | `https://cloudflare-dns.com/dns-query` | DNS-over-HTTPS endpoint used to resolve `_atproto.<handle>` TXT records       |
+| Variable              | Default                                | Description                                                                 |
+| --------------------- | -------------------------------------- | --------------------------------------------------------------------------- |
+| `ZENA_REGISTRY`       | `https://pkg.zena-lang.dev`            | The registry `publish`, `scope`, `org`, `team` and `owner` call             |
+| `ZENA_CONFIG_DIR`     | `~/.config/zena`                       | Directory where `session.json` is stored                                    |
+| `ZENA_CACHE_DIR`      | `~/.cache/zena`                        | Base directory for the unpacked package cache (`packages/sources/<cid>`)    |
+| `ZENA_PROJECT_CACHE`  | _(unset)_                              | When set, stores the package cache in `.zena/packages` inside the workspace |
+| `ZENA_APP_PASSWORD`   | _(unset)_                              | An app password, which `zena pkg login` signs in with instead of OAuth      |
+| `BROWSER`             | the system's                           | The command `zena pkg login` opens the sign-in address with                 |
+| `ZENA_REGISTRY_TOKEN` | _(unset)_                              | An automation account's token, which `zena pkg publish` uses in CI          |
+| `ZENA_PLC_DIRECTORY`  | `https://plc.directory`                | PLC directory URL used to resolve `did:plc:` identities                     |
+| `ZENA_DNS_OVER_HTTPS` | `https://cloudflare-dns.com/dns-query` | DNS-over-HTTPS endpoint used to resolve `_atproto.<handle>` TXT records     |

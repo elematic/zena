@@ -1,0 +1,159 @@
+/**
+ * A browser for `tests/login_test.zena`, which signs in to the fake PDS as
+ * a person would, without asking anyone. The fake's authorization endpoint
+ * approves whoever comes, so this approves the sign-in by fetching the
+ * address `zena pkg login` gives, follows the PDS's answer to the
+ * registry's callback page, and reads the page:
+ *
+ * - `fake-browser.zena <log> <address>`, as `BROWSER`, does what the
+ *   page's script does (`handToZena` in `packages/pds-web/src/main.ts`):
+ *   goes on to `zena` on `127.0.0.1`, at the port the page names, with
+ *   the answer's query;
+ * - `fake-browser.zena --paste <log>`, as over SSH, reads what
+ *   `zena pkg login --no-browser` prints from stdin, signs in at the
+ *   address it shows, and prints the line the page shows for pasting, for
+ *   `zena` to read on its stdin. Then it copies the rest of what `zena`
+ *   prints to the log.
+ *
+ * It writes the addresses it reached, and what went wrong, to `<log>`.
+ */
+
+import {Future} from 'zena:async';
+import {getArguments, readStdin} from 'zena:cli';
+import {fetch} from 'zena:fetch';
+import {writeFile} from 'zena:fs';
+import {URL} from 'zena:url';
+
+/** What the browser did, kept in a file as it goes. */
+final class Log {
+  #path: String;
+  var #text = '';
+
+  new(path: String) : #path = path;
+
+  async add(line: String): Future<void> {
+    this.#text = `${this.#text}${line}\n`;
+    await writeFile(this.#path, this.#text);
+  }
+}
+
+/** The callback page the PDS sent the browser to, once it approved at `address`. */
+final class CallbackPage {
+  address: String;
+  text: String;
+
+  new(this.address, this.text);
+
+  /** The port the page hands the answer to, or '' when it names none. */
+  port: String {
+    get { return between(this.text, 'data-cli-callback="', '"'); }
+  }
+
+  /** The line the page shows for pasting, as a person would copy it. */
+  line: String {
+    get { return copied(between(this.text, '<pre><code>', '</code></pre>')); }
+  }
+}
+
+/** `html` as a person copies it from the page: the answer's `&`s are escaped there. */
+function copied(html: String): String {
+  let pieces = html.split('&amp;');
+  var text = pieces[0];
+  for (var i = 1; i < pieces.length; i += 1) {
+    text = `${text}&${pieces[i]}`;
+  }
+  return text;
+}
+
+/** The text of `text` between the first `start` and the `end` after it. */
+function between(text: String, start: String, end: String): String {
+  let after = text.split(start);
+  if (after.length < 2) {
+    throw new Error(`the page has no ${start}:\n${text}`);
+  }
+  return after[1].split(end)[0];
+}
+
+async function approve(address: String, log: Log): Future<CallbackPage> {
+  let approved = await fetch(address);
+  let status = approved.status;
+  let back = approved.header('location');
+  if (status != 302 || back == null) {
+    throw new Error(`the PDS answered ${status} at ${address}: ${await approved.text()}`);
+  }
+  await log.add(`approved, back to ${back}`);
+  let page = await fetch(back);
+  let pageStatus = page.status;
+  let text = await page.text();
+  if (pageStatus != 200) {
+    throw new Error(`the callback page answered ${pageStatus}: ${text}`);
+  }
+  return new CallbackPage(back, text);
+}
+
+/** Opens `address`, and goes on to `zena` as the callback page's script does. */
+async function browse(address: String, log: Log): Future<void> {
+  let page = await approve(address, log);
+  if (page.port == '') {
+    throw new Error(`the callback page names no port:\n${page.text}`);
+  }
+  let handed = await fetch(`http://127.0.0.1:${page.port}/callback${URL.parse(page.address)?.search ?? ''}`);
+  let status = handed.status;
+  await log.add(`zena answered ${status}: ${await handed.text()}`);
+}
+
+/** Signs in at the address `zena` prints on stdin, and prints the line to paste. */
+async function paste(log: Log): Future<void> {
+  var buffered = '';
+  var address = '';
+  var chunk = await readStdin();
+  while (address == '' && chunk != '') {
+    buffered = `${buffered}${chunk}`;
+    let lines = buffered.split('\n');
+    // The last piece is a line still being printed.
+    for (var i = 0; i < lines.length - 1; i += 1) {
+      if (let (true, at) = lines[i].indexOf('http')) {
+        if (address == '' && lines[i].contains('/oauth/authorize?')) {
+          address = lines[i].slice(at).trim();
+        }
+      }
+    }
+    if (address == '') {
+      chunk = await readStdin();
+    }
+  }
+  if (address == '') {
+    throw new Error(`zena printed no address to sign in at:\n${buffered}`);
+  }
+  let page = await approve(address, log);
+  if (page.port != '') {
+    throw new Error(`the callback page names a port, ${page.port}, for a sign-in without a browser`);
+  }
+  console.log(page.line);
+  await log.add(`pasted ${page.line}`);
+  var rest = await readStdin();
+  while (rest != '') {
+    await log.add(rest);
+    rest = await readStdin();
+  }
+}
+
+/**
+ * Returns nothing, since `zena run` prints a result, which in paste mode
+ * would go to a `zena` that has finished.
+ */
+export async function main(): Future<void> {
+  let args = getArguments();
+  let pasting = args[args.length - 2] == '--paste';
+  let log = new Log(if (pasting) args[args.length - 1] else args[args.length - 2]);
+  try {
+    if (pasting) {
+      await paste(log);
+    } else {
+      await browse(args[args.length - 1], log);
+    }
+  } catch (e) {
+    await log.add(`error: ${e.message}`);
+    throw e;
+  }
+}
