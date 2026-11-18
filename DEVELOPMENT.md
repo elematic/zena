@@ -104,7 +104,7 @@ matches one of these:
   lines the test step prints every 30 seconds show `available=` falling
   below 1 GiB just before.
 - **The `http-service` component test** (`test:component` in
-  `packages/zena-compiler`) gets empty bodies for its four concurrent
+  `packages/compiler`) gets empty bodies for its four concurrent
   requests under load (#449).
 - **A script's output missing after a cache restore.** A script fails
   because a file another script declares as its output is not there,
@@ -117,7 +117,7 @@ matches one of these:
 
 ## Where things live
 
-- `packages/zena-compiler` — the compiler (Zena). `zena/lib/codegen/`
+- `packages/compiler` — the compiler (Zena). `zena/lib/codegen/`
   has its own CONTEXT.md files.
 - `packages/zena-runtime` — Rust library: what a compiled Zena module
   needs from its wasmtime host (engine flags, `.cwasm` cache, the

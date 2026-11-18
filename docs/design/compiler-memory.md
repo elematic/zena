@@ -43,7 +43,7 @@ crosses a doubling threshold shows twice the RSS of one just under it.
 ## Measuring
 
 `ZENA_CENSUS=1` on any compile prints what the finished compile
-retains, from `zena/lib/census.zena`: AST nodes by kind with their
+retains, from `src/lib/census.zena`: AST nodes by kind with their
 bytes under the layout above, the semantic-model side tables by entry
 count, locations, comments and source text, and counters for the
 types minted over the process, the cached type-key strings and the

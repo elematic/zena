@@ -1,4 +1,4 @@
-// Bundles `packages/compiler/stdlib/**/*.zena` into `src/stdlib-data.json` for
+// Bundles `packages/compiler-js/stdlib/**/*.zena` into `src/stdlib-data.json` for
 // `<zena-playground>`'s browser worker (`createVirtualFileReader`).
 
 import {mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = resolve(__dirname, '..');
-const stdlibDir = resolve(pkgDir, '../compiler/stdlib');
+const stdlibDir = resolve(pkgDir, '../compiler-js/stdlib');
 const outDir = join(pkgDir, 'src');
 
 mkdirSync(outDir, {recursive: true});

@@ -117,7 +117,7 @@ An npm monorepo managed with [Wireit](https://github.com/google/wireit).
 
 | Path                        | What it is                               |
 | --------------------------- | ---------------------------------------- |
-| `packages/zena-compiler`    | Self-hosted compiler, written in Zena    |
+| `packages/compiler`         | Self-hosted compiler, written in Zena    |
 | `packages/zena-formatter`   | Zena formatter, written in Zena          |
 | `packages/stdlib`           | Standard library                         |
 | `packages/zena-cli`         | Native Rust CLI, runs Zena via Wasmtime  |

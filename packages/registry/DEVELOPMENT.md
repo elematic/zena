@@ -448,7 +448,7 @@ another key.
 ### Requiring a newer zena
 
 `zena` names its version to every registry call, in its `user-agent`
-(`zena/0.1.0 (linux-x86_64) zena-compiler/0.1.0 package-manager/0.1.0`).
+(`zena/0.1.0 (linux-x86_64) compiler/0.1.0 package-manager/0.1.0`).
 Its version is the `version` in `packages/zena-cli/zena-package.json`,
 and the compiler's and the package manager's are in theirs. Raise the
 command's with each release, then run `npm run versions`, which copies

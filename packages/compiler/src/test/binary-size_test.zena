@@ -1,0 +1,668 @@
+/**
+ * A minimal program must compile to a small module.
+ *
+ * This is a **ratchet**, not a snapshot. `export function main(): i32
+ * { return 42; }` needs no strings, no collections, no allocation and
+ * makes no calls, so every byte in its module arrived without the
+ * program asking. The budget below only ever moves DOWN; raising it
+ * means something started being emitted that a program with no code in
+ * it does not need, and that is the bug.
+ *
+ * It exists because nothing was watching. `dce_test.zena` asserts only
+ * that two programs compile to the *same* length, which stays true
+ * while both triple. Between the TypeScript bootstrap's 175 bytes and
+ * this test being written, the same program reached 33,875 — a name
+ * section emitted unconditionally, plus the whole of `String`,
+ * `FixedArray`/`ImmutableArray` at four element types (including
+ * `HashMap`'s internal entry type, in a program with no map), and
+ * `WasiConsole`. The reachability leaks behind that are diagnosed in
+ * docs/design/binary-size.md and are not all fixed; the budget is set
+ * where the compiler actually is, so it holds the line while they are.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue, isFalse, equal } from 'zena:assert';
+import { readFile, writeFile, exists, mkdir } from 'zena:fs';
+import {
+  Compiler, createCompiler, checkCompilation,
+} from '../lib/compiler.zena';
+import { loadWorkspace } from '../lib/package-manifest.zena';
+import { readWitSource } from '../lib/wit-source.zena';
+import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.zena';
+import { makeImportEncoder } from '../lib/codegen/wit-imports.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { getEnv } from 'zena:cli';
+import { PlainHost, stdlibRoot } from './test-utils.zena';
+
+/** Mirrors codegen-wat_test's helper; UPDATE_SNAPSHOTS=1 regenerates. */
+async function assertSnapshot(name: String, content: String) {
+  let snapDir = 'packages/compiler/test-files/snapshots';
+  if (!await exists(snapDir)) {
+    await mkdir(snapDir);
+  }
+  let snapFile = `${snapDir}/${name}.snap`;
+  if (getEnv("UPDATE_SNAPSHOTS") != null) {
+    await writeFile(snapFile, content);
+    equal(content, content);
+  } else if (await exists(snapFile)) {
+    let expected = await readFile(snapFile);
+    equal(content, expected);
+  } else {
+    await writeFile(snapFile, content);
+    equal(content, content);
+  }
+}
+
+/**
+ * Compiles to wasm the way `zena-cli build` does — names off. The
+ * budgets measure the core module with no host beneath it, which is
+ * `core`: `zena-component` and `component` wrap the same module in a
+ * component, and `zena-component` always adds the event loop that lets
+ * `main` be an async export, which is the host's cost rather than the
+ * program's.
+ */
+async function compile(path: String, target: String = 'core') {
+  let c = await newCompiler();
+  let result = await c.compile({entry: path, target});
+  let checked = checkCompilation(result);
+  for (let diag in checked.diagnostics) {
+    if (diag.severity == DiagnosticSeverity.Error) {
+      throw new Error(`${path}: ${diag.message}`);
+    }
+  }
+  let entryAst = result.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in result.files) {
+    let res = checked.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) { entryUnit = unit; }
+    }
+  }
+  return new BinaryGenerator(target, false)
+    .generate(new Program(units, entryUnit))
+    .toByteArray();
+}
+
+let target = 'packages/compiler/test-files/minimal.zena';
+
+/**
+ * Whether the module's bytes contain `name` — a byte-substring scan,
+ * not an export-section parse. Export names are stored verbatim, so
+ * for these fixtures (whose sources never mention the helper names) a
+ * hit can only be the export entry; the miss direction is exact.
+ */
+function hasExport(bytes: ByteArray, name: String): boolean {
+  if (name.length == 0 || bytes.length < name.length) { return false; }
+  for (var i = 0; i <= bytes.length - name.length; i += 1) {
+    var matches = true;
+    for (var j = 0; j < name.length; j += 1) {
+      if (bytes[i + j] != name.getByteAt(j)) { matches = false; break; }
+    }
+    if (matches) { return true; }
+  }
+  return false;
+}
+
+/**
+ * The number of entries in the module's import section, or 0 when it has
+ * none. A real section walk rather than a byte scan: an import's module
+ * and field names are the host surface this asserts about, so a miss has
+ * to mean "no import", not "the name I guessed is spelled differently".
+ */
+function importCount(bytes: ByteArray): i32 {
+  // magic (4) + version (4), then (id: u8, size: uleb128, payload).
+  var pos = 8;
+  while (pos < bytes.length) {
+    let id = bytes[pos];
+    pos += 1;
+    var size = 0;
+    var shift = 0;
+    while (pos < bytes.length) {
+      let b = bytes[pos];
+      pos += 1;
+      size = size | ((b & 0x7f) << shift);
+      shift += 7;
+      if ((b & 0x80) == 0) {
+        break;
+      }
+    }
+    if (id == 2) {
+      // The payload opens with the vector length, in the same encoding.
+      var count = 0;
+      var cshift = 0;
+      var cpos = pos;
+      while (cpos < bytes.length) {
+        let b = bytes[cpos];
+        cpos += 1;
+        count = count | ((b & 0x7f) << cshift);
+        cshift += 7;
+        if ((b & 0x80) == 0) {
+          break;
+        }
+      }
+      return count;
+    }
+    pos += size;
+  }
+  return 0;
+}
+
+/**
+ * Constructs an `Error`, which is what links the stack-trace hooks.
+ */
+let errorTarget = 'packages/compiler/test-files/error-construct.zena';
+
+/**
+ * Names `zena:wasi` and calls nothing in it.
+ */
+let wasiTarget = 'packages/compiler/test-files/wasi-import-only.zena';
+
+/**
+ * A step up from minimal: an array literal summed by a for-in loop, so
+ * it genuinely needs an array type, its iterator, and
+ * `Iterable`/`Iterator` dispatch. Minimal alone cannot notice a
+ * regression in generic specialization, because it specializes
+ * nothing.
+ */
+let arrayTarget = 'packages/compiler/test-files/array-sum.zena';
+
+/**
+ * Between the two: one string literal, returned. Needs the String
+ * class, the literal machinery, and the four $string* host-interop
+ * exports — but calls no String methods, so its budget tracks what
+ * instantiating String costs beyond the literal itself (today: every
+ * method, via the vtable force-reach — "The keystone" in the doc).
+ */
+let helloTarget = 'packages/compiler/test-files/hello-string.zena';
+
+/**
+ * A generic class and a subclass of it. Subclassing is what makes the
+ * base's vtable slots dispatchable, so this is the fixture that
+ * notices an ERASURE being believed in as a class.
+ */
+let subclassedTarget = 'packages/compiler/test-files/subclassed-generic.zena';
+
+/**
+ * Methods nothing calls, on a final class with mixins and on a base
+ * class with a subclass.
+ */
+let mixinTarget = 'packages/compiler/test-files/uncalled-methods.zena';
+
+/**
+ * A list packed into an interface-typed slot and iterated through it:
+ * the only members called through the interface are `:iterator` and
+ * the iterator's `next`.
+ */
+let iterableSlotsTarget = 'packages/compiler/test-files/iterable-slots.zena';
+
+/** The same, with the list upcast from Array to Iterable on the way. */
+let iterableSlotsUpcastTarget = 'packages/compiler/test-files/iterable-slots-upcast.zena';
+
+/**
+ * An async `main` with an empty body, built as a component: nothing of
+ * its own, so its size is what the event loop in `zena:wasi` and the
+ * async runtime cost every program that awaits.
+ */
+let asyncNoopTarget = 'packages/compiler/test-files/component/async-noop.zena';
+
+/**
+ * A component that writes three lines to stdout and stderr: the first
+ * program most people build, and the smallest that allocates linear
+ * memory through the runtime memory module.
+ */
+let printTarget = 'packages/compiler/test-files/component/print.zena';
+
+/**
+ * The same counting loop written as a for-in over `0..n` and C-style,
+ * and loops over range values passed in as parameters.
+ */
+let rangeLoopTarget = 'packages/compiler/test-files/range-loop.zena';
+let countingLoopTarget = 'packages/compiler/test-files/counting-loop.zena';
+let rangeValueTarget = 'packages/compiler/test-files/range-value-loop.zena';
+
+/**
+ * Ratchet these down as reachability improves. Do not raise one
+ * without recording why in docs/design/binary-size.md — the number
+ * moving up is the signal this test exists to give.
+ */
+let budget = 37;
+let arrayBudget = 110;
+let helloBudget = 360;
+let asyncNoopBudget = 5600;
+let printBudget = 8000;
+
+export let tests = suite('Binary size', () => {
+  test('a minimal program stays within its byte budget', async (ctx) => {
+    let bytes = await compile(target);
+    isTrue(bytes.length <= budget,
+      `${target} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
+      `${i32ToString(budget)}-byte budget. Something is being emitted that a ` +
+      `program with no code in it does not need — see docs/design/binary-size.md.`);
+  });
+
+  test('an array-literal sum stays within its byte budget', async (ctx) => {
+    let bytes = await compile(arrayTarget);
+    isTrue(bytes.length <= arrayBudget,
+      `${arrayTarget} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
+      `${i32ToString(arrayBudget)}-byte budget. A generic specialization is ` +
+      `reaching more than the program uses — see docs/design/binary-size.md.`);
+  });
+
+  test('a returned string literal stays within its byte budget', async (ctx) => {
+    let bytes = await compile(helloTarget);
+    isTrue(bytes.length <= helloBudget,
+      `${helloTarget} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
+      `${i32ToString(helloBudget)}-byte budget. Instantiating String is ` +
+      `reaching more than a program with one literal uses — see ` +
+      `docs/design/binary-size.md.`);
+  });
+
+  test('an async main that does nothing stays within its byte budget', async (ctx) => {
+    // The whole component, wrapper included. The event loop used to
+    // keep three hash maps from the host's handle numbers to what each
+    // handle was owed, and each map came with every method a map has:
+    // 22,839 bytes, about 60% of it map code. One array indexed by
+    // handle does the same job.
+    let bytes = await compileComponent(asyncNoopTarget, 'component');
+    isTrue(bytes.length <= asyncNoopBudget,
+      `${asyncNoopTarget} compiles to ${i32ToString(bytes.length)} bytes, ` +
+      `over the ${i32ToString(asyncNoopBudget)}-byte budget. The event ` +
+      `loop in zena:wasi (wasi/async.zena) or the async runtime under it ` +
+      `is carrying more than a program that awaits needs — see ` +
+      `docs/design/binary-size.md.`);
+  });
+
+  test('a component that prints stays within its byte budget', async (ctx) => {
+    // The allocator this program's linear memory goes through used to
+    // keep a hash map from over-aligned pointers to their blocks, and
+    // the map brought every method a map has: 16,763 bytes. The
+    // runtime module's allocator now frees an aligned block by the
+    // pointer it handed out, so there is nothing to look up.
+    let bytes = await compileComponent(printTarget, 'component');
+    isTrue(bytes.length <= printBudget,
+      `${printTarget} compiles to ${i32ToString(bytes.length)} bytes, ` +
+      `over the ${i32ToString(printBudget)}-byte budget. Writing to ` +
+      `stdio, or the allocator under it, is carrying more than a program ` +
+      `that prints needs — see docs/design/binary-size.md.`);
+  });
+
+  test('a for-in over an array ships no iterator machinery', async (ctx) => {
+    // lowerForIn compiles a for-in whose iterable is a bare array,
+    // FixedArray, ImmutableArray or Array to an index loop —
+    // array.len/array.get, no :iterator call, no ArrayIterator, no
+    // Iterable dispatch. Reachability must root exactly what lowering
+    // calls: this program's only loop is over an array literal, so
+    // none of the iterator machinery may exist in the module. The
+    // String assertions pin the downstream chain: instantiating
+    // FixedArray<String> as a sibling force-reached its `contains`,
+    // whose `==` on elements dragged the whole String equality/hash
+    // family into a program with no strings.
+    let wat = new WatGenerator('core', false).generate(await programOf(arrayTarget));
+    isTrue(!wat.contains('ArrayIterator'),
+      `${arrayTarget} emits ArrayIterator machinery for a loop lowering ` +
+      `compiles to an index loop.`);
+    isTrue(!wat.contains('_trampoline'),
+      `${arrayTarget} emits interface trampolines for a loop that never ` +
+      `dispatches through an interface.`);
+    isTrue(!wat.contains('String_'),
+      `${arrayTarget} emits String machinery in a program with no strings — ` +
+      `a phantom FixedArray<String> specialization is being instantiated.`);
+    // The Range classes are named only by FixedArray.slice's SIGNATURE,
+    // and slice is registered, never reached — a registered member's
+    // signature is plumbing, not evidence. A reached body re-records
+    // its own evidence when it is walked.
+    isTrue(!wat.contains('Range'),
+      `${arrayTarget} carries Range structs named only by the signature ` +
+      `of a registered-but-unreached member.`);
+    // The wrapper classes are extensions: a value of one IS the raw
+    // wasm array, so their placeholder structs can never be values and
+    // nothing emitted references them.
+    isTrue(!wat.contains('ImmutableArray'),
+      `${arrayTarget} carries ImmutableArray machinery no code names.`);
+    isTrue(!wat.contains('FixedArray'),
+      `${arrayTarget} carries FixedArray's placeholder struct — an ` +
+      `extension value is the raw array, so the struct is unreferenceable.`);
+  });
+
+  test('a for-in over a range literal compiles to the C-style loop', async (ctx) => {
+    // A range written in the loop header is only syntax for a counting
+    // loop: no range object, no iterator, and the same bytes as
+    // `for (var i = 0; i < n; i += 1)`.
+    let rangeWat = new WatGenerator('core', false)
+        .generate(await programOf(rangeLoopTarget));
+    let countingWat = new WatGenerator('core', false)
+        .generate(await programOf(countingLoopTarget));
+    equal(rangeWat, countingWat);
+  });
+
+  test('a for-in over a range value ships no iterator machinery', async (ctx) => {
+    // A range held in a parameter is a real object, and the loop reads
+    // its start and end fields. It still never asks for an iterator.
+    let wat = new WatGenerator('core', false)
+        .generate(await programOf(rangeValueTarget));
+    isTrue(!wat.contains('RangeIterator'),
+      `${rangeValueTarget} emits a range iterator for loops that count ` +
+      `from the range's bounds.`);
+    isTrue(!wat.contains('_trampoline'),
+      `${rangeValueTarget} emits interface trampolines for loops that ` +
+      `never dispatch through an interface.`);
+  });
+
+  test('async without a way to cancel carries no cancellation machinery', async (ctx) => {
+    // The whole-program gate: this program awaits but has no way to
+    // cause a cancellation, so the module must not carry the second
+    // exception tag (its export is the machinery's one stable,
+    // name-section-independent marker).
+    let bytes = await compile('packages/compiler/test-files/async-no-cancel.zena');
+    isFalse(hasExport(bytes, '__zena_cancellation'));
+  });
+
+  test('a reachable cancel call enables the cancellation machinery', async (ctx) => {
+    let bytes = await compile('packages/compiler/test-files/async-with-cancel.zena');
+    isTrue(hasExport(bytes, '__zena_cancellation'));
+  });
+
+  test('a cancel clause alone does not enable the machinery', async (ctx) => {
+    // Handler syntax is not a cause: with no way to raise a
+    // cancellation the clause is elided, and the module carries no
+    // machinery.
+    let bytes = await compile('packages/compiler/test-files/async-cancel-clause-only.zena');
+    isFalse(hasExport(bytes, '__zena_cancellation'));
+  });
+
+  test('a generator without a protocol for-in stays gate-closed', async (ctx) => {
+    // Manual next() consumption cannot dispose, so the generator
+    // carries no disposal machinery and no tag.
+    let bytes = await compile('packages/compiler/test-files/gen-no-protocol-forin.zena');
+    isFalse(hasExport(bytes, '__zena_cancellation'));
+  });
+
+  test('a generator iterated by a protocol for-in opens the disposal gate', async (ctx) => {
+    let bytes = await compile('packages/compiler/test-files/gen-with-protocol-forin.zena');
+    isTrue(hasExport(bytes, '__zena_cancellation'));
+  });
+
+  test('methods nothing calls are not emitted, whatever the hierarchy', async (ctx) => {
+    // A method table slot is kept only when a call can dispatch through
+    // it, and a method is reached only when something calls it. How the
+    // class got the method (declared, inherited or from a mixin) and
+    // whether the class is final play no part.
+    let wat = new WatGenerator('core', false).generate(await programOf(mixinTarget));
+    isTrue(wat.contains('describe'),
+      `${mixinTarget}: the fixture should call describe.`);
+    isTrue(!wat.contains('unused'),
+      `${mixinTarget} emits a mixin method nothing calls.`);
+    isTrue(!wat.contains('neverCalled'),
+      `${mixinTarget} emits a second mixin's method nothing calls.`);
+    isTrue(!wat.contains('quiet'),
+      `${mixinTarget} emits a method of a base class and its subclass ` +
+      `that nothing calls.`);
+    isTrue(wat.contains('Dog_') && wat.contains('.speak'),
+      `${mixinTarget}: a call through Animal must reach Dog's speak.`);
+  });
+
+  test('interface members nothing calls through the interface get no slot', async (ctx) => {
+    // An interface vtable slot comes with a trampoline per class, and the
+    // trampoline reaches the class's method. Packing a GrowableArray into
+    // an Iterable slot used to reach every Iterable method on it, and
+    // `filter` brought FilteredIterable and FilterIterator, which
+    // implement Iterable and Iterator in turn (#425). An upcast from
+    // Array to Iterable used to reference every member of Iterable too.
+    for (let path in [iterableSlotsTarget, iterableSlotsUpcastTarget]) {
+      let wat = new WatGenerator('core', false).generate(await programOf(path));
+      isTrue(wat.contains('.:iterator') && wat.contains('.next'),
+        `${path}: the for-in must dispatch :iterator and next.`);
+      isTrue(!wat.contains('FilteredIterable') && !wat.contains('FilterIterator'),
+        `${path} emits the classes of Iterable.filter, which nothing calls.`);
+      for (let name in ['contains', 'all', 'some', 'find', 'filter']) {
+        isTrue(!wat.contains(`_${name}_trampoline`) && !wat.contains(`Value.${name}`),
+          `${path} emits Iterable.${name}, which nothing calls through the ` +
+          `interface.`);
+      }
+    }
+  });
+
+  test('a subclassed generic emits no erased specialization', async (ctx) => {
+    // `Counted<T> extends Cell<T>` names `Cell<T>` from inside generic
+    // code — linking the subclass template's supertype — and the
+    // erasure `Cell<anyref>` IS `isConcrete`, so RTA took it for a
+    // real specialization. That gave it a class vtable global, and a
+    // vtable global ref.funcs its slots, so an erased body of every
+    // method came with it: `$Cell_s867_anyref.get` and `.put`, dead,
+    // in a 478-byte module that is 400 bytes without them.
+    //
+    // Dead code is the mild failure. The same fiction makes a generic
+    // class whose methods use the `eq`/`hash` intrinsics impossible to
+    // COMPILE once subclassed — the erased body has no operand type to
+    // dispatch on. See
+    // tests/language/execution/generics/subclassed-generic-eq-hash.zena.
+    let wat = new WatGenerator('core', false).generate(await programOf(subclassedTarget));
+    isTrue(!wat.contains('_anyref.'),
+      `${subclassedTarget} emits a method on an erased class type. No value ` +
+      `can have that type — every value the mention stands for is a real ` +
+      `specialization, so the body is dead, and if it used eq/hash it would ` +
+      `not lower at all.`);
+    isTrue(wat.contains('_i32.get'),
+      `${subclassedTarget} does not emit Cell<i32>.get — the check above is ` +
+      `passing because nothing is being emitted at all.`);
+    // And `Cell<T>.swap<U>` is never called, so the only body it could
+    // have is the one at U's erasure — which is not a function. One
+    // dead copy per specialization of the class is what emitting it
+    // cost, and each built its result through the erased class.
+    isTrue(!wat.contains('.swap'),
+      `${subclassedTarget} emits a body for the generic method swap<U>. A ` +
+      `generic method exists once per specialization, minted at the call ` +
+      `site; the unspecialized registration is not a function.`);
+  });
+
+  test('a class nothing reaches specializes nothing', async (ctx) => {
+    // `Shelf` is declared and unreachable, and its field type is the
+    // only mention of `Cell<Marker>` in the program. Every declared
+    // class is still laid out — that is what registers its members,
+    // and evidence can arrive after its turn — but the layout walks
+    // its members' signatures, and a signature's mention of a
+    // specialization is not a `new` of one. Listing `Cell<Marker>`
+    // alongside the `Cell<i32>` main really builds was enough to emit
+    // it whole: instantiating any sibling instantiates every listed
+    // one.
+    //
+    // At stdlib scale this is what a facade costs. Re-exporting
+    // `zena:stream` from `zena:async` put 22 functions — every method
+    // of `Completer`, `Future` and `Box` at the type arguments
+    // `stream.zena` names — into a timer component that never mentions
+    // a stream, 9.5% of its bytes, and slowed it enough to fail the
+    // component suite's CPU-time assertion.
+    let unreachedTarget =
+        'packages/compiler/test-files/unreached-class-generic-field.zena';
+    let wat = new WatGenerator('core', false).generate(await programOf(unreachedTarget));
+    isTrue(!wat.contains('Marker'),
+      `${unreachedTarget} emits the Cell<Marker> specialization. Only an ` +
+      `unreachable class's field type names it, and laying that class out ` +
+      `is not evidence that a value of Cell<Marker> can exist.`);
+    isTrue(wat.contains('_i32.get'),
+      `${unreachedTarget} does not emit Cell<i32>.get — the check above is ` +
+      `passing because nothing is being emitted at all.`);
+  });
+
+  test('a facade re-exporting TemplateStringsArray ships none of it', async (ctx) => {
+    // `TemplateStringsArray` used to be instantiated because the class was
+    // visible, not because anything built one — so importing any library
+    // that re-exports it cost its struct, the two String arrays its fields
+    // name, and a vtable global. That is 32 bytes on a program that
+    // returns `'hello'.length`, which is the whole of what `zena:core`
+    // cost over importing the same name from its own module.
+    let quiet = 'packages/compiler/test-files/core-facade-no-template.zena';
+    let wat = new WatGenerator('core', false).generate(await programOf(quiet));
+    isTrue(!wat.contains('TemplateStringsArray'),
+      `${quiet} emits TemplateStringsArray. Importing a library that ` +
+      `re-exports it is not evidence that a tagged template exists.`);
+    isTrue(wat.contains('String'),
+      `${quiet} does not emit String — the check above is passing because ` +
+      `nothing is being emitted at all.`);
+  });
+
+  test('a tagged template still ships TemplateStringsArray', async (ctx) => {
+    // The other half: the root moved to where a tagged template is found,
+    // so it has to fire there. Without this, the test above passes by
+    // never emitting the class at all.
+    let tagged =
+        'packages/compiler/test-files/core-facade-tagged-template.zena';
+    let wat = new WatGenerator('core', false).generate(await programOf(tagged));
+    isTrue(wat.contains('TemplateStringsArray'),
+      `${tagged} does not emit TemplateStringsArray, but its tagged ` +
+      `template needs one built.`);
+  });
+
+  test('the hello-string WAT names everything it ships', async (ctx) => {
+    // Small enough to read whole, like minimal's: a regression names
+    // the exact function/type it added. Regenerate with
+    // UPDATE_SNAPSHOTS=1; `zena build <file> -o out.wat` dumps the
+    // same text for any program.
+    await assertSnapshot('hello_string_program',
+        new WatGenerator('core', false).generate(await programOf(helloTarget)));
+  });
+
+  test('the array-sum WAT names everything it ships', async (ctx) => {
+    // Small enough to read whole since the for-in fast path stopped
+    // rooting the iterator protocol: one function (main's index loop),
+    // one array type, and the plumbing. Regenerate with
+    // UPDATE_SNAPSHOTS=1 and eyeball the diff — a new entry means a
+    // loop that lowers to array.get started reaching machinery again.
+    await assertSnapshot('array_sum_program',
+        new WatGenerator('core', false).generate(await programOf(arrayTarget)));
+  });
+
+  test('the minimal program WAT is exactly the ideal module', async (ctx) => {
+    // A SNAPSHOT, unlike the byte budgets: the minimal module is small
+    // enough to read whole, and any regression shows up as the exact
+    // type/function/export it added. Regenerate with
+    // UPDATE_SNAPSHOTS=1 and eyeball the diff — a new entry here means
+    // something reached code a program with no code in it cannot run.
+    await assertSnapshot('minimal_program',
+        new WatGenerator('core', false).generate(await programOf(target)));
+  });
+
+  test('a program with no strings exports no string helpers', async (ctx) => {
+    // The $string* helpers exist to hand String values across the host
+    // boundary; a module with no String values has nothing to hand
+    // across, and every export is emitted code. A returned literal
+    // must have them (the host reads the result through
+    // $stringGetLength/$stringGetByte).
+    isTrue(!hasExport(await compile(target), '$stringCreate'),
+      `${target} exports $stringCreate — a program with no strings is ` +
+      `carrying the String host-interop helpers.`);
+    isTrue(hasExport(await compile(helloTarget), '$stringGetLength'),
+      `${helloTarget} does not export $stringGetLength — the host cannot ` +
+      `read the String this program returns.`);
+  });
+
+  test('naming zena:wasi links none of the component runtime', async (ctx) => {
+    // The library is all-target, because the name is the subject and not
+    // the host: a core-module program can say `zena:wasi` and a component
+    // is only where the canonical parts have anything beneath them. What
+    // makes that safe is that the `@external("canon", ...)` declarations
+    // are declarations — reachability links one when the program calls
+    // it, and this program calls none.
+    equal(importCount(await compile(wasiTarget, 'core')), 0,
+      `${wasiTarget} imports something on the core target. Naming ` +
+      `the module must not link the component runtime behind it.`);
+  });
+
+  test('core imports nothing the program did not ask for', async (ctx) => {
+    // The floor a target promises, asserted rather than inspected.
+    // `core` has no host beneath it, so its import list holds
+    // only what the program itself declared with `@external` — and
+    // this program declares none. Constructing an `Error` is the case
+    // that used to make that impossible: the stack-trace hooks were
+    // unconditional, and take `anyref`/`externref`, which no component
+    // and no hostless embedder can supply. See
+    // docs/design/component-emission.md, Part 2.
+    equal(importCount(await compile(errorTarget, 'core')), 0,
+      `${errorTarget} imports something on the core target. A ` +
+      `target with no host must import only what the program declared.`);
+    equal(importCount(await compile(target, 'core')), 0,
+      `${target} imports something on the core target.`);
+    // The same program on a target that HAS a host still links the
+    // hooks: `zena-component`'s traces come from its host's `stack-trace`
+    // interface, so that import must be there. Import names are stored
+    // verbatim like export names, so the byte scan finds it the same way.
+    isTrue(hasExport(await compileComponent(errorTarget, 'zena-component'),
+        'zena:host/stack-trace'),
+      `${errorTarget} does not import the host's stack-trace interface on ` +
+      `zena-component, whose host supplies it.`);
+  });
+
+  test('the name section is opt-in', async (ctx) => {
+    // Debug metadata, and for a small module the largest thing in it.
+    // `-g` (ZENA_DEBUG_NAMES) turns it on; the default must not.
+    let plain = await compile(target);
+    let named = new BinaryGenerator('core', false, true)
+      .generate(await programOf(target))
+      .toByteArray();
+    isTrue(named.length > plain.length,
+      `the debugNames build is ${i32ToString(named.length)} bytes and the ` +
+      `default is ${i32ToString(plain.length)} — the default is carrying a ` +
+      `name section it should not.`);
+  });
+});
+
+/**
+ * Compiles a component the way `zena-cli build` does for a component
+ * target, with the runtime memory module and the WIT-typed import
+ * encoder the wrapper needs; `compile` above stops at the core module.
+ */
+async function compileComponent(path: String, target: String): Future<ByteArray> {
+  let host = new PlainHost();
+  let c = await newCompilerOn(host);
+  let generator = new BinaryGenerator(target, false);
+  let program = await programOf(path, target, c);
+  // On the same compiler as the program, at its `core` target.
+  generator.runtimeMemoryModule = await compileComponentRuntimeModule(c, stdlibRoot);
+  // The WIT-backed packages the stdlib carries, as the CLI passes them.
+  let packagesWit = (await readWitSource(host, `${stdlibRoot}/wit`)) + '\n' +
+      await readWitSource(host, `${stdlibRoot}/host-wit`);
+  generator.importEncoder = makeImportEncoder(null, '', packagesWit);
+  return generator.generate(program).toByteArray();
+}
+
+/** A compiler over the real standard library and package map. */
+async function newCompiler(): Future<Compiler> {
+  return await newCompilerOn(new PlainHost());
+}
+
+/** The same, over a host the caller also needs — to read WIT through. */
+async function newCompilerOn(host: PlainHost): Future<Compiler> {
+  return createCompiler(host, {
+    stdlibRoot,
+    packages: await loadWorkspace(host, '.'),
+  });
+}
+
+/** The `Program` for a path, for a second generate() over the same input. */
+async function programOf(
+  path: String,
+  target: String = 'core',
+  compiler: Compiler | null = null
+): Future<Program> {
+  let c = compiler ?? await newCompiler();
+  let result = await c.compile({entry: path, target});
+  let checked = checkCompilation(result);
+  let entryAst = result.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in result.files) {
+    let res = checked.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) { entryUnit = unit; }
+    }
+  }
+  return new Program(units, entryUnit);
+}

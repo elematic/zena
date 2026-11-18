@@ -1,0 +1,1355 @@
+/**
+ * Integration tests for lsp.wasm — the language service entry point.
+ *
+ * These tests load lsp.wasm directly in Node.js (no VS Code needed),
+ * provide mock host imports, and exercise the check/diagnostic/format API.
+ */
+
+import {suite, test, beforeEach} from 'node:test';
+import assert from 'node:assert';
+import {readFile} from 'node:fs/promises';
+import {readdirSync, readFileSync} from 'node:fs';
+import {resolve, dirname} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {
+  createHostAsync,
+  createPromiseImports,
+  createStringReader,
+  createStringWriter,
+  createConsoleImports,
+  instantiate,
+  numberImports,
+  stringImports,
+} from '@zena-lang/runtime';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/** Same shape as the exports from lsp.wasm. */
+interface LspExports extends WebAssembly.Exports {
+  init(stdlibRoot: unknown): Promise<void>;
+  check(path: unknown, source: unknown): Promise<unknown>;
+  compileToWasm(path: unknown, source: unknown): Promise<unknown>;
+  getByteArrayLength(bytes: unknown): number;
+  getByteArrayByte(bytes: unknown, index: number): number;
+  getDiagnosticCount(diagnostics: unknown): number;
+  getDiagnosticLine(diagnostics: unknown, index: number): number;
+  getDiagnosticColumn(diagnostics: unknown, index: number): number;
+  getDiagnosticStart(diagnostics: unknown, index: number): number;
+  getDiagnosticLength(diagnostics: unknown, index: number): number;
+  getDiagnosticSeverity(diagnostics: unknown, index: number): number;
+  getDiagnosticMessage(diagnostics: unknown, index: number): unknown;
+  getDiagnosticFile(diagnostics: unknown, index: number): unknown;
+  format(source: unknown): unknown;
+  getDefinition(path: unknown, offset: number): unknown;
+  getDefinitionFile(result: unknown): unknown;
+  getDefinitionLine(result: unknown): number;
+  getDefinitionColumn(result: unknown): number;
+  getDefinitionStart(result: unknown): number;
+  getDefinitionLength(result: unknown): number;
+  getHover(path: unknown, offset: number): unknown;
+  getHoverType(result: unknown): unknown;
+  getHoverLabel(result: unknown): unknown;
+  getHoverDoc(result: unknown): unknown;
+  getCompletions(path: unknown, offset: number): unknown;
+  getCompletionCount(items: unknown): number;
+  getCompletionItem(items: unknown, index: number): unknown;
+  getCompletionLabel(item: unknown): unknown;
+  getCompletionKind(item: unknown): number;
+  getCompletionDetail(item: unknown): unknown;
+  getCompletionDoc(item: unknown): unknown;
+  getDocumentSymbols(path: unknown, source: unknown): unknown;
+  getSymbolCount(symbols: unknown): number;
+  getSymbol(symbols: unknown, index: number): unknown;
+  getSymbolName(sym: unknown): unknown;
+  getSymbolKind(sym: unknown): number;
+  getSymbolStart(sym: unknown): number;
+  getSymbolEnd(sym: unknown): number;
+  getSymbolSelStart(sym: unknown): number;
+  getSymbolSelEnd(sym: unknown): number;
+  getSymbolChildCount(sym: unknown): number;
+  getSymbolChild(sym: unknown, index: number): unknown;
+  $stringGetByte(str: unknown, index: number): number;
+  $stringGetLength(str: unknown): number;
+  $stringCreate(len: number): unknown;
+  $stringSetByte(str: unknown, index: number, value: number): void;
+}
+
+interface LspHandle {
+  exports: LspExports;
+  writeString: (s: string) => unknown;
+  readString: (ref: unknown, len: number) => string;
+  openDocs: Map<string, string>;
+}
+
+/** Load lsp.wasm and wire up imports. */
+async function loadLsp(): Promise<LspHandle> {
+  // compiler.wasm lives at packages/compiler-js/compiler.wasm after build
+  const wasmPath = resolve(__dirname, '../compiler.wasm');
+  const wasmBuffer = await readFile(wasmPath);
+
+  let exports: LspExports | undefined;
+  let writeString: ((s: string) => unknown) | undefined;
+  let readString: ((ref: unknown, len: number) => string) | undefined;
+
+  const consoleImports = createConsoleImports(() => exports);
+
+  const openDocs = new Map<string, string>();
+  // The compiler reads files through a host-async import: the promise's
+  // value settles the handle, and a rejection is a missing file.
+  const hostAsync = createHostAsync(() => exports);
+  const compilerImports = {
+    read_file: hostAsync.wrap(
+      async (pathRef: unknown, pathLen: number): Promise<string> => {
+        const filePath = readString!(pathRef, pathLen);
+        if (openDocs.has(filePath)) {
+          return openDocs.get(filePath)!;
+        }
+        return readFileSync(filePath, 'utf8');
+      },
+      'string',
+    ),
+    list_dir: hostAsync.wrap(
+      async (pathRef: unknown, pathLen: number): Promise<string> => {
+        const dirPath = readString!(pathRef, pathLen);
+        return readdirSync(dirPath).sort().join('\n');
+      },
+      'string',
+    ),
+  };
+  // lsp.wasm is built for the host target: its imports are the console,
+  // the file reader, the clock and the stack-trace hooks below, and
+  // no WASI.
+  const result = await (WebAssembly.instantiate as any)(
+    wasmBuffer,
+    {
+      env: {
+        getStackTrace: () => null,
+        captureStackTrace: () => null,
+        formatStackTrace: () => null,
+      },
+      // The compiler times its phases through `zena:time`'s host clock.
+      time: {
+        now_ms: () => performance.now(),
+        sleep_ms: () => {},
+        sleep_cancel: () => {},
+      },
+      console: consoleImports,
+      compiler: compilerImports,
+      js: createPromiseImports(() => exports),
+      'zena:host:string': stringImports,
+      'zena:host:number': numberImports,
+    },
+    {
+      builtins: ['js-string'],
+      importedStringConstants: '_',
+    },
+  );
+
+  const instance =
+    (result as unknown as {instance: WebAssembly.Instance}).instance ?? result;
+  exports = instance.exports as LspExports;
+  writeString = createStringWriter(exports);
+  readString = createStringReader(exports);
+
+  // Init with stdlib root.
+  const stdlibRoot = resolve(__dirname, '..', '../stdlib/zena');
+  await exports.init(writeString(stdlibRoot));
+
+  return {exports, writeString, readString, openDocs};
+}
+
+/** Helper: check source and return diagnostics as plain objects. */
+async function checkSource(
+  lsp: LspHandle,
+  source: string,
+  path = '/test/main.zena',
+) {
+  const {exports, writeString, readString, openDocs} = lsp;
+  openDocs.set(path, source);
+  const sourceRef = writeString(source);
+  const pathRef = writeString(path);
+  const handle = await exports.check(pathRef, sourceRef);
+  const count = exports.getDiagnosticCount(handle);
+
+  const diagnostics: {
+    line: number;
+    column: number;
+    start: number;
+    length: number;
+    severity: number;
+    message: string;
+    file: string;
+  }[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const msgRef = exports.getDiagnosticMessage(handle, i);
+    const msgLen = exports.$stringGetLength(msgRef);
+    const fileRef = exports.getDiagnosticFile(handle, i);
+    const fileLen = exports.$stringGetLength(fileRef);
+    diagnostics.push({
+      line: exports.getDiagnosticLine(handle, i),
+      column: exports.getDiagnosticColumn(handle, i),
+      start: exports.getDiagnosticStart(handle, i),
+      length: exports.getDiagnosticLength(handle, i),
+      severity: exports.getDiagnosticSeverity(handle, i),
+      message: readString(msgRef, msgLen),
+      file: readString(fileRef, fileLen),
+    });
+  }
+
+  return diagnostics;
+}
+
+suite('lsp.wasm integration', () => {
+  let lsp: LspHandle;
+
+  // A fresh handle per test. A single LspSession holds one long-lived
+  // compiler, and what a compiler accumulates per checked entry — nominal
+  // types and instantiations interned onto the stdlib's own generic types —
+  // is never collected while it lives (see the batch-compilation note in
+  // packages/compiler/CONTEXT.md, which caps reuse at 16 entries for the
+  // same reason). Across ~60 checks that growth is superlinear and exhausts
+  // the heap; instantiating lsp.wasm afresh costs well under 100ms, so each
+  // test simply starts clean. Every test here is self-contained.
+  beforeEach(async () => {
+    lsp = await loadLsp();
+  });
+
+  test('loads and initializes', async () => {
+    assert.ok(lsp.exports.check, 'check export exists');
+    assert.ok(lsp.exports.init, 'init export exists');
+  });
+
+  test('reports no diagnostics for valid code', async () => {
+    const diags = await checkSource(lsp, 'let _x = 42;');
+    assert.strictEqual(
+      diags.length,
+      0,
+      `Expected 0 diagnostics, got: ${JSON.stringify(diags)}`,
+    );
+  });
+
+  test('reports diagnostic for type error', async () => {
+    const diags = await checkSource(lsp, 'let x: i32 = "hello";');
+    assert.ok(diags.length > 0, 'Expected at least 1 diagnostic');
+    // Should be a type mismatch error
+    const hasTypeMismatch = diags.some(
+      (d) => d.severity === 0 && d.message.toLowerCase().includes('type'),
+    );
+    assert.ok(
+      hasTypeMismatch,
+      `Expected type error, got: ${JSON.stringify(diags)}`,
+    );
+  });
+
+  test('reports diagnostic for unresolved name', async () => {
+    const diags = await checkSource(lsp, 'let x = unknownVariable;');
+    assert.ok(diags.length > 0, 'Expected at least 1 diagnostic');
+  });
+
+  test('reports diagnostic on import statement for missing module', async () => {
+    const diags = await checkSource(
+      lsp,
+      "import { foo } from './does_not_exist.zena';\nlet _ = foo;",
+      '/test/main.zena',
+    );
+    assert.ok(diags.length > 0, 'Expected diagnostic for missing module');
+    const hasModuleNotFound = diags.some(
+      (d) =>
+        d.severity === 0 &&
+        d.line === 1 &&
+        d.message.includes("Library not found: './does_not_exist.zena'"),
+    );
+    assert.ok(
+      hasModuleNotFound,
+      `Expected ModuleNotFound diagnostic on line 1, got: ${JSON.stringify(diags)}`,
+    );
+  });
+
+  test('reports diagnostic on import statement for missing exported member', async () => {
+    await checkSource(lsp, 'export let existing = 1;', '/test/math.zena');
+    const diags = await checkSource(
+      lsp,
+      "import { nonexistent } from './math.zena';\nlet _ = nonexistent;",
+      '/test/main.zena',
+    );
+    assert.ok(
+      diags.length > 0,
+      'Expected diagnostic for missing exported member',
+    );
+    const hasSymbolNotFound = diags.some(
+      (d) =>
+        d.severity === 0 &&
+        d.line === 1 &&
+        d.message.includes(
+          "Library './math.zena' has no exported member 'nonexistent'",
+        ),
+    );
+    assert.ok(
+      hasSymbolNotFound,
+      `Expected SymbolNotFound diagnostic on line 1, got: ${JSON.stringify(diags)}`,
+    );
+  });
+
+  test('resolves stdlib imports without errors', async () => {
+    const source = `
+      import { GrowableArray } from 'zena:core';
+      let arr = new GrowableArray<i32>();
+    `;
+    let diags;
+    try {
+      diags = await checkSource(lsp, source);
+    } catch (e: any) {
+      // Log the error from console output, then fail explicitly
+      assert.fail(`check() threw: ${e}\n${e?.stack}`);
+    }
+    // Filter out any "not used" warnings — we only care about errors
+    const errors = diags!.filter((d) => d.severity === 0);
+    assert.strictEqual(
+      errors.length,
+      0,
+      `Expected 0 errors with stdlib import, got: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  test('resolves simple stdlib import', async () => {
+    // Test with inline source that mimics string.zena features
+    const stringLikeSrc = `
+export final class MyString {
+  #data: i32;
+  #start: i32;
+  #end: i32;
+
+  new(data: i32, start: i32, end: i32)
+    : #data = data, #start = start, #end = end;
+
+  length: i32 {
+    get {
+      return this.#end - this.#start;
+    }
+  }
+
+  static fromParts(x: i32): MyString {
+    return new MyString(x, 0, x);
+  }
+
+  getByteAt(index: i32): i32 {
+    return this.#start + index;
+  }
+
+  copy(): MyString {
+    return new MyString(this.#data, this.#start, this.#end);
+  }
+
+  operator +(other: MyString): MyString {
+    return new MyString(this.#data, this.#start, other.#end);
+  }
+
+  operator ==(other: MyString): boolean {
+    return this.#start == other.#start;
+  }
+}
+`;
+    try {
+      const diags = await checkSource(lsp, stringLikeSrc);
+      const errors = diags.filter((d: any) => d.severity === 0);
+      console.log(`  [string-like test] ${errors.length} errors`);
+      if (errors.length > 0) console.log(`    ${JSON.stringify(errors)}`);
+    } catch (e: any) {
+      console.log(`  [string-like test] CRASH - ${e.message}`);
+    }
+
+    // Also test the actual stdlib imports
+    const tests = [
+      {
+        name: 'string',
+        src: `import { String } from 'zena:core'; let x: i32 = 42;`,
+      },
+      {
+        name: 'error',
+        src: `import { Error } from 'zena:core'; let x: i32 = 42;`,
+      },
+    ];
+    for (const t of tests) {
+      try {
+        const diags = await checkSource(lsp, t.src);
+        const errors = diags.filter((d: any) => d.severity === 0);
+        console.log(`  [import test] ${t.name}: ${errors.length} errors`);
+        if (errors.length > 0) console.log(`    ${JSON.stringify(errors)}`);
+      } catch (e: any) {
+        console.log(`  [import test] ${t.name}: CRASH - ${e.message}`);
+      }
+    }
+  });
+
+  test('reports error for bad import name', async () => {
+    const source = `
+      import { NonExistentThing } from 'zena:core';
+      let x = NonExistentThing;
+    `;
+    const diags = await checkSource(lsp, source);
+    assert.ok(diags.length > 0, 'Expected diagnostics for bad import');
+  });
+
+  test('diagnostic has location info', async () => {
+    const diags = await checkSource(lsp, 'let x: i32 = "hello";');
+    assert.ok(diags.length > 0);
+    const d = diags[0];
+    assert.ok(d.line > 0, `Expected line > 0, got ${d.line}`);
+    assert.ok(d.column > 0, `Expected column > 0, got ${d.column}`);
+  });
+
+  test('imported types resolve in type annotations', async () => {
+    // A file that imports Array (a class) from stdlib and uses it as a type.
+    const source = `
+      import { Array } from 'zena:core';
+      let describe = (arr: Array<i32>): i32 => 0;
+    `;
+    const diags = await checkSource(lsp, source);
+    const errors = diags.filter((d) => d.severity === 0);
+    // "Array" should be recognized as a type — no "Type 'Array' not found".
+    const typeNotFound = errors.filter((d) => d.message.includes('not found'));
+    assert.strictEqual(
+      typeNotFound.length,
+      0,
+      `Imported type should resolve, got: ${JSON.stringify(typeNotFound)}`,
+    );
+  });
+
+  test('format returns formatted source', async () => {
+    const {exports, writeString, readString} = lsp;
+    const source = 'let   x=42;';
+    const sourceRef = writeString(source);
+    const resultRef = exports.format(sourceRef);
+    const resultLen = exports.$stringGetLength(resultRef);
+    const formatted = readString(resultRef, resultLen);
+    assert.ok(
+      formatted.includes('let'),
+      `Expected formatted output, got: ${formatted}`,
+    );
+    // Should be cleaner than the input
+    assert.notStrictEqual(formatted, source, 'Format should change the source');
+  });
+
+  // ========================================================================
+  // Go to Definition Tests
+  // ========================================================================
+
+  /**
+   * Helper: check source, then call getDefinition at a byte offset.
+   * Returns {file, line, column, start, length} or null.
+   */
+  async function getDefinitionAt(
+    lsp: LspHandle,
+    source: string,
+    offset: number,
+    path = '/test/main.zena',
+  ) {
+    const {exports, writeString, readString} = lsp;
+    // check() must run first to populate the cached scope result.
+    await checkSource(lsp, source, path);
+    const pathRef = writeString(path);
+    const resultRef = exports.getDefinition(pathRef, offset);
+    if (resultRef === null || resultRef === undefined || resultRef === 0)
+      return null;
+    const fileRef = exports.getDefinitionFile(resultRef);
+    const fileLen = exports.$stringGetLength(fileRef);
+    return {
+      file: readString(fileRef, fileLen),
+      line: exports.getDefinitionLine(resultRef),
+      column: exports.getDefinitionColumn(resultRef),
+      start: exports.getDefinitionStart(resultRef),
+      length: exports.getDefinitionLength(resultRef),
+    };
+  }
+
+  /** Find the byte offset of a substring in source. */
+  function offsetOf(source: string, needle: string, occurrence = 1): number {
+    let idx = -1;
+    for (let i = 0; i < occurrence; i++) {
+      idx = source.indexOf(needle, idx + 1);
+      if (idx === -1)
+        throw new Error(`"${needle}" occurrence ${i + 1} not found`);
+    }
+    return idx;
+  }
+
+  test('getDefinition: variable reference → declaration', async () => {
+    //        0123456789...
+    const src = 'let x = 42;\nlet y = x;';
+    // "x" in "let y = x" is at the second occurrence of "x"
+    const offset = offsetOf(src, 'x', 2);
+    const def = await getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition result');
+    // Should point to "x" in "let x = 42" (offset 4)
+    assert.strictEqual(def!.start, offsetOf(src, 'x', 1));
+    assert.strictEqual(def!.line, 1);
+  });
+
+  test('getDefinition: type annotation → class declaration', async () => {
+    const src =
+      'class Foo { x: i32; new(this.x); }\nlet f = (a: Foo): i32 => 0;';
+    // "Foo" in parameter type annotation "a: Foo"
+    const offset = offsetOf(src, 'Foo', 2);
+    const def = await getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition for type name Foo');
+    // Should point to the ClassDeclaration (start of "class Foo")
+    assert.strictEqual(def!.line, 1);
+  });
+
+  test('getDefinition: constructor reference → class declaration', async () => {
+    const src = 'class Foo { x: i32; new(this.x); }\nlet f = new Foo(1);';
+    // "Foo" in "new Foo(1)"
+    const offset = offsetOf(src, 'Foo', 2);
+    const def = await getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition for constructor Foo');
+    assert.strictEqual(def!.line, 1);
+  });
+
+  test('getDefinition: parameter declaration → itself', async () => {
+    const src = 'let f = (x: i32): i32 => x;';
+    // Click on "x" in the parameter "(x: i32)"
+    const offset = offsetOf(src, 'x', 1);
+    const def = await getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition for parameter declaration');
+    // Should point to the parameter itself.
+    assert.strictEqual(def!.start, offset);
+  });
+
+  test('getDefinition: return type annotation resolves', async () => {
+    const src =
+      'class Bar { x: i32; new(this.x); }\nlet f = (a: i32): Bar => new Bar(a);';
+    // "Bar" in return type ": Bar"
+    const offset = offsetOf(src, 'Bar', 2);
+    const def = await getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition for return type Bar');
+    assert.strictEqual(def!.line, 1);
+  });
+
+  test('getDefinition: no result at non-symbol position', async () => {
+    const src = 'let x = 42;';
+    // Offset 0 is at 'l' of 'let' — a keyword, not a symbol reference.
+    const def = await getDefinitionAt(lsp, src, 0);
+    assert.strictEqual(def, null);
+  });
+
+  test('getDefinition: field type annotation resolves', async () => {
+    const src =
+      'class A { x: i32; new(this.x); }\nclass B { a: A; new(this.a); }';
+    // "A" in field type "a: A" inside class B
+    const offset = offsetOf(src, 'A', 2);
+    const def = await getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition for field type A');
+    assert.strictEqual(def!.line, 1);
+  });
+
+  // ========================================================================
+  // Hover Tests
+  // ========================================================================
+
+  /**
+   * Helper: check source, then call getHover at a byte offset.
+   * Returns {type, label} or null.
+   */
+  async function getHoverAt(
+    lsp: LspHandle,
+    source: string,
+    offset: number,
+    path = '/test/main.zena',
+  ) {
+    const {exports, writeString, readString} = lsp;
+    // check() must run first to populate the cached results.
+    await checkSource(lsp, source, path);
+    const pathRef = writeString(path);
+    const resultRef = exports.getHover(pathRef, offset);
+    if (resultRef === null || resultRef === undefined || resultRef === 0)
+      return null;
+    const typeRef = exports.getHoverType(resultRef);
+    const typeLen = exports.$stringGetLength(typeRef);
+    const labelRef = exports.getHoverLabel(resultRef);
+    const labelLen = exports.$stringGetLength(labelRef);
+    const docRef = exports.getHoverDoc(resultRef);
+    const docLen = exports.$stringGetLength(docRef);
+    return {
+      type: readString(typeRef, typeLen),
+      label: readString(labelRef, labelLen),
+      doc: readString(docRef, docLen),
+    };
+  }
+
+  test('getHover: variable with explicit type', async () => {
+    const src = 'let x: i32 = 42;\nlet y = x;';
+    // Hover over "x" in "let y = x"
+    const offset = offsetOf(src, 'x', 2);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.type, 'i32');
+    assert.ok(
+      hover!.label.includes('x') && hover!.label.includes('i32'),
+      `Expected label with name and type, got: ${hover!.label}`,
+    );
+  });
+
+  test('getHover: inferred type from literal', async () => {
+    const src = 'let x = 42;';
+    // Hover over "x" at declaration
+    const offset = offsetOf(src, 'x', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.type, 'i32');
+  });
+
+  test('getHover: function type', async () => {
+    const src = 'let add = (a: i32, b: i32): i32 => a + b;';
+    const offset = offsetOf(src, 'add', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for function');
+    // The type should be a function type
+    assert.ok(
+      hover!.type.includes('=>'),
+      `Expected function type, got: ${hover!.type}`,
+    );
+  });
+
+  test('getHover: no result at keyword', async () => {
+    const src = 'let x = 42;';
+    // Offset 0 is 'l' of 'let'
+    const hover = await getHoverAt(lsp, src, 0);
+    assert.strictEqual(hover, null, 'Expected no hover at keyword');
+  });
+
+  test('getHover: var binding shows var keyword', async () => {
+    const src = 'var count = 0;';
+    const offset = offsetOf(src, 'count', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for var');
+    assert.ok(
+      hover!.label.startsWith('var '),
+      `Expected var prefix, got: ${hover!.label}`,
+    );
+  });
+
+  test('getHover: this keyword shows class type', async () => {
+    const src = `class Foo {
+  x: i32;
+  new(this.x);
+  getX(): i32 { return this.x; }
+}`;
+    // Hover over "this" in "return this.x" (not the constructor's this.x)
+    const offset = src.lastIndexOf('this.x');
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for this');
+    assert.ok(
+      hover!.label.includes('this') && hover!.label.includes('Foo'),
+      `Expected this: Foo, got: ${hover!.label}`,
+    );
+  });
+
+  test('getHover: member access property shows type', async () => {
+    const src = `class Foo {
+  x: i32;
+  new(this.x);
+}
+let f = new Foo(42);
+let v = f.x;`;
+    // Hover over "x" in "f.x"
+    const lastLine = 'let v = f.x;';
+    const lineStart = src.indexOf(lastLine);
+    const offset = lineStart + lastLine.indexOf('.x') + 1; // on 'x'
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for member access');
+    assert.ok(
+      hover!.label.includes('(property)') && hover!.label.includes('x'),
+      `Expected (property) label, got: ${hover!.label}`,
+    );
+  });
+
+  test('getHover: function parameter shows (parameter)', async () => {
+    const src = 'let add = (a: i32, b: i32): i32 => a + b;';
+    // Hover over "a" in the parameter list
+    const offset = src.indexOf('a:');
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for parameter');
+    assert.ok(
+      hover!.label.startsWith('(parameter)'),
+      `Expected (parameter) prefix, got: ${hover!.label}`,
+    );
+    assert.ok(
+      hover!.label.includes('a') && hover!.label.includes('i32'),
+      `Expected parameter name and type, got: ${hover!.label}`,
+    );
+  });
+
+  test('getHover: class name shows class prefix', async () => {
+    const src = `class Foo {
+  x: i32;
+  new(this.x);
+}
+let f = new Foo(42);`;
+    // Hover over "Foo" in "new Foo(42)"
+    const lastLine = 'let f = new Foo(42);';
+    const lineStart = src.indexOf(lastLine);
+    const offset = lineStart + lastLine.indexOf('Foo');
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for class reference');
+    assert.ok(
+      hover!.label.startsWith('class '),
+      `Expected class prefix, got: ${hover!.label}`,
+    );
+  });
+
+  test('getHover: block doc comment on variable', async () => {
+    const src = '/** The answer to everything */\nlet x = 42;';
+    const offset = offsetOf(src, 'x', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, 'The answer to everything');
+  });
+
+  test('getHover: block doc comment on class', async () => {
+    const src =
+      '/** A 2D point */\nclass Point {\n  x: f64;\n  y: f64;\n  new(this.x, this.y);\n}\nlet p = new Point(1.0, 2.0);';
+    // Hover over "Point" in "new Point(...)" (a reference, not declaration)
+    const offset = offsetOf(src, 'Point', 2);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, 'A 2D point');
+  });
+
+  test('getHover: triple-slash is not a doc comment', async () => {
+    const src = '/// Not a doc comment\nlet ticks: i32 = 0;';
+    const offset = offsetOf(src, 'ticks', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, '');
+  });
+
+  test('getHover: multi-line block doc comment', async () => {
+    const src =
+      '/**\n * Add two numbers.\n * Returns their sum.\n */\nlet add = (a: i32, b: i32): i32 => a + b;';
+    const offset = offsetOf(src, 'add', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, 'Add two numbers.\nReturns their sum.');
+  });
+
+  test('getHover: doc comment keeps its paragraphs', async () => {
+    const src =
+      '/**\n * Add two numbers.\n *\n * ```zena\n * let three = 1 + 2;\n * ```\n */\nlet add = (a: i32, b: i32): i32 => a + b;';
+    const offset = offsetOf(src, 'add', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(
+      hover!.doc,
+      'Add two numbers.\n\n```zena\nlet three = 1 + 2;\n```',
+    );
+  });
+
+  test('getHover: doc comment on function at call site reference', async () => {
+    const src =
+      '/**\n * Greets a user by name.\n */\nlet greet = (name: String): String => "Hello " + name;\n\nexport let main = () => {\n  greet("Zena");\n};';
+    const offset = offsetOf(src, 'greet', 2);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, 'Greets a user by name.');
+  });
+
+  test('getHover: no doc comment returns empty string', async () => {
+    const src = 'let x = 42;';
+    const offset = offsetOf(src, 'x', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, '');
+  });
+
+  test('getHover: regular comment is not a doc comment', async () => {
+    const src = '// Just a regular comment\nlet x = 42;';
+    const offset = offsetOf(src, 'x', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, '');
+  });
+
+  test('getHover: doc comment on class field at definition', async () => {
+    const src = `class Foo {
+  /** The value */
+  x: i32;
+  new(this.x);
+}`;
+    // Hover on "x" in the field definition (first "x")
+    const offset = offsetOf(src, 'x', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for field');
+    assert.strictEqual(hover!.doc, 'The value');
+  });
+
+  test('getHover: doc comment on method at definition', async () => {
+    const src = `class Foo {
+  x: i32;
+  new(this.x);
+  /** Get the value */
+  getX(): i32 { return this.x; }
+}`;
+    const offset = offsetOf(src, 'getX', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for method');
+    assert.strictEqual(hover!.doc, 'Get the value');
+  });
+
+  test('getHover: doc on top-level let at definition site', async () => {
+    const src = '/** The magic number */\nlet magic = 42;';
+    const offset = offsetOf(src, 'magic', 2);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, 'The magic number');
+  });
+
+  test('getHover: type ref inside field initializer does not leak field doc', async () => {
+    const src = `class Scope {
+  /** Map of values */
+  #values = new HashMap<String, SymbolInfo>();
+  #types = new HashMap<String, SymbolInfo>();
+}
+/** Info about a name */
+class SymbolInfo {}
+class HashMap<K, V> {}`;
+    // Hover on "SymbolInfo" type arg in #values field — should show
+    // SymbolInfo class doc, not the #values field doc.
+    const offset = offsetOf(src, 'SymbolInfo', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    if (hover && hover.doc) {
+      assert.ok(
+        !hover.doc.includes('Map of values'),
+        `Should not show enclosing field doc, got: "${hover.doc}"`,
+      );
+    }
+  });
+
+  test('getHover: type ref inside undocumented field does not leak class doc', async () => {
+    const src = `/** The Scope class */
+class Scope {
+  #types = new HashMap<String, SymbolInfo>();
+}
+class SymbolInfo {}
+class HashMap<K, V> {}`;
+    // Hover on "SymbolInfo" in #types — should NOT show Scope class doc.
+    const offset = offsetOf(src, 'SymbolInfo', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    if (hover && hover.doc) {
+      assert.ok(
+        !hover.doc.includes('The Scope class'),
+        `Should not show enclosing class doc, got: "${hover.doc}"`,
+      );
+    }
+  });
+
+  test('getHover: ref inside class body does not show next declaration doc', async () => {
+    const src = `let helper = (): i32 => 0;
+/** Info about a name */
+class SymbolInfo {
+  id: i32;
+  new() : id = helper();
+}`;
+    // Hover on "helper" ref inside SymbolInfo constructor — should NOT
+    // show the SymbolInfo class doc.
+    const offset = offsetOf(src, 'helper', 2);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for helper ref');
+    assert.strictEqual(hover!.doc, '', 'helper has no doc comment');
+  });
+
+  // ========================================================================
+  // Document Symbols Tests
+  // ========================================================================
+
+  interface SymbolInfo {
+    name: string;
+    kind: number;
+    start: number;
+    end: number;
+    selStart: number;
+    selEnd: number;
+    children: SymbolInfo[];
+  }
+
+  /**
+   * Helper: get document symbols from source.
+   */
+  function getSymbols(
+    lsp: LspHandle,
+    source: string,
+    path = '/test/main.zena',
+  ): SymbolInfo[] {
+    const {exports, writeString, readString} = lsp;
+    const pathRef = writeString(path);
+    const sourceRef = writeString(source);
+    const symbolsRef = exports.getDocumentSymbols(pathRef, sourceRef);
+    const count = exports.getSymbolCount(symbolsRef);
+    const result: SymbolInfo[] = [];
+
+    function readSym(ref: unknown): SymbolInfo {
+      const nameRef = exports.getSymbolName(ref);
+      const nameLen = exports.$stringGetLength(nameRef);
+      const name = readString(nameRef, nameLen);
+      const kind = exports.getSymbolKind(ref);
+      const start = exports.getSymbolStart(ref);
+      const end = exports.getSymbolEnd(ref);
+      const selStart = exports.getSymbolSelStart(ref);
+      const selEnd = exports.getSymbolSelEnd(ref);
+      const childCount = exports.getSymbolChildCount(ref);
+      const children: SymbolInfo[] = [];
+      for (let j = 0; j < childCount; j++) {
+        children.push(readSym(exports.getSymbolChild(ref, j)));
+      }
+      return {name, kind, start, end, selStart, selEnd, children};
+    }
+
+    for (let i = 0; i < count; i++) {
+      result.push(readSym(exports.getSymbol(symbolsRef, i)));
+    }
+    return result;
+  }
+
+  // VS Code SymbolKind constants used in assertions.
+  const SK_CLASS = 5;
+  const SK_METHOD = 6;
+  const SK_PROPERTY = 8;
+  const SK_CONSTRUCTOR = 9;
+  const SK_ENUM = 10;
+  const SK_INTERFACE = 11;
+  const SK_FUNCTION = 12;
+  const SK_VARIABLE = 13;
+  const SK_ENUM_MEMBER = 22;
+
+  test('getDocumentSymbols: class with members', async () => {
+    const src = `class Foo {
+  x: i32;
+  new(this.x);
+  getX(): i32 { return this.x; }
+}`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 1);
+    assert.strictEqual(symbols[0].name, 'Foo');
+    assert.strictEqual(symbols[0].kind, SK_CLASS);
+    const children = symbols[0].children;
+    assert.ok(
+      children.length >= 2,
+      `Expected >= 2 children, got ${children.length}`,
+    );
+    const names = children.map((c) => c.name);
+    assert.ok(names.includes('x'), `Expected field x, got: ${names}`);
+    assert.ok(
+      names.includes('new') || names.includes('<constructor>'),
+      `Expected constructor, got: ${names}`,
+    );
+    assert.ok(names.includes('getX'), `Expected method getX, got: ${names}`);
+    // Constructor should have SK_CONSTRUCTOR kind
+    const ctor = children.find(
+      (c) => c.name === 'new' || c.name === '<constructor>',
+    );
+    assert.strictEqual(ctor?.kind, SK_CONSTRUCTOR);
+  });
+
+  test('getDocumentSymbols: variable and function', async () => {
+    const src = `let x = 42;
+let add = (a: i32, b: i32): i32 => a + b;`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 2);
+    assert.strictEqual(symbols[0].name, 'x');
+    assert.strictEqual(symbols[0].kind, SK_VARIABLE);
+    assert.strictEqual(symbols[1].name, 'add');
+    assert.strictEqual(symbols[1].kind, SK_FUNCTION);
+  });
+
+  test('getDocumentSymbols: enum with members', async () => {
+    const src = `enum Color { Red, Green, Blue }`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 1);
+    assert.strictEqual(symbols[0].name, 'Color');
+    assert.strictEqual(symbols[0].kind, SK_ENUM);
+    assert.strictEqual(symbols[0].children.length, 3);
+    assert.strictEqual(symbols[0].children[0].name, 'Red');
+    assert.strictEqual(symbols[0].children[0].kind, SK_ENUM_MEMBER);
+  });
+
+  test('getDocumentSymbols: interface', async () => {
+    const src = `interface Printable {
+  toString(): String;
+}`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 1);
+    assert.strictEqual(symbols[0].name, 'Printable');
+    assert.strictEqual(symbols[0].kind, SK_INTERFACE);
+    assert.ok(symbols[0].children.length >= 1);
+    assert.strictEqual(symbols[0].children[0].name, 'toString');
+  });
+
+  test('getDocumentSymbols: sealed class with variants', async () => {
+    const src = `sealed class Expr {
+  case Lit(value: i32)
+  case Add(left: Expr, right: Expr)
+}`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 1);
+    assert.strictEqual(symbols[0].name, 'Expr');
+    assert.strictEqual(symbols[0].kind, SK_CLASS);
+    const variantNames = symbols[0].children.map((c) => c.name);
+    assert.ok(
+      variantNames.includes('Lit'),
+      `Expected Lit, got ${variantNames}`,
+    );
+    assert.ok(
+      variantNames.includes('Add'),
+      `Expected Add, got ${variantNames}`,
+    );
+  });
+
+  test('getDocumentSymbols: type alias', async () => {
+    const src = `type Point = {x: f64, y: f64};`;
+    const symbols = getSymbols(lsp, src);
+    assert.strictEqual(symbols.length, 1);
+    assert.strictEqual(symbols[0].name, 'Point');
+  });
+
+  test('getDocumentSymbols: test file with suite/test', async () => {
+    const src = `import {suite, test, TestContext} from 'zena:test';
+
+export let tests = suite('Parser', (): void => {
+  suite('Variables', (): void => {
+    test('let declaration', (ctx: TestContext): void => {
+      let x = 1;
+    });
+    test('var declaration', (ctx: TestContext): void => {
+      let y = 2;
+    });
+  });
+  test('standalone', (ctx: TestContext): void => {
+    let z = 3;
+  });
+});`;
+    const symbols = getSymbols(lsp, src);
+    // Should have 'tests' as a top-level function symbol.
+    const testsSym = symbols.find((s) => s.name === 'tests');
+    assert.ok(
+      testsSym,
+      `Expected 'tests' symbol, got: ${symbols.map((s) => s.name)}`,
+    );
+    assert.strictEqual(testsSym!.kind, SK_FUNCTION);
+
+    // Should have nested suite/test children.
+    const children = testsSym!.children;
+    assert.ok(
+      children.length >= 2,
+      `Expected >= 2 children, got ${children.length}`,
+    );
+
+    const varsSuite = children.find((c) => c.name === 'Variables');
+    assert.ok(
+      varsSuite,
+      `Expected 'Variables' suite, got: ${children.map((c) => c.name)}`,
+    );
+    assert.ok(
+      varsSuite!.children.length >= 2,
+      `Expected >= 2 tests in Variables`,
+    );
+    assert.strictEqual(varsSuite!.children[0].name, 'let declaration');
+    assert.strictEqual(varsSuite!.children[1].name, 'var declaration');
+
+    const standalone = children.find((c) => c.name === 'standalone');
+    assert.ok(standalone, `Expected 'standalone' test`);
+  });
+
+  // ========================================================================
+  // Cross-File Tests
+  // ========================================================================
+
+  test('getHover: cross-file doc comment from stdlib', async () => {
+    // IndexOutOfBoundsError has a doc comment in the stdlib:
+    // /** Thrown when an array/sequence index is out of bounds. */
+    const src = `import { IndexOutOfBoundsError } from 'zena:core';
+let e = new IndexOutOfBoundsError(0, 0);`;
+    // Hover over "IndexOutOfBoundsError" in the let declaration (2nd occurrence)
+    const offset = offsetOf(src, 'IndexOutOfBoundsError', 2);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for cross-file type');
+    assert.ok(
+      hover!.doc.length > 0,
+      `Expected doc comment from stdlib, got empty string`,
+    );
+    assert.ok(
+      hover!.doc.includes('out of bounds') || hover!.doc.includes('index'),
+      `Expected doc about index bounds, got: ${hover!.doc}`,
+    );
+  });
+
+  test('getHover: cross-file type info from stdlib', async () => {
+    // LookupError has a doc comment: /** Base class for errors when a lookup operation fails. */
+    const src = `import { LookupError } from 'zena:core';
+let e = new LookupError("test");`;
+    // Hover over "LookupError" in "new LookupError(...)" (2nd occurrence)
+    const offset = offsetOf(src, 'LookupError', 2);
+    const hover = await getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info for cross-file type');
+    assert.ok(
+      hover!.doc.includes('lookup'),
+      `Expected doc about lookup errors, got: "${hover!.doc}"`,
+    );
+  });
+
+  test('getDefinition: cross-file import jumps to stdlib', async () => {
+    const src = `import { Error } from 'zena:core';
+let e = new Error("test");`;
+    // Click on "Error" in "new Error("test")" (3rd occurrence: import specifier, type=Error, new Error)
+    const offset = offsetOf(src, 'Error', 2);
+    const def = await getDefinitionAt(lsp, src, offset);
+    assert.ok(def, 'Expected a definition result');
+    // Should point to a file in the stdlib (error.zena)
+    assert.ok(
+      def!.file.includes('error.zena'),
+      `Expected definition in error.zena, got: ${def!.file}`,
+    );
+  });
+
+  test('getHover: cross-file hover on import specifier', async () => {
+    const src = `import { KeyNotFoundError } from 'zena:core';
+let x: i32 = 0;`;
+    // Hover on "KeyNotFoundError" in the import specifier
+    const offset = offsetOf(src, 'KeyNotFoundError', 1);
+    const hover = await getHoverAt(lsp, src, offset);
+    if (hover) {
+      // If we get hover info, the doc should come from the stdlib
+      assert.ok(
+        hover.doc.includes('key') ||
+          hover.doc.includes('not found') ||
+          hover.doc.includes('map'),
+        `Expected doc about key not found, got: "${hover.doc}"`,
+      );
+    }
+    // It's acceptable for hover on import specifiers to return null
+  });
+
+  test('compileToWasm: compiles source and exports main()', async () => {
+    const src = `export let main = (): void => {
+  console.log('Hello from test main');
+};`;
+    const wasmRef = await lsp.exports.compileToWasm(
+      lsp.writeString('/main.zena'),
+      lsp.writeString(src),
+    );
+    assert.ok(wasmRef, 'compileToWasm should return a ByteArray reference');
+    const len = lsp.exports.getByteArrayLength(wasmRef);
+    assert.ok(len > 0, `Expected Wasm binary length > 0, got ${len}`);
+
+    const uint8 = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      uint8[i] = lsp.exports.getByteArrayByte(wasmRef, i) & 0xff;
+    }
+
+    let programExports: WebAssembly.Exports | undefined;
+    let loggedMessage = '';
+    const result = await instantiate(uint8, {
+      console: {
+        log_string: (strRef: unknown, strLen?: number) => {
+          loggedMessage =
+            typeof strRef === 'string'
+              ? strRef
+              : createStringReader(programExports!)(strRef, strLen);
+        },
+      },
+    });
+    const instance = 'instance' in result ? result.instance : result;
+    programExports = instance.exports;
+
+    const exportKeys = Object.keys(programExports);
+    console.log('[compileToWasm test] Export keys:', exportKeys);
+    assert.ok(
+      exportKeys.includes('main'),
+      `Expected export 'main' in keys: ${exportKeys.join(', ')}`,
+    );
+
+    const mainFn = programExports.main as () => void;
+    mainFn();
+    assert.strictEqual(loggedMessage, 'Hello from test main');
+  });
+
+  test('compileToWasm: refuses to emit code from a recovered parse', async () => {
+    // Recovery exists so the editor can answer questions mid-edit; it is
+    // not a licence to build. The checker never sees parse errors, so
+    // without an explicit completeness check this emits a module built
+    // from an import the user had not finished typing.
+    const src = `import { console } from 'zena:console'
+export let main = (): void => {
+  console.log('Hello');
+};`;
+    const wasmRef = await lsp.exports.compileToWasm(
+      lsp.writeString('/main.zena'),
+      lsp.writeString(src),
+    );
+    assert.strictEqual(
+      wasmRef,
+      null,
+      'Expected no Wasm from a file with a recovered parse error',
+    );
+  });
+
+  test('getCompletions: returns keywords, builtins, and scope symbols', async () => {
+    const src = 'let foo = 42;\nlet bar = "hello";\n';
+    const filePath = '/test.zena';
+    await lsp.exports.check(lsp.writeString(filePath), lsp.writeString(src));
+
+    const completionsRef = lsp.exports.getCompletions(
+      lsp.writeString(filePath),
+      src.length,
+    );
+    assert.ok(completionsRef, 'Expected completions array reference');
+
+    const count = lsp.exports.getCompletionCount(completionsRef);
+    assert.ok(count > 0, `Expected completions count > 0, got ${count}`);
+
+    const labels: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const item = lsp.exports.getCompletionItem(completionsRef, i);
+      const strRef = lsp.exports.getCompletionLabel(item);
+      const len = lsp.exports.$stringGetLength(strRef);
+      const label = lsp.readString(strRef, len);
+      labels.push(label);
+    }
+
+    assert.ok(
+      labels.includes('let'),
+      'Completions should include keyword "let"',
+    );
+    assert.ok(
+      labels.includes('String'),
+      'Completions should include builtin type "String"',
+    );
+    assert.ok(
+      labels.includes('foo'),
+      'Completions should include scope variable "foo"',
+    );
+    assert.ok(
+      labels.includes('bar'),
+      'Completions should include scope variable "bar"',
+    );
+  });
+
+  test('an import being typed still analyzes the rest of the file', async () => {
+    // The parser recovers from an import with no module specifier, so the
+    // file is analyzed rather than collapsing to a single parse error —
+    // but the error itself is still reported.
+    const src = 'import {Map} from \nlet foo = 42;\n';
+    const filePath = '/test.zena';
+
+    const diags = await checkSource(lsp, src, filePath);
+    assert.ok(
+      !diags.some((d) => d.message.startsWith('Compiler error:')),
+      `Expected recovery, not a bail-out: ${diags.map((d) => d.message).join(', ')}`,
+    );
+    assert.ok(
+      diags.some((d) => d.message === 'Expected string literal'),
+      `Expected the recovered parse error to be reported, got: ${diags.map((d) => d.message).join(', ')}`,
+    );
+
+    const completionsRef = lsp.exports.getCompletions(
+      lsp.writeString(filePath),
+      src.length,
+    );
+    assert.ok(completionsRef, 'Expected completions array reference');
+
+    const count = lsp.exports.getCompletionCount(completionsRef);
+    const labels: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const item = lsp.exports.getCompletionItem(completionsRef, i);
+      const strRef = lsp.exports.getCompletionLabel(item);
+      const len = lsp.exports.$stringGetLength(strRef);
+      labels.push(lsp.readString(strRef, len));
+    }
+
+    assert.ok(
+      labels.includes('foo'),
+      'Completions should see symbols declared below the incomplete import',
+    );
+  });
+
+  test('getCompletions: returns member methods for object access', async () => {
+    const src =
+      'class Person {\n  name: String;\n  sayHello() {}\n}\nlet main = () => {\n  let p = new Person();\n  p.\n};';
+    const filePath = '/test.zena';
+    await lsp.exports.check(lsp.writeString(filePath), lsp.writeString(src));
+
+    const offset = src.indexOf('p.') + 2; // position right after `p.`
+    const completionsRef = lsp.exports.getCompletions(
+      lsp.writeString(filePath),
+      offset,
+    );
+    assert.ok(completionsRef, 'Expected completions array reference');
+
+    const count = lsp.exports.getCompletionCount(completionsRef);
+    assert.ok(count > 0, `Expected completions count > 0, got ${count}`);
+
+    const labels: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const item = lsp.exports.getCompletionItem(completionsRef, i);
+      const strRef = lsp.exports.getCompletionLabel(item);
+      const len = lsp.exports.$stringGetLength(strRef);
+      const label = lsp.readString(strRef, len);
+      labels.push(label);
+    }
+
+    assert.ok(
+      labels.includes('sayHello'),
+      'Member completions should include method "sayHello"',
+    );
+    assert.ok(
+      labels.includes('name'),
+      'Member completions should include field "name"',
+    );
+    assert.ok(
+      !labels.includes('let'),
+      'Member completions should not include top-level keyword "let"',
+    );
+    assert.ok(
+      !labels.includes('class'),
+      'Member completions should not include top-level keyword "class"',
+    );
+  });
+
+  test('getCompletions: returns console methods for console.l access', async () => {
+    const src = 'export let main = () => {\n  console.l\n};';
+    const filePath = '/console_test.zena';
+    lsp.openDocs.set(filePath, src);
+    await lsp.exports.check(lsp.writeString(filePath), lsp.writeString(src));
+
+    const offset = src.indexOf('console.l') + 9; // right after console.l
+    const completionsRef = lsp.exports.getCompletions(
+      lsp.writeString(filePath),
+      offset,
+    );
+    assert.ok(completionsRef, 'Expected completions array reference');
+
+    const count = lsp.exports.getCompletionCount(completionsRef);
+    assert.ok(count > 0, `Expected completions count > 0, got ${count}`);
+
+    const labels: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const item = lsp.exports.getCompletionItem(completionsRef, i);
+      const strRef = lsp.exports.getCompletionLabel(item);
+      const len = lsp.exports.$stringGetLength(strRef);
+      const label = lsp.readString(strRef, len);
+      labels.push(label);
+    }
+
+    assert.ok(
+      labels.includes('log'),
+      'Console member completions should include method "log"',
+    );
+    assert.ok(
+      !labels.includes('error'),
+      'Console member completions for console.l should not include "error"',
+    );
+    assert.ok(
+      !labels.includes('let'),
+      'Console member completions for console.l should not include keyword "let"',
+    );
+  });
+});

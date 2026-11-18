@@ -10,7 +10,7 @@ describe what was built; "Verification" records what was measured.
 ## Overview
 
 The compiler reads source through `CompilerHost`
-(`packages/zena-compiler/zena/lib/library-loader.zena`), whose two
+(`packages/compiler/src/lib/library-loader.zena`), whose two
 methods are synchronous:
 
 ```zena
@@ -189,7 +189,7 @@ the output.
 
 ### Command-line tools
 
-The compiler's `main` (`zena/cli/main.zena`) and `zena-cli`'s `main`
+The compiler's `main` (`src/cli/main.zena`) and `zena-cli`'s `main`
 become `async function main(): Future<i32>`. The commands that compile
 (`build`, `run`, `test`, `bench`, `lint`, `doc`, `lsp`) become
 asynchronous down to the call that reaches the compiler. That takes in
@@ -320,7 +320,7 @@ out. Fixed in elematic/zena#905.
 - `npm test` passes, the stage B and stage C comparison included.
 - A compiler built from the branch's base and one built from the
   branch, each compiling the same inputs through `ZENA_COMPILER_WASM`
-  (`packages/zena-compiler/CONTEXT.md`, "Debugging the compiler"),
+  (`packages/compiler/CONTEXT.md`, "Debugging the compiler"),
   emit identical bytes: two small programs with an async `main`, the
   compiler's `cli/main.zena` (2.2 MB), zenadoc's `main.zena` (1.0 MB)
   and the `zena` command's `main.zena` (3.0 MB). The baseline has to be

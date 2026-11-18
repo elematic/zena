@@ -2,7 +2,7 @@
 
 The Zena language service and Language Server Protocol (LSP) library: diagnostics, lint findings and quick fixes, hover, completions, go-to-definition, document symbols, and formatting.
 
-Used by `zena lsp` (in `packages/zena-cli`) and compiled to WebAssembly by `@zena-lang/compiler` (`packages/compiler`) for JavaScript, browser, and VS Code hosts.
+Used by `zena lsp` (in `packages/zena-cli`) and compiled to WebAssembly by `@zena-lang/compiler` (`packages/compiler-js`) for JavaScript, browser, and VS Code hosts.
 
 ## Usage in Zena
 

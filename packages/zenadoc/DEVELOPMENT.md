@@ -4,7 +4,7 @@ Notes for working on `zenadoc`.
 
 ## Architecture
 
-Nothing in the language depends on `zenadoc`. The dependency runs one way — `zenadoc` imports `zena-compiler`, never the reverse — so the compiler, type checker, and code generator are unaffected by changes here.
+Nothing in the language depends on `zenadoc`. The dependency runs one way — `zenadoc` imports `compiler`, never the reverse — so the compiler, type checker, and code generator are unaffected by changes here.
 
 Documenting a module means compiling it, and everything downstream reads what that compile already produced:
 
