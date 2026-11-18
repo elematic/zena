@@ -10,6 +10,7 @@ import {
   checkReleaseTags,
   checkVersionIncrement,
   extractChangelogNotes,
+  extractReleaseNotesBody,
   parseReleaseVersion,
   releaseNotesPath,
 } from '../dev/release-version.zena';
@@ -119,9 +120,15 @@ export let tests = suite('release version checks and host paths', () => {
     let notesPath = releaseNotesPath(CLI_VERSION);
     equal(notesPath, `docs/releases/${CLI_VERSION}.md`);
     if (await exists(notesPath)) {
+      let rawNotes = await readFile(notesPath);
       isTrue(
-        (await readFile(notesPath)).startsWith(`# Zena ${CLI_VERSION}\n`),
+        rawNotes.startsWith(`# Zena ${CLI_VERSION}\n`),
         `${notesPath} starts with '# Zena ${CLI_VERSION}'`,
+      );
+      let body = extractReleaseNotesBody(rawNotes);
+      isTrue(
+        body != null && !body.startsWith('# '),
+        `${notesPath} yields a non-empty body without its '# Zena' title`,
       );
     } else {
       isTrue(
@@ -130,6 +137,11 @@ export let tests = suite('release version checks and host paths', () => {
       );
     }
     equal(extractChangelogNotes(changelog, '99.99.99'), null);
+    equal(
+      extractReleaseNotesBody('# Zena 0.1.0\n\n2026-12-01\n\n## Toolchain\n\n### cli\n\n#### Added\n\n- Entry\n'),
+      '## Toolchain\n\n### cli\n\n#### Added\n\n- Entry\n',
+    );
+    equal(extractReleaseNotesBody('# Zena 0.1.0\n\n2026-12-01\n'), null);
 
     let emptySection = '# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2026-12-01\n\n## [0.1.0] - 2026-11-12\n\n- Initial\n';
     equal(extractChangelogNotes(emptySection, '0.2.0'), null);

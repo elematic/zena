@@ -95,14 +95,29 @@ export const extractBodyChecksums = (body: string): Map<string, string> => {
 };
 
 /**
- * Strips the auto-appended install/download footer from a release's Markdown
- * body so `<zena-releases>` renders the human changelog once alongside its
+ * Strips any leading `# <Title>` + `YYYY-MM-DD` document header and the
+ * auto-appended install/download footer from a release's Markdown body so
+ * `<zena-releases>` renders the changelog once alongside its card header and
  * structured downloads table.
  */
 export const extractChangelogBody = (body: string): string => {
   const markerIndex = body.indexOf(DOWNLOADS_MARKER);
   const sliced = markerIndex >= 0 ? body.slice(0, markerIndex) : body;
-  return sliced.trim();
+  const lines = sliced.split(/\r?\n/);
+  let idx = 0;
+  while (idx < lines.length && lines[idx].trim() === '') {
+    idx++;
+  }
+  if (idx < lines.length && /^#\s+/.test(lines[idx].trim())) {
+    idx++;
+    while (idx < lines.length && lines[idx].trim() === '') {
+      idx++;
+    }
+    if (idx < lines.length && /^\d{4}-\d{2}-\d{2}$/.test(lines[idx].trim())) {
+      idx++;
+    }
+  }
+  return lines.slice(idx).join('\n').trim();
 };
 
 const formatReleaseDate = (iso: string | null | undefined): string | null => {

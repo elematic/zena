@@ -51,8 +51,9 @@ const renderInlineMarkdown = (text: string): Array<string | TemplateResult> => {
 };
 
 /**
- * Renders Keep a Changelog prose (`###` headings, bullet lists, and paragraphs)
- * into light-DOM elements styled by `.prose`.
+ * Renders release notes Markdown (`##`/`###`/`####` headings, fenced code
+ * blocks, bullet lists, and paragraphs) into light-DOM elements styled by
+ * `.prose`.
  */
 const renderChangelog = (markdown: string): TemplateResult | typeof nothing => {
   if (!markdown) return nothing;
@@ -61,6 +62,8 @@ const renderChangelog = (markdown: string): TemplateResult | typeof nothing => {
   const lines = markdown.split(/\r?\n/);
   let listItems: string[] = [];
   let paragraphLines: string[] = [];
+  let inCodeFence = false;
+  let codeLines: string[] = [];
 
   const flushParagraph = () => {
     if (paragraphLines.length === 0) return;
@@ -80,7 +83,30 @@ const renderChangelog = (markdown: string): TemplateResult | typeof nothing => {
     );
   };
 
+  const flushCode = () => {
+    const code = codeLines.join('\n');
+    codeLines = [];
+    blocks.push(html`<pre><code>${code}</code></pre>`);
+  };
+
   for (const rawLine of lines) {
+    if (rawLine.trim().startsWith('```')) {
+      if (inCodeFence) {
+        flushCode();
+        inCodeFence = false;
+      } else {
+        flushParagraph();
+        flushList();
+        inCodeFence = true;
+      }
+      continue;
+    }
+
+    if (inCodeFence) {
+      codeLines.push(rawLine);
+      continue;
+    }
+
     const line = rawLine.trim();
     if (!line) {
       flushParagraph();
@@ -88,11 +114,19 @@ const renderChangelog = (markdown: string): TemplateResult | typeof nothing => {
       continue;
     }
 
-    const headingMatch = /^(#{2,4})\s+(.+)$/.exec(line);
+    const headingMatch = /^(#{1,4})\s+(.+)$/.exec(line);
     if (headingMatch) {
       flushParagraph();
       flushList();
-      blocks.push(html`<h4>${renderInlineMarkdown(headingMatch[2])}</h4>`);
+      const depth = headingMatch[1].length;
+      const content = renderInlineMarkdown(headingMatch[2]);
+      if (depth <= 2) {
+        blocks.push(html`<h4>${content}</h4>`);
+      } else if (depth === 3) {
+        blocks.push(html`<h5>${content}</h5>`);
+      } else {
+        blocks.push(html`<h6>${content}</h6>`);
+      }
       continue;
     }
 
@@ -116,6 +150,9 @@ const renderChangelog = (markdown: string): TemplateResult | typeof nothing => {
     paragraphLines.push(line);
   }
 
+  if (inCodeFence) {
+    flushCode();
+  }
   flushParagraph();
   flushList();
 

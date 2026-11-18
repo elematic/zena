@@ -177,6 +177,71 @@ export function releaseNotesPath(version: String): String {
   return `docs/releases/${version}.md`;
 }
 
+function isAsciiDigit(b: i32) {
+  return b >= 48 && b <= 57;
+}
+
+/** True when `text` is an ISO `YYYY-MM-DD` date line. */
+function isIsoDateLine(text: String): boolean {
+  if (text.length != 10) {
+    return false;
+  }
+  return (
+    isAsciiDigit(text.getByteAt(0)) &&
+    isAsciiDigit(text.getByteAt(1)) &&
+    isAsciiDigit(text.getByteAt(2)) &&
+    isAsciiDigit(text.getByteAt(3)) &&
+    text.getByteAt(4) == 45 &&
+    isAsciiDigit(text.getByteAt(5)) &&
+    isAsciiDigit(text.getByteAt(6)) &&
+    text.getByteAt(7) == 45 &&
+    isAsciiDigit(text.getByteAt(8)) &&
+    isAsciiDigit(text.getByteAt(9))
+  );
+}
+
+/**
+ * Extracts the release body from `docs/releases/<version>.md`, stripping the
+ * leading `# <Title> <version>` heading and `YYYY-MM-DD` date line that
+ * GitHub Releases and `zena-lang.dev/releases/` render in their own headers.
+ * Returns `null` when nothing remains below the header.
+ */
+export function extractReleaseNotesBody(doc: String): String | null {
+  let lines = doc.split('\n');
+  var idx = 0;
+  while (idx < lines.length && lines[idx].trim() == '') {
+    idx += 1;
+  }
+  if (idx < lines.length && lines[idx].trim().startsWith('# ')) {
+    idx += 1;
+    while (idx < lines.length && lines[idx].trim() == '') {
+      idx += 1;
+    }
+    if (idx < lines.length && isIsoDateLine(lines[idx].trim())) {
+      idx += 1;
+    }
+  }
+  while (idx < lines.length && lines[idx].trim() == '') {
+    idx += 1;
+  }
+  var last = lines.length - 1;
+  while (last >= idx && lines[last].trim() == '') {
+    last -= 1;
+  }
+  if (idx > last) {
+    return null;
+  }
+  let sb = new StringBuilder();
+  for (var i = idx; i <= last; i += 1) {
+    if (i > idx) {
+      sb.append('\n');
+    }
+    sb.append(lines[i]);
+  }
+  sb.append('\n');
+  return sb.toString();
+}
+
 /**
  * Extracts the release notes under `## [<version>]` from Keep a Changelog
  * Markdown text, stopping before the next `## ` section or link reference
