@@ -12,7 +12,7 @@ that runs it on wasmtime. See
 
 The registry-side pieces (engine configuration, the `.cwasm` cache, the
 stack-trace, `zena:process` and `zena:wasm` imports) live in the
-[`zena-runtime`](../zena-runtime) crate. [`zena-run`](../zena-run) embeds
+[`zena-runtime`](../runtime-wasmtime) crate. [`zena-run`](../zena-run) embeds
 the same crate to run any compiled module.
 
 ## Building

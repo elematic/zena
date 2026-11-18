@@ -20,15 +20,15 @@
 //! Build the two components, then run, from the repository root:
 //!
 //! ```text
-//! ./target/release/zena build packages/zena-runtime/examples/components-spike/child.zena \
-//!     --target component --wit packages/zena-runtime/examples/components-spike/child.wit \
-//!     --world child -o packages/zena-runtime/examples/components-spike/out/child.wasm
-//! ./target/release/zena build packages/zena-runtime/examples/components-spike/caller.zena \
-//!     --target component --wit packages/zena-runtime/examples/components-spike/caller.wit \
-//!     --world caller -o packages/zena-runtime/examples/components-spike/out/caller.wasm
+//! ./target/release/zena build packages/runtime-wasmtime/examples/components-spike/child.zena \
+//!     --target component --wit packages/runtime-wasmtime/examples/components-spike/child.wit \
+//!     --world child -o packages/runtime-wasmtime/examples/components-spike/out/child.wasm
+//! ./target/release/zena build packages/runtime-wasmtime/examples/components-spike/caller.zena \
+//!     --target component --wit packages/runtime-wasmtime/examples/components-spike/caller.wit \
+//!     --world caller -o packages/runtime-wasmtime/examples/components-spike/out/caller.wasm
 //! cargo run --release -p zena-runtime --example components_spike -- \
-//!     packages/zena-runtime/examples/components-spike/out/caller.wasm \
-//!     packages/zena-runtime/examples/components-spike/out/child.wasm
+//!     packages/runtime-wasmtime/examples/components-spike/out/caller.wasm \
+//!     packages/runtime-wasmtime/examples/components-spike/out/child.wasm
 //! ```
 
 use std::sync::Arc;

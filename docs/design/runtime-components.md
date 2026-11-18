@@ -585,7 +585,7 @@ instance; two loads in flight at once get distinct handles.
 - **A handle as the first parameter of every function.** The runtime
   adds the extension's handle to each call in both directions, and the
   program keeps a table from handle to its state. It works, and the
-  example harness in `packages/zena-runtime/examples` still has this
+  example harness in `packages/runtime-wasmtime/examples` still has this
   shape, but the program's functions had to know the extension system,
   and nothing tied a handle to the code serving it. One object per
   extension puts the identity where the program's code already keeps

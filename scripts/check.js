@@ -226,12 +226,14 @@ if (linted.length > 0) {
       // A type error in a library that tests import by package specifier is
       // not reported by those tests (#510), but lint checks each file on its
       // own and says so. Libraries for the js target cannot check under the
-      // default one.
+      // default one, and a library moved without an edit is not this
+      // change's to fix.
       const unchecked = /^(.+?): does not check \((.*)\); skipped$/.exec(
         finding,
       );
       if (
         unchecked &&
+        touched.get(unchecked[1])?.size > 0 &&
         !/(^|[-/])js(-[a-z]+)?\.zena$/.test(unchecked[1]) &&
         !unchecked[2].includes("'zena:js'")
       ) {

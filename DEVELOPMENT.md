@@ -119,7 +119,7 @@ matches one of these:
 
 - `packages/compiler` — the compiler (Zena). `zena/lib/codegen/`
   has its own CONTEXT.md files.
-- `packages/zena-runtime` — Rust library: what a compiled Zena module
+- `packages/runtime-wasmtime` — Rust library: what a compiled Zena module
   needs from its wasmtime host (engine flags, `.cwasm` cache, the
   stack-trace and `zena:process` imports). The Rust counterpart of
   `packages/runtime`.

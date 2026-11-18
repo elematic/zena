@@ -236,7 +236,7 @@ await x` pays the bare-value queue hop for nothing — return
   - Also next: richer fetch (headers, streamed bodies — streams are
     designed in [streams.md](docs/design/streams.md) with the
     `zena:stream` rendezvous core implemented); the tokio-backed CLI
-    and the WASI 0.3 host both exist now (`packages/zena-runtime`).
+    and the WASI 0.3 host both exist now (`packages/runtime-wasmtime`).
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
     resolve); what remains is everything that turns a parsed WIT into a running

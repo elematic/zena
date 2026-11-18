@@ -1359,7 +1359,7 @@ What was built (2026-09-28):
   `wasm` with the `run` resource, `precompile` and the run records
   behind `zena:wasm`. The compiler registers it as a built-in package
   named `zena`, beside the built-in `wasi` package. The Rust side
-  is `packages/zena-runtime/src/component.rs`, generated with
+  is `packages/runtime-wasmtime/src/component.rs`, generated with
   `bindgen!` over that WIT. `zena-run` and `zena:wasm` also run a core
   module, with no imports: a `freestanding` build, a hand-written
   `.wat` benchmark, or another language's `wasm32-unknown-unknown`

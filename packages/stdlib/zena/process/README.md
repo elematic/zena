@@ -100,7 +100,7 @@ stdlib module:
 
 ## Implementation notes
 
-The host side lives in `packages/zena-runtime/src/process.rs`. Strings
+The host side lives in `packages/runtime-wasmtime/src/process.rs`. Strings
 cross the boundary through the `$stringCreate` / `$stringSetByte` /
 `$stringGetByte` / `$stringGetLength` helpers every compiled Zena
 module exports; handles cross as `externref`s wrapping host state.
