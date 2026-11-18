@@ -8,9 +8,8 @@ A package is defined by the `zena-package.json` manifest at its root: its name, 
 
 ```json [zena-package.json]
 {
-  "name": "router",
+  "name": "acme:router",
   "did": "did:plc:routerrouterrouterrouter",
-  "scope": "acme",
   "version": "1.4.2",
   "description": "HTTP router for WebAssembly services",
   "license": "MIT",
@@ -34,21 +33,21 @@ A package is defined by the `zena-package.json` manifest at its root: its name, 
 
 ## Field reference
 
-| Field          | Type                         | Where          | Description                                                                                          |
-| -------------- | ---------------------------- | -------------- | ---------------------------------------------------------------------------------------------------- |
-| `name`         | `string`                     | Any package    | The package's name (a single lowercase DNS label), suggested as the default local name to dependents |
-| `did`          | `string`                     | Any package    | The package's AT Protocol DID, written by `zena pkg publish` or `zena pkg create`                    |
-| `scope`        | `string`                     | Any package    | The scope on the registry where the package is created (e.g., `acme`)                                |
-| `version`      | `string`                     | Any package    | Semantic version (`1.4.2`, `2.0.0-rc.1`) published by the next `zena pkg publish`                    |
-| `description`  | `string`                     | Any package    | One-sentence summary of the package; required to publish                                             |
-| `license`      | `string`                     | Any package    | SPDX license expression (`MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`); required to publish            |
-| `source`       | `string`                     | Any package    | The directory the package's libraries are in; `src` by default                                       |
-| `exports`      | `Record<string, Export>`     | Any package    | Libraries other packages may import as `<local-name>/<library>`                                      |
-| `main`         | `string`                     | Any package    | The library an import of the package's name alone imports; `main` by default                         |
-| `dependencies` | `Record<string, Dependency>` | Any package    | Packages imported by this package's libraries, keyed by local name                                   |
-| `workspace`    | `{packages: string[]}`       | Workspace root | Directories or `/*` globs of workspace member packages                                               |
-| `scopes`       | `Record<string, string>`     | Workspace root | Custom handle domains for `scope:name` lookups                                                       |
-| `scopedNames`  | `boolean`                    | Workspace root | Whether `zena pkg add` names a package in a scope `scope:name` (the default) or by its own name      |
+| Field          | Type                         | Where          | Description                                                                                                      |
+| -------------- | ---------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `name`         | `string`                     | Any package    | The package's name, after the scope it is created in: `acme:router`; suggested to dependents as their local name |
+| `did`          | `string`                     | Any package    | The package's AT Protocol DID, written by `zena pkg publish` or `zena pkg create`                                |
+| `scope`        | `string`                     | Any package    | The scope of a `name` that has none; give it in the name instead                                                 |
+| `version`      | `string`                     | Any package    | Semantic version (`1.4.2`, `2.0.0-rc.1`) published by the next `zena pkg publish`                                |
+| `description`  | `string`                     | Any package    | One-sentence summary of the package; required to publish                                                         |
+| `license`      | `string`                     | Any package    | SPDX license expression (`MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`); required to publish                        |
+| `source`       | `string`                     | Any package    | The directory the package's libraries are in; `src` by default                                                   |
+| `exports`      | `Record<string, Export>`     | Any package    | Libraries other packages may import as `<local-name>/<library>`                                                  |
+| `main`         | `string`                     | Any package    | The library an import of the package's name alone imports; `main` by default                                     |
+| `dependencies` | `Record<string, Dependency>` | Any package    | Packages imported by this package's libraries, keyed by local name                                               |
+| `workspace`    | `{packages: string[]}`       | Workspace root | Directories or `/*` globs of workspace member packages                                                           |
+| `scopes`       | `Record<string, string>`     | Workspace root | Custom handle domains for `scope:name` lookups                                                                   |
+| `scopedNames`  | `boolean`                    | Workspace root | Whether `zena pkg add` names a package in a scope `scope:name` (the default) or by its own name                  |
 
 All file and directory paths in `zena-package.json` are relative to the directory containing that manifest.
 

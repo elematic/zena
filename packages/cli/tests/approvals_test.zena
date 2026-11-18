@@ -27,7 +27,7 @@ export let tests = suite('zena pkg approve', () => {
           .set('ZENA_REGISTRY', addresses['registry'] as String)
           .set('ZENA_CONFIG_DIR', scratch.host(`config-${who}`));
       let person = (who: String) => personIn(who, 'lib');
-      await write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
+      await write(scratch.at('lib/zena-package.json'), '{"name": "acme:greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}\n');
       await write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
       let alice = person('alice');
       let bob = person('bob');
@@ -38,7 +38,7 @@ export let tests = suite('zena pkg approve', () => {
       isTrue(published.succeeded() && published.stdout.contains('Published greet 1.0.0'), described(published));
       let did = (parseJson(await read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
       let manifestAt = async (version: String) => await write(scratch.at('lib/zena-package.json'),
-          `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "${version}"}\n`);
+          `{"name": "acme:greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "version": "${version}"}\n`);
 
       // The scope's owners can change the package's maintainers too, so Bob
       // joins Alice as an owner of the scope, which then needs both.
@@ -108,7 +108,7 @@ export let tests = suite('zena pkg approve', () => {
       let printed = await alice.run(['pkg', 'scope', 'policy', 'acme']);
       isTrue(printed.succeeded() && printed.stdout.contains("Every release in acme needs at least 2 maintainers'"),
           described(printed));
-      await write(scratch.at('solo/zena-package.json'), '{"name": "solo", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
+      await write(scratch.at('solo/zena-package.json'), '{"name": "acme:solo", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}\n');
       await write(scratch.at('solo/solo.zena'), 'export let one = 1;\n');
       let solo = await personIn('alice', 'solo').run(['pkg', 'create', '--yes']);
       isTrue(!solo.succeeded() && solo.stderr.contains('asks 2 maintainers'), described(solo));

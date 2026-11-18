@@ -45,8 +45,7 @@ To be published, a package's `zena-package.json` must include `name`, `version`,
 
 ```json [zena-package.json]
 {
-  "name": "router",
-  "scope": "acme",
+  "name": "acme:router",
   "version": "1.0.0",
   "description": "HTTP request router for Zena",
   "license": "MIT",
@@ -70,7 +69,7 @@ From the package directory, run `zena pkg publish`:
 zena pkg publish
 ```
 
-If `scope` is not set in `zena-package.json`, pass `--scope <name>` on the command line:
+The `name` is the package's name after its scope, `acme:router`. If the name has no scope, pass `--scope <name>` on the command line, and the CLI writes it into the name:
 
 ```sh
 zena pkg publish --scope acme
