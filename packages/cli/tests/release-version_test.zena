@@ -5,12 +5,13 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {readFile} from 'zena:fs';
+import {exists, readFile} from 'zena:fs';
 import {
   checkReleaseTags,
   checkVersionIncrement,
   extractChangelogNotes,
   parseReleaseVersion,
+  releaseNotesPath,
 } from '../dev/release-version.zena';
 import {CLI_VERSION} from '../zena/versions.zena';
 import {normalizeHostPath} from '../zena/env.zena';
@@ -113,13 +114,21 @@ export let tests = suite('release version checks and host paths', () => {
     isTrue(checkVersionIncrement(s020, s200) != null, 'skipped major');
   });
 
-  test('packages/cli/CHANGELOG.md documents the current CLI version', async (ctx) => {
+  test('the current CLI version has release notes', async (ctx) => {
     let changelog = await readFile('packages/cli/CHANGELOG.md');
-    let notes = extractChangelogNotes(changelog, CLI_VERSION);
-    isTrue(
-      notes != null && notes.contains('### Added'),
-      `packages/cli/CHANGELOG.md needs a non-empty ## [${CLI_VERSION}] section`,
-    );
+    let notesPath = releaseNotesPath(CLI_VERSION);
+    equal(notesPath, `docs/releases/${CLI_VERSION}.md`);
+    if (await exists(notesPath)) {
+      isTrue(
+        (await readFile(notesPath)).startsWith(`# Zena ${CLI_VERSION}\n`),
+        `${notesPath} starts with '# Zena ${CLI_VERSION}'`,
+      );
+    } else {
+      isTrue(
+        extractChangelogNotes(changelog, CLI_VERSION) != null,
+        `${CLI_VERSION} needs ${notesPath}, or a non-empty ## [${CLI_VERSION}] section in packages/cli/CHANGELOG.md`,
+      );
+    }
     equal(extractChangelogNotes(changelog, '99.99.99'), null);
 
     let emptySection = '# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2026-12-01\n\n## [0.1.0] - 2026-11-12\n\n- Initial\n';

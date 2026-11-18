@@ -1,0 +1,172 @@
+import {suite, test} from 'zena:test';
+import {equal} from 'zena:assert';
+import {HashMap} from 'zena:collections';
+import {Version} from 'zena-lang:semver';
+import {
+  ChangeFile,
+  Problem,
+  parseChangeFile,
+} from 'zena-lang:changes/change-file';
+import {Config} from 'zena-lang:changes/config';
+import {notableChanges, notesPath, releaseNotes} from 'zena-lang:changes/notes';
+import {ReleasePlan, planReleases} from 'zena-lang:changes/plan';
+
+let CONFIG = '{"groups": {"toolchain": {"versions": "patch", "units": ["compiler", "zena-cli", "zena-runtime"]}},'
+  + ' "units": {"semver": {}, "terminal": {}, "pds": {"versioned": false}}}';
+
+function files(texts: Array<String>) {
+  let problems = new GrowableArray<Problem>();
+  let read = new GrowableArray<ChangeFile>();
+  for (let i in 0..texts.length) {
+    read.push(parseChangeFile(`.changes/${i}.md`, texts[i], problems));
+  }
+  equal(problems.length, 0);
+  return read;
+}
+
+function plan(changes: Array<ChangeFile>) {
+  let versions = new HashMap<String, Version>();
+  for (let name in [
+    'compiler',
+    'zena-cli',
+    'zena-runtime',
+    'semver',
+    'terminal'
+  ]) {
+    versions[name] = Version.parse('0.0.2');
+  }
+  return planReleases(Config.parse(CONFIG), changes, versions);
+}
+
+export let tests = suite(
+  'zena-lang:changes/notes',
+  () => {
+    test(
+      'names a release\'s notes by its version',
+      () => {
+        equal(
+          notesPath('docs/releases', '0.0.3-preview.1'),
+          'docs/releases/0.0.3-preview.1.md'
+        );
+      }
+    );
+
+    test(
+      'joins the change files\' prose in their order',
+      () => {
+        let changes = files(
+          [
+            '## Release notes\n\n### Prompts\n\nA program can ask.\n\n## terminal\n\n### Added\n\n- Prompts.\n',
+            '## semver\n\n### Fixed\n\n- Ranges.\n',
+            '## Release notes\n\n### Patterns\n\nRenaming uses `as`.\n\n## compiler\n\n### Fixed\n\n- a\n'
+          ]
+        );
+        equal(
+          notableChanges(changes),
+          '### Prompts\n\nA program can ask.\n\n### Patterns\n\nRenaming uses `as`.'
+        );
+        equal(
+          notableChanges(files(['## semver\n\n### Fixed\n\n- Ranges.\n'])),
+          ''
+        );
+      }
+    );
+
+    test(
+      'writes the prose, then the group\'s units, then the other releases',
+      () => {
+        let changes = files(
+          [
+            '## Release notes\n\n### Prompts\n\nA program can ask.\n\n'
+              + '## zena-cli\n\n### Fixed\n\n- A crash.\n\n### Added\n\n- Raw mode, which\n  reads keys.\n\n'
+              + '## compiler\n\n### Removed\n\n- **Breaking:** Renaming with a colon.\n\n'
+              + '## terminal\n\n### Added\n\n- Prompts.\n\n'
+              + '## pds\n\n### Fixed\n\n- A leak.\n'
+          ]
+        );
+        let releases = plan(changes);
+        let versions: HashMap<String, String> = {
+          'toolchain' => '0.0.3',
+          'terminal' => '0.0.3'
+        };
+        let others = new GrowableArray<ReleasePlan>();
+        others.push(releases[1]);
+        others.push(releases[2]);
+        equal(
+          releaseNotes(
+            'Zena',
+            '0.0.3',
+            '2026-12-01',
+            notableChanges(changes),
+            releases[0],
+            others,
+            versions
+          ),
+          '# Zena 0.0.3\n'
+            + '\n'
+            + '2026-12-01\n'
+            + '\n'
+            + '## Notable changes\n'
+            + '\n'
+            + '### Prompts\n'
+            + '\n'
+            + 'A program can ask.\n'
+            + '\n'
+            + '## Toolchain\n'
+            + '\n'
+            + '### compiler\n'
+            + '\n'
+            + '#### Removed\n'
+            + '\n'
+            + '- **Breaking:** Renaming with a colon.\n'
+            + '\n'
+            + '### zena-cli\n'
+            + '\n'
+            + '#### Added\n'
+            + '\n'
+            + '- Raw mode, which\n'
+            + '  reads keys.\n'
+            + '\n'
+            + '#### Fixed\n'
+            + '\n'
+            + '- A crash.\n'
+            + '\n'
+            + '## Packages\n'
+            + '\n'
+            + '### terminal 0.0.3\n'
+            + '\n'
+            + '#### Added\n'
+            + '\n'
+            + '- Prompts.\n'
+            + '\n'
+            + '### pds\n'
+            + '\n'
+            + '#### Fixed\n'
+            + '\n'
+            + '- A leak.\n'
+        );
+      }
+    );
+
+    test(
+      'leaves out the parts with nothing in them',
+      () => {
+        let releases = plan(
+          files(['## zena-cli\n\n### Fixed\n\n- A crash.\n'])
+        );
+        equal(
+          releaseNotes(
+            'Zena',
+            '0.0.3',
+            '2026-12-01',
+            '',
+            releases[0],
+            [],
+            new HashMap<String, String>()
+          ),
+          '# Zena 0.0.3\n\n2026-12-01\n\n## Toolchain\n\n### zena-cli\n\n#### Fixed\n\n- A crash.\n'
+        );
+      }
+    );
+  }
+);

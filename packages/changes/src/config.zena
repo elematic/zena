@@ -66,8 +66,15 @@ export final class Group {
   policy: VersionPolicy;
   /** The names of the group's units, held ones included, as listed. */
   units: GrowableArray<String>;
+  /**
+   * The directory the group's release notes are written to, one file for
+   * each release, or null for a group with no release notes.
+   */
+  notesDir: String?;
+  /** What the release notes call a release: `Zena` in `# Zena 0.0.3`. */
+  notesTitle: String;
 
-  new(this.name, this.policy, this.units) {}
+  new(this.name, this.policy, this.units, this.notesDir, this.notesTitle) {}
 }
 
 /** Everything `.changes/config.json` says. */
@@ -109,7 +116,19 @@ export final class Config {
         (groupName, value) => {
           let what = `group '${groupName}'`;
           let group = objectOf(value, what);
-          onlyKeys(group, ['versions', 'units', 'held'], what);
+          onlyKeys(group, ['versions', 'units', 'held', 'notes'], what);
+          var notesDir: String? = null;
+          var notesTitle = groupName;
+          if (group.has('notes')) {
+            let notes = objectOf(group['notes'], `${what}: "notes"`);
+            onlyKeys(notes, ['dir', 'title'], `${what}: "notes"`);
+            if (let (true, dir) = notes.stringAt('dir')) {
+              notesDir = dir;
+            } else {
+              throw new ConfigError(`${what}: "notes" has no "dir"`);
+            }
+            notesTitle = notes.stringAt('title') ?? groupName;
+          }
           let names = stringsOf(group['units'], `${what}: "units"`);
           let held = new HashSet<String>();
           if (group.has('held')) {
@@ -145,7 +164,9 @@ export final class Config {
           groups[groupName] = new Group(
             groupName,
             policyOf(group, what),
-            names
+            names,
+            notesDir,
+            notesTitle
           );
         }
       );
