@@ -27,5 +27,24 @@ terminal 0.3.1 -> 0.3.2
     - Prompts.
 ```
 
-The commands that make a release (`version`) and write a change file
-(`add`) are not built yet.
+`version` makes a release, as edits to the working tree for a pull
+request:
+
+```sh
+npm run changes -- version                       # everything that has entries
+npm run changes -- version toolchain semver      # the named groups and independent packages
+npm run changes -- version toolchain --preview   # 0.0.3-preview.1, to test the release
+npm run changes -- version terminal --as 0.1.0   # a version the entries would not give
+```
+
+It writes the version to each manifest in the released directories
+(`zena-package.json`, `package.json`, `Cargo.toml`), adds a section to
+each `CHANGELOG.md`, and takes the released entries out of the change
+files, deleting a file with nothing left. A preview release writes only
+the manifests. `--date 2026-12-01` sets the date in the changelog
+headings, which is otherwise today's.
+
+It does not yet refresh `package-lock.json`, `Cargo.lock` or
+`packages/zena-cli/zena/versions.zena`, write release notes, or change
+dependents' ranges. The command that writes a change file (`add`) is not
+built yet.

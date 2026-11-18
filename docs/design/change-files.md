@@ -2,8 +2,20 @@
 
 ## Status
 
-Proposed. Nothing here is implemented. Changelogs are edited by hand
-today, as [Background](#background) describes.
+Partly built, in `packages/changes`:
+
+- Built: the configuration and the change files' format, `check` for
+  what is wrong in them, `status`, and `version` for manifests,
+  changelogs and change files, with `--preview` and `--as`.
+- Not built: `add`; release notes, so `version` leaves a change file's
+  `## Release notes` in place; dependents' ranges and `Requires:`, which
+  is read and not acted on; the lockfiles and `versions.zena`, which
+  `version` asks the person to refresh; the check that a pull request
+  adds a change file.
+
+No change file exists yet. Changelogs are still edited by hand under
+`## [Unreleased]`, as [Background](#background) describes, and `version`
+refuses to release a unit whose changelog has entries there.
 
 ## Overview
 
