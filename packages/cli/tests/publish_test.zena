@@ -114,11 +114,12 @@ export let tests = suite('zena pkg publish', () => {
       isTrue(!first.stdout.contains('Created the scope'), described(first));
       isTrue(first.stdout.contains('Created greet.acme.pkg.test'), described(first));
       isTrue(first.stdout.contains('Published greet 1.0.0'), described(first));
-      // The manifest now names the package's DID and its scope.
+      // The manifest now names the package's DID, and its name its scope.
       let manifest = parseJson(await read(scratch.at('lib/zena-package.json'))) as JsonObject;
       let did = manifest['did'] as String;
       isTrue(did.startsWith('did:plc:'), did);
-      equal(manifest['scope'] as String, 'acme');
+      equal(manifest['name'] as String, 'acme:greet');
+      isTrue(!manifest.has('scope'), 'the scope is in the name');
       // The registry holds the accounts it creates: no recovery key is made.
       isTrue(!(await exists(scratch.at('config/recovery-key'))), 'no recovery key was created');
 
@@ -128,7 +129,7 @@ export let tests = suite('zena pkg publish', () => {
       // A manifest that lost its DID, as when it was never committed, is
       // told the DID of the package its name already is.
       await write(scratch.at('forgot/zena-package.json'),
-          '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.1"}\n');
+          '{"name": "acme:greet", "description": "A package for tests", "license": "MIT", "version": "1.0.1"}\n');
       await write(scratch.at('forgot/greet.zena'), 'export function answer(): i32 { return 42; }\n');
       let forgot = await zenaIn('forgot').run(['pkg', 'publish', '--yes']);
       isTrue(!forgot.succeeded() && forgot.stderr.contains(`greet.acme.pkg.test already exists, as ${did}`) &&
@@ -137,12 +138,12 @@ export let tests = suite('zena pkg publish', () => {
       // A manifest whose scope is not the package's is refused, and so is a
       // --scope that disagrees with the manifest.
       await write(scratch.at('lib/zena-package.json'),
-          `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "other", "version": "1.1.0"}\n`);
+          `{"name": "other:greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "version": "1.1.0"}\n`);
       let wrongScope = await lib.run(['pkg', 'publish']);
       isTrue(!wrongScope.succeeded() && wrongScope.stderr.contains('not greet.other.pkg.test') &&
           wrongScope.stderr.contains('greet.acme.pkg.test'), described(wrongScope));
       await write(scratch.at('lib/zena-package.json'),
-          `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "1.1.0"}\n`);
+          `{"name": "acme:greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "version": "1.1.0"}\n`);
       let disagrees = await lib.run(['pkg', 'publish', '--scope', 'beta']);
       isTrue(!disagrees.succeeded() && disagrees.stderr.contains('in the scope acme, not beta'), described(disagrees));
       let second = await lib.run(['pkg', 'publish']);
@@ -151,7 +152,7 @@ export let tests = suite('zena pkg publish', () => {
 
       // A second package names its scope in its manifest, and `zena pkg
       // create` only creates it.
-      await write(scratch.at('other/zena-package.json'), '{"name": "other", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "0.1.0"}\n');
+      await write(scratch.at('other/zena-package.json'), '{"name": "acme:other", "description": "A package for tests", "license": "MIT", "version": "0.1.0"}\n');
       await write(scratch.at('other/other.zena'), 'export let x = 1;\n');
       let created = await zenaIn('other').run(['pkg', 'create', '--yes']);
       isTrue(created.succeeded() && created.stdout.contains('Created other.acme.pkg.test'), described(created));

@@ -430,8 +430,9 @@ Subcommands (`./target/release/zena <subcommand>`):
 - **`pkg <command>`**: The package commands, under one noun.
   - **`pkg init [dir] [--name <name>] [--scope <scope>]`**: Make the
     current directory, or `dir` (made if need be), a package: write its
-    `zena-package.json` with the directory's name, or `--name`, and
-    version 0.1.0. It refuses a directory that already has a manifest.
+    `zena-package.json` with the directory's name, or `--name`, after
+    `--scope`'s scope (`"name": "acme:router"`), and version 0.1.0. It
+    refuses a directory that already has a manifest.
   - **`pkg add <package>[@version] [--name <local>]`**: Add a published
     package, by DID, handle or `scope:name`, to `zena-package.json`, at its
     latest stable release when no version is given (its latest
@@ -459,7 +460,7 @@ Subcommands (`./target/release/zena <subcommand>`):
   - **`pkg publish [--scope <name> --yes] [--registry <url>]`**: Publish the
     package you are in at its manifest's `version` to a registry
     (`ZENA_REGISTRY`), creating its account first when it has no `did`, in
-    the scope its manifest's `scope` or `--scope` names, with the files its
+    the scope its manifest's name (`acme:router`) or `--scope` names, with the files its
     `files` patterns name (by default, all but tests). The registry holds
     the release until enough maintainers attest it. **`pkg create`** only
     creates it.

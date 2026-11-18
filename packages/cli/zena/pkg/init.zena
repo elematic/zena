@@ -4,8 +4,8 @@
  *
  * The directory is the current one, or `dir`, which is made if need be.
  * The package's name is `--name`, or else the directory's name, which must
- * then be a valid package name; `--scope` adds the scope it is published
- * in. Its version starts at 0.1.0. A directory that already has a manifest
+ * then be a valid package name; `--scope` puts the scope it is published
+ * in before it, as `scope:name`. Its version starts at 0.1.0. A directory that already has a manifest
  * is left as it is.
  */
 
@@ -14,7 +14,7 @@ import { Future } from 'zena:async';
 import { exists, writeFile } from 'zena:fs';
 import { JsonObject, stringify } from 'zena:json';
 import { basename, join2 } from 'zena:path';
-import { isValidPackageName, isValidScopeName } from 'package-manager/records';
+import { isValidLocalName, isValidPackageName, isValidScopeName } from 'package-manager/records';
 import { Options, resolveUserPath, userCwd } from '../env.zena';
 import { ensureDir } from '../compile.zena';
 
@@ -38,15 +38,16 @@ export async function initCommand(args: ParsedArgs, options: Options): Future<i3
     console.error(`Error: '${name}' is not a valid package name: lowercase letters, digits and '-', starting with a letter. Give one with --name.`);
     return 1;
   }
-  let manifest = new JsonObject();
-  manifest['name'] = name;
   if (let (true, scope) = args.getOption('scope')) {
-    if (!isValidScopeName(scope)) {
+    // `zena:` is the standard library's in imports, so no package is named in it.
+    if (!isValidScopeName(scope) || !isValidLocalName(`${scope}:${name}`)) {
       console.error(`Error: '${scope}' is not a valid scope name.`);
       return 1;
     }
-    manifest['scope'] = scope;
+    name = `${scope}:${name}`;
   }
+  let manifest = new JsonObject();
+  manifest['name'] = name;
   manifest['version'] = '0.1.0';
 
   await ensureDir(dir);

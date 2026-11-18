@@ -29,7 +29,7 @@ export let tests = suite('zena pkg ci', () => {
           .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
           .set('ZENA_REGISTRY', addresses['registry'] as String)
           .set('ZENA_CONFIG_DIR', scratch.host(`config-${who}`));
-      await write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "1.0.0"}\n');
+      await write(scratch.at('lib/zena-package.json'), '{"name": "acme:greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}\n');
       await write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
       let alice = person('alice');
       isTrue((await alice.run(['pkg', 'login', ALICE, '--password-stdin'], 'app-password\n')).succeeded(), 'alice signs in');
@@ -52,7 +52,7 @@ export let tests = suite('zena pkg ci', () => {
       let bot = ci(token);
       let did = (parseJson(await read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
       await write(scratch.at('lib/zena-package.json'),
-          `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "1.1.0"}\n`);
+          `{"name": "acme:greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "version": "1.1.0"}\n`);
       let notYet = await bot.run(['pkg', 'publish']);
       isTrue(!notYet.succeeded() && notYet.stderr.contains('Forbidden'), described(notYet));
       let unmarked = await alice.run(['pkg', 'owner', 'add', 'ci.acme.pkg.test']);
@@ -87,7 +87,7 @@ export let tests = suite('zena pkg ci', () => {
       let next = after(replaced.stdout, 'Its new token, which is not shown again:');
       isTrue(replaced.succeeded() && next.startsWith('zena_ci_') && next != token, described(replaced));
       await write(scratch.at('lib/zena-package.json'),
-          `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "1.2.0"}\n`);
+          `{"name": "acme:greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "version": "1.2.0"}\n`);
       let revoked = await bot.run(['pkg', 'publish']);
       isTrue(!revoked.succeeded() && revoked.stderr.contains('InvalidToken'), described(revoked));
       let renewed = await ci(next).run(['pkg', 'publish']);

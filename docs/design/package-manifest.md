@@ -33,9 +33,8 @@ else moved.
 
 ```json
 {
-  "name": "app",
+  "name": "acme:app",
   "did": "did:plc:appappappappappappappapp",
-  "scope": "acme",
   "version": "1.4.2",
   "exports": {"server": {}},
   "dependencies": {
@@ -47,35 +46,48 @@ else moved.
 }
 ```
 
-| Field          | Type                            | Where          | Description                                                                     |
-| -------------- | ------------------------------- | -------------- | ------------------------------------------------------------------------------- |
-| `name`         | `string`                        | any package    | The package's own name, and the name it suggests to its dependents              |
-| `did`          | `string`                        | any package    | The package's DID, once it has been created on an App View                      |
-| `scope`        | `string`                        | any package    | The scope on an App View the package is created in                              |
-| `description`  | `string`                        | any package    | What the package is for, in a sentence; required to publish                     |
-| `license`      | `string`                        | any package    | An SPDX license expression, such as `MIT`; required to publish                  |
-| `version`      | `string`                        | any package    | The version `zena pkg publish` publishes next                                   |
-| `source`       | `string`                        | any package    | The directory the package's libraries are in; `src` by default                  |
-| `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                         |
-| `main`         | `string`                        | any package    | The library an import of the package's name alone imports; `main` by default    |
-| `files`        | `string[]`                      | any package    | The files a published release holds, as patterns                                |
-| `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name                     |
-| `workspace`    | `{packages: string[]}`          | workspace root | The directories of the workspace's other packages                               |
-| `scopes`       | `Record<string, string>`        | workspace root | Domains for `scope:name` (see package-manager.md, "Names and scopes")           |
-| `scopedNames`  | `boolean`                       | workspace root | Whether `zena pkg add` names a package in a scope `scope:name`; true by default |
+| Field          | Type                            | Where          | Description                                                                      |
+| -------------- | ------------------------------- | -------------- | -------------------------------------------------------------------------------- |
+| `name`         | `string`                        | any package    | The package's name, after the scope it is created in, if any                     |
+| `did`          | `string`                        | any package    | The package's DID, once it has been created on an App View                       |
+| `scope`        | `string`                        | any package    | The scope of a `name` that has none; read until the bootstrap reads scoped names |
+| `description`  | `string`                        | any package    | What the package is for, in a sentence; required to publish                      |
+| `license`      | `string`                        | any package    | An SPDX license expression, such as `MIT`; required to publish                   |
+| `version`      | `string`                        | any package    | The version `zena pkg publish` publishes next                                    |
+| `source`       | `string`                        | any package    | The directory the package's libraries are in; `src` by default                   |
+| `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                          |
+| `main`         | `string`                        | any package    | The library an import of the package's name alone imports; `main` by default     |
+| `files`        | `string[]`                      | any package    | The files a published release holds, as patterns                                 |
+| `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name                      |
+| `workspace`    | `{packages: string[]}`          | workspace root | The directories of the workspace's other packages                                |
+| `scopes`       | `Record<string, string>`        | workspace root | Domains for `scope:name` (see package-manager.md, "Names and scopes")            |
+| `scopedNames`  | `boolean`                       | workspace root | Whether `zena pkg add` names a package in a scope `scope:name`; true by default  |
 
 All paths are relative to the directory the manifest is in.
 
 ### `name`
 
-A package name is one DNS label: lowercase ASCII letters, digits and `-`,
-starting with a letter, not ending with `-`, without `--` as its third and
-fourth characters, and at most 63 characters. `zena` is the standard
-library's. The name is what a published package's profile suggests to
-the packages that add it, and what a workspace's other packages call it
-unless they choose another name. A package with a `scope` is
-`<scope>:<name>` instead, in its workspace and to its own tests
-([import-names.md](import-names.md)).
+The package's name, and before it, for a package in a scope, the scope:
+`router`, or `acme:router`. The name and the scope are each one DNS label:
+lowercase ASCII letters, digits and `-`, starting with a letter, not ending
+with `-`, without `--` as their third and fourth characters, and at most 63
+characters. `zena` is the standard library's, so it is neither a package's
+name nor, here, its scope.
+
+The scope is the one on an App View that the package's first
+`zena pkg publish` creates it in, such as `acme` for
+`router.acme.pkg.zena-lang.dev` (package-manager.md, "Scopes"). The scope
+must exist on the App View. Once the package has a `did`, `zena pkg publish`
+refuses when the package's handle is not in this scope, since the manifest
+and the package then disagree about where it is. A package whose handle is
+on its maintainers' own domain has no scope.
+
+The name, with its scope, is what a published package's profile suggests to
+the packages that add it, and what a workspace's other packages and its own
+tests import it by, unless they choose another name. A package in a scope
+also names itself by its name alone ([import-names.md](import-names.md)).
+`zena pkg init --scope` and `zena pkg publish --scope` write the scope into
+the name.
 
 ### `did`
 
@@ -85,16 +97,14 @@ published to the same package.
 
 ### `scope`
 
-The scope on an App View that the package's first `zena pkg publish` creates
-it in, such as `acme` for `router.acme.pkg.zena-lang.dev`
-(package-manager.md, "Scopes"). The scope must exist on the App View. Once
-the package has a `did`, `zena pkg publish` refuses when the package's handle
-is not in this scope, since the manifest and the package then disagree
-about where it is. A workspace root's `scope` is also the scope of each
-workspace package that has none of its own. A package whose handle is on
-its maintainers' own domain has no `scope`. The compiler reads it for the
-package's name: a package with a scope, its own or, inside the workspace,
-the root's, is `<scope>:<name>` there.
+The scope of a package whose `name` has none, read as the scope in the
+name would be. A workspace root's `scope` is also the scope of each
+workspace package that has none of its own. The field is read because the
+compiler checked in as the bootstrap ([bootstrapping.md](bootstrapping.md)),
+which reads every manifest in the Zena repository, takes no scope in a
+name, so that repository's manifests keep the field until the bootstrap
+does. The field is removed then. A manifest that gives a scope in both is
+refused.
 
 `scope` is unrelated to `scopes`, below, which says where `zena pkg add`
 looks up the packages of other scopes.

@@ -351,11 +351,20 @@ final class WorkspaceLoader {
       if (!(nameValue is String)) {
         throw new Error(`${path}/zena-package.json: the name is not a package name`);
       }
-      let plain = nameValue;
-      if (!isPackageName(plain)) {
+      // A name gives its scope as `scope:name`. The `scope` field is still
+      // read, for manifests the checked-in bootstrap reads, which takes no
+      // scope in a name.
+      let colon = indexOfByte(nameValue, 58); // ':'
+      let plain = if (colon < 0) nameValue else nameValue.sliceBytes(colon + 1, nameValue.length);
+      let nameScope = if (colon < 0) null else nameValue.sliceBytes(0, colon);
+      if (!isPackageName(plain) || (nameScope != null && !isScopeName(nameScope))) {
         throw new Error(`${path}/zena-package.json: the name is not a package name`);
       }
-      let scope = scopeOf(manifest, `${path}/zena-package.json`) ??
+      let fieldScope = scopeOf(manifest, `${path}/zena-package.json`);
+      if (nameScope != null && fieldScope != null) {
+        throw new Error(`${path}/zena-package.json: the scope is in the name, so leave out the scope field`);
+      }
+      let scope = nameScope ?? fieldScope ??
           (if (isInside(path, this.#root)) this.#rootScope else null);
       name = if (scope != null) `${scope}:${plain}` else plain;
       plainName = plain;
@@ -540,8 +549,8 @@ function isLocalName(name: String): boolean {
   return isScopeName(name.sliceBytes(0, colon)) && isNamePart(name.sliceBytes(colon + 1, name.length));
 }
 
-// Whether `name` can be a package's own name, which is plain: its scope,
-// if any, is a manifest field of its own.
+// Whether `name` can be a package's own name without its scope: a
+// manifest's `name` is this, or `scope:` and this.
 function isPackageName(name: String): boolean {
   return isNamePart(name) && name != "zena";
 }

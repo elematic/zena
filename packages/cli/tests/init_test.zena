@@ -34,7 +34,7 @@ export let tests = suite('zena pkg init', () => {
       let scoped = await zena.run(['pkg', 'init', 'packages/router', '--scope', 'acme']);
       isTrue(scoped.succeeded(), described(scoped));
       equal(await read(scratch.at('ws/packages/router/zena-package.json')),
-          '{\n  "name": "router",\n  "scope": "acme",\n  "version": "0.1.0"\n}\n');
+          '{\n  "name": "acme:router",\n  "version": "0.1.0"\n}\n');
 
       // A directory whose name is not a package name needs --name.
       let bad = await zena.run(['pkg', 'init', 'My_Lib']);
@@ -44,8 +44,10 @@ export let tests = suite('zena pkg init', () => {
       isTrue(named.succeeded(), described(named));
       isTrue((await read(scratch.at('ws/My_Lib/zena-package.json'))).contains('"name": "my-lib"'), 'named');
 
-      let badScope = await zena.run(['pkg', 'init', 'other', '--scope', 'Acme']);
-      isTrue(!badScope.succeeded() && badScope.stderr.contains('not a valid scope name'), described(badScope));
+      for (let scope in ['Acme', 'zena']) {
+        let badScope = await zena.run(['pkg', 'init', 'other', '--scope', scope]);
+        isTrue(!badScope.succeeded() && badScope.stderr.contains('not a valid scope name'), described(badScope));
+      }
     } finally {
       await scratch.remove();
     }

@@ -265,7 +265,11 @@ export let tests = suite("Package Manifest", () => {
         await rejects([("/ws/zena-package.json", `{"name": "app", "dependencies": {"${name}": {"path": "."}}}`)],
             `the local name ${name}`);
       }
-      await rejects([("/ws/zena-package.json", '{"name": "acme:app"}')], "a name with its scope in it");
+      for (let name in ['acme:', ':app', 'acme:app:x', 'zena:app', 'acme:zena']) {
+        await rejects([("/ws/zena-package.json", `{"name": "${name}"}`)], `the name ${name}`);
+      }
+      await rejects([("/ws/zena-package.json", '{"name": "acme:app", "scope": "acme"}')],
+          "a scope in the name and in the scope field");
       await rejects([("/ws/zena-package.json", '{"name": "app", "scope": "a/b"}')], "a scope that is not a name");
       await rejects([("/ws/zena-package.json", '{"name": "app", "scope": "zena"}')], "the standard library's scope");
     });
@@ -301,6 +305,20 @@ export let tests = suite("Package Manifest", () => {
       equal(names["acme:lib"], "acme:lib");
       equal(names["acme:router"], "did:plc:router@1.0.0");
       equal((packages["acme:lib"].dependencies as HashMap<String, String>)["zena-lang:wit"], "zena-lang:wit");
+    });
+
+    test("names a package whose name has its scope as it does one with a scope field", async () => {
+      let host = new MockHost();
+      host.addFile("/ws/zena-package.json", '{"workspace": {"packages": ["markdown", "site"]}}');
+      host.addFile("/ws/markdown/zena-package.json", '{"name": "zena-lang:markdown"}');
+      host.addFile("/ws/site/zena-package.json",
+          '{"name": "site", "dependencies": {"zena-lang:markdown": {"path": "../markdown"}}}');
+      let packages = await loadWorkspace(host, "/ws", null, "/cache");
+      let markdown = packages["zena-lang:markdown"].dependencies as HashMap<String, String>;
+      equal(markdown["zena-lang:markdown"], "zena-lang:markdown");
+      equal(markdown["markdown"], "zena-lang:markdown");
+      equal((packages["site"].dependencies as HashMap<String, String>)["zena-lang:markdown"], "zena-lang:markdown");
+      isFalse(packages.has("markdown"));
     });
 
     test("names a scoped package by its plain name too, to itself and to a dependent whose key it is", async () => {

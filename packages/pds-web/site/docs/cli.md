@@ -15,7 +15,7 @@ zena pkg init [<dir>] [--name <name>] [--scope <scope>]
 Makes the current directory, or `<dir>`, a package by writing its `zena-package.json`. It creates `<dir>` if it does not exist yet.
 
 - `--name <name>`: The package's name. Defaults to the directory's name, which must then be a valid package name: lowercase letters, digits and `-`, starting with a letter.
-- `--scope <scope>`: The scope the package is published in.
+- `--scope <scope>`: The scope the package is published in, which goes before its name: `--scope acme` names it `acme:<name>`.
 
 The version starts at `0.1.0`. `zena pkg init` never overwrites an existing `zena-package.json`.
 
@@ -81,7 +81,7 @@ Ends the current session and removes `$ZENA_CONFIG_DIR/session.json`.
 zena pkg publish [--scope <name>] [--registry <url>] [--yes]
 ```
 
-Packs and publishes the package in the current directory at the `version` in `zena-package.json`. Creates the package account on first publish when `zena-package.json` has no `did`.
+Packs and publishes the package in the current directory at the `version` in `zena-package.json`. Creates the package account on first publish when `zena-package.json` has no `did`, in the scope its `name` gives (`acme:router`), or `--scope`, which it then writes into the name.
 
 ### `zena pkg create`
 

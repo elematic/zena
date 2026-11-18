@@ -1328,26 +1328,26 @@ does not have stops, and says to create it with `zena pkg scope create`. If
 publishing created it, a mistyped `--scope` would make a scope no one
 meant to have, and take its name.
 
-**Which scope a package is in.** The manifest's `scope` names it:
+**Which scope a package is in.** The manifest's `name` gives it, before
+the package's own name:
 
 ```json
-{"name": "router", "scope": "acme", "version": "1.4.2"}
+{"name": "acme:router", "version": "1.4.2"}
 ```
 
 The first publish creates the package in that scope, and `--scope` gives
-one for a manifest without it. A workspace root's `scope` is the default
-for its workspace packages (see
-[package-manifest.md](package-manifest.md#scope)). The manifest's `name`
-stays the package's own name, without the scope, since it is also the
-name dependents import it by, and a DNS label. `acme:router` is only
-`zena pkg add`'s shorthand for a handle.
+one for a manifest without it, which it writes into the name. A workspace
+root's `scope` is the default for its workspace packages (see
+[package-manifest.md](package-manifest.md#scope)). `acme:router` is also
+the name dependents import the package by, and `zena pkg add`'s shorthand
+for its handle, `router.acme.<domain>`.
 
-Once the package exists, its DID decides where it is, and `scope` is a
+Once the package exists, its DID decides where it is, and the scope is a
 check. `zena pkg publish` resolves the DID's handle, and refuses when it is
 not `<name>.<scope>.<domain>`, naming both. That catches a manifest
 copied from another package, and a package renamed or moved without its
 manifest following. A package whose handle is on a domain its maintainers
-control has no `scope`.
+control has no scope.
 
 **Seeing a scope.** `zena pkg scope info <scope>` takes the scope's name,
 handle or DID, and prints its DID, its handle, its organization if it has
@@ -1381,7 +1381,7 @@ is still open.
 
 The first `zena pkg publish` of a package creates its account, after asking:
 it names the handle it would create and stops, and `--yes` creates it.
-The package is created in the scope the manifest's `scope` or `--scope`
+The package is created in the scope the manifest's `name` or `--scope`
 names, which must exist (see [Scopes](#scopes)). `zena pkg create`
 does only this, for scripts.
 

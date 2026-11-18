@@ -45,9 +45,10 @@ export final class Manifest {
   /** The package's DID, once it has been created on a package host. */
   did: String | null;
   /**
-   * The scope on a package host the package is created in, or null. At a
+   * The scope on a package host the package is created in, or null: the
+   * part of `name` before its `:`, or else the `scope` field. At a
    * workspace's root, also the scope of each workspace package that names
-   * none (package-manifest.md, "scope").
+   * none (package-manifest.md, "name").
    */
   var scope: String | null = null;
   /** What the package is for, in a sentence: publishing requires it. */
@@ -126,15 +127,35 @@ export final class Manifest {
 }
 
 /**
+ * The package name and scope a manifest's `name`, `[scope:]name`, gives:
+ * both null when it has none, and a null scope when the name has none.
+ */
+function splitName(name: String | null): inline (String | null, String | null) {
+  if (name == null) {
+    return (null, null);
+  }
+  let colon = name.indexOf(':');
+  if (let (true, at) = colon) {
+    let scope = name.slice(name.startIndex, at);
+    let plain = name.slice(name.indexAfter(at));
+    if (!isValidLocalName(name) || !isValidPackageName(plain)) {
+      throw new ManifestError(`zena-package.json: '${name}' is not a valid package name: a name, or scope:name`);
+    }
+    return (plain, scope);
+  }
+  if (!isValidPackageName(name)) {
+    throw new ManifestError(`zena-package.json: '${name}' is not a valid package name`);
+  }
+  return (name, null);
+}
+
+/**
  * Reads `zena-package.json` text. A null `text`, for a directory with no
  * manifest, reads as an empty manifest. Throws `ManifestError`.
  */
 export function readManifest(text: String | null): Manifest {
   let root = parse(text);
-  let name = optionalString(root, 'name');
-  if (name != null && !isValidPackageName(name)) {
-    throw new ManifestError(`zena-package.json: '${name}' is not a valid package name`);
-  }
+  let (name, nameScope) = splitName(optionalString(root, 'name'));
   let did = optionalString(root, 'did');
   if (did != null && !isValidDid(did)) {
     throw new ManifestError(`zena-package.json: '${did}' is not a DID`);
@@ -221,9 +242,19 @@ export function readManifest(text: String | null): Manifest {
       scopes[scope] = domain;
     });
   }
-  let scope = optionalString(root, 'scope');
+  // The scope is given in the name. The `scope` field is still read, since
+  // the bootstrap compiler, which reads every manifest in the Zena
+  // repository, takes no scope in a name, and that repository's manifests
+  // keep the field until the bootstrap does.
+  var scope = optionalString(root, 'scope');
   if (scope != null && !isValidScopeName(scope)) {
     throw new ManifestError(`zena-package.json: '${scope}' is not a valid scope name`);
+  }
+  if (nameScope != null) {
+    if (scope != null) {
+      throw new ManifestError(`zena-package.json: the scope is in the name, '${nameScope}:${name ?? ''}', so leave out the scope field`);
+    }
+    scope = nameScope;
   }
   let manifest = new Manifest(name, did, requirements, paths, workspacePackages, scopes, version);
   manifest.wits = wits;
@@ -434,10 +465,10 @@ export function writeDependencies(text: String | null, requirements: OrderedHash
 }
 
 /**
- * `zena-package.json` text with its `did` set to `did`, and its `scope` to
- * `scope` when one is given, as `zena pkg publish` writes it when it creates
- * the package. A new `did` goes after `name`, a new `scope` after `did`,
- * and every other key stays where it was.
+ * `zena-package.json` text with its `did` set to `did`, and, when a `scope`
+ * is given, its `name` to `<scope>:<name>`, as `zena pkg publish` writes it
+ * when it creates the package. A new `did` goes after `name`, a `scope`
+ * field goes, and every other key stays where it was.
  */
 export function writeDid(text: String, did: String, scope: String | null = null): String {
   var root = parse(text);
@@ -447,11 +478,12 @@ export function writeDid(text: String, did: String, scope: String | null = null)
     root = insertAfter(root, 'name', 'did', did);
   }
   if (scope != null) {
-    if (root.has('scope')) {
-      root['scope'] = scope;
-    } else {
-      root = insertAfter(root, 'did', 'scope', scope);
+    let (name, _) = splitName(optionalString(root, 'name'));
+    if (name == null) {
+      throw new ManifestError('zena-package.json has no name to give the scope in');
     }
+    root['name'] = `${scope}:${name}`;
+    root.delete('scope');
   }
   return stringify(root, '  ');
 }
