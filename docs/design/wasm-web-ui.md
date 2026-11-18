@@ -992,7 +992,7 @@ shadowrootmode="open">` holding a `<style>` with the definition's
 The protocol is unchanged by this. Two tests hold it to Lit:
 `ssr_test.ts` renders the same templates through `@lit-labs/ssr` from
 the js-target module's results and through `renderResult` from the
-`zena-cli` build of the same file, and the outputs agree byte for byte;
+`zena` build of the same file, and the outputs agree byte for byte;
 `hydrate_test.ts` upgrades an element over the server's markup and
 checks that the server's nodes stay, that a property set and a listener
 then update them in place, and that no second stylesheet is adopted.

@@ -294,7 +294,7 @@ Target "build" {
   ],
 
   Command {
-    run: "zena-cli build src/main.zena -o dist/main.wasm --target component",
+    run: "zena build src/main.zena -o dist/main.wasm --target component",
   }
 }
 
@@ -311,7 +311,7 @@ Target "test" {
   ],
 
   Command {
-    run: "zena-cli test test/suite.zena",
+    run: "zena test test/suite.zena",
   }
 }
 ```

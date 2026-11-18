@@ -32,5 +32,5 @@ npm test -w @zena-lang/zena-lint
 Or run the test suite directly:
 
 ```bash
-./target/release/zena-cli test packages/zena-lint/test/lint_test.zena
+./target/release/zena test packages/zena-lint/test/lint_test.zena
 ```

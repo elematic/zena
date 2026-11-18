@@ -204,8 +204,8 @@ parameter.
 Run from `packages/compiler/`. Wireit reruns what an edit under
 `zena/` affects; if it serves a stale result, a script is missing an
 input, so fix its config (AGENTS.md, "Build System") rather than deleting
-`.wireit`. To compile a probe without zena-cli's compile cache, use
-`zena-cli run --no-cache`.
+`.wireit`. To compile a probe without zena's compile cache, use
+`zena run --no-cache`.
 
 ```bash
 npm test                       # unit + syntax + semantics + execution + interop + fixpoint
@@ -248,7 +248,7 @@ it:
 ```bash
 npm run build:self-hosted   # writes out/cli-self.wasm
 ZENA_GC_RESERVE_MB=1536 ZENA_COMPILER_WASM=out/cli-self.wasm \
-  ../../target/release/zena-cli build src/cli/main.zena -o out/cli-self2.wasm
+  ../../target/release/zena build src/cli/main.zena -o out/cli-self2.wasm
 cmp out/cli-self.wasm out/cli-self2.wasm
 ```
 
@@ -266,7 +266,7 @@ fixed input program instead.
 - Suspected miscompile in the self-compile: add a temporary index-range
   env filter in module-generator's function loop and bisect — a culprit
   function falls out in ~15 iterations.
-- Standalone lib-module builds (`zena-cli build src/lib/X.zena`) are a
+- Standalone lib-module builds (`zena build src/lib/X.zena`) are a
   fast trap probe — they exercise imports.
 - `ZENA_TEST_PARALLELISM=N` caps execution-test wasmtime fan-out (the
   default can exhaust machine memory).
@@ -275,7 +275,7 @@ fixed input program instead.
   usually a type error the compile did not report: a dependency's
   errors are dropped and its code generated anyway (#510).
   `zena lint <file>` checks the library on its own and prints
-  `does not check (<first error>)`; `zena-cli build <file> -o <out>.wasm`
+  `does not check (<first error>)`; `zena build <file> -o <out>.wasm`
   prints every error.
 
 ## Zena-authoring gotchas (recur constantly in this directory)

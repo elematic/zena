@@ -177,7 +177,7 @@ Forking after a research or planning step, for its builds, does pay.
   a few points, and Claude Code's team found agentic grep beat their early
   vector search.
 
-**Next:** a Claude Code plugin that runs `zena-cli lsp`, for diagnostics
+**Next:** a Claude Code plugin that runs `zena lsp`, for diagnostics
 after each edit. **Later:** `references` and `workspace/symbol` in the
 language server. No embedding index.
 

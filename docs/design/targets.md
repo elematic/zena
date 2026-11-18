@@ -12,13 +12,13 @@ sizes, and test coverage across the repository.
 <name>`). The five targets organize into three base WebAssembly environments,
 with Zena-hosted variants for JavaScript and the Component Model:
 
-| Target                         | Module Kind  | String Representation                                     | Host Runtime                            |
-| :----------------------------- | :----------- | :-------------------------------------------------------- | :-------------------------------------- |
-| **`core`**                     | Core Wasm GC | UTF-8/WTF-8 `ByteArray` views                             | Any core Wasm GC engine (no imports)    |
-| **`js`**                       | Core Wasm GC | `externref` JS string handle (`wasm:js-string`)           | Any JS engine with JS String Builtins   |
-| **`zena-js`**                  | Core Wasm GC | `externref` JS string handle (`wasm:js-string`)           | JS engine + `@zena-lang/runtime`        |
-| **`component`**                | Component    | UTF-8/WTF-8 `ByteArray` views (lowered via Canonical ABI) | Any WASI 0.3 component host             |
-| **`zena-component`** (default) | Component    | UTF-8/WTF-8 `ByteArray` views (lowered via Canonical ABI) | `zena-runtime` (`zena-cli`, `zena-run`) |
+| Target                         | Module Kind  | String Representation                                     | Host Runtime                          |
+| :----------------------------- | :----------- | :-------------------------------------------------------- | :------------------------------------ |
+| **`core`**                     | Core Wasm GC | UTF-8/WTF-8 `ByteArray` views                             | Any core Wasm GC engine (no imports)  |
+| **`js`**                       | Core Wasm GC | `externref` JS string handle (`wasm:js-string`)           | Any JS engine with JS String Builtins |
+| **`zena-js`**                  | Core Wasm GC | `externref` JS string handle (`wasm:js-string`)           | JS engine + `@zena-lang/runtime`      |
+| **`component`**                | Component    | UTF-8/WTF-8 `ByteArray` views (lowered via Canonical ABI) | Any WASI 0.3 component host           |
+| **`zena-component`** (default) | Component    | UTF-8/WTF-8 `ByteArray` views (lowered via Canonical ABI) | `zena-runtime` (`zena`, `zena-run`)   |
 
 Target definitions and capability predicates live in
 `packages/compiler/src/lib/targets.zena`.
@@ -164,13 +164,13 @@ custom WIT worlds (`--wit`, `--world`).
   `wasi:clocks`, `wasi:random`, `wasi:http`) or interfaces declared in the
   selected WIT world.
 - Runs directly under `wasmtime run -S p3=y` or any WASI 0.3 component host, as
-  well as `zena-run` and `zena-cli run`.
+  well as `zena-run` and `zena run`.
 
 ### E. Zena Component Target (`--target zena-component`, default)
 
 Produces a WebAssembly Component targeting WASI 0.3 plus the `zena:host@1.0.0`
 WIT interfaces (`packages/stdlib/zena/host-wit/host.wit`) supplied by the Rust
-`zena-runtime` crate (`zena-cli`, `zena-run`, or custom Rust embedders):
+`zena-runtime` crate (`zena`, `zena-run`, or custom Rust embedders):
 
 - `zena:host/stack-trace@1.0.0`: Wasm backtrace capture for `Error`.
 - `zena:host/process@1.0.0`: Subprocess spawning (`zena:process`, gated on

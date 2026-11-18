@@ -13,7 +13,7 @@ almost no host machinery.** The split pass already turns suspendable
 bodies into frame-based state machines; async adds a resume-value
 slot it was designed to accept (generators.md §5.3). The event loop
 is a plain Zena library, not a host feature — so async programs run
-on today's unmodified hosts (wasmtime via zena-cli, Node, browsers),
+on today's unmodified hosts (wasmtime via zena, Node, browsers),
 and the _optional_ host contract is two hooks.
 
 ## 1. Surface language and typing
@@ -299,7 +299,7 @@ and the exported `main` drains the microtask queue until it is empty
 before returning. Programs whose futures all complete _internally_ —
 pure computation, `Completer`s completed by other tasks, test
 choreography — run to completion on **any** wasm host that can call
-one export. That includes today's zena-cli/wasmtime with **zero Rust
+one export. That includes today's zena/wasmtime with **zero Rust
 changes**, and answers the "delegate the event loop to wasmtime"
 question: we don't. Core-module wasmtime has no event loop to
 delegate to; the loop is Zena code inside the module, and wasmtime
@@ -333,7 +333,7 @@ provided both at the time this was written: `clock_time_get` and
 `poll_oneoff` with a clock subscription. The drain loop grows one arm:
 when the queue is empty but timers are pending, `poll_oneoff` until the
 next deadline, then complete the timer's `Completer` and keep draining.
-Still no zena-cli changes — this is stdlib code over existing WASI
+Still no zena changes — this is stdlib code over existing WASI
 imports. (Preview 1 is gone now; on WASI 0.3 the same arm arms a
 `wasi:clocks` `wait-for` and the host re-enters the component when it
 fires — `time/p3.zena`.)
@@ -400,7 +400,7 @@ Real I/O means the host completes futures. The shape, for a JS host
 (`zena:js` is virtual and resolves only on the JS-hosted targets — the
 protocol assumes an embedder with an event loop that calls back into
 the module's exports; a component's futures ride the canonical ABI's
-waitables instead, on the `component` and `zena-cli` targets alike):
+waitables instead, on the `component` and `zena-component` targets alike):
 
 1. A host-async import takes a freshly minted handle; `zena:js`
    keeps the `Completer` behind it and hands Zena code the `Future`.
@@ -486,7 +486,7 @@ and `zena:test` moved to asynchronous execution.
 On the **Rust CLI**, the same shape backed by tokio: host ops spawn onto
 a runtime keyed by handle, and a `zena_park()` import blocks until a
 completion is ready, after which the CLI calls the completion exports
-back into the instance. This is the first point where zena-cli needs
+back into the instance. This is the first point where zena needs
 custom code, and it is confined to the park import and whatever I/O ops
 we choose to expose. It is _not_ needed for v1.
 
@@ -634,7 +634,7 @@ website served by a Zena server":
   host, so it is split into `__zena_main_start` and
   `__zena_main_result`; `@zena-lang/runtime`'s `run()` drives the pair
   and returns a promise. `main` itself is unchanged, so WASI and
-  `zena-cli` are untouched.
+  `zena` are untouched.
 
   Note that `sleep()` needed `Future<void>`, which is why that had to
   land first: a sleep carries no value, and faking it with

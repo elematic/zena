@@ -19,7 +19,7 @@
  * makes the phase parallel; workers are this same module re-invoked with
  * `compile-slice` as its first argument.
  *
- * **Running** is one `zena-cli run` process per test (via
+ * **Running** is one `zena run` process per test (via
  * `zena:process`, bounded pool), because that is where traps and
  * infinite loops live and one must take down one test rather than the
  * runner. Each worker is handed an already-emitted `.wasm`, so nothing
@@ -28,7 +28,7 @@
  * Every run recompiles every test — there is no compile cache here and
  * so no way for a stale module to be reported as a pass. What a run
  * does reuse, when a module comes out byte-identical, is the module
- * file itself, purely so `zena-cli`'s wasmtime `.cwasm` beside it stays
+ * file itself, purely so `zena`'s wasmtime `.cwasm` beside it stays
  * valid; a test's module is only ever run on the strength of a status
  * file written by this run's compile phase.
  *
@@ -169,7 +169,7 @@ function trim(s: String) {
 }
 
 /**
- * `zena-cli run --invoke` prints the returned value on its own final
+ * `zena run --invoke` prints the returned value on its own final
  * line, after anything the program itself printed. A `void` return
  * prints nothing, which is why `@result: undefined` expects the empty
  * string.
@@ -396,7 +396,7 @@ function statusPathOf(relPath: String) {
 }
 
 /**
- * Writes a module only when its bytes changed. `zena-cli` caches the
+ * Writes a module only when its bytes changed. `zena` caches the
  * wasmtime-compiled form of a module in a `.cwasm` beside it and
  * decides staleness by mtime, so rewriting an identical module would
  * throw that away and make the run phase re-JIT all 465 — which costs
@@ -525,7 +525,7 @@ async function compileOne(
 /**
  * Worker entry point: compile every test whose position in discovery
  * order is `index` mod `count`. Invoked as
- * `zena-cli run --dir .::/ <self.wasm> compile-slice <index> <count> <filter>`,
+ * `zena run --dir .::/ <self.wasm> compile-slice <index> <count> <filter>`,
  * and dispatched to from `main` on that first argument.
  */
 async function compileSlice(args: Array<String>): Future<i32> {
@@ -643,7 +643,7 @@ async function runCompilePhase(
  * The execution runner, as a function the test wrapper dispatches to.
  * `args` is the argument vector with any subcommand that selected this
  * runner already removed, so `args[1]` is either `compile-slice` or the
- * `zena-cli` path, exactly as when this was its own program.
+ * `zena` path, exactly as when this was its own program.
  */
 export async function runPortableExecution(args: Array<String>): Future<i32> {
   if (args.length > 1 && args[1] == compileSliceCommand) {
@@ -707,7 +707,7 @@ export async function runPortableExecution(args: Array<String>): Future<i32> {
   await runCompilePhase(zenaCli, selfWasm, compileWorkers, filter);
   console.log('');
 
-  // Sliding-window pool: at most `parallelism` `zena-cli run` workers in
+  // Sliding-window pool: at most `parallelism` `zena run` workers in
   // flight, results reported in discovery order as the window advances.
   var passed = 0;
   var failed = 0;

@@ -31,13 +31,13 @@ When publishing to the Zena package manager (`zena pkg publish`), `"files": ["sr
 
 ## Running in the Monorepo
 
-Prerequisite: a built checkout (`npm run build`), so `target/release/zena-cli` and the compiler exist. From the repository root:
+Prerequisite: a built checkout (`npm run build`), so `target/release/zena` and the compiler exist. From the repository root:
 
 ```sh
-./target/release/zena-cli build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<target>]
-./target/release/zena-cli build --migrate [--dry-run] [-f|--force] [<package-dir>]
-# or directly via zena-cli run:
-./target/release/zena-cli run --dir . --allow-spawn packages/zebra/src/main.zena \
+./target/release/zena build [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<target>]
+./target/release/zena build --migrate [--dry-run] [-f|--force] [<package-dir>]
+# or directly via zena run:
+./target/release/zena run --dir . --allow-spawn packages/zebra/src/main.zena \
   [-C <workspace-root>] [-j <jobs>] [-w|--watch] [-f|--force] [--no-cache] [-v|--verbose] [<package-dir>] [<script>]
 ```
 
@@ -46,7 +46,7 @@ Prerequisite: a built checkout (`npm run build`), so `target/release/zena-cli` a
 `test/fixtures/example/` is a three-package workspace (`greeting`, `site`, and `hello-wasm`). Build it in place from the repository root:
 
 ```sh
-./target/release/zena-cli run --dir . --allow-spawn packages/zebra/src/main.zena \
+./target/release/zena run --dir . --allow-spawn packages/zebra/src/main.zena \
   -C packages/zebra/test/fixtures/example build
 ```
 
@@ -58,10 +58,10 @@ From the repository root:
 npm test -w @zena-lang/zebra
 ```
 
-Or directly with `zena-cli`:
+Or directly with `zena`:
 
 ```sh
-./target/release/zena-cli test "packages/zebra/test/*_test.zena"
+./target/release/zena test "packages/zebra/test/*_test.zena"
 ```
 
 The end-to-end tests build temporary workspaces under `/tmp` through the real filesystem and shell.

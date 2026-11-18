@@ -1,7 +1,7 @@
 # Benchmarking: `zena:bench`
 
 Status: in-process runner (`zena:bench`) and cross-binary orchestration
-(`zena-cli bench`) landed. Result history and a milestone workload suite
+(`zena bench`) landed. Result history and a milestone workload suite
 are follow-ups, sketched at the bottom.
 
 ## Why
@@ -89,12 +89,12 @@ timestamp, options, machine info, and per-variant samples + summary +
 pairwise difference CIs. Samples are included on purpose: future tooling
 can re-analyze (different horizons, outlier filters) without re-running.
 
-## Cross-binary comparison: `zena-cli bench`
+## Cross-binary comparison: `zena bench`
 
 The headline use case — the same workload compiled by two compiler
 versions, or Zena vs a frozen reference vs Node — needs processes,
 which WASI cannot spawn. That capability is now a stdlib library,
-`zena:process` (host imports provided by zena-cli to trusted
+`zena:process` (host imports provided by zena to trusted
 invocations only; see `packages/stdlib/zena/process/README.md`), and
 the orchestrator is itself Zena: `zena:bench`'s `runSuite`
 (`packages/stdlib/zena/bench/suite.zena`), which `zena bench` calls
@@ -108,7 +108,7 @@ measured it, so loading and instantiating the module are left out. A
 `zena:process`, and reports its own time on stdout.
 
 ```sh
-zena-cli bench benchmarks/fib.json          # prints report, writes fib.results.json
+zena bench benchmarks/fib.json          # prints report, writes fib.results.json
 ```
 
 The config lists variants; sample semantics differ by kind, which is the
@@ -147,12 +147,12 @@ self-reporting Node script.
   and relative-to-milestone numbers.
 - **Repointing the existing suites.** `benchmark.ts`'s execution suites
   still compile workloads with the bootstrap compiler; they must move to
-  `zena-cli` + `zena:bench` before the bootstrap compiler can be
+  `zena` + `zena:bench` before the bootstrap compiler can be
   removed.
 
 ## Notes
 
-- A `zena-cli` run inside another checkout of Zena, such as a worktree or
+- A `zena` run inside another checkout of Zena, such as a worktree or
   a second clone, takes that checkout's standard library and CLI module,
   so one built binary can serve several — needed by any workflow that
   benchmarks the working tree against another checkout.

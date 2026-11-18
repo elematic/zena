@@ -19,6 +19,6 @@ From the repository root:
 ```sh
 npm test -w @zena-lang/pds                       # its tests, through wireit
 npm run test:emulator -w @zena-lang/pds          # the storage tests against the Firestore emulator
-./target/release/zena-cli test "packages/pds/test/*_test.zena"
-./target/release/zena-cli run packages/pds/src/main.zena   # padstone alone, on $PORT, default 2583
+./target/release/zena test "packages/pds/test/*_test.zena"
+./target/release/zena run packages/pds/src/main.zena   # padstone alone, on $PORT, default 2583
 ```

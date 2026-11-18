@@ -40,8 +40,8 @@ npm test -w @zena-lang/registry                  # its tests, through wireit
 npm run test:emulator -w @zena-lang/registry     # the store tests against the Firestore emulator
 npm run demo -w @zena-lang/registry              # an App View to try zena against, on this machine
 npm run demo:publish -w @zena-lang/registry      # or: the same, with the repository's packages published in it
-./target/release/zena-cli test "packages/registry/test/*_test.zena"
-APP_VIEW_DOMAIN=pkg.test ./target/release/zena-cli run packages/registry/src/main.zena   # serve on $PORT, default 2583
+./target/release/zena test "packages/registry/test/*_test.zena"
+APP_VIEW_DOMAIN=pkg.test ./target/release/zena run packages/registry/src/main.zena   # serve on $PORT, default 2583
 ```
 
 ## The demo
@@ -83,7 +83,7 @@ source .zena/demo/env.sh
 It sets `ZENA_REGISTRY`, `ZENA_PLC_DIRECTORY`, `ZENA_DNS_OVER_HTTPS` and
 `ZENA_CONFIG_DIR`, which keeps the demo's sign-in in `.zena/demo/config`,
 apart from yours. It also unsets `ZENA_REGISTRY_TOKEN`, and makes `zena`
-an alias for this checkout's `target/release/zena-cli`. With the same
+an alias for this checkout's `target/release/zena`. With the same
 `PORT`, the file is the same from one start to the next, though what the
 demo held is gone: a session made against its maintainer needs
 `zena pkg login` again.
@@ -391,7 +391,7 @@ packages there:
    ```sh
    source packages/registry/deploy/try-staging.sh
    export ZENA_CONFIG_DIR=~/.config/zena-staging
-   alias zena="$PWD/target/release/zena-cli"
+   alias zena="$PWD/target/release/zena"
    zena pkg login <your handle>
    zena pkg scope info zena-lang
    mkdir ~/zena-staging   # a new one: cp -R into an earlier copy would nest it
@@ -465,7 +465,7 @@ Which versions the App View takes is in code, in `registry/clients`, and
 changes in the pull request that changes how `zena` and the App View
 talk, not in a deploy setting:
 
-1. The change that a newer `zena` needs raises zena-cli's version, and
+1. The change that a newer `zena` needs raises zena's version, and
    `RECOMMENDED_CLIENT_VERSION` to match. Older clients still work, and
    `zena` warns their users that their version is deprecated and to
    upgrade.
@@ -601,7 +601,7 @@ and the App View's online key, which signs its operations
   you trust, and never on the server:
 
   ```sh
-  zena-cli run packages/registry/src/main.zena -- generate-key
+  zena run packages/registry/src/main.zena -- generate-key
   ```
 
   It prints a private key, to keep offline (on paper, or in a password
@@ -621,8 +621,8 @@ good operation's CID in the account's log
 offline key:
 
 ```sh
-zena-cli run packages/registry/src/main.zena -- plc-restore <did> <cid> < offline-key.txt         # shows the operation
-zena-cli run packages/registry/src/main.zena -- plc-restore <did> <cid> --yes < offline-key.txt   # sends it
+zena run packages/registry/src/main.zena -- plc-restore <did> <cid> < offline-key.txt         # shows the operation
+zena run packages/registry/src/main.zena -- plc-restore <did> <cid> --yes < offline-key.txt   # sends it
 ```
 
 It sends a copy of that operation, signed by the offline key, which the

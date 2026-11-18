@@ -103,7 +103,7 @@ would block the loop like everything else on p2.
 > fixup modules it otherwise needs. WASI p3 is reachable _only_ through a
 > component — wasmtime rejects a p3 import in a core module — so the component
 > target is the WASI target, which is why that document proposes
-> `--target js | zena-cli | freestanding | component` and no portable p1 or p2
+> `--target js | zena | freestanding | component` and no portable p1 or p2
 > target at all.
 > It also settles open question 4: a DCE'd import must not stay in the world,
 > because leaving it in panics `wit-component`. Bindgen stays downstream; what

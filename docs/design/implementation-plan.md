@@ -83,7 +83,7 @@ The async-specific refinement:
   internal completions) runs on today's unmodified hosts; timers rode
   WASI preview 1's `poll_oneoff` at first and ride `wasi:clocks`
   `wait-for` on 0.3 now; JS-host completions are a tiny runtime-lib
-  wrapper — **no JSPI**, no zena-cli changes until real native I/O;
+  wrapper — **no JSPI**, no zena changes until real native I/O;
   WASI 0.3's callback ABI is what `zena:wasi`'s event loop maps
   step()/drain onto.
 - Churn guard: the split machinery is effect-kind-tagged from day one

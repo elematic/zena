@@ -26,7 +26,7 @@ cd "$(dirname "$0")"
 source ./env.sh
 
 REPO="$(cd ../../.. && pwd)"
-ZENA="$REPO/target/release/zena-cli"
+ZENA="$REPO/target/release/zena"
 if [ "$PLC_MODE" = staging ]; then
   PLC="https://${DOMAIN}/plc"
 else

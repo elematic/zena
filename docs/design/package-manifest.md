@@ -166,7 +166,7 @@ file is relative to the `source` directory.
   re-exports its public API and reaches the other files with relative
   imports (`./encoding.zena`). Those files cannot be imported by name.
 - **`virtual`**: a different entry file for each compilation target (`js`
-  for browsers and Node.js, `component` for a WASI component, `zena-cli`
+  for browsers and Node.js, `component` for a WASI component, `zena`
   for the `zena` command's host, `freestanding` for a core module with no
   imports). Compiling with `--target component`,
   `import { log } from 'pkg:console'` resolves to

@@ -258,7 +258,7 @@ execFileSync(
     'bash',
     '-c',
     `${wide}ZENA_GC_RESERVE_MB=2048 ZENA_COMPILER_WASM=packages/compiler/out/cli.wasm ` +
-      `./target/release/zena-cli run --no-cache --dir=. scratch/fp-runner.zena`,
+      `./target/release/zena run --no-cache --dir=. scratch/fp-runner.zena`,
   ],
   {cwd: root, stdio: ['ignore', 'inherit', 'inherit']},
 );

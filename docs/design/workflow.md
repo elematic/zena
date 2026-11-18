@@ -251,7 +251,7 @@ monorepo can migrate incrementally and A/B the two systems.
 ```zconf
 scripts: {
   'build:cli': {
-    command: 'zena-cli build src/cli/main.zena -o out/cli.wasm',
+    command: 'zena build src/cli/main.zena -o out/cli.wasm',
     files: ['zena/**/*.zena', 'bootstrap/cli.wasm'],
     output: ['out/cli.wasm'],
     dependencies: ['../cli:build'],
@@ -290,7 +290,7 @@ materialize just the reachable subgraph before a run.
 ### File watching
 
 WASI provides no change-notification API — `wasi:filesystem` can read
-and stat but not watch — so watching is a host capability: `zena-cli`
+and stat but not watch — so watching is a host capability: `zena`
 exposes the platform watchers (inotify, FSEvents, kqueue, via a crate
 such as `notify`) to Zena as an import, the same pattern as
 `zena:process`. Where native watching is unavailable, the fallback is
@@ -395,7 +395,7 @@ invalidation, cancellation) accrue to it for free.
    cache, precise cleaning. Run side by side with Wireit on this
    monorepo and diff the decisions.
 3. **Services and watch mode.** Parity with the Wireit features the
-   monorepo uses; the `zena-cli` watcher capability with the polling
+   monorepo uses; the `zena` watcher capability with the polling
    fallback; `build.zconf` and the converter.
 4. **Fine-grained tracking.** Engine delta plumbing, `ZEBRA_CHANGED_FILES`,
    per-output records; prove it on the website build.
@@ -405,7 +405,7 @@ invalidation, cancellation) accrue to it for free.
    fingerprints; measure warm no-op startup. Compiled configuration
    follows when the measurement justifies it.
 7. **Remote caches.** GitHub Actions and HTTP backends; move CI to `zebra`.
-8. **Compile server.** Protocol in `zena-cli`, service rule in `zebra`.
+8. **Compile server.** Protocol in `zena`, service rule in `zebra`.
 9. **Component rules and the durable runner.** After dynamic component
    loading lands.
 

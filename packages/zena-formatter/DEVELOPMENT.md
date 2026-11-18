@@ -18,5 +18,5 @@ npm test -w @zena-lang/zena-formatter
 Or run a single test file directly:
 
 ```bash
-./target/release/zena-cli test packages/zena-formatter/test/formatter_test.zena
+./target/release/zena test packages/zena-formatter/test/formatter_test.zena
 ```

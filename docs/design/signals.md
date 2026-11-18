@@ -294,7 +294,7 @@ no sample falls in the collector.
 ## Measured costs
 
 `packages/stdlib/benchmarks/signals_bench.zena`, on wasmtime 47 through
-`zena-cli run`, an idle machine (load average 0.5):
+`zena run`, an idle machine (load average 0.5):
 
 | Workload                                                               | Per operation          |
 | ---------------------------------------------------------------------- | ---------------------- |

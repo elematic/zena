@@ -196,7 +196,7 @@ The end of the series first, then the first step as it was measured
 at the time.
 
 After the last change and a reseed, each compiler module compiling
-the `zena-cli` module from the source of its own era (an old module
+the `zena` module from the source of its own era (an old module
 run on today's source fails in a second on syntax it predates, and
 looks fast), interleaved, two rounds each within 0.1 s, on an idle
 16-core VM at the build's reserve:
@@ -448,7 +448,7 @@ By November 2026 the swing was 7 s. The self-compile at `-O1` took
 17.0 s with one build of the CLI module and 24.4 s with another that
 does less work (#822), all of the difference in discovery, which makes
 most of the type tests. The CLI module counts even when
-`ZENA_COMPILER_WASM` names the compiler: `zena-cli` loads it into the
+`ZENA_COMPILER_WASM` names the compiler: `zena` loads it into the
 same engine first, so its types shift the compiler's indices. `main`'s
 compiler spent 7.7 s or 17 s in discovery depending only on which CLI
 module was built.
@@ -497,7 +497,7 @@ with samples whose leaf is in the collector left out: a collection is
 charged to whichever allocation tripped it, which made `i32ToString`
 look like 3% of a compile.
 
-The `zena-cli` module compile at `-O2` (`cli-module` in
+The `zena` module compile at `-O2` (`cli-module` in
 `mem-bench.sh`), before and after the changes below, on the same
 machine with the census running:
 
@@ -563,7 +563,7 @@ What the census still shows, in the order it ranks them:
 
 ## The -O2 compile, and keys without strings
 
-The census so far was of the `-O1` compile of the `zena-cli` module.
+The census so far was of the `-O1` compile of the `zena` module.
 The self-build — the bootstrap compiling the compiler at `-O2`, which
 `build:cli` runs and everything in CI waits on — was five times
 worse: 22.5 GiB for the same module at `-O2`, 405M objects, and a
@@ -627,7 +627,7 @@ hashes the uids in place and compares them against the stored keys,
 so a hit still allocates nothing and a miss allocates one entry and
 one key. The trie had cost about one node and one map entry per
 element of every distinct list — 1.1M nodes, 0.8M maps, 1.5M
-entries, 190 MB and 4% of the zena-cli compile's allocation — and n
+entries, 190 MB and 4% of the zena compile's allocation — and n
 map lookups per probe. The table holds the same keys in 289K entries
 and 42K tables, about 25 MB, and the compile allocates 4.00 GiB
 where it allocated 4.13 (9.11 GiB at `-O2`, from 9.25).
@@ -673,7 +673,7 @@ stamps on the function's type for RTA and lowering to reach the
 function by. The tag is per type object, as before, so an interned
 instantiation carries the tag its source had when it was made.
 
-What it bought, on the `zena-cli` module compile at `-O1`: a
+What it bought, on the CLI module's compile at `-O1`: a
 `FunctionType` is 80 bytes rather than 96, 12K `FunctionDeclInfo`
 records serve 154K types, and 84K of the function types the codegen
 substitutions asked for were already there — 238K minted before,
@@ -740,7 +740,7 @@ crossing and an indirect call per use. `new Map<K, V>()` already
 produced a `HashMap`, but its constructor declared no return type, so
 the checker typed every inferred local as the interface, and the
 compiler's own code carried some 600 explicit interface annotations
-besides: 5.5M fat pointers in the `-O1` compile of the `zena-cli`
+besides: 5.5M fat pointers in the `-O1` compile of the `zena`
 module, 11M at `-O2` before #228 took the successor lists out.
 
 Two changes. The stdlib's `Map` and `Set` constructors declare the
@@ -791,7 +791,7 @@ set — the gate the unnecessary-cast warning already used, so the one
 switch means "performance warnings" — the checker reports every
 adaptation it inserts: a class boxed to pass as an interface, a
 function value re-wrapped to another signature, a record copied to
-another shape, each at the expression that pays. The zena-cli module
+another shape, each at the expression that pays. The zena module
 has 42 boxings and 13 record copies; the language service shows them
 as warnings. What the checker cannot say is whether `-O2` later
 removes one — that is whole-program knowledge the inliner and the

@@ -32,7 +32,7 @@ jobs:
       WORKSPACE_CRATES: |
         target/zena-rust-sources.tsv
         target/release/zena-run
-        target/release/zena-cli
+        target/release/zena
         target/release/*.d
         target/release/.fingerprint/workspace-hack-*
         target/release/.fingerprint/zena-*
@@ -102,7 +102,7 @@ jobs:
             gh release list --limit 1000 --json tagName --jq '.[].tagName'
           } | sort -u > .zena/release-tags.txt
           rm -f .zena/github-output.txt
-          ./target/release/zena-cli run --dir . packages/cli/dev/check-release-version.zena \
+          ./target/release/zena run --dir . packages/cli/dev/check-release-version.zena \
             --tags-file .zena/release-tags.txt \
             --notes-out packages/cli/out/release-notes.md \
             --github-output .zena/github-output.txt
@@ -145,22 +145,18 @@ jobs:
             target: aarch64-apple-darwin
             archive_ext: tar.gz
             bin_name: zena
-            built_bin: zena-cli
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             archive_ext: tar.gz
             bin_name: zena
-            built_bin: zena-cli
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive_ext: tar.gz
             bin_name: zena
-            built_bin: zena-cli
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive_ext: zip
             bin_name: zena.exe
-            built_bin: zena-cli.exe
 
     steps:
       # out/stdlib_bundle.rs embeds packages/stdlib/zena/** via include_bytes!
@@ -197,13 +193,13 @@ jobs:
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: '14.0'
-        run: cargo build --release --locked --target ${{ matrix.target }} -p zena-cli --features bundled
+        run: cargo build --release --locked --target ${{ matrix.target }} -p zena --features bundled
 
       - name: Strip symbols and verify dynamic library links (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          BIN="target/${{ matrix.target }}/release/${{ matrix.built_bin }}"
+          BIN="target/${{ matrix.target }}/release/${{ matrix.bin_name }}"
           if [ "${{ runner.os }}" = "macOS" ]; then
             strip -x "$BIN"
             codesign --force --sign - "$BIN"
@@ -228,11 +224,10 @@ jobs:
           TARGET: ${{ matrix.target }}
           EXT: ${{ matrix.archive_ext }}
           BIN_NAME: ${{ matrix.bin_name }}
-          BUILT_BIN: ${{ matrix.built_bin }}
         run: |
           rm -rf stage dist
           mkdir -p stage dist
-          cp "target/${TARGET}/release/${BUILT_BIN}" "stage/${BIN_NAME}"
+          cp "target/${TARGET}/release/${BIN_NAME}" "stage/${BIN_NAME}"
           ARCHIVE="zena-${TAG}-${TARGET}.${EXT}"
           if [ "$EXT" = "tar.gz" ]; then
             chmod +x "stage/${BIN_NAME}"
@@ -365,7 +360,7 @@ jobs:
       WORKSPACE_CRATES: |
         target/zena-rust-sources.tsv
         target/release/zena-run
-        target/release/zena-cli
+        target/release/zena
         target/release/*.d
         target/release/.fingerprint/workspace-hack-*
         target/release/.fingerprint/zena-*
@@ -470,7 +465,7 @@ jobs:
       WORKSPACE_CRATES: |
         target/zena-rust-sources.tsv
         target/release/zena-run
-        target/release/zena-cli
+        target/release/zena
         target/release/*.d
         target/release/.fingerprint/workspace-hack-*
         target/release/.fingerprint/zena-*

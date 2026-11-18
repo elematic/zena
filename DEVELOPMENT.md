@@ -37,14 +37,14 @@ a prebuilt, checked-in build of the CLI module and the only prebuilt
 artifact in the repository.
 
 ```
-cargo build          → zena-cli, zena-run       (Rust/wasmtime hosts, from source)
-zena-cli + bootstrap → zena/out/cli.wasm        (Stage A: the working compiler)
+cargo build          → zena, zena-run       (Rust/wasmtime hosts, from source)
+zena + bootstrap → zena/out/cli.wasm        (Stage A: the working compiler)
 zena/out/cli.wasm    → out/zena.wasm, and rest  (CLI module, stdlib tests, LSP, …)
 ```
 
-Before `packages/cli/out/zena.wasm` is built, `zena-cli` falls back
+Before `packages/cli/out/zena.wasm` is built, `zena` falls back
 to `bootstrap/zena.wasm`, so `zena build`, `zena fmt` and `zena lint`
-work immediately after `cargo build --release -p zena-cli`.
+work immediately after `cargo build --release -p zena`.
 
 The invariant, enforced by `npm test` and CI on every change: **the
 bootstrap must build a HEAD that passes the test suite**, including
@@ -63,7 +63,7 @@ Full design: [docs/design/bootstrapping.md](./docs/design/bootstrapping.md).
 
 ## Rust dependencies
 
-The Rust crates (`zena-runtime`, and the `zena-run`, `zena-cli` and `zfx`
+The Rust crates (`zena-runtime`, and the `zena-run`, `zena` and `zfx`
 binaries) each depend on `packages/workspace-hack`, which
 [cargo hakari](https://docs.rs/cargo-hakari) generates so that every
 crate resolves the same features for the dependencies they share. Without
@@ -89,7 +89,7 @@ build, which `scripts/ci-cargo-freshness.py` lets cargo reuse, and wireit's
 script results.
 
 `nix flake check` builds the whole monorepo hermetically in the Nix
-sandbox — cargo compiles `zena-cli`, the bootstrap compiles the
+sandbox — cargo compiles `zena`, the bootstrap compiles the
 compiler, and the entire `npm test` suite runs offline — so it shows
 that a clean checkout bootstraps, which a cached run does not.
 

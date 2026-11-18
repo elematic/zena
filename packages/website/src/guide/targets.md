@@ -20,7 +20,7 @@ Component Model (`component`) — plus Zena-hosted variants (`zena-js` and
 | `js`             | Core Wasm GC  | Any JS engine supporting `wasm:js-string` (`WebAssembly.instantiate` with `{}`) |
 | `zena-js`        | Core Wasm GC  | Browsers, Node.js, Deno, Bun, or Workers with `@zena-lang/runtime`              |
 | `component`      | Component     | Standard WASI 0.3 hosts (`wasmtime run -S p3=y`) and custom WIT worlds          |
-| `zena-component` | Component     | `zena-cli`, `zena-run`, and Rust embedders linking `zena-runtime`               |
+| `zena-component` | Component     | `zena`, `zena-run`, and Rust embedders linking `zena-runtime`                   |
 
 ## Capabilities per target
 

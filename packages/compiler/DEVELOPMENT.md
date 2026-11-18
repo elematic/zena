@@ -36,7 +36,7 @@ npm run test:execution -w @zena-lang/compiler-zena
 To run a single Zena unit test file directly:
 
 ```bash
-./target/release/zena-cli test packages/compiler/src/test/compiler-api_test.zena
+./target/release/zena test packages/compiler/src/test/compiler-api_test.zena
 ```
 
 ## Reseeding the Bootstrap Binary
@@ -51,7 +51,7 @@ See `packages/cli/bootstrap/README.md` and `docs/design/bootstrapping.md` for de
 
 ## Benchmarking
 
-Benchmarks live at the repository root under `benchmarks/workloads/`, one program per workload, built at `-O2` and timed by `zena-cli bench` with statistical sampling (`benchmarks/README.md` lists them).
+Benchmarks live at the repository root under `benchmarks/workloads/`, one program per workload, built at `-O2` and timed by `zena bench` with statistical sampling (`benchmarks/README.md` lists them).
 
 ```bash
 npm run bench                                   # build every workload, report sizes
@@ -62,5 +62,5 @@ npm run bench -- --build --speed poly-param     # one workload
 To time the compiler itself on a source file:
 
 ```bash
-./target/release/zena-cli build <file>.zena -o out.wasm --time --no-cache
+./target/release/zena build <file>.zena -o out.wasm --time --no-cache
 ```

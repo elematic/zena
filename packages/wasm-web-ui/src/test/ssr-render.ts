@@ -1,13 +1,13 @@
 /**
  * The server side of the rendering tests: `ssr/render.zena` run through
- * `zena-cli` on the `zena-cli` target, split into the sections it
+ * `zena` on the `zena-component` target, split into the sections it
  * prints. Shared by `ssr_test.ts` and `hydrate_test.ts`.
  */
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
 const harnessUrl = new URL('../src/test/ssr/render.zena', import.meta.url);
-const cliUrl = new URL('../../../target/release/zena-cli', import.meta.url);
+const cliUrl = new URL('../../../target/release/zena', import.meta.url);
 
 /** Everything `render.zena` prints, by section: the cases, then the counter element's markup. */
 export const renderWithZena = (): string[] => {

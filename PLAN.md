@@ -48,7 +48,7 @@ This document tracks completed work and planned features. For project instructio
     state machines that park on futures and resume off a microtask queue, and
     an async `main` is driven to completion by a synthesized export wrapper —
     so async programs run under plain `wasmtime --invoke main` today, with no
-    host event loop and no changes to `zena-cli`.
+    host event loop and no changes to `zena`.
   - **`await` on a union is done**, generalized past the design's
     sketch: `T | Future<U> | Future<V>` yields `T | U | V` — future
     arms are distinguished at runtime and each suspends on its own

@@ -49,7 +49,7 @@ class P(sd.Profile):
                     return 'wasm ' + re.sub(r'_s\d+', '', raw)
                 return 'wasm ' + self.pm[i][2]
             return 'wasm ?'
-        if lib.startswith('zena-run') or lib.startswith('zena-cli'):
+        if lib.startswith('zena-run') or lib.startswith('zena'):
             i = bisect.bisect_right(self.symaddrs, a) - 1
             return 'native ' + (self.syms[i][1] if i >= 0 else '?')
         return 'lib ' + lib

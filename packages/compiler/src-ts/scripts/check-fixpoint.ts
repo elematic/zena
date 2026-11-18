@@ -28,7 +28,7 @@ import {fileURLToPath} from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const repoRoot = join(pkgDir, '..', '..');
-const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+const zenaCli = join(repoRoot, 'target', 'release', 'zena');
 
 const entry = join('src', 'cli', 'main.zena');
 const stageBRel = join('out', 'cli-self.wasm');
@@ -37,7 +37,7 @@ const stageB = join(pkgDir, stageBRel);
 const stageC = join(pkgDir, stageCRel);
 
 /**
- * Which compiler `zena-cli` uses, defined in packages/cli/zena/compile.zena
+ * Which compiler `zena` uses, defined in packages/cli/zena/compile.zena
  * — a path to a .wasm. Without it, the compiler linked into the CLI module
  * compiles, and that is HEAD's compiler too.
  */
@@ -64,7 +64,7 @@ try {
   process.exit(1);
 }
 
-// This whole check rests on zena-cli honouring COMPILER_ENV. If it ever stops
+// This whole check rests on zena honouring COMPILER_ENV. If it ever stops
 // doing so, stage C would be built by the default compiler — HEAD's compiler
 // in the CLI module, whose output is stage B's — and the comparison below
 // would pass while testing nothing. Prove the variable still takes effect
@@ -72,7 +72,7 @@ try {
 // build to fail.
 try {
   build(stageC, join('out', 'definitely-not-a-compiler.wasm'));
-  console.error(`✗ ${COMPILER_ENV} is being ignored by zena-cli.`);
+  console.error(`✗ ${COMPILER_ENV} is being ignored by zena.`);
   console.error(
     '  A build with a nonexistent compiler path succeeded, so stage C',
   );
@@ -84,7 +84,7 @@ try {
   );
   process.exit(1);
 } catch {
-  // Expected: zena-cli rejects a compiler path that does not exist.
+  // Expected: zena rejects a compiler path that does not exist.
 }
 
 console.log('Building stage C (stage B building the compiler)...');

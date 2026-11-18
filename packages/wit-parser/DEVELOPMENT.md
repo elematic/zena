@@ -107,7 +107,7 @@ validates the output with `wasm-tools validate --features all` and checks that
 To regenerate goldens after an intentional encoder change:
 
 ```bash
-UPDATE_WIT_GOLDENS=1 ./target/release/zena-cli test packages/wit-parser/test/encoder_test.zena
+UPDATE_WIT_GOLDENS=1 ./target/release/zena test packages/wit-parser/test/encoder_test.zena
 ```
 
 ### 4. Real-World WASI WIT Corpus (`dev/wit-corpus.json`)
@@ -134,7 +134,7 @@ You can also run `dev/parse-real-wit.zena` manually on any directory of `.wit`
 files from the monorepo root:
 
 ```bash
-./target/release/zena-cli run --dir . --dir / packages/wit-parser/dev/parse-real-wit.zena --check
-./target/release/zena-cli run --dir . --dir / packages/wit-parser/dev/parse-real-wit.zena "$ZENA_WASI_WIT/wasi/proposals"
-./target/release/zena-cli run --dir . --dir / packages/wit-parser/dev/parse-real-wit.zena --files "$ZENA_WASI_WIT/wasi-http/wit"
+./target/release/zena run --dir . --dir / packages/wit-parser/dev/parse-real-wit.zena --check
+./target/release/zena run --dir . --dir / packages/wit-parser/dev/parse-real-wit.zena "$ZENA_WASI_WIT/wasi/proposals"
+./target/release/zena run --dir . --dir / packages/wit-parser/dev/parse-real-wit.zena --files "$ZENA_WASI_WIT/wasi-http/wit"
 ```

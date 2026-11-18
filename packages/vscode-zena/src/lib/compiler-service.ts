@@ -171,7 +171,7 @@ function listsPackage(
 }
 
 /**
- * Finds the Zena workspace root matching `workspace_root_for` in `zena-cli`:
+ * Finds the Zena workspace root matching `workspace_root_for` in `zena`:
  * nearest ancestor with `zena-package.json`, promoted to an enclosing
  * workspace root if one lists it in `workspace.packages`.
  */
@@ -237,7 +237,7 @@ async function directoryExists(uri: vscode.Uri): Promise<boolean> {
 
 /**
  * Resolves the package cache directory (`<cache>/sources/<cid>`) matching
- * `packageCacheDir()` in `zena-cli` without importing `node:*` modules.
+ * `packageCacheDir()` in `zena` without importing `node:*` modules.
  */
 async function resolvePackageCachePath(
   workspaceRootUri: vscode.Uri | undefined,

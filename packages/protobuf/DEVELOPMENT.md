@@ -37,7 +37,7 @@ When publishing to the Zena package manager (`zena pkg publish`), `"files": ["sr
 From the repository root:
 
 ```sh
-./target/release/zena-cli run --dir . packages/protobuf/bin/generate.zena -- \
+./target/release/zena run --dir . packages/protobuf/bin/generate.zena -- \
   -I path/to/protos -I packages/protobuf/protos \
   -o out/service.zena path/to/service.proto
 ```
@@ -57,5 +57,5 @@ npm test -w @zena-lang/protobuf
 When the code generator's output changes intentionally, regenerate the checked-in golden fixture (`test/fixtures/generated/everything.zena`) and review the diff:
 
 ```sh
-UPDATE_PROTO_GOLDENS=1 ./target/release/zena-cli test packages/protobuf/test/generator_test.zena
+UPDATE_PROTO_GOLDENS=1 ./target/release/zena test packages/protobuf/test/generator_test.zena
 ```

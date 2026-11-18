@@ -51,7 +51,7 @@ It does not make a build faster. See "Measurements".
 ## Measurements
 
 `zena build --time packages/cli/zena/main.zena` at `-O1`, measured
-on 2026-11-04 with a `zena-cli` built from the branch that became #898.
+on 2026-11-04 with a `zena` built from the branch that became #898.
 Two runs agreed to within 4%; the machine's load average was 4 on 16
 cores.
 
@@ -100,7 +100,7 @@ interface CompilerHost {
 A missing file fails the future, as it throws today. There are eleven
 implementations: `FileHost` (`compile-file.zena`), `DiskHost`
 (`fs-host.zena`), `DocumentHost` (the language service), `ManifestHost`
-(`zena-cli`'s `lsp.zena`), the hosts in `zenadoc` and `zena-lint`, and
+(`zena`'s `lsp.zena`), the hosts in `zenadoc` and `zena-lint`, and
 five in the compiler's tests and benchmarks. A host that holds its
 sources in memory declares the methods `async` and returns directly.
 
@@ -189,11 +189,11 @@ the output.
 
 ### Command-line tools
 
-The compiler's `main` (`src/cli/main.zena`) and `zena-cli`'s `main`
+The compiler's `main` (`src/cli/main.zena`) and `zena`'s `main`
 become `async function main(): Future<i32>`. The commands that compile
 (`build`, `run`, `test`, `bench`, `lint`, `doc`, `lsp`) become
 asynchronous down to the call that reaches the compiler. That takes in
-`compileTo`, `compileCached` and `compileIntoCache` in `zena-cli`'s
+`compileTo`, `compileCached` and `compileIntoCache` in `zena`'s
 `compile.zena`, `zenadoc`'s `documentPackage`, and `zena-lint`'s
 `Project` (`checking.zena`), which type-checks each fix before keeping
 it.

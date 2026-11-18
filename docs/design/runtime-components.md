@@ -510,7 +510,7 @@ on only that.
 
 ### The Zena API
 
-`zena:extensions`, on the `zena-cli` and `component` targets:
+`zena:extensions`, on the `zena-component` and `component` targets:
 
 ```zena
 export type LoadOptions = {
@@ -637,5 +637,5 @@ instance; two loads in flight at once get distinct handles.
 - [component-async-exports.md](./component-async-exports.md): how an
   async export's task yields, which is what lets a call back in.
 - [wasi.md](./wasi.md) and
-  [component-emission.md](./component-emission.md): the `zena-cli`
+  [component-emission.md](./component-emission.md): the `zena`
   target and its host.

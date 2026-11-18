@@ -44,5 +44,5 @@ npm test -w @zena-lang/zenadoc
 Or run the test suite directly:
 
 ```bash
-./target/release/zena-cli test "packages/zenadoc/test/*_test.zena"
+./target/release/zena test "packages/zenadoc/test/*_test.zena"
 ```

@@ -1,7 +1,7 @@
 /**
  * The elements library's server renderer against Lit's: the same
  * templates (`ssr/elements.zena`) rendered by `@lit-labs/ssr` from the
- * js-target module's results, and by `renderResult` from the `zena-cli`
+ * js-target module's results, and by `renderResult` from the `zena`
  * build of the same file (`ssr/render.zena`). Hydration reads the
  * markers Lit writes, so the Zena renderer has to write the same ones.
  */
