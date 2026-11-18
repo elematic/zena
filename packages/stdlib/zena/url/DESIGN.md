@@ -104,7 +104,7 @@ where `compareTo` is JavaScript's comparison.
 
 WPT is not a signal for the js build, since it would be testing the host's
 own URL. The Zena implementation stays the conformance target. What
-`packages/runtime/src/test/url_js_test.ts` checks instead is the wrapper:
+`packages/runtime-js/src/test/url_js_test.ts` checks instead is the wrapper:
 that `URL.parse` and every `with*` method give the URL JavaScript's `URL`
 gives, over the vendored `urltestdata.json` and `setters_tests.json`.
 

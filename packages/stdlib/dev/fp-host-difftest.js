@@ -24,7 +24,7 @@ import {readFileSync, writeFileSync, mkdirSync} from 'node:fs';
 
 const N = Number(process.argv[2] || 20000);
 const root = new URL('../../..', import.meta.url).pathname.replace(/\/$/, '');
-const {instantiate} = await import(`${root}/packages/runtime/index.js`);
+const {instantiate} = await import(`${root}/packages/runtime-js/index.js`);
 
 const dv = new DataView(new ArrayBuffer(8));
 const bitsToF64 = (b) => {

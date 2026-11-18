@@ -181,7 +181,7 @@ being attempted.
 ## Strings across the boundary
 
 Reading a Zena string from JavaScript calls an exported getter once per
-byte (`createStringReader` in `packages/runtime/src/index.ts`). A WebAssembly
+byte (`createStringReader` in `packages/runtime-js/src/index.ts`). A WebAssembly
 GC array is opaque to JavaScript — no indexed access, no length, no
 iterator — so calling back into wasm is the only way to read one, and the
 per-byte loop driven from JavaScript is the fastest form available today.

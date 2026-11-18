@@ -209,7 +209,7 @@ Measured at `-O2` across minimal workloads:
     `tests/language/semantics/` files against `zena-js`.
   - `packages/language-service/` compiles `lsp.wasm` with `--target zena-js` and
     exposes `compileToWasmForTarget` / `checkForTarget`.
-  - `packages/runtime/src/test/` tests `@zena-lang/runtime` imports on `zena-js`
+  - `packages/runtime-js/src/test/` tests `@zena-lang/runtime` imports on `zena-js`
     and zero-import `WebAssembly.instantiate(bytes, {}, ...)` execution on `js`
     (`pure_js_target_test.ts`).
 - **`zena-component`**:

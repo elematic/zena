@@ -512,5 +512,5 @@ In `packages/website/eleventy.config.js`:
    - `sandbox/vendor/lit-html.js` (from `lit-html`)
 2. Emits `_site/sandbox/service-worker-proxy.html`, which loads
    `./service-worker-proxy.js`.
-3. Adds `../wasm-web-ui:build` and `../runtime:build` to
+3. Adds `../wasm-web-ui:build` and `../runtime-js:build` to
    `packages/website/package.json` Wireit dependencies for `build`.
