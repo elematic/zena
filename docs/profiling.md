@@ -10,7 +10,7 @@ how to measure it (`ZENA_CENSUS=1`, `scripts/mem-bench.sh`) — see
 
 ## How It Works
 
-Because the self-hosted compiler runs as a WebAssembly module inside `zena-cli`, standard system-level profilers (like Apple Instruments) cannot resolve WebAssembly guest stack traces by default.
+Because the self-hosted compiler runs as a WebAssembly module inside `zena`, standard system-level profilers (like Apple Instruments) cannot resolve WebAssembly guest stack traces by default.
 
 To solve this, we configure Wasmtime to emit native JIT symbol maps via `--profile=perfmap` (or `ProfilingStrategy::PerfMap` in the Rust API) whenever the `ZENA_PROFILE` environment variable is defined. The `samply` profiler captures these JIT symbols to construct a symbolicated flame graph on [profiler.firefox.com](https://profiler.firefox.com).
 
@@ -61,7 +61,7 @@ rm entitlements.xml
 To record the compiler while building a benchmark (e.g., `stdlib_moderate`):
 
 ```bash
-ZENA_PROFILE=1 samply record target/release/zena-cli build packages/compiler/test-files/benchmarks/stdlib_moderate.zena -o out.wasm --time --no-cache
+ZENA_PROFILE=1 samply record target/release/zena build packages/compiler/test-files/benchmarks/stdlib_moderate.zena -o out.wasm --time --no-cache
 ```
 
 ### Options:
@@ -109,7 +109,7 @@ browser, which is what you want over SSH or in a VM:
 ZENA_PROFILE=1 ZENA_GC_RESERVE_MB=1536 \
   ZENA_COMPILER_WASM=packages/compiler/out/cli-self.wasm \
   samply record --save-only -o /tmp/prof.json.gz -- \
-  ./target/release/zena-cli -g build <file>.zena -o /tmp/out.wasm
+  ./target/release/zena -g build <file>.zena -o /tmp/out.wasm
 ```
 
 Upload the `.json.gz` to [profiler.firefox.com](https://profiler.firefox.com),
@@ -120,11 +120,11 @@ script can walk.
 **Symbols.** Wasmtime writes its JIT symbols to `/tmp/perf-<pid>.map`,
 and `samply` does not read that file, so frames inside the compiled
 Zena code come back as bare addresses. Native frames — everything in
-`zena-cli` itself, including wasmtime's runtime and GC — are also bare
+`zena` itself, including wasmtime's runtime and GC — are also bare
 addresses, and those resolve against the binary:
 
 ```bash
-nm -C --defined-only target/release/zena-cli | sort > /tmp/syms.txt
+nm -C --defined-only target/release/zena | sort > /tmp/syms.txt
 # then for an address, take the last symbol at or below it
 ```
 
@@ -150,5 +150,5 @@ By default, Wasmtime compiles with `native_unwind_info` enabled to support exter
 
 For production execution:
 
-- `native_unwind_info` is **disabled** by default in `zena-cli` to guarantee maximum speed.
+- `native_unwind_info` is **disabled** by default in `zena` to guarantee maximum speed.
 - It is only turned back on when `ZENA_PROFILE=1` is specified to allow accurate stack capture.

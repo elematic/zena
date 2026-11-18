@@ -77,8 +77,8 @@ relative to that root.
 
 A virtual module has one entry file per compilation target, and exists
 only on the targets it names. Documentation is per target: `zena doc
---target zena-cli` documents `zena:console` as the WASI entry file and
-leaves out `zena:component-async` entirely, because a `zena-cli`
+--target zena` documents `zena:console` as the WASI entry file and
+leaves out `zena:component-async` entirely, because a `zena`
 program cannot import it and documenting it would describe an API that
 is not there.
 
@@ -105,7 +105,7 @@ even if it compiles.
 
 `packages/zenadoc` is a Zena package of the repository's workspace,
 named `zenadoc`, importing the compiler the same way
-`zena-formatter` and `language-service` do. Its inputs are things the
+`formatter` and `language-service` do. Its inputs are things the
 compiler already produces:
 
 - **The AST** (`Module` and the declaration nodes) for syntax that has

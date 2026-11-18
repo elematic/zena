@@ -114,7 +114,7 @@ Emits a portable WebAssembly Component. Enables `component` and `wasi`.
 
 ## zena-component
 
-Default target. Emits a WebAssembly Component for `zena-runtime` (`zena-cli`,
+Default target. Emits a WebAssembly Component for `zena-runtime` (`zena`,
 `zena-run`, and Rust `wasmtime` embedders). Enables `component`, `wasi`, and
 `zenaComponentHost`.
 

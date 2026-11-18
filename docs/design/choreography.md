@@ -165,7 +165,7 @@ Instead, Zena can adopt a **Referenced Endpoint Architecture**:
    Each component/microservice has its own standard Zena entry file. It imports the projected role handler from the shared protocol file and implements local business logic hooks.
 
 3. **Standard Compilation**:
-   `zena-cli build buyer_main.zena -o buyer.wasm` compiles as a completely standard single-entrypoint binary! No special multi-binary compiler output magic is required.
+   `zena build buyer_main.zena -o buyer.wasm` compiles as a completely standard single-entrypoint binary! No special multi-binary compiler output magic is required.
 
 ---
 

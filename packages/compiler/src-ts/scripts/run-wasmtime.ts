@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Run a compiler test program under zena-cli.
+ * Run a compiler test program under zena.
  *
  * Every test program built by `build-wasi-tests.js` exports `main()`,
- * prints its own report, and returns the number of failures; zena-cli
+ * prints its own report, and returns the number of failures; zena
  * prints that return value as the last line of stdout.
  *
  * With no argument, runs all of the unit suites. With one, runs just
@@ -26,7 +26,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const outDir = join(pkgDir, 'out');
 const repoRoot = join(pkgDir, '..', '..');
-const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+const zenaCli = join(repoRoot, 'target', 'release', 'zena');
 
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
@@ -107,7 +107,7 @@ for (const wasmFile of wasmFiles) {
 
   const output = result.stdout?.trim() ?? '';
 
-  // zena-cli prints main()'s return value as the last line; everything
+  // zena prints main()'s return value as the last line; everything
   // before it is the program's own report.
   const lines = output.split('\n');
   const returnValue = lines.pop()?.trim();

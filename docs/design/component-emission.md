@@ -16,7 +16,7 @@
   emission then follows and disagreements with which are compile
   errors. C4 is implemented too (2026-09-28): `zena:fs` and `zena:cli`
   are written over `wasi:filesystem@0.3.0` and `wasi:cli@0.3.0`, the
-  `zena-cli` target is a component for the zena command's host, that
+  `zena-component` target is a component for the zena command's host, that
   host runs components (and core modules with no imports, for
   `freestanding` builds and hand-written benchmarks), and WASI
   preview 1 is gone from the repository. Every load-bearing claim of Part 1 was verified against
@@ -54,7 +54,7 @@ import `wasi_snapshot_preview1` and nothing later: wasmtime rejects a p3
 import in a core module outright (1.9). There is no p3 core-module form
 to choose between, so the component target _is_ the WASI target. What a
 target names is the host, with the output form following from it, which
-puts the set at four: `js`, `zena-cli`, `freestanding` and `component`
+puts the set at four: `js`, `zena-component`, `freestanding` and `component`
 (Part 3).
 
 The immediate prize is non-blocking timers. p1 can read a clock but can
@@ -607,10 +607,10 @@ entry, one import line. The `js` target keeps the host hooks; the
 `component` target does not get stack traces, because there is nowhere
 to put them.
 
-The `zena-cli` target became a component on 2026-09-28, and its stack
+The `zena-component` target became a component on 2026-09-28, and its stack
 traces come from the host through a third variant,
 `core/error/stack-hooked.zena`. `Error` is in `zena:core`, and every
-module that could reach the host's `zena-cli:host/stack-trace` import
+module that could reach the host's `zena:host/stack-trace` import
 imports `zena:core` back, which is a cycle a module-level value cannot
 cross. So the variant holds two hooks and nothing else, and a runtime
 module the target loads beside `zena:wasi`, `zena:host-setup`
@@ -634,19 +634,19 @@ set. Adding one is a manifest-and-stdlib exercise.
 
 ### Import sets today
 
-Measured in 2026-08, when `zena-cli` was still a core module over WASI
-preview 1, with `zena-cli build` on
+Measured in 2026-08, when `zena` was still a core module over WASI
+preview 1, with `zena build` on
 `export function main(): i32 { return 7; }`. The point of the section
 — the import list is a property of the target — still holds; the
-`zena-cli` row describes a target that no longer exists in this form.
+`zena` row describes a target that no longer exists in this form.
 
-| Target     | Imports                                                                                                                                               |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `host`     | `console.log_i32`, `log_f32`, `log_string`, `info_string`, `warn_string`, `error_string`, `debug_string`; `env.captureStackTrace`, `formatStackTrace` |
-| `zena-cli` | `env.captureStackTrace`, `formatStackTrace`; `wasi_snapshot_preview1.fd_write`                                                                        |
+| Target           | Imports                                                                                                                                               |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host`           | `console.log_i32`, `log_f32`, `log_string`, `info_string`, `warn_string`, `error_string`, `debug_string`; `env.captureStackTrace`, `formatStackTrace` |
+| `zena-component` | `env.captureStackTrace`, `formatStackTrace`; `wasi_snapshot_preview1.fd_write`                                                                        |
 
 Both export `main` and the string helpers `$stringCreate`,
-`$stringSetByte`, `$stringGetByte`, `$stringGetLength`; `zena-cli` also
+`$stringSetByte`, `$stringGetByte`, `$stringGetLength`; `zena` also
 exports `memory`.
 
 **Correction.** Those numbers predate the dead-code-elimination work of
@@ -664,7 +664,7 @@ the program, for two reasons: `zena:console` is in the prelude
 (`lib/prelude.zena` binds `console` into every module) and the
 module-level `export let console = new WasiConsole()` is a root; and the
 stack-trace hooks of Part 2 are unconditional. So the floor today is
-nine imports on `host` and three on `zena-cli`, for a program that uses
+nine imports on `host` and three on `zena`, for a program that uses
 none of them.
 
 ### WASI versus the Component Model
@@ -689,7 +689,7 @@ Three things vary between outputs:
 
 1. **Output form** — core module or component.
 2. **Host imports** — none, the JS runtime, or a WIT world (WASI 0.3,
-   with the zena command's own `zena-cli:host` interfaces on its
+   with the zena command's own `zena:host` interfaces on its
    target).
 3. **String encoding** — how `String` is represented, and how it crosses
    the boundary.
@@ -709,17 +709,17 @@ one that deserves its own flag.
 ### Recommendation
 
 ```
---target  js | zena-cli | freestanding | component
+--target  js | zena | freestanding | component
 ```
 
-| Target         | Output      | Imports                                                                                  |
-| -------------- | ----------- | ---------------------------------------------------------------------------------------- |
-| `js`           | core module | `@zena-lang/runtime` — `console.*`, `time.*`, `env.*`; later JS string builtins          |
-| `zena-cli`     | component   | WASI 0.3, plus `zena-cli:host@1.0.0`: stack traces, process spawning, running components |
-| `freestanding` | core module | none beyond what the program declares with `@external`                                   |
-| `component`    | component   | WIT interfaces: WASI 0.3 and application worlds                                          |
+| Target           | Output      | Imports                                                                              |
+| ---------------- | ----------- | ------------------------------------------------------------------------------------ |
+| `js`             | core module | `@zena-lang/runtime` — `console.*`, `time.*`, `env.*`; later JS string builtins      |
+| `zena-component` | component   | WASI 0.3, plus `zena:host@1.0.0`: stack traces, process spawning, running components |
+| `freestanding`   | core module | none beyond what the program declares with `@external`                               |
+| `component`      | component   | WIT interfaces: WASI 0.3 and application worlds                                      |
 
-This is the set as of 2026-09-28. The `zena-cli` row was "core module,
+This is the set as of 2026-09-28. The `zena` row was "core module,
 WASI p1 plus the private `env.*` and `zena_process`" until then; open
 question 2 below records the change. `host` is still accepted as a
 legacy spelling of `js` (`lib/targets.zena`); the `wasi` spelling, which
@@ -730,7 +730,7 @@ Four points this settles:
 - **No portable `wasip1` or `wasip2` target.** Zena has no users to keep
   on an older preview, so a portable p1 target would be a second
   supported surface bought with nothing. p1 stayed for a while as
-  `zena-cli`'s private business, supplied by the Rust embedder through
+  `zena`'s private business, supplied by the Rust embedder through
   `wasmtime-wasi`, and was deleted once that host ran components: the
   p1 standard library (`fs.zena`, `cli.zena`, `console/wasi.zena`,
   `time/wasi.zena`, `process/wasi.zena`, `wasm/wasi.zena`) is gone, and
@@ -968,7 +968,7 @@ p3 would be its first implementation.
 
 Since 2026-09-28 the preview 1 clock is gone, and `time/component.zena`
 calls `wasi:clocks/monotonic-clock`'s `wait-for` directly through
-`awaitPacked` on both the `component` and the `zena-cli` targets, with
+`awaitPacked` on both the `component` and the `zena-component` targets, with
 no `Clock` interface, timer queue, or `Parker` in between.
 
 ### When `main` is lifted async
@@ -1006,7 +1006,7 @@ and includes the event loop, when any of these holds:
 - a declared world has exports whose wrappers hand their results to the
   event loop through `finishTask`;
 - `main` is `async`;
-- the target is `zena-cli`, whose entry must call `installHost` before
+- the target is `zena-component`, whose entry must call `installHost` before
   anything else runs.
 
 Otherwise `main` stays a synchronous export and the module carries none
@@ -1354,12 +1354,12 @@ What was built (2026-09-28):
   asynchronous ([async-compiler.md](./async-compiler.md)).
 - The zena command's host is a component host. Its own interfaces are
   declared in `packages/stdlib/zena/host-wit/host.wit` (package
-  `zena-cli:host@1.0.0`): `stack-trace` with `capture`, `process` with
+  `zena:host@1.0.0`): `stack-trace` with `capture`, `process` with
   the `command` and `process` resources behind `zena:process`, and
   `wasm` with the `run` resource, `precompile` and the run records
   behind `zena:wasm`. The compiler registers it as a built-in package
-  named `zena-cli`, beside the built-in `wasi` package. The Rust side
-  is `packages/zena-runtime/src/component.rs`, generated with
+  named `zena`, beside the built-in `wasi` package. The Rust side
+  is `packages/runtime-wasmtime/src/component.rs`, generated with
   `bindgen!` over that WIT. `zena-run` and `zena:wasm` also run a core
   module, with no imports: a `freestanding` build, a hand-written
   `.wat` benchmark, or another language's `wasm32-unknown-unknown`
@@ -1543,7 +1543,7 @@ instead of making a pair. A file's `read-via-stream` set as a
 `zena:http` response body therefore goes to `response.new` as is, and
 wasmtime copies the file to the connection host to host; no byte
 enters linear memory or the GC heap. Serving a 64 MB file this way
-takes about 17 ms under zena-cli, against 1.5 s for reading it into a
+takes about 17 ms under zena, against 1.5 s for reading it into a
 `FixedArray<u8>` and writing it back (`benchmarks/http/file-serving.sh`;
 stock wasmtime-wasi's 8 KiB file reads make it 245 ms, which
 zena-runtime's `fs_read.rs` works around). The same
@@ -1589,7 +1589,7 @@ Still C6: non-u8 stream elements and the bare `future` (no payload).
    namespace came with it: `@external("canon", "waitable-set.new")`
    names a canonical builtin, which is a function with no interface to
    be imported from and no type to declare.
-2. Should `zena-cli` eventually run components rather than core modules?
+2. Should `zena` eventually run components rather than core modules?
    wasmtime supports components natively, so the embedder could drop its
    private `env.*` surface and become an ordinary component host. That
    would collapse two targets into one, at the cost of the marshaling
@@ -1598,9 +1598,9 @@ Still C6: non-u8 stream elements and the bare `future` (no payload).
    **Direction settled, timing open.** Yes, and it is how the last
    blocking wait leaves the language: `time/wasi.zena` is the one driver
    that stops the module, and the alternative to a component host is a
-   thread pool and a completion queue behind zena-cli's `env.*` surface
+   thread pool and a completion queue behind zena's `env.*` surface
    — which is what a p3 host already is, over a surface we intend to
-   delete. zena-cli's p1 is already implemented on top of wasmtime's p2
+   delete. zena's p1 is already implemented on top of wasmtime's p2
    (`-S preview2=y` is the default), so the host is async-capable
    underneath; what blocks the guest is p1's ABI, where the call simply
    does not return.
@@ -1609,7 +1609,7 @@ Still C6: non-u8 stream elements and the bare `future` (no payload).
    - **Everything but timers needs the type encoder.** `wait-for` was
      reachable in C2 because its whole signature is flat scalars.
      `readFile`, argv and stdout move strings, lists and records across
-     the canonical ABI, and that is true of a zena-cli-specific world
+     the canonical ABI, and that is true of a zena-component-specific world
      just as much as of WASI's. p3's filesystem is genuinely async — 21
      `async func`s, most returning `result<T, error-code>` rather than
      streams — so it needs C3's types and async imports that _return_
@@ -1623,11 +1623,11 @@ Still C6: non-u8 stream elements and the bare `future` (no payload).
      lands. Measure the self-compile before committing.
 
    Until then the blocking clock stays as it is. It is not observable on
-   zena-cli — timers are the only thing that settles a future there, and
+   zena — timers are the only thing that settles a future there, and
    the drain parks only once nothing else can run — and an interim
    re-entry loop over `env.*` would be built to be thrown away.
 
-   **Done, 2026-09-28.** `zena-cli` is a component target and its host
+   **Done, 2026-09-28.** `zena` is a component target and its host
    is a component host; the C4 entry in Part 6 lists what was built.
    The compiler's file reads and string work stay inside the guest, and
    only file contents and paths cross the boundary, so the copying

@@ -20,9 +20,9 @@ uses `zena:process`, `wasm` when it uses `zena:wasm` to run other
 components, and `extensions` when it uses `zena:extensions` to load
 components as extensions: long-lived instances it calls through
 objects. Those interfaces, the engine flags Zena output needs, and the
-`.cwasm` cache come from the [`zena-runtime`](../zena-runtime) crate,
-which [`zena-cli`](../cli) shares. The difference between the two
-binaries is that `zena-cli` also bundles the compiler and the test and
+`.cwasm` cache come from the [`zena-runtime`](../runtime-wasmtime) crate,
+which [`zena`](../cli) shares. The difference between the two
+binaries is that `zena` also bundles the compiler and the test and
 benchmark runners, and so needs a checkout (or installed tree) of this
 repository; `zena-run` needs only the component. A component built for
 the portable `component` target runs here too, and under `wasmtime run`.

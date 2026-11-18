@@ -105,11 +105,11 @@ export function main(): void {
 ```
 
 When `main` returns a value, it is returned directly to the host that invoked
-it. For example, `zena-cli run` prints non-void return values to standard output:
+it. For example, `zena run` prints non-void return values to standard output:
 
 ```zena
 export function main(): i32 {
-  return 42; // Printed to stdout by zena-cli run
+  return 42; // Printed to stdout by zena run
 }
 ```
 

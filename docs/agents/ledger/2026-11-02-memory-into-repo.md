@@ -5,7 +5,7 @@
   fixed, stale, already documented or about finished work, and about 60
   still true and documented nowhere, several of them recorded because an
   agent made the same mistake more than once (integer `/`, editing
-  inputs during a Wireit run, a stale `zena-cli`, `-f` filtering paths).
+  inputs during a Wireit run, a stale `zena`, `-f` filtering paths).
   It also found repository docs that were wrong: `Map.get`'s return type,
   a `--warn-unnecessary-casts` flag that does not exist, stage A's
   name section, and `rm -rf .wireit` in ir/CONTEXT.md against AGENTS.md.

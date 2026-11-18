@@ -7,7 +7,7 @@ the orientation.
 
 Install: `curl -fsSL https://zena-lang.dev/install.sh | sh` (macOS and
 Linux) or `irm https://zena-lang.dev/install.ps1 | iex` (Windows). In a
-checkout of the Zena repository the command is `./target/release/zena-cli`.
+checkout of the Zena repository the command is `./target/release/zena`.
 
 ## Commands
 

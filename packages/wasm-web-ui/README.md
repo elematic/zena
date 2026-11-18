@@ -144,7 +144,7 @@ uses Wasm GC never touches it.
 ## Server rendering
 
 The same source renders on a server. `zena:web-elements` compiled for the
-`zena-cli` or `component` target has no DOM host: `requestUpdate` does
+`zena-component` or `component` target has no DOM host: `requestUpdate` does
 nothing, an event's methods throw, and `renderElement` writes an element
 as declarative shadow DOM with the markers Lit's hydration reads.
 
@@ -165,7 +165,7 @@ updates in place from then on. `demo/server.zena` serves the demo this
 way from a server written in Zena:
 
 ```sh
-./target/release/zena-cli run --dir . packages/wasm-web-ui/demo/server.zena
+./target/release/zena run --dir . packages/wasm-web-ui/demo/server.zena
 ```
 
 The renderer's output is held to `@lit-labs/ssr`'s byte for byte by

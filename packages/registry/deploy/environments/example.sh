@@ -39,7 +39,7 @@ ROTATION_KMS=1
 ROTATION_KMS_VERSION=1
 # The operator's offline rotation keys, as did:keys separated by spaces,
 # highest ranked first, which every account ranks above the online one,
-# each from `zena-cli run packages/registry/src/main.zena -- generate-key`
+# each from `zena run packages/registry/src/main.zena -- generate-key`
 # on a machine the operator trusts. Their private keys are kept offline,
 # apart from each other, never on a server or in a repository. Production
 # must have two, so that losing one leaves the other; a staging, whose

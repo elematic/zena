@@ -15,7 +15,7 @@ the `zena` command. The design is in
      `zena:bench`'s `runSuite` with a function that compiles its `zena`
      variants, `lsp.zena`, which connects the language server
      (`language-service/server`) to stdin and stdout, `lint.zena`,
-     which runs zena-lint's rules (`zena-lint`) over files and
+     which runs lint's rules (`lint`) over files and
      prints the findings or, with `--fix`, applies them.
    - `zena/pkg/` holds the `zena pkg` commands. `command.zena` describes
      their options (`describePkg`, which `main.zena`'s description
@@ -74,7 +74,7 @@ the `zena` command. The design is in
      sources and the CLI module. It builds into `target/standalone`, so it
      never replaces the repository's binary, and `build` does not run it,
      since nothing in the repository runs that binary.
-   - `zena-run`, `zena-cli` and `zfx` share every compiled dependency,
+   - `zena-run`, `zena` and `zfx` share every compiled dependency,
      wasmtime and Cranelift included, because every crate depends on
      `packages/workspace-hack`, which `cargo hakari` generates with the
      union of the features the workspace turns on for each shared crate.
@@ -206,7 +206,7 @@ the `zena` command. The design is in
      better-sqlite3 it locks does not build on Node.js 26.
 
 5. **The bootstrap and the build order**
-   - `zena-cli` (`build:binary`) runs the checked-in CLI module bootstrap
+   - `zena` (`build:binary`) runs the checked-in CLI module bootstrap
      (`ZENA_CLI_MODULE=packages/cli/bootstrap/zena.wasm`) to build
      Stage A (`compiler:build:cli`), and `zena-run` runs Stage A to
      build `out/zena.wasm` (`build:module`). The language service's
@@ -233,8 +233,8 @@ the `zena` command. The design is in
   built with its name section, so a trap inside it prints a readable
   backtrace.
 - **Workspace Navigation**: The Cargo workspace is the repository root
-  (`Cargo.toml` and `Cargo.lock` there); use `cargo build -p zena-cli`,
+  (`Cargo.toml` and `Cargo.lock` there); use `cargo build -p zena`,
   `cargo check`, and `cargo clippy` from the root, and
-  `cargo test -p zena-runtime -p zena-cli -p zena-run` for all three crates.
+  `cargo test -p zena-runtime -p zena -p zena-run` for all three crates.
   Add `--release` to reuse the artifacts `npm run build` compiled; without
   it cargo builds wasmtime again in the dev profile.

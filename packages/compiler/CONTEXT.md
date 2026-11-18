@@ -243,7 +243,7 @@ worth more than the keying work itself.
 - Parentheses are not nodes. `(a + b)` parses to the `BinaryExpression`
   itself, so nothing in the tree records them.
 - A lint rule that needs a node's whole source text uses `RuleContext`'s
-  `extent`, `start` and `end` (`packages/zena-lint/zena/lib/context.zena`),
+  `extent`, `start` and `end` (`packages/lint/zena/lib/context.zena`),
   which span the node's descendants and widen over the parentheses
   around them.
 
@@ -251,7 +251,7 @@ worth more than the keying work itself.
 
 - Print from the compiler with `console.log`, rebuild the CLI module
   (`npm run build -w @zena-lang/cli`), and compile a probe with
-  `./target/release/zena-cli build <probe>.zena -o <probe>.wasm`, which
+  `./target/release/zena build <probe>.zena -o <probe>.wasm`, which
   always compiles and prints the compiler's output. `zena run` reuses a
   cached module unless given `--no-cache`.
 - To skip the CLI module rebuild, build stage A alone and compile with
@@ -261,12 +261,12 @@ worth more than the keying work itself.
   ```bash
   npm run build:cli -w @zena-lang/compiler-zena
   ZENA_COMPILER_WASM=packages/compiler/out/cli.wasm \
-    ./target/release/zena-cli build <probe>.zena -o <probe>.wasm
+    ./target/release/zena build <probe>.zena -o <probe>.wasm
   ```
 
 - To compare two compilers (`origin/main` and your branch, say), build
   stage A from each tree, keep both `cli.wasm` files, and compile the
-  same inputs with each through `ZENA_COMPILER_WASM`. With the variable set, `zena-cli` skips its
+  same inputs with each through `ZENA_COMPILER_WASM`. With the variable set, `zena` skips its
   compile cache.
 - `typeToString` prints a class, interface or alias as its name and type
   arguments only, so two types with the same name from different
@@ -318,7 +318,7 @@ rule.
 They share `src/test/portable-harness.zena` (directory discovery,
 `// @name: value` directive parsing, skip accounting). The execution
 runner additionally uses `zena:process` to run each language test in its
-own `zena-cli run` worker, with a bounded pool and a 120s per-test
+own `zena run` worker, with a bounded pool and a 120s per-test
 deadline (`waitFor`); `run-wasmtime.js` grants it `--allow-spawn` and
 sets the pool size (`ZENA_TEST_PARALLELISM`, else `min(cpus, 8)`).
 
@@ -329,7 +329,7 @@ every test itself before running any, many entry points through **one**
 stdlib is then parsed and checked once per batch rather than once per
 test, which is where nearly all the cost was (a five-line test cost
 0.385s to compile against 0.027s for a cache hit). Only _running_ is
-isolated, one `zena-cli run` process per test, because that is where
+isolated, one `zena run` process per test, because that is where
 traps and hangs live.
 
 The runner also builds its own `BinaryGenerator` (`compileOne`), so an
@@ -362,7 +362,7 @@ otherwise the suite would get quietly slower per test as it grew. The
 slicing across worker processes is for parallelism, and is what keeps the
 compile phase at 3.7s of wall time. Whole suite: 33.6s → 21.2s with
 nothing cached, 3.5s → 7.0s on a repeat run — the repeat costs more
-because it genuinely recompiles all 465 rather than serving `zena-cli`'s
+because it genuinely recompiles all 465 rather than serving `zena`'s
 cache.
 
 `CompileSession` (`src/lib/compile-file.zena`) packages the same

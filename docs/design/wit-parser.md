@@ -108,7 +108,7 @@ Run the whole set, or one file with its own output:
 
 ```bash
 npm test -w @zena-lang/wit-parser
-./target/release/zena-cli test --single packages/wit-parser/zena/test/corpus_test.zena
+./target/release/zena test --single packages/wit-parser/zena/test/corpus_test.zena
 ```
 
 ---

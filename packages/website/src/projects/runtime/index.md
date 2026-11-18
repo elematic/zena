@@ -15,7 +15,7 @@ loading untrusted plugins with resource limits, prompting for secrets safely,
 and printing readable Wasm stack traces on crash.
 
 To support the self-hosted toolchain without bloating the native binary, we
-built a small layered Rust host (`zena-runtime`, `zena-run`, and `zena-cli`) and
+built a small layered Rust host (`zena-runtime`, `zena-run`, and `zena`) and
 a set of WIT interfaces (`zena:host`). While built for Zena today, these crates
 and WIT contracts solve problems shared by any native CLI or server written as a
 WebAssembly component.
@@ -49,11 +49,11 @@ interfaces alongside WASI Preview 2 / 0.3:
 The native Rust side is split into three small crates so production containers
 never carry compiler weight:
 
-| Crate / Binary      | Role                                                                                                                                                                                                  |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `zena-runtime`      | Library crate configuring Wasmtime (Wasm GC, Component Model, WASI 0.3 async), content-addressed `.cwasm` AOT caching on disk, and the `zena:host` linker bindings.                                   |
-| `zena-run`          | Minimal standalone runner binary (~a few megabytes) that executes any precompiled `.cwasm` or `.wasm` component on `zena-runtime`—ideal for slim container images and deployed servers.               |
-| `zena-cli` (`zena`) | Thin (~100-line) Rust entry point that embeds the self-hosted `zena.wasm` CLI component and delegates `build`, `run`, `test`, `fmt`, `lint`, and LSP commands to Zena code running on `zena-runtime`. |
+| Crate / Binary | Role                                                                                                                                                                                                  |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `zena-runtime` | Library crate configuring Wasmtime (Wasm GC, Component Model, WASI 0.3 async), content-addressed `.cwasm` AOT caching on disk, and the `zena:host` linker bindings.                                   |
+| `zena-run`     | Minimal standalone runner binary (~a few megabytes) that executes any precompiled `.cwasm` or `.wasm` component on `zena-runtime`—ideal for slim container images and deployed servers.               |
+| `zena`         | Thin (~100-line) Rust entry point that embeds the self-hosted `zena.wasm` CLI component and delegates `build`, `run`, `test`, `fmt`, `lint`, and LSP commands to Zena code running on `zena-runtime`. |
 
 Caching Wasmtime's compiled `.cwasm` artifacts keyed by engine version and input
 digest lets self-hosted Wasm CLIs start in a few milliseconds without cold-JIT

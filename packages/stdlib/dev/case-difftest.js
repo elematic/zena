@@ -100,7 +100,7 @@ export async function main(): Future<i32> {
 
 console.log(`corpus: ${lines.length} strings`);
 execFileSync(
-  './target/release/zena-cli',
+  './target/release/zena',
   ['run', '--no-cache', '--dir=.', 'scratch/case-runner.zena'],
   {cwd: root, stdio: ['ignore', 'inherit', 'inherit']},
 );

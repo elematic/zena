@@ -111,7 +111,7 @@
           npmRebuildFlags = [ "--ignore-scripts" ];
 
           # `npm run build` compiles the Rust crates (packages/cli,
-          # packages/zena-run, packages/zenafx, and the packages/zena-runtime
+          # packages/zena-run, packages/zenafx, and the packages/runtime-wasmtime
           # library they share, `cargo build --release`). Vendor their crates
           # from Cargo.lock so cargo runs offline in the sandbox;
           # cargoSetupHook wires up CARGO_HOME + the vendored registry.
@@ -147,14 +147,14 @@
             mkdir -p $out/lib/zena
             cp -r packages $out/lib/zena/
             cp package.json $out/lib/zena/
-            cp target/release/zena-cli $out/lib/zena/zena-cli
+            cp target/release/zena $out/lib/zena/zena
 
             # Standalone runtime binaries that run compiled modules:
             mkdir -p $out/bin
             cp target/release/zena-run $out/bin/zena-run
             cp target/release/zfx $out/bin/zfx
 
-            # The zena command is zena-cli (Rust/wasmtime host) running the
+            # The zena command is zena (Rust/wasmtime host) running the
             # CLI module the build produced
             # (packages/cli/out/zena.wasm), which has the compiler in
             # it. ZENA_STDLIB_DIR and ZENA_CLI_MODULE locate the stdlib and
@@ -164,7 +164,7 @@
             #!${pkgs.bash}/bin/bash
             export ZENA_STDLIB_DIR="\''${ZENA_STDLIB_DIR:-$out/lib/zena/packages/stdlib/zena}"
             export ZENA_CLI_MODULE="\''${ZENA_CLI_MODULE:-$out/lib/zena/packages/cli/out/zena.wasm}"
-            exec $out/lib/zena/zena-cli "\$@"
+            exec $out/lib/zena/zena "\$@"
             EOF
             chmod +x $out/bin/zena
 

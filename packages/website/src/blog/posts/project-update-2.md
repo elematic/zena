@@ -22,11 +22,11 @@ a set of compiler and type checker fixes.
 
 The `zena` command-line tool is now a Zena program
 (`packages/cli/zena/main.zena`) compiled to WebAssembly. The native
-`zena-cli` executable is a thin Rust host (~100 lines) that configures
+`zena` executable is a thin Rust host (~100 lines) that configures
 filesystem preopens, enables process spawning, and calls `main`.
 
 The CLI module links the compiler, build orchestrator (`zb`), doc generator
-(`zenadoc`), and code formatter (`zena-formatter`) in-process:
+(`zenadoc`), and code formatter (`formatter`) in-process:
 
 - **`zena build`**: Compiles Zena modules in-process using `compileFile`. Wireit
   targets can be run via `zena build <target>` with `zb`.

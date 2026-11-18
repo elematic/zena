@@ -137,7 +137,7 @@ exactly as much as that ratio is far from 1:1.
 Run from the repository root:
 
 ```sh
-zena-cli run packages/compiler/src/bench/interning.zena --dir .
+zena run packages/compiler/src/bench/interning.zena --dir .
 ```
 
 `zena:bench` samples variants round-robin and reports the CI of the
@@ -179,7 +179,7 @@ What does not reproduce:
   happened to exclude zero.
 
 **Compiling the compiler is neither measurably faster nor slower.** Twenty
-alternating pairs of `zena-cli build src/cli/main.zena --time`, paired
+alternating pairs of `zena build src/cli/main.zena --time`, paired
 differences with 95% CIs:
 
 | phase     | baseline | difference with interning  |            |

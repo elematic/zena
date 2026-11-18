@@ -2,9 +2,9 @@
   "workspace": {
     "packages": [
       "packages/compiler",
-      "packages/zena-formatter",
+      "packages/formatter",
       "packages/zenadoc",
-      "packages/zena-lint",
+      "packages/lint",
       "packages/language-service",
       "packages/wit-parser",
       "packages/markdown",
@@ -55,11 +55,11 @@
       "#": "The gate, and what CI runs: every package's tests, the compiler's fixpoint check included.",
       "dependencies": ["test:others", "./packages/compiler:test"]
     },
-    "test:quick": "./target/release/zena-cli test",
+    "test:quick": "./target/release/zena test",
     "check": "node scripts/check.js",
     "generate:logos": "node scripts/generate-logos.js",
-    "versions": "./target/release/zena-cli run --dir . packages/cli/dev/versions.zena",
-    "changes": "./target/release/zena-cli run --dir . packages/changes/bin/changes.zena",
+    "versions": "./target/release/zena run --dir . packages/cli/dev/versions.zena",
+    "changes": "./target/release/zena run --dir . packages/changes/bin/changes.zena",
     "watch-prs": "node scripts/watch-prs.js",
     "worktrees": "node scripts/worktrees.js",
     "prepare": "git config core.hooksPath scripts/git-hooks || true",
@@ -70,11 +70,11 @@
     "wasmtime:build": "./scripts/wasmtime-run.sh",
     "demo:cloudflare:build": "npm run zena -w @zena-lang/cli -- build ../../examples/cloudflare-worker/hello.zena -o ../../examples/cloudflare-worker/hello.wasm --target zena-js",
     "sloc": "./scripts/count-lines.sh",
-    "bench": "./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/run.zena",
-    "bench:build": "./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/build.zena",
-    "bench:size": "./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/size.zena",
-    "bench:speed": "./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/run.zena -- --speed",
-    "bench:compile": "ZENA_TIME_JSON=1 ./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/compile.zena",
+    "bench": "./target/release/zena run --allow-spawn --dir .::. benchmarks/zena/run.zena",
+    "bench:build": "./target/release/zena run --allow-spawn --dir .::. benchmarks/zena/build.zena",
+    "bench:size": "./target/release/zena run --allow-spawn --dir .::. benchmarks/zena/size.zena",
+    "bench:speed": "./target/release/zena run --allow-spawn --dir .::. benchmarks/zena/run.zena -- --speed",
+    "bench:compile": "ZENA_TIME_JSON=1 ./target/release/zena run --allow-spawn --dir .::. benchmarks/zena/compile.zena",
     "test:smoke": {
       "#": "Everything except the fixpoint check (stage B, then stage C, then a byte comparison), which is two compiler builds and the longest chain in a cold run. It catches the compiler miscompiling itself, which nothing else can see, so `npm test` keeps it and CI runs that on every PR — the window for finding such a bug stays one commit wide. This target is for the local loop, where paying it on every run is what hurts. See docs/design/bootstrapping.md, \"The invariant\".",
       "dependencies": ["test:others", "./packages/compiler:test:smoke"]
@@ -104,9 +104,9 @@
         "./packages/website:test",
         "./packages/workflow:test",
         "./packages/zebra:test",
-        "./packages/zena-lint:test",
+        "./packages/lint:test",
         "./packages/cli:test",
-        "./packages/zena-formatter:test",
+        "./packages/formatter:test",
         "./packages/zena-run:test",
         "./packages/zenadoc:test",
         "./packages/zenafx:test"
@@ -114,7 +114,7 @@
     },
     "check:workspace": {
       "#": "Whether the whole workspace loads. Every compile reads all of the workspace's zena-package.json manifests and fails when one cannot be read, but its output depends only on the manifests of the packages it reaches, so each script lists only those. This compiles scripts/workspace-check.zena, which imports nothing, with the zena command, whose compiler is stage A's source and which names the manifest at fault, and then with the checked-in bootstrap, which builds stage A and reads the manifests with its own code.",
-      "command": "mkdir -p .zena/workspace-check && ./target/release/zena-cli build scripts/workspace-check.zena -o .zena/workspace-check/zena.wasm && ZENA_CLI_MODULE=packages/cli/bootstrap/zena.wasm ./target/release/zena-cli build scripts/workspace-check.zena -o .zena/workspace-check/bootstrap.wasm",
+      "command": "mkdir -p .zena/workspace-check && ./target/release/zena build scripts/workspace-check.zena -o .zena/workspace-check/zena.wasm && ZENA_CLI_MODULE=packages/cli/bootstrap/zena.wasm ./target/release/zena build scripts/workspace-check.zena -o .zena/workspace-check/bootstrap.wasm",
       "files": [
         "scripts/workspace-check.zena",
         "zena-package.json",
@@ -132,7 +132,7 @@
     },
     "reseed": {
       "#": "Re-baselines packages/cli/bootstrap/zena.wasm after the workspace test suite (fixpoint included) passes, then compiles zena/main.zena again with the candidate bootstrap and checks byte-for-byte parity before replacing the bootstrap.",
-      "command": "mkdir -p packages/cli/bootstrap packages/cli/out && ZENA_GC_RESERVE_MB=1536 ZENA_CLI_MODULE=packages/cli/out/zena.wasm ./target/release/zena-cli -g -O2 build packages/cli/zena/main.zena -o packages/cli/out/zena-seed.wasm && ZENA_GC_RESERVE_MB=1536 ZENA_CLI_MODULE=packages/cli/out/zena-seed.wasm ./target/release/zena-cli -g -O2 build packages/cli/zena/main.zena -o packages/cli/out/zena-audit.wasm && cmp packages/cli/out/zena-seed.wasm packages/cli/out/zena-audit.wasm && mv packages/cli/out/zena-seed.wasm packages/cli/bootstrap/zena.wasm && rm -f packages/cli/out/zena-audit.wasm",
+      "command": "mkdir -p packages/cli/bootstrap packages/cli/out && ZENA_GC_RESERVE_MB=1536 ZENA_CLI_MODULE=packages/cli/out/zena.wasm ./target/release/zena -g -O2 build packages/cli/zena/main.zena -o packages/cli/out/zena-seed.wasm && ZENA_GC_RESERVE_MB=1536 ZENA_CLI_MODULE=packages/cli/out/zena-seed.wasm ./target/release/zena -g -O2 build packages/cli/zena/main.zena -o packages/cli/out/zena-audit.wasm && cmp packages/cli/out/zena-seed.wasm packages/cli/out/zena-audit.wasm && mv packages/cli/out/zena-seed.wasm packages/cli/bootstrap/zena.wasm && rm -f packages/cli/out/zena-audit.wasm",
       "output": [],
       "dependencies": ["test"]
     },

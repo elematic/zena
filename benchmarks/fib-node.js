@@ -1,5 +1,5 @@
 // Node baseline for the fib workload. Self-reports the measured region in
-// milliseconds as the last stdout line, so `zena-cli bench` excludes Node
+// milliseconds as the last stdout line, so `zena bench` excludes Node
 // startup — the process-spawn round-robin unit, Tachometer-style.
 function fib(n) {
   return n < 2 ? n : fib(n - 1) + fib(n - 2);

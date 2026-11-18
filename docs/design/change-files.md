@@ -130,7 +130,7 @@ A configuration file, `.changes/config.json`, lists the units:
   "groups": {
     "toolchain": {
       "versions": "patch",
-      "units": ["cli", "compiler", "zena-runtime", "..."],
+      "units": ["cli", "compiler", "runtime-wasmtime", "..."],
       "held": ["compiler-js", "runtime", "playground"]
     }
   },
@@ -226,8 +226,8 @@ its output:
 
 - `compiler`, with the standard library
 - `cli`
-- `zena-runtime`, and the hosts built on it: `zena-run`, `zenafx`
-- `zena-formatter`, `zena-lint`, `zenadoc`, `language-service`, which
+- `runtime-wasmtime`, and the hosts built on it: `zena-run`, `zenafx`
+- `formatter`, `lint`, `zenadoc`, `language-service`, which
   read the compiler's syntax tree
 - the npm packages `compiler-js` and `runtime`, which are the compiler and
   the runtime for its JavaScript target, and `playground`, which bundles

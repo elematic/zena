@@ -1,4 +1,4 @@
-//! `zena-cli`: the `zena` command.
+//! `zena`: the `zena` command.
 //!
 //! The command is a Zena program, the CLI module
 //! (`packages/cli/zena/main.zena`, built to `out/zena.wasm` as a
@@ -440,7 +440,7 @@ mod tests {
 
     /// A directory under the system's temporary directory, made anew.
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("zena-cli-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("zena-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("packages/stdlib/zena")).unwrap();
         std::fs::canonicalize(dir).unwrap()

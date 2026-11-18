@@ -852,7 +852,7 @@ loop:
   microtask queue. This guarantees consistent ordering and prevents stack overflows
   caused by deeply recursive synchronous completions.
 - **Platform execution**: On platforms without an ambient event loop (such as
-  standalone WebAssembly run under `zena-cli` or `wasmtime`), the runtime drains the
+  standalone WebAssembly run under `zena` or `wasmtime`), the runtime drains the
   microtask queue to completion before the program exits. On JavaScript hosts and
   browsers, the queue integrates with the host microtask loop.
 

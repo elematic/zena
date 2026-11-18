@@ -1,6 +1,6 @@
 # Development
 
-Notes for working on `zena-lint`.
+Notes for working on `lint`.
 
 ## How It Works
 
@@ -26,11 +26,11 @@ A rule is a function `(ctx: RuleContext) => void` in `src/rules/`, registered in
 ## Running Tests
 
 ```bash
-npm test -w @zena-lang/zena-lint
+npm test -w @zena-lang/lint
 ```
 
 Or run the test suite directly:
 
 ```bash
-./target/release/zena-cli test packages/zena-lint/test/lint_test.zena
+./target/release/zena test packages/lint/test/lint_test.zena
 ```

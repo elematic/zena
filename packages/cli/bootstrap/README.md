@@ -1,7 +1,7 @@
 # The bootstrap CLI module
 
 `zena.wasm` is the prebuilt Zena CLI module that bootstraps a fresh checkout.
-Once cargo builds `zena-cli` (`cargo build --release -p zena-cli`), the host
+Once cargo builds `zena` (`cargo build --release -p zena`), the host
 falls back to `bootstrap/zena.wasm` whenever `out/zena.wasm` has not been built
 yet, so `zena build`, `zena fmt`, `zena lint`, `zena run` and `zena test` work
 immediately. During a repository build, `compiler:build:cli` runs

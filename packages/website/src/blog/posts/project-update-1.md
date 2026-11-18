@@ -271,7 +271,7 @@ As Zena's deployment targets expanded, bundling the compiler and runtime into a
 single monolith became impractical. We restructured the CLI architecture into
 modular layers:
 
-- **`packages/zena-runtime`**: A standalone Rust crate that configures the
+- **`packages/runtime-wasmtime`**: A standalone Rust crate that configures the
   Wasmtime engine, manages `.cwasm` ahead-of-time compilation caches, and
   provides host imports.
 - **`packages/zena-run`**: A lightweight binary dedicated solely to executing

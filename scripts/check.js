@@ -7,7 +7,7 @@
  *
  * - prettier, on the changed files CI's Format job checks;
  * - `zena lint`, on the changed lines of changed `.zena` files under
- *   `packages/` (skipped with a note when `zena-cli` is not built);
+ *   `packages/` (skipped with a note when `zena` is not built);
  * - commit subjects, which start with package tags: `[stdlib] Add ...`;
  * - words listed in `<git common dir>/info/private-words`, one per line, in
  *   the added lines and the commit messages. The list lives outside the
@@ -36,7 +36,7 @@ const LINTED = /^packages\/.*\.zena$/;
 const NOT_LINTED = [
   // Inputs the compiler's own tests compile, many deliberately unidiomatic.
   /^packages\/compiler\/test-files\//,
-  /^packages\/zena-lint\/test\/fixtures\//,
+  /^packages\/lint\/test\/fixtures\//,
 ];
 const SUBJECT = /^(\[[a-z0-9][a-z0-9.-]*\])+ \S/;
 
@@ -208,10 +208,10 @@ const linted = changed.filter(
   (file) => LINTED.test(file) && !NOT_LINTED.some((re) => re.test(file)),
 );
 if (linted.length > 0) {
-  const zena = './target/release/zena-cli';
+  const zena = './target/release/zena';
   if (!existsSync(zena)) {
     notes.push(
-      'zena lint: skipped, zena-cli is not built (cargo build --release -p zena-cli)',
+      'zena lint: skipped, zena is not built (cargo build --release -p zena)',
     );
   } else {
     const result = spawnSync(zena, ['lint', ...linted], {encoding: 'utf8'});
@@ -226,18 +226,20 @@ if (linted.length > 0) {
       // A type error in a library that tests import by package specifier is
       // not reported by those tests (#510), but lint checks each file on its
       // own and says so. Libraries for the js target cannot check under the
-      // default one.
+      // default one, and a library moved without an edit is not this
+      // change's to fix.
       const unchecked = /^(.+?): does not check \((.*)\); skipped$/.exec(
         finding,
       );
       if (
         unchecked &&
+        touched.get(unchecked[1])?.size > 0 &&
         !/(^|[-/])js(-[a-z]+)?\.zena$/.test(unchecked[1]) &&
         !unchecked[2].includes("'zena:js'")
       ) {
         errors.push(
           `${unchecked[1]}: has a type error, line ${unchecked[2]} ` +
-            `(zena-cli build ${unchecked[1]} -o <out.wasm> shows all of them)`,
+            `(zena build ${unchecked[1]} -o <out.wasm> shows all of them)`,
         );
       }
     }

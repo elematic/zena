@@ -22,7 +22,7 @@ import {fileURLToPath} from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const repoRoot = join(pkgDir, '..', '..');
-const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+const zenaCli = join(repoRoot, 'target', 'release', 'zena');
 const outDir = join(pkgDir, 'out', 'component');
 const fixtures = join(pkgDir, 'test-files', 'component');
 
@@ -740,7 +740,7 @@ for (const fixture of FIXTURES) {
   const buildArgs = ['build', source, '--target', 'component', '-o', out];
   if (fixture.wit) {
     // Repo-relative: the compiler resolves the path through its `.`
-    // preopen, and zena-cli relativizes only the source file.
+    // preopen, and zena relativizes only the source file.
     buildArgs.push(
       '--wit',
       join('packages', 'compiler', 'test-files', 'component', fixture.wit[0]),

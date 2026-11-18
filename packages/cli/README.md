@@ -1,4 +1,4 @@
-# Zena CLI (`zena-cli`)
+# Zena CLI (`zena`)
 
 The `zena` command: build, run and test Zena programs, build targets,
 format and lint them, extract API docs, benchmark, serve a language server,
@@ -6,13 +6,13 @@ and add and fetch published packages.
 
 The command is a Zena program. `zena/main.zena` and the files beside it
 are the **CLI module**, compiled to `out/zena.wasm` with the compiler,
-zebra, zenadoc and the formatter linked in. `zena-cli` is the Rust binary
+zebra, zenadoc and the formatter linked in. `zena` is the Rust binary
 that runs it on wasmtime. See
 [docs/design/cli-module.md](../../docs/design/cli-module.md).
 
 The registry-side pieces (engine configuration, the `.cwasm` cache, the
 stack-trace, `zena:process` and `zena:wasm` imports) live in the
-[`zena-runtime`](../zena-runtime) crate. [`zena-run`](../zena-run) embeds
+[`zena-runtime`](../runtime-wasmtime) crate. [`zena-run`](../zena-run) embeds
 the same crate to run any compiled module.
 
 ## Building
@@ -28,12 +28,12 @@ checked-in bootstrap, then the CLI module with that compiler
 ## Usage
 
 ```bash
-zena-cli run examples/hello-world.zena
-zena-cli build main.zena -o main.wasm
-zena-cli test packages/stdlib/tests
-zena-cli build ./packages/zebra:test   # a build target, run with zebra
-zena-cli --help
-zena-cli <command> --help
+zena run examples/hello-world.zena
+zena build main.zena -o main.wasm
+zena test packages/stdlib/tests
+zena build ./packages/zebra:test   # a build target, run with zebra
+zena --help
+zena <command> --help
 ```
 
 Global flags go before the command: `-g` / `--debug` names functions in
@@ -86,11 +86,11 @@ package with a handle on its own domain gets the name its profile
 suggests (docs/design/import-names.md):
 
 ```bash
-zena-cli pkg add acme:router@1.4.2           # as "acme:router"
-zena-cli pkg add router.acme.com --name routing
-zena-cli pkg update                 # every dependency of the current package
-zena-cli pkg update acme:router    # only router
-zena-cli pkg fetch             # what zena-lock.json pins, e.g. in CI
+zena pkg add acme:router@1.4.2           # as "acme:router"
+zena pkg add router.acme.com --name routing
+zena pkg update                 # every dependency of the current package
+zena pkg update acme:router    # only router
+zena pkg fetch             # what zena-lock.json pins, e.g. in CI
 ```
 
 `add` and `update` change the manifest of the package the command is run
@@ -115,8 +115,8 @@ showing it, and keeps the session in `session.json` in the configuration
 directory, readable only by you. `zena pkg logout` ends the session.
 
 ```bash
-zena-cli pkg login alice.bsky.social
-echo "$APP_PASSWORD" | zena-cli pkg login alice.bsky.social --password-stdin
+zena pkg login alice.bsky.social
+echo "$APP_PASSWORD" | zena pkg login alice.bsky.social --password-stdin
 ```
 
 Packages on a registry are in scopes: `router.acme.<registry domain>` is
@@ -154,10 +154,10 @@ with `zena pkg approve <package>@<version>`, which shows the release first and
 approves it with `--yes`. Raise `version` to publish again.
 
 ```bash
-zena-cli pkg scope create acme --yes       # once per scope
-zena-cli pkg publish --scope acme --yes    # the first time, or with "scope": "acme"
-zena-cli pkg publish                       # after raising "version"
-zena-cli pkg retract 1.4.1 --reason "Routes with a trailing slash matched the wrong handler"
+zena pkg scope create acme --yes       # once per scope
+zena pkg publish --scope acme --yes    # the first time, or with "scope": "acme"
+zena pkg publish                       # after raising "version"
+zena pkg retract 1.4.1 --reason "Routes with a trailing slash matched the wrong handler"
 ```
 
 To publish from CI, a scope's owner creates an automation account, and a
@@ -166,9 +166,9 @@ the secret `ZENA_REGISTRY_TOKEN`, and runs `zena pkg publish`, signed in to
 nothing:
 
 ```bash
-zena-cli pkg ci create acme/ci                          # prints the token, once
-zena-cli pkg owner add ci.acme.pkg.zena-lang.dev --automation
-zena-cli pkg ci token acme/ci                           # a new token, for one that leaked; the old one stops working
+zena pkg ci create acme/ci                          # prints the token, once
+zena pkg owner add ci.acme.pkg.zena-lang.dev --automation
+zena pkg ci token acme/ci                           # a new token, for one that leaked; the old one stops working
 ```
 
 The registry holds an automation account and writes its attestations, so
@@ -176,8 +176,8 @@ its attestation counts only together with a person's: a release CI
 publishes waits until a maintainer approves it.
 
 ```bash
-zena-cli pkg approve acme:router@1.5.0         # shows the release, and who has approved it
-zena-cli pkg approve acme:router@1.5.0 --yes   # approves it
+zena pkg approve acme:router@1.5.0         # shows the release, and who has approved it
+zena pkg approve acme:router@1.5.0 --yes   # approves it
 ```
 
 `zena pkg retract <version>` marks a release as retracted. Builds whose
@@ -198,27 +198,27 @@ commitments, and the registry shows the entries behind them only to those
 who may see them.
 
 ```bash
-zena-cli pkg scope add acme bob.example.com --role owner   # publisher or owner
-zena-cli pkg scope remove acme bob.example.com
-zena-cli pkg scope maintainers acme
-zena-cli pkg scope upgrade acme --yes        # acme becomes an organization
-zena-cli pkg org add acme bob.example.com
-zena-cli pkg org members acme
-zena-cli pkg scope join acme-labs acme       # once acme's owners approve too
-zena-cli pkg scope leave acme-labs           # an owner of either side, at once
-zena-cli pkg team create acme/core
-zena-cli pkg team add acme/core bob.example.com --role maintainer   # member or maintainer
-zena-cli pkg scope add acme --team acme/core # the team's members create packages
-zena-cli pkg owner add --team acme/core      # in a package: the team publishes it
-zena-cli pkg owner add carol.example.com --role owner   # publisher or owner
-zena-cli pkg owner list
+zena pkg scope add acme bob.example.com --role owner   # publisher or owner
+zena pkg scope remove acme bob.example.com
+zena pkg scope maintainers acme
+zena pkg scope upgrade acme --yes        # acme becomes an organization
+zena pkg org add acme bob.example.com
+zena pkg org members acme
+zena pkg scope join acme-labs acme       # once acme's owners approve too
+zena pkg scope leave acme-labs           # an owner of either side, at once
+zena pkg team create acme/core
+zena pkg team add acme/core bob.example.com --role maintainer   # member or maintainer
+zena pkg scope add acme --team acme/core # the team's members create packages
+zena pkg owner add --team acme/core      # in a package: the team publishes it
+zena pkg owner add carol.example.com --role owner   # publisher or owner
+zena pkg owner list
 
-zena-cli pkg owner settings --threshold 2 --humans 1   # releases need 2 approvals, 1 of them a person's
-zena-cli pkg owner settings --owner-threshold 2        # changes to the maintainers need 2 owners
-zena-cli pkg scope settings acme --owner-threshold 2
-zena-cli pkg team settings acme/core --threshold 2
-zena-cli pkg scope policy acme --minimum-threshold 2 --default-teams acme/core:publisher --default-threshold 2
-zena-cli pkg scope profile acme --name "Acme Corp" --website https://acme.example
+zena pkg owner settings --threshold 2 --humans 1   # releases need 2 approvals, 1 of them a person's
+zena pkg owner settings --owner-threshold 2        # changes to the maintainers need 2 owners
+zena pkg scope settings acme --owner-threshold 2
+zena pkg team settings acme/core --threshold 2
+zena pkg scope policy acme --minimum-threshold 2 --default-teams acme/core:publisher --default-threshold 2
+zena pkg scope profile acme --name "Acme Corp" --website https://acme.example
 ```
 
 The `settings` commands change thresholds, and with no flags print them.

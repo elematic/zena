@@ -16,7 +16,7 @@ Future languages planned: JavaScript, Python, Dart, Swift, Go, Kotlin, and Zig.
 
 ## Running Benchmarks
 
-All benchmark orchestration tools are written in **Zena** and executed via `zena-cli`.
+All benchmark orchestration tools are written in **Zena** and executed via `zena`.
 
 ### Quick Commands
 
@@ -34,7 +34,7 @@ npm run bench:size
 npm run bench:speed
 
 # Target a specific workload
-./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/run.zena fib
+./target/release/zena run --allow-spawn --dir .::. benchmarks/zena/run.zena fib
 ```
 
 ---
@@ -79,14 +79,14 @@ benchmarks/workloads/minimal/
 ├── main.as.ts         # AssemblyScript implementation
 ├── main_nostd.rs      # Rust no_std implementation
 ├── main_std.rs        # Rust standard library implementation
-└── bench.json         # Speed benchmark configuration for zena-cli bench
+└── bench.json         # Speed benchmark configuration for zena bench
 ```
 
 ---
 
 ## Speed Benchmarking Methodology
 
-Speed benchmarks use `zena-cli bench` (powered by `zena:bench`):
+Speed benchmarks use `zena bench` (powered by `zena:bench`):
 
 - **Tachometer-style round-robin sampling**: Variants are sampled in rotation to eliminate bias from CPU throttling and background noise.
 - **Fresh instantiation**: Each `.wasm` sample is freshly instantiated and timed host-side (`Instant`), excluding compilation and module load time.
@@ -98,7 +98,7 @@ Speed benchmarks use `zena-cli bench` (powered by `zena:bench`):
 ## HTTP File Serving
 
 `benchmarks/http/file-serving.sh` times serving one file over HTTP from
-`zena-cli` (issue #323). It writes a file of random bytes, serves it with
+`zena` (issue #323). It writes a file of random bytes, serves it with
 `benchmarks/http/file-server.zena`, and fetches it with curl two ways:
 through `serve`, where the file's stream goes to the response unread and
 the host copies it, and through `/copy/`, where the guest reads the file
@@ -111,5 +111,5 @@ benchmarks/http/file-serving.sh
 SIZE_MB=256 RUNS=25 benchmarks/http/file-serving.sh
 ```
 
-A dev build of `zena-cli` compiles against the standard library of the
+A dev build of `zena` compiles against the standard library of the
 checkout it was built from, so run the script from that checkout.

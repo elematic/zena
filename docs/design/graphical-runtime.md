@@ -7,7 +7,7 @@ graphical Zena programs.
 
 Zena separates execution into targeted tools:
 
-- `zena-cli`: bundles the compiler, test orchestrator, benchmark runner, and
+- `zena`: bundles the compiler, test orchestrator, benchmark runner, and
   documentation generator.
 - `zena-run`: runs one compiled component for the `zena-component` target with
   minimal host imports (WASI 0.3, and the `zena:host` interfaces for stack
@@ -255,5 +255,5 @@ Once the required component model features land in the compiler:
    - Port `triangle` to Zena syntax (`packages/zenafx/examples/triangle.zena`).
    - Import `wasi:webgpu` and `wasi-gfx:surface`.
 3. **End-to-End Verification**:
-   - Compile `triangle.zena` with `zena-cli build --target component`.
+   - Compile `triangle.zena` with `zena build --target component`.
    - Run the emitted component with `zfx`.

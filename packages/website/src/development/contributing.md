@@ -80,7 +80,7 @@ instructions below.
 The repository provides a Nix flake that sets up the full environment:
 Node.js (version 25+, satisfying the engine requirement for WASM exception
 handling), `wasmtime`, `wasm-tools`, and the Rust toolchain needed to compile
-`zena-cli`.
+`zena`.
 
 ```bash
 git clone https://github.com/elematic/zena.git
@@ -118,7 +118,7 @@ An npm monorepo managed with [Wireit](https://github.com/google/wireit).
 | Path                        | What it is                               |
 | --------------------------- | ---------------------------------------- |
 | `packages/compiler`         | Self-hosted compiler, written in Zena    |
-| `packages/zena-formatter`   | Zena formatter, written in Zena          |
+| `packages/formatter`        | Zena formatter, written in Zena          |
 | `packages/stdlib`           | Standard library                         |
 | `packages/cli`              | Native Rust CLI, runs Zena via Wasmtime  |
 | `packages/runtime`          | JS runtime helpers                       |
@@ -129,7 +129,7 @@ An npm monorepo managed with [Wireit](https://github.com/google/wireit).
 | `docs/design/`              | Design documents, written while deciding |
 
 The compiler is **self-hosted**: written in Zena, running on Wasmtime via
-`zena-cli`. See [Status and roadmap](/development/roadmap/).
+`zena`. See [Status and roadmap](/development/roadmap/).
 
 ## Tests and formatting
 

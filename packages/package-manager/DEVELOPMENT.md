@@ -32,8 +32,8 @@ From the repository root:
 npm test -w @zena-lang/package-manager
 ```
 
-Or run a test file directly with `zena-cli`:
+Or run a test file directly with `zena`:
 
 ```sh
-./target/release/zena-cli test packages/package-manager/test/manifest_test.zena
+./target/release/zena test packages/package-manager/test/manifest_test.zena
 ```

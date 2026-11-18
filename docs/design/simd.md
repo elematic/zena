@@ -119,7 +119,7 @@ let addInPlace = (ptr: i32): void => {
 
 Not included. Relaxed SIMD instructions are permitted to give different
 results on different engines, and they are off by default in the engines
-Zena targets (including the wasmtime embedded in `zena-cli`). Adding them
+Zena targets (including the wasmtime embedded in `zena`). Adding them
 means deciding what a Zena program is allowed to assume about its own
 arithmetic, which is a separate decision from exposing the deterministic
 set.

@@ -20,15 +20,15 @@ case that enables bootstrapping — the one artifact that exists before
 anything is built. Everything else compiles from source:
 
 ```
-cargo build             → zena-cli, zena-run      (the Rust/wasmtime hosts, from source)
-zena-cli + bootstrap    → out/cli.wasm       (Stage A: the working compiler, from source)
+cargo build             → zena, zena-run      (the Rust/wasmtime hosts, from source)
+zena + bootstrap    → out/cli.wasm       (Stage A: the working compiler, from source)
 zena-run + cli.wasm     → packages/cli/out/zena.wasm (the working CLI module, from source)
-zena-cli (+ zena.wasm)  → everything else         (stdlib tests, LSP, formatter, …)
+zena (+ zena.wasm)  → everything else         (stdlib tests, LSP, formatter, …)
 ```
 
-Before `packages/cli/out/zena.wasm` is built, `zena-cli` falls back
+Before `packages/cli/out/zena.wasm` is built, `zena` falls back
 to `packages/cli/bootstrap/zena.wasm`, so once cargo has built
-`zena-cli` a fresh checkout can already run `zena build` (including
+`zena` a fresh checkout can already run `zena build` (including
 zebra target builds), `zena fmt`, `zena lint`, `zena run` and
 `zena test`. During a build, `build:cli` in `packages/compiler`
 sets `ZENA_CLI_MODULE=../cli/bootstrap/zena.wasm` explicitly so
@@ -39,7 +39,7 @@ stale wasmtime configuration.
 
 Keeping Stage A between the bootstrap and `out/zena.wasm` decouples the
 rest of the repository from the bootstrap's age: changes to `zebra`,
-`zena-lint`, `zena-formatter`, `zenadoc`, `pds` or `zena-cli` are
+`lint`, `formatter`, `zenadoc`, `pds` or `zena` are
 compiled by Stage A and take effect without re-baselining.
 
 It is checked into git (not fetched) so that a clone plus cargo is a
@@ -77,7 +77,7 @@ same thing under both.
 
 What each stage is for:
 
-- **A** is what everything in the repository compiles with. `zena-cli`'s
+- **A** is what everything in the repository compiles with. `zena`'s
   module (`packages/cli/out/zena.wasm`) is compiled by it, and so
   every package that compiles Zena reaches A's output, along with the
   compiler's own test program and the component fixtures.
@@ -118,13 +118,13 @@ The artifact is also self-certifying: `reseed` compiles `zena/main.zena`
 at `-g -O2` with `out/zena.wasm` (whose compiler was emitted by Stage A)
 and checks that the resulting module compiling `zena/main.zena` again
 reproduces itself **byte-for-byte**. To audit a bootstrap, check out its
-re-baseline commit, build `zena-cli`'s binary
-(`cargo build --release -p zena-cli`), and compile the CLI module with
+re-baseline commit, build `zena`'s binary
+(`cargo build --release -p zena`), and compile the CLI module with
 the bootstrap:
 
 ```bash
 ZENA_GC_RESERVE_MB=1536 ZENA_CLI_MODULE=packages/cli/bootstrap/zena.wasm \
-  ./target/release/zena-cli -g -O2 build packages/cli/zena/main.zena \
+  ./target/release/zena -g -O2 build packages/cli/zena/main.zena \
   -o packages/cli/out/audit.wasm
 cmp packages/cli/out/audit.wasm packages/cli/bootstrap/zena.wasm
 ```
@@ -200,7 +200,7 @@ change to compile, the compiler change lands first, handling both the
 old and the new form of the library, and is re-baselined; the library
 changes after. Before re-baselining, check the new form against the
 fixed compiler by editing the library file and compiling a probe with
-`./target/release/zena-cli`, whose compiler reads the standard library
+`./target/release/zena`, whose compiler reads the standard library
 from disk.
 
 The same holds for what the compiler reads besides source. The
@@ -237,5 +237,5 @@ re-baselines and then changes source in the CLI module's closure
 re-baselines again at the end.
 
 `*.cwasm` and `*.lock` may appear next to the bootstrap — they are
-`zena-cli`'s machine-specific precompilation cache, gitignored, never
+`zena`'s machine-specific precompilation cache, gitignored, never
 committed.

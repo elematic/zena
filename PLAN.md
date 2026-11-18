@@ -48,7 +48,7 @@ This document tracks completed work and planned features. For project instructio
     state machines that park on futures and resume off a microtask queue, and
     an async `main` is driven to completion by a synthesized export wrapper —
     so async programs run under plain `wasmtime --invoke main` today, with no
-    host event loop and no changes to `zena-cli`.
+    host event loop and no changes to `zena`.
   - **`await` on a union is done**, generalized past the design's
     sketch: `T | Future<U> | Future<V>` yields `T | U | V` — future
     arms are distinguished at runtime and each suspends on its own
@@ -236,7 +236,7 @@ await x` pays the bare-value queue hop for nothing — return
   - Also next: richer fetch (headers, streamed bodies — streams are
     designed in [streams.md](docs/design/streams.md) with the
     `zena:stream` rendezvous core implemented); the tokio-backed CLI
-    and the WASI 0.3 host both exist now (`packages/zena-runtime`).
+    and the WASI 0.3 host both exist now (`packages/runtime-wasmtime`).
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
     resolve); what remains is everything that turns a parsed WIT into a running

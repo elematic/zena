@@ -19,8 +19,8 @@ From the repository root:
 npm test -w @zena-lang/atproto
 ```
 
-Or run a test file directly with `zena-cli`:
+Or run a test file directly with `zena`:
 
 ```sh
-./target/release/zena-cli test packages/atproto/test/cbor_test.zena
+./target/release/zena test packages/atproto/test/cbor_test.zena
 ```

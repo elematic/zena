@@ -71,10 +71,10 @@ WASI-only.
 | `timeBudgetMs` | `60000.0` | Stop auto-sampling after this long (at a round boundary) |
 | `horizons`     | `['0%']`  | Resolution horizons: `'N%'` relative or `'Nms'` absolute |
 
-## Cross-binary comparison: `zena-cli bench`
+## Cross-binary comparison: `zena bench`
 
 ```sh
-zena-cli bench benchmarks/fib.json   # prints report, writes fib.results.json
+zena bench benchmarks/fib.json   # prints report, writes fib.results.json
 ```
 
 The config names a suite, options (same meanings as above), and

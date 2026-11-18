@@ -12,7 +12,7 @@ Sources:
 - the repository's pull requests, CI runs and review comments, through
   `gh` (skip with --no-github);
 - with --lint, `zena lint` over the .zena files under packages/ added in
-  the period (needs ./target/release/zena-cli).
+  the period (needs ./target/release/zena).
 
 It prints a Markdown summary and writes the messages behind each count
 (relays, corrections, review comments) to --out as signals.json, for the
@@ -227,7 +227,7 @@ def lint_new_files(since, until):
                     and '/test-files/' not in f})
     if not files:
         return 0, collections.Counter()
-    out = subprocess.run(['./target/release/zena-cli', 'lint', *files],
+    out = subprocess.run(['./target/release/zena', 'lint', *files],
                          capture_output=True, text=True).stdout
     rules = collections.Counter(re.findall(r'\[([a-z-]+)\]$', out, re.M))
     return len(files), rules
