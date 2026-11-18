@@ -8,6 +8,7 @@
  * "..."}`, with a 4xx or 5xx status.
  */
 
+import {Future} from 'zena:async';
 import {Own, StringBuilder} from 'zena:core';
 import {Response, fetch} from 'zena:fetch';
 import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
@@ -23,12 +24,31 @@ export class XrpcError extends Error {
   new(status: i32, error: String, message: String) : status = status, error = error, super(message);
 }
 
+/**
+ * What authorizes each request a client sends with proof of possession, as
+ * an OAuth session's DPoP does (`atproto/oauth`): its headers are made for
+ * the one request, and an answer can call for the request to be sent again.
+ */
+export interface RequestSigner {
+  /** The headers that authorize a request of `method` to `url`, such as `authorization` and `dpop`. */
+  headers(method: String, url: String): Array<(String, String)>;
+
+  /**
+   * Learns from the answer to a request it signed, such as a new nonce,
+   * and says whether to sign the request again and send it once more, as
+   * after a refused nonce or an access token it has since refreshed.
+   */
+  answered(status: i32, dpopNonce: String | null, wwwAuthenticate: String | null): Future<boolean>;
+}
+
 /** A client for the XRPC methods of one service, such as a PDS. */
 export final class XrpcClient {
   /** The service's origin, such as `https://pds.example.com`. */
   service: String;
   /** The `authorization` header to send, or null. */
   var authorization: String | null = null;
+  /** What signs each request instead of `authorization`, or null. */
+  var signer: RequestSigner | null = null;
   /** The `user-agent` header to send, naming the client, or null. */
   var userAgent: String | null = null;
 
@@ -52,21 +72,53 @@ export final class XrpcClient {
     return sb.toString();
   }
 
-  #headers(contentType: String | null): GrowableArray<(String, String)> {
+  #headers(method: String, url: String, contentType: String | null,
+      extra: Array<(String, String)> | null): GrowableArray<(String, String)> {
     let headers = new GrowableArray<(String, String)>();
     headers.push(('accept', 'application/json'));
     if (contentType != null) {
       headers.push(('content-type', contentType));
     }
+    let signer = this.signer;
     let authorization = this.authorization;
-    if (authorization != null) {
+    if (signer != null) {
+      for (let header in signer.headers(method, url)) {
+        headers.push(header);
+      }
+    } else if (authorization != null) {
       headers.push(('authorization', authorization));
     }
     let userAgent = this.userAgent;
     if (userAgent != null) {
       headers.push(('user-agent', userAgent));
     }
+    if (extra != null) {
+      for (let header in extra) {
+        headers.push(header);
+      }
+    }
     return headers;
+  }
+
+  /**
+   * Sends a request and returns its answer, signed by the signer if there
+   * is one, and sent a second time when the signer asks for it.
+   */
+  async #send(method: String, url: String, contentType: String | null,
+      body: String | FixedArray<u8> | null, extra: Array<(String, String)> | null): Future<Own<Response>> {
+    let response = await fetch(url, {method, headers: this.#headers(method, url, contentType, extra), body});
+    let signer = this.signer;
+    if (signer == null) {
+      return response;
+    }
+    let again = await signer.answered(response.status, response.header('dpop-nonce'),
+        response.header('www-authenticate'));
+    if (!again) {
+      return response;
+    }
+    let second = await fetch(url, {method, headers: this.#headers(method, url, contentType, extra), body});
+    await signer.answered(second.status, second.header('dpop-nonce'), second.header('www-authenticate'));
+    return second;
   }
 
   /**
@@ -77,13 +129,7 @@ export final class XrpcClient {
    */
   async queryRaw(nsid: String, params: Array<(String, String)> | null = null,
       headers: Array<(String, String)> | null = null): Future<Own<Response>> {
-    let sent = this.#headers(null);
-    if (headers != null) {
-      for (let header in headers) {
-        sent.push(header);
-      }
-    }
-    let response = await fetch(this.#url(nsid, params), {headers: sent});
+    let response = await this.#send('GET', this.#url(nsid, params), null, null, headers);
     return await checkAnswer(nsid, response);
   }
 
@@ -100,11 +146,7 @@ export final class XrpcClient {
   async procedure(nsid: String, input: JsonValue, params: Array<(String, String)> | null = null): Future<JsonValue> {
     let body: String | null = if (input == null) null else stringify(input);
     let contentType: String | null = if (input == null) null else 'application/json';
-    let response = await fetch(this.#url(nsid, params), {
-      method: 'POST',
-      headers: this.#headers(contentType),
-      body,
-    });
+    let response = await this.#send('POST', this.#url(nsid, params), contentType, body, null);
     let answer = await checkAnswer(nsid, response);
     let text = await answer.text();
     return if (text.length == 0) null else parseJson(text);
@@ -113,11 +155,7 @@ export final class XrpcClient {
   /** Calls a procedure whose body is bytes of type `mimeType`, such as `com.atproto.repo.uploadBlob`. */
   async upload(nsid: String, mimeType: String, bytes: FixedArray<u8>,
       params: Array<(String, String)> | null = null): Future<JsonValue> {
-    let response = await fetch(this.#url(nsid, params), {
-      method: 'POST',
-      headers: this.#headers(mimeType),
-      body: bytes,
-    });
+    let response = await this.#send('POST', this.#url(nsid, params), mimeType, bytes, null);
     let answer = await checkAnswer(nsid, response);
     return parseJson(await answer.text());
   }

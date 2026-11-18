@@ -1,0 +1,554 @@
+/**
+ * Signing in with atproto OAuth (https://atproto.com/specs/oauth), as a
+ * public client: an app that runs on the person's own machine, such as a
+ * command-line tool, and has no secret of its own.
+ *
+ * `startAuthorization` finds the account's PDS and the PDS's authorization
+ * server, and pushes an authorization request (PAR) with a PKCE challenge
+ * and a DPoP key made for the session. It returns the URL to send the
+ * person's browser to. When they approve, the authorization server sends
+ * the browser to the client's redirect URI with a code, which
+ * `finishAuthorization` trades for tokens. Every request to either server
+ * carries a DPoP proof, with the nonce the server last sent; a request
+ * refused for a stale nonce is sent again with the new one.
+ *
+ * The `OAuthSession` it returns is an `AccountSession`: its `client()`
+ * signs each request to the PDS, and it refreshes its access token when
+ * the PDS says the token is no longer valid. `toJson` holds its refresh
+ * token and DPoP key, so whoever keeps it keeps it secret.
+ *
+ * ```zena
+ * let client = new OAuthClient(clientId, redirectUri, 'atproto ...');
+ * let pending = await startAuthorization(client, 'alice.example', state, resolver);
+ * // Send the browser to pending.url; the redirect brings code, state and iss.
+ * let session = await finishAuthorization(pending, code, state, iss);
+ * let token = await getServiceAuth(session, audience, method);
+ * ```
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {sha256} from 'zena:crypto';
+import {base64Url} from 'zena:encoding';
+import {fetch} from 'zena:fetch';
+import {JsonArray, JsonObject, JsonValue, parseJson} from 'zena:json';
+import {randomBytes} from 'zena:random';
+import {EncodeSet, percentEncode, serializeFormUrlencoded} from 'zena:url';
+import {now} from 'wasi:clocks/system-clock';
+import {DpopKey} from './dpop.zena';
+import {IdentityResolver} from './identity.zena';
+import {AccountSession} from './session.zena';
+import {isValidDid} from './syntax.zena';
+import {RequestSigner, XrpcClient} from './xrpc.zena';
+
+/** A sign-in that cannot be started, finished or used, or a server that refused it. */
+export class OAuthError extends Error {
+  /** The OAuth error code the server gave, such as `invalid_grant`, or an empty string. */
+  error: String;
+
+  new(message: String, error: String = '') : error = error, super(message);
+}
+
+/**
+ * A client: its `client_id`, the URL of its metadata document; the one
+ * redirect URI it uses; and the scope it asks for.
+ */
+export final class OAuthClient {
+  clientId: String;
+  redirectUri: String;
+  scope: String;
+
+  new(this.clientId, this.redirectUri, this.scope);
+}
+
+/** The endpoints of an authorization server, from its metadata. */
+export final class AuthorizationServer {
+  issuer: String;
+  pushedAuthorizationEndpoint: String;
+  authorizationEndpoint: String;
+  tokenEndpoint: String;
+  /** Where tokens are revoked, or null when the server says nowhere. */
+  revocationEndpoint: String | null;
+
+  new(this.issuer, this.pushedAuthorizationEndpoint, this.authorizationEndpoint, this.tokenEndpoint,
+      this.revocationEndpoint);
+
+  toJson(): JsonObject {
+    let json = new JsonObject();
+    json['issuer'] = this.issuer;
+    json['pushed_authorization_request_endpoint'] = this.pushedAuthorizationEndpoint;
+    json['authorization_endpoint'] = this.authorizationEndpoint;
+    json['token_endpoint'] = this.tokenEndpoint;
+    let revocation = this.revocationEndpoint;
+    if (revocation != null) {
+      json['revocation_endpoint'] = revocation;
+    }
+    return json;
+  }
+
+  /**
+   * The server an authorization server's metadata describes, checking that
+   * it names `issuer` and supports what atproto requires. Throws
+   * `OAuthError`.
+   */
+  static fromMetadata(json: JsonValue, issuer: String): AuthorizationServer {
+    if (!(json is JsonObject)) {
+      throw new OAuthError(`${issuer} has no authorization server metadata`);
+    }
+    let metadata = json;
+    if (metadata['issuer'] != issuer) {
+      throw new OAuthError(`${issuer}'s metadata names another issuer`);
+    }
+    if (!listHas(metadata['code_challenge_methods_supported'], 'S256')) {
+      throw new OAuthError(`${issuer} does not support PKCE with S256`);
+    }
+    if (!listHas(metadata['dpop_signing_alg_values_supported'], 'ES256')) {
+      throw new OAuthError(`${issuer} does not support DPoP with ES256`);
+    }
+    let revocation = metadata['revocation_endpoint'];
+    return new AuthorizationServer(issuer, endpoint(metadata, 'pushed_authorization_request_endpoint', issuer),
+        endpoint(metadata, 'authorization_endpoint', issuer), endpoint(metadata, 'token_endpoint', issuer),
+        if (revocation is String) revocation else null);
+  }
+
+  /** Reads a server `toJson` wrote. */
+  static fromJson(json: JsonValue): AuthorizationServer {
+    if (json is JsonObject) {
+      let issuer = json['issuer'];
+      if (issuer is String) {
+        let revocation = json['revocation_endpoint'];
+        return new AuthorizationServer(issuer, endpoint(json, 'pushed_authorization_request_endpoint', issuer),
+            endpoint(json, 'authorization_endpoint', issuer), endpoint(json, 'token_endpoint', issuer),
+            if (revocation is String) revocation else null);
+      }
+    }
+    throw new OAuthError('a stored session has no authorization server');
+  }
+}
+
+function endpoint(metadata: JsonObject, name: String, issuer: String): String {
+  let value = metadata[name];
+  if (value is String) {
+    return value;
+  }
+  throw new OAuthError(`${issuer}'s metadata has no ${name}`);
+}
+
+function listHas(value: JsonValue, wanted: String): boolean {
+  if (value is JsonArray) {
+    for (var i = 0; i < value.length; i += 1) {
+      let item = value[i];
+      if (item is String && item == wanted) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** The origin of `url`: its scheme, host and port. */
+function originOf(url: String) {
+  var i = 0;
+  // Past the scheme and its `://`.
+  while (i + 2 < url.length &&
+      !(url.getByteAt(i) == 58 && url.getByteAt(i + 1) == 47 && url.getByteAt(i + 2) == 47)) {
+    i += 1;
+  }
+  i += 3;
+  while (i < url.length) {
+    let b = url.getByteAt(i);
+    if (b == 47 || b == 63 || b == 35) { // '/', '?' or '#'
+      return url.sliceBytes(0, i);
+    }
+    i += 1;
+  }
+  return url;
+}
+
+/** The latest DPoP nonce each server sent, by origin. */
+final class Nonces {
+  #byOrigin = new HashMap<String, String>();
+
+  of(url: String): String | null {
+    if (let (true, nonce) = this.#byOrigin.get(originOf(url))) {
+      return nonce;
+    }
+    return null;
+  }
+
+  learn(url: String, nonce: String | null): void {
+    if (nonce != null) {
+      this.#byOrigin[originOf(url)] = nonce;
+    }
+  }
+}
+
+function nowSeconds() {
+  return now().seconds;
+}
+
+/** A random string for a proof's `jti`, a PKCE verifier or a `state`. */
+export function randomToken(bytes: i32 = 16): String {
+  return base64Url.encode(randomBytes(bytes), false);
+}
+
+/** The PKCE challenge of `verifier`, by the S256 method: base64url of its SHA-256. */
+export function pkceChallenge(verifier: String): String {
+  return base64Url.encode(sha256(verifier.toBytes()), false);
+}
+
+async function getJson(url: String): Future<JsonValue> {
+  let response = await fetch(url, {headers: [('accept', 'application/json')]});
+  if (!response.ok) {
+    throw new OAuthError(`${url} answered HTTP ${response.status}`);
+  }
+  return parseJson(await response.text());
+}
+
+/**
+ * Posts the form `form` to the authorization server's endpoint `url`, with
+ * a DPoP proof signed by `key`, and returns its JSON answer, or null for an
+ * empty one. A request refused for want of a fresh nonce is sent once more
+ * with the nonce the server gave. Throws `OAuthError` for a refusal.
+ */
+async function postForm(url: String, form: Array<(String, String)>, key: DpopKey,
+    nonces: Nonces): Future<JsonObject | null> {
+  let body = serializeFormUrlencoded(form);
+  var refusal = new OAuthError(`${url} refused the request`);
+  for (var attempt = 0; attempt < 2; attempt += 1) {
+    let proof = key.proof('POST', url, nowSeconds(), randomToken(), nonces.of(url));
+    let response = await fetch(url, {
+      method: 'POST',
+      headers: [('content-type', 'application/x-www-form-urlencoded'), ('accept', 'application/json'),
+          ('dpop', proof)],
+      body,
+    });
+    let nonce = response.header('dpop-nonce');
+    nonces.learn(url, nonce);
+    let ok = response.ok;
+    let status = response.status;
+    let text = await response.text();
+    var json: JsonValue = null;
+    if (text.length > 0) {
+      try {
+        json = parseJson(text);
+      } catch (e) {
+        throw new OAuthError(`${url} answered HTTP ${status} with something other than JSON`);
+      }
+    }
+    if (ok) {
+      return if (json is JsonObject) json else null;
+    }
+    var error = '';
+    var description = `HTTP ${status}`;
+    if (json is JsonObject) {
+      let code = json['error'];
+      let detail = json['error_description'];
+      if (code is String) {
+        error = code;
+        description = if (detail is String) `${code}: ${detail}` else code;
+      }
+    }
+    refusal = new OAuthError(`${url} refused the request: ${description}`, error);
+    if (error != 'use_dpop_nonce' || nonce == null) {
+      break;
+    }
+  }
+  throw refusal;
+}
+
+/** The tokens a token endpoint answered with. */
+final class Tokens {
+  access: String;
+  refresh: String;
+  /** When the access token expires, in seconds since the epoch. */
+  expiresAt: i64;
+  scope: String;
+  sub: String;
+
+  new(this.access, this.refresh, this.expiresAt, this.scope, this.sub);
+}
+
+/**
+ * The tokens in a token endpoint's answer, for the account `did`. Throws
+ * `OAuthError` unless they are DPoP tokens for `did` that include the
+ * `atproto` scope.
+ */
+function tokensOf(answer: JsonObject | null, did: String, issuer: String) {
+  if (answer == null) {
+    throw new OAuthError(`${issuer} answered without tokens`);
+  }
+  let access = answer['access_token'];
+  let refresh = answer['refresh_token'];
+  let type = answer['token_type'];
+  let scope = answer['scope'];
+  let sub = answer['sub'];
+  if (!(access is String) || !(refresh is String)) {
+    throw new OAuthError(`${issuer} answered without an access token and a refresh token`);
+  }
+  if (!(type is String) || type.toLowerCase() != 'dpop') {
+    throw new OAuthError(`${issuer} answered with tokens not bound to the DPoP key`);
+  }
+  if (!(scope is String) || !hasScope(scope, 'atproto')) {
+    throw new OAuthError(`${issuer} answered with a scope without atproto`);
+  }
+  if (!(sub is String) || sub != did) {
+    throw new OAuthError(`${issuer} signed in another account than ${did}`);
+  }
+  let expiresIn = answer['expires_in'];
+  let lifetime = if (expiresIn is Box<f64>) expiresIn.value as i64 else 300 as i64;
+  return new Tokens(access, refresh, nowSeconds() + lifetime, scope, sub);
+}
+
+function hasScope(scope: String, wanted: String): boolean {
+  for (let part in scope.split(' ')) {
+    if (part == wanted) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** A sign-in begun with `startAuthorization`, waiting for the browser to come back. */
+export final class PendingAuthorization {
+  client: OAuthClient;
+  /** The account's DID, which the tokens must be for. */
+  did: String;
+  /** The account's handle, when it resolves back to the DID; otherwise null. */
+  handle: String | null;
+  /** The account's PDS. */
+  pds: String;
+  server: AuthorizationServer;
+  /** The `state` the redirect must bring back. */
+  state: String;
+  /** Where to send the person's browser. */
+  url: String;
+  #verifier: String;
+  #key: DpopKey;
+  #nonces: Nonces;
+
+  new(client: OAuthClient, did: String, handle: String | null, pds: String, server: AuthorizationServer,
+      state: String, url: String, verifier: String, key: DpopKey, nonces: Nonces)
+      : client = client, did = did, handle = handle, pds = pds, server = server, state = state, url = url,
+        #verifier = verifier, #key = key, #nonces = nonces;
+
+  /**
+   * Trades the code the redirect brought for tokens: `finishAuthorization`
+   * checks `state` and `iss` first.
+   */
+  async exchange(code: String): Future<OAuthSession> {
+    let form = new GrowableArray<(String, String)>();
+    form.push(('grant_type', 'authorization_code'));
+    form.push(('code', code));
+    form.push(('redirect_uri', this.client.redirectUri));
+    form.push(('code_verifier', this.#verifier));
+    form.push(('client_id', this.client.clientId));
+    let tokens = tokensOf(await postForm(this.server.tokenEndpoint, form, this.#key, this.#nonces),
+        this.did, this.server.issuer);
+    return new OAuthSession(this.did, this.handle, this.pds, this.server, this.client.clientId, this.#key,
+        tokens.access, tokens.refresh, tokens.expiresAt, tokens.scope, this.#nonces);
+  }
+}
+
+/** Finds the authorization server of the PDS at `pds`, from the PDS's resource metadata. */
+export async function findAuthorizationServer(pds: String): Future<AuthorizationServer> {
+  let resource = await getJson(`${pds}/.well-known/oauth-protected-resource`);
+  var issuer: String | null = null;
+  if (resource is JsonObject) {
+    let servers = resource['authorization_servers'];
+    if (servers is JsonArray && servers.length > 0) {
+      let first = servers[0];
+      if (first is String) {
+        issuer = first;
+      }
+    }
+  }
+  if (issuer == null) {
+    throw new OAuthError(`${pds} names no authorization server`);
+  }
+  let found = issuer;
+  return AuthorizationServer.fromMetadata(await getJson(`${found}/.well-known/oauth-authorization-server`), found);
+}
+
+/**
+ * Begins signing in the account `identifier`, a handle or a DID: finds its
+ * PDS and authorization server, and pushes the authorization request, which
+ * the redirect answers with `state`. Throws `OAuthError`, or
+ * `IdentityError` when the identifier does not resolve.
+ */
+export async function startAuthorization(client: OAuthClient, identifier: String, state: String,
+    resolver: IdentityResolver): Future<PendingAuthorization> {
+  let identity = await resolver.resolve(identifier);
+  let pds = identity.document.pds;
+  if (pds == null) {
+    throw new OAuthError(`${identity.did} has no PDS`);
+  }
+  let server = await findAuthorizationServer(pds);
+  let key = DpopKey.generate(() => randomBytes(32));
+  let nonces = new Nonces();
+  let verifier = randomToken(32);
+  let form = new GrowableArray<(String, String)>();
+  form.push(('response_type', 'code'));
+  form.push(('client_id', client.clientId));
+  form.push(('redirect_uri', client.redirectUri));
+  form.push(('scope', client.scope));
+  form.push(('state', state));
+  form.push(('code_challenge', pkceChallenge(verifier)));
+  form.push(('code_challenge_method', 'S256'));
+  form.push(('login_hint', identifier));
+  let answer = await postForm(server.pushedAuthorizationEndpoint, form, key, nonces);
+  let requestUri = answer?['request_uri'];
+  if (!(requestUri is String)) {
+    throw new OAuthError(`${server.issuer} answered the authorization request without a request_uri`);
+  }
+  let url = `${server.authorizationEndpoint}?client_id=${percentEncode(client.clientId, EncodeSet.Component)}` +
+      `&request_uri=${percentEncode(requestUri, EncodeSet.Component)}`;
+  return new PendingAuthorization(client, identity.did, identity.handle, pds, server, state, url, verifier, key,
+      nonces);
+}
+
+/**
+ * Finishes the sign-in `pending`, with the `code`, `state` and `iss` the
+ * redirect brought: checks that they answer this sign-in, from its
+ * authorization server, and trades the code for tokens. Throws
+ * `OAuthError`.
+ */
+export async function finishAuthorization(pending: PendingAuthorization, code: String, state: String,
+    iss: String): Future<OAuthSession> {
+  if (state != pending.state) {
+    throw new OAuthError('the redirect answers another sign-in');
+  }
+  if (iss != pending.server.issuer) {
+    throw new OAuthError(`the redirect comes from ${iss}, not ${pending.server.issuer}`);
+  }
+  return await pending.exchange(code);
+}
+
+/**
+ * An account signed in with OAuth. Its access token and refresh token are
+ * bound to its DPoP key, and every request it makes carries a proof.
+ */
+export final class OAuthSession implements AccountSession, RequestSigner {
+  did: String;
+  /** The account's handle when it signed in, or null. */
+  handle: String | null;
+  pds: String;
+  server: AuthorizationServer;
+  clientId: String;
+  /** The scope the authorization server granted. */
+  var scope: String;
+  var accessToken: String;
+  var refreshToken: String;
+  /** When the access token expires, in seconds since the epoch. */
+  var expiresAt: i64;
+  /** Whether the tokens changed since the session was made or read, so that whoever keeps it writes it again. */
+  var refreshed = false;
+  #key: DpopKey;
+  #nonces: Nonces;
+
+  new(did: String, handle: String | null, pds: String, server: AuthorizationServer, clientId: String, key: DpopKey,
+      accessToken: String, refreshToken: String, expiresAt: i64, scope: String, nonces: Nonces = new Nonces())
+      : did = did, handle = handle, pds = pds, server = server, clientId = clientId, #key = key,
+        accessToken = accessToken, refreshToken = refreshToken, expiresAt = expiresAt, scope = scope,
+        #nonces = nonces;
+
+  /** An XRPC client for the PDS that signs each request with the session's DPoP key. */
+  client(): XrpcClient {
+    let client = new XrpcClient(this.pds);
+    client.signer = this;
+    return client;
+  }
+
+  headers(method: String, url: String): Array<(String, String)> {
+    let access = this.accessToken;
+    let proof = this.#key.proof(method, url, nowSeconds(), randomToken(), this.#nonces.of(url), access);
+    return [('authorization', `DPoP ${access}`), ('dpop', proof)];
+  }
+
+  async answered(status: i32, dpopNonce: String | null, wwwAuthenticate: String | null): Future<boolean> {
+    this.#nonces.learn(this.pds, dpopNonce);
+    if (status != 401 || wwwAuthenticate == null) {
+      return false;
+    }
+    if (wwwAuthenticate.contains('use_dpop_nonce')) {
+      return dpopNonce != null;
+    }
+    if (wwwAuthenticate.contains('invalid_token')) {
+      await this.refresh();
+      return true;
+    }
+    return false;
+  }
+
+  /** Replaces the tokens with new ones from the authorization server. The old refresh token stops working. */
+  async refresh(): Future<void> {
+    let form = new GrowableArray<(String, String)>();
+    form.push(('grant_type', 'refresh_token'));
+    form.push(('refresh_token', this.refreshToken));
+    form.push(('client_id', this.clientId));
+    let tokens = tokensOf(await postForm(this.server.tokenEndpoint, form, this.#key, this.#nonces), this.did,
+        this.server.issuer);
+    this.accessToken = tokens.access;
+    this.refreshToken = tokens.refresh;
+    this.expiresAt = tokens.expiresAt;
+    this.scope = tokens.scope;
+    this.refreshed = true;
+  }
+
+  /** Ends the session at the authorization server, so that its refresh token stops working. */
+  async revoke(): Future<void> {
+    let revocation = this.server.revocationEndpoint;
+    if (revocation == null) {
+      return;
+    }
+    let form = new GrowableArray<(String, String)>();
+    form.push(('token', this.refreshToken));
+    form.push(('client_id', this.clientId));
+    await postForm(revocation, form, this.#key, this.#nonces);
+  }
+
+  /** The session as JSON, for keeping. It holds the tokens and the DPoP key, so it is a secret. */
+  toJson(): JsonObject {
+    let json = new JsonObject();
+    json['did'] = this.did;
+    let handle = this.handle;
+    if (handle != null) {
+      json['handle'] = handle;
+    }
+    json['pds'] = this.pds;
+    json['server'] = this.server.toJson();
+    json['clientId'] = this.clientId;
+    json['scope'] = this.scope;
+    json['accessToken'] = this.accessToken;
+    json['refreshToken'] = this.refreshToken;
+    json['expiresAt'] = new Box<f64>(this.expiresAt as f64);
+    json['dpopKey'] = this.#key.toJson();
+    return json;
+  }
+
+  /** Reads a session `toJson` wrote. Throws `OAuthError`, or `DpopError` for its key. */
+  static fromJson(json: JsonValue): OAuthSession {
+    if (!(json is JsonObject)) {
+      throw new OAuthError('a stored session is not a JSON object');
+    }
+    let object = json;
+    let did = text(object, 'did');
+    if (!isValidDid(did)) {
+      throw new OAuthError('a stored session has no DID');
+    }
+    let handle = object['handle'];
+    let expiresAt = object['expiresAt'];
+    return new OAuthSession(did, if (handle is String) handle else null, text(object, 'pds'),
+        AuthorizationServer.fromJson(object['server']), text(object, 'clientId'),
+        DpopKey.fromJson(object['dpopKey']), text(object, 'accessToken'), text(object, 'refreshToken'),
+        if (expiresAt is Box<f64>) expiresAt.value as i64 else 0 as i64, text(object, 'scope'));
+  }
+}
+
+function text(object: JsonObject, name: String): String {
+  let value = object[name];
+  if (value is String) {
+    return value;
+  }
+  throw new OAuthError(`a stored session has no ${name}`);
+}

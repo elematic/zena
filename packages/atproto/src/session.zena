@@ -10,10 +10,11 @@
  * `atproto/service-auth`), refreshing the session once if the access token
  * has expired.
  *
- * OAuth replaces passwords for apps that act for someone else's account;
- * this is the password flow, which command-line tools still use.
+ * `atproto/oauth` signs in with OAuth instead, and its sessions are
+ * `AccountSession`s too, which `getServiceAuth` takes.
  */
 
+import {Future} from 'zena:async';
 import {JsonObject, JsonValue} from 'zena:json';
 import {IdentityResolver} from './identity.zena';
 import {isValidDid} from './syntax.zena';
@@ -27,8 +28,25 @@ export class SessionError extends Error {
   new(message: String) : super(message);
 }
 
-/** A signed-in account and its tokens. */
-export final class Session {
+/**
+ * A signed-in account, whichever way it signed in: with a password
+ * (`Session`), or with OAuth (`atproto/oauth`'s `OAuthSession`).
+ */
+export interface AccountSession {
+  /** The account's DID. */
+  did: String;
+  /** The PDS's origin. */
+  pds: String;
+
+  /** An XRPC client for the PDS that authorizes its requests as the account. */
+  client(): XrpcClient;
+
+  /** Replaces the session's tokens with new ones from its PDS. */
+  refresh(): Future<void>;
+}
+
+/** An account signed in with a password, and its tokens. */
+export final class Session implements AccountSession {
   /** The account's DID. */
   did: String;
   /** The account's handle, as its PDS gave it. */
@@ -51,6 +69,10 @@ export final class Session {
     let client = new XrpcClient(this.pds);
     client.authorization = `Bearer ${this.accessJwt}`;
     return client;
+  }
+
+  refresh(): Future<void> {
+    return refreshSession(this);
   }
 
   /** The session as JSON, for storing. It holds the tokens, so it is a secret. */
@@ -130,7 +152,7 @@ export async function deleteSession(session: Session): Future<void> {
  * the epoch, the token lasts until then; PDSes allow up to an hour for a
  * token bound to a method, and default to a minute.
  */
-export async function getServiceAuth(session: Session, audience: String, method: String,
+export async function getServiceAuth(session: AccountSession, audience: String, method: String,
     expiresAt: i64 = 0 as i64): Future<String> {
   let params = new GrowableArray<(String, String)>();
   params.push(('aud', audience));
@@ -145,7 +167,7 @@ export async function getServiceAuth(session: Session, audience: String, method:
     if (!(e is XrpcError) || e.error != 'ExpiredToken') {
       throw e;
     }
-    await refreshSession(session);
+    await session.refresh();
     answer = await session.client().query(SERVER_GET_SERVICE_AUTH, params);
   }
   if (answer is JsonObject) {

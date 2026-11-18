@@ -1,0 +1,27 @@
+// @mode: run
+// @result: 2
+// @skip: at -O1 and -O2 the exception escapes, as if the try had no handler (#1270)
+
+// A try inside `while (true)`, whose only way out is the `break` in its
+// protected part. The first call throws and is caught; the second returns.
+function fails(n: i32): i32 {
+  if (n == 1) {
+    throw new Error('first');
+  }
+  return n;
+}
+
+export function main(): i32 {
+  var calls = 0;
+  var result = 0;
+  while (true) {
+    calls += 1;
+    try {
+      result = fails(calls);
+      break;
+    } catch (e) {
+      // Try again.
+    }
+  }
+  return result;
+}

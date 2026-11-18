@@ -33,11 +33,13 @@ let decoded = decodeCbor(bytes);
 - `atproto/didkey`: public keys as multikeys, `did:key`s, and DID document verification methods, and checking atproto signatures with them.
 - `atproto/did`: what atproto reads from a DID document: the signing key, the PDS, and the claimed handle.
 - `atproto/service-auth`: service-auth JWTs, which an account's PDS signs so the account can call another service: creating them, checking them against the issuer's key, the audience, the method, and the time, and refusing a token presented twice (`ReplayGuard`).
-- `atproto/session`: signing in to an account's PDS with a password, refreshing and ending the session, and asking the PDS for service-auth tokens.
-- `atproto/xrpc`: an XRPC client.
+- `atproto/session`: signing in to an account's PDS with a password, refreshing and ending the session, and asking the PDS for service-auth tokens, with a password session or an OAuth one (`AccountSession`).
+- `atproto/oauth`: signing in with atproto OAuth as a public client, such as a command-line tool: finding the PDS's authorization server, the authorization request with PKCE and DPoP, trading the code for tokens, and a session that signs each request, follows the servers' nonces, refreshes and revokes its tokens.
+- `atproto/dpop`: DPoP keys and proofs: ES256 proofs for each request, checking them, and JWK thumbprints.
+- `atproto/xrpc`: an XRPC client, whose requests a `RequestSigner` can authorize one by one.
 - `atproto/methods`: the NSIDs of standard `com.atproto` methods, and `xrpcPath`, a method's path on a server.
 - `atproto/plc`: `did:plc` operations: building and signing them, the DID a genesis operation makes, and sending an operation to a PLC directory.
 - `atproto/identity`: resolving DIDs (`did:plc`, `did:web`) and handles (DNS over HTTPS, then HTTPS), checking handles in both directions.
 - `atproto/sync`: fetching a record and checking its proof against the DID document's key, fetching a blob and checking it against its CID, and listing a collection's records, which comes with no proof.
 
-`atproto/xrpc`, `atproto/identity`, `atproto/sync`, `atproto/session`, and `atproto/plc` send requests with `zena:fetch`. The other libraries have no imports from the host.
+`atproto/xrpc`, `atproto/identity`, `atproto/sync`, `atproto/session`, `atproto/oauth`, and `atproto/plc` send requests with `zena:fetch`; `atproto/oauth` also reads the clock and draws random bytes. The other libraries have no imports from the host.

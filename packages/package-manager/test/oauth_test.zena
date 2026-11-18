@@ -1,0 +1,183 @@
+/**
+ * Signing in with OAuth (`atproto/oauth`) at the fake PDS's authorization
+ * server (`testing/fake-oauth`), and using the session as `zena` does:
+ * service-auth tokens for a registry's methods, and attestation records in
+ * the account's own repository.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {Future} from 'zena:async';
+import {fetch} from 'zena:fetch';
+import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
+import {URL} from 'zena:url';
+import {REPO_PUT_RECORD} from 'atproto/methods';
+import {
+  OAuthClient, OAuthError, OAuthSession, PendingAuthorization, finishAuthorization, startAuthorization
+} from 'atproto/oauth';
+import {getServiceAuth} from 'atproto/session';
+import {XrpcError} from 'atproto/xrpc';
+import {FakePds} from 'package-manager/testing/fake-pds';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let REGISTRY = 'did:web:pkg.test';
+let CREATE = 'dev.zena-lang.registry.createPackage';
+let ATTESTATION = 'dev.zena-lang.package.attestation';
+let CLIENT = new OAuthClient('https://pkg.test/oauth/cli-client-metadata.json',
+    'https://pkg.test/oauth/cli-callback', `atproto repo:${ATTESTATION} rpc:${CREATE}?aud=*`);
+
+function startPds() {
+  let pds = new FakePds();
+  pds.start();
+  pds.account(ALICE, 'alice.test');
+  return pds;
+}
+
+/** The redirect's `code`, `state` and `iss`, after the authorization endpoint approves `pending`. */
+async function approve(pending: PendingAuthorization): Future<(String, String, String)> {
+  let answer = await fetch(pending.url);
+  equal(answer.status, 302);
+  let location = answer.header('location') ?? '';
+  isTrue(location.startsWith(`${CLIENT.redirectUri}?`), location);
+  let params = (URL.parse(location, null) as URL).searchParams();
+  return (params.get('code') ?? '', params.get('state') ?? '', params.get('iss') ?? '');
+}
+
+async function signIn(pds: FakePds): Future<OAuthSession> {
+  let pending = await startAuthorization(CLIENT, 'alice.test', 'state-1', pds.resolver());
+  let (code, state, iss) = await approve(pending);
+  return await finishAuthorization(pending, code, state, iss);
+}
+
+function attestation(did: String, rkey: String, collection: String = ATTESTATION) {
+  return parseJson(`{"repo": "${did}", "collection": "${collection}", "rkey": "${rkey}",
+      "record": {"$type": "${collection}", "subject": "at://x"}}`) as JsonObject;
+}
+
+/** What `call` threw: the XRPC error's status and name, or the OAuth error's code. */
+async function failureOf(call: () => Future<JsonValue>): Future<String> {
+  try {
+    await call();
+  } catch (e) {
+    if (e is XrpcError) {
+      return `${e.status} ${e.error}`;
+    }
+    if (e is OAuthError) {
+      return if (e.error == '') e.message else e.error;
+    }
+    return e.message;
+  }
+  return 'none';
+}
+
+export let tests = suite('OAuth with the fake PDS', () => {
+  test('signs in, then asks for service-auth tokens and writes attestations', async (ctx) => {
+    let pds = startPds();
+    try {
+      let session = await signIn(pds);
+      // The first request had no nonce, was refused, and was sent again.
+      equal(pds.oauth.nonceRefusals, 1);
+      equal(session.did, ALICE);
+      equal(session.handle as String, 'alice.test');
+      equal(session.pds, pds.origin);
+      equal(pds.oauth.clientIds[0], CLIENT.clientId);
+      equal(pds.oauth.scopes[0], CLIENT.scope);
+      isTrue(session.scope.contains(ATTESTATION), session.scope);
+
+      let token = await getServiceAuth(session, REGISTRY, CREATE);
+      isTrue(token.length > 0, 'a token');
+      equal(pds.serviceAuthRequests[pds.serviceAuthRequests.length - 1], (REGISTRY, CREATE));
+      let written = await session.client().procedure(REPO_PUT_RECORD, attestation(ALICE, 'a1')) as JsonObject;
+      equal(written['uri'] as String, `at://${ALICE}/${ATTESTATION}/a1`);
+    } finally {
+      pds.close();
+    }
+  });
+
+  test('refuses what the scope does not allow', async (ctx) => {
+    let pds = startPds();
+    try {
+      let session = await signIn(pds);
+      equal(await failureOf(async (): Future<JsonValue> => {
+        await getServiceAuth(session, REGISTRY, 'dev.zena-lang.registry.retract');
+        return null;
+      }), '403 insufficient_scope');
+      equal(await failureOf(async (): Future<JsonValue> =>
+          await session.client().procedure(REPO_PUT_RECORD, attestation(ALICE, 'p1', 'app.bsky.feed.post'))),
+          '403 insufficient_scope');
+    } finally {
+      pds.close();
+    }
+  });
+
+  test('follows a new nonce, and refreshes an access token that is no longer valid', async (ctx) => {
+    let pds = startPds();
+    try {
+      let session = await signIn(pds);
+      let refused = pds.oauth.nonceRefusals;
+      pds.oauth.rotateNonce();
+      isTrue((await getServiceAuth(session, REGISTRY, CREATE)).length > 0, 'after a new nonce');
+      equal(pds.oauth.nonceRefusals, refused + 1);
+      isTrue(!session.refreshed, 'no refresh for a nonce');
+
+      let oldRefresh = session.refreshToken;
+      pds.oauth.expireAccessTokens();
+      isTrue((await getServiceAuth(session, REGISTRY, CREATE)).length > 0, 'after a refresh');
+      isTrue(session.refreshed, 'refreshed');
+      equal(pds.oauth.refreshes, 1);
+      isTrue(session.refreshToken != oldRefresh, 'a new refresh token');
+
+      // A refresh token is taken once: the old one no longer works.
+      let stale = OAuthSession.fromJson(session.toJson());
+      stale.refreshToken = oldRefresh;
+      equal(await failureOf(async (): Future<JsonValue> => {
+        await stale.refresh();
+        return null;
+      }), 'invalid_grant');
+    } finally {
+      pds.close();
+    }
+  });
+
+  test('refuses a redirect for another sign-in, from another server, or a code used twice', async (ctx) => {
+    let pds = startPds();
+    try {
+      let pending = await startAuthorization(CLIENT, ALICE, 'state-2', pds.resolver());
+      let (code, state, iss) = await approve(pending);
+      equal(await failureOf(async (): Future<JsonValue> => {
+        await finishAuthorization(pending, code, 'state-other', iss);
+        return null;
+      }), 'the redirect answers another sign-in');
+      equal(await failureOf(async (): Future<JsonValue> => {
+        await finishAuthorization(pending, code, state, 'https://other.example');
+        return null;
+      }), `the redirect comes from https://other.example, not ${pds.origin}`);
+      let session = await finishAuthorization(pending, code, state, iss);
+      equal(session.did, ALICE);
+      equal(await failureOf(async (): Future<JsonValue> => {
+        await finishAuthorization(pending, code, state, iss);
+        return null;
+      }), 'invalid_grant');
+    } finally {
+      pds.close();
+    }
+  });
+
+  test('a stored session works where it is read back, until it is revoked', async (ctx) => {
+    let pds = startPds();
+    try {
+      let session = await signIn(pds);
+      let read = OAuthSession.fromJson(parseJson(stringify(session.toJson())));
+      // The read session has no nonce yet, so its first request is sent twice.
+      isTrue((await getServiceAuth(read, REGISTRY, CREATE)).length > 0, 'from the stored session');
+      await read.revoke();
+      equal(pds.oauth.revoked[0], read.refreshToken);
+      equal(await failureOf(async (): Future<JsonValue> => {
+        await read.refresh();
+        return null;
+      }), 'invalid_grant');
+    } finally {
+      pds.close();
+    }
+  });
+});
