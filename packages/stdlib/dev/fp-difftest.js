@@ -6,7 +6,7 @@
 //
 //   node packages/stdlib/dev/fp-difftest.js [caseCount]
 //
-// Requires packages/zena-compiler/zena/out/cli.wasm to be current.
+// Requires packages/compiler/out/cli.wasm to be current.
 
 import {execFileSync} from 'node:child_process';
 import {writeFileSync, mkdirSync} from 'node:fs';
@@ -257,7 +257,7 @@ execFileSync(
     '--command',
     'bash',
     '-c',
-    `${wide}ZENA_GC_RESERVE_MB=2048 ZENA_COMPILER_WASM=packages/zena-compiler/zena/out/cli.wasm ` +
+    `${wide}ZENA_GC_RESERVE_MB=2048 ZENA_COMPILER_WASM=packages/compiler/out/cli.wasm ` +
       `./target/release/zena-cli run --no-cache --dir=. scratch/fp-runner.zena`,
   ],
   {cwd: root, stdio: ['ignore', 'inherit', 'inherit']},

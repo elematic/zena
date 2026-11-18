@@ -3,7 +3,7 @@
 Status: **Proposed**
 
 This document designs a mid-level intermediate representation — **ZIR** (Zena
-IR) — for the self-hosted compiler (`packages/zena-compiler`). It supersedes
+IR) — for the self-hosted compiler (`packages/compiler`). It supersedes
 the IR sketches in two earlier documents:
 
 - `optimizations.md` proposed optional HIR/LIR tiers and deferred SSA

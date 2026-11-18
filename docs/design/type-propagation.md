@@ -34,7 +34,7 @@ on an earlier revision it did not make the compiler faster at all. Both
 are below, as is the work the measurements point to that does not need
 the analysis.
 
-All numbers are for `zena/cli/main.zena`, the standalone compiler,
+All numbers are for `src/cli/main.zena`, the standalone compiler,
 built at `-O2` on one machine, except where a section names an earlier
 revision.
 
@@ -146,10 +146,10 @@ Three checks find the rewrite correct:
   normally compiles at `-O1`; this runs it at `-O2`:
 
   ```sh
-  ZENA_TEST_OPT_LEVEL=2 npm run test:execution -w @zena-lang/zena-compiler
+  ZENA_TEST_OPT_LEVEL=2 npm run test:execution -w @zena-lang/compiler-zena
   ```
 
-- `zena/test/type-propagation_test.zena` checks a dispatch that only
+- `src/test/type-propagation_test.zena` checks a dispatch that only
   the analysis can resolve: one class reaches a field and the other
   class an array.
 

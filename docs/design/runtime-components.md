@@ -302,7 +302,7 @@ them: a type both sides define is compared by structure (records,
 variants, enums, flags and aliases), and a type a `use` brings in is
 compared by name. Whether a function is `async` is not compared, as
 the runtime does not compare it. The check is
-`packages/zena-compiler/zena/lib/extension-views.zena`.
+`packages/compiler/src/lib/extension-views.zena`.
 
 An extension written in Zena is checked against the same document
 when it is built, by `--wit` and `--world`, so its exports and imports

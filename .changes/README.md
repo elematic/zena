@@ -12,7 +12,7 @@ under `packages/`, and under it the
 have entries: Added, Changed, Deprecated, Removed, Fixed, Security.
 
 ```md
-## zena-compiler
+## compiler
 
 ### Removed
 

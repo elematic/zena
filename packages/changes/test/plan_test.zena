@@ -25,8 +25,8 @@ let CONFIG = `{
   "groups": {
     "toolchain": {
       "versions": "patch",
-      "units": ["zena-compiler", "zena-cli", "zena-runtime", "compiler"],
-      "held": ["compiler"]
+      "units": ["compiler", "zena-cli", "zena-runtime", "compiler-js"],
+      "held": ["compiler-js"]
     }
   },
   "units": {
@@ -55,10 +55,10 @@ function versions(pairs: Array<(String, String)>) {
 }
 
 let NOW = [
-  ('zena-compiler', '0.0.2'),
+  ('compiler', '0.0.2'),
   ('zena-cli', '0.0.2'),
   ('zena-runtime', '0.0.2'),
-  ('compiler', '0.0.1'),
+  ('compiler-js', '0.0.1'),
   ('semver', '0.0.4'),
   ('terminal', '0.3.1')
 ];
@@ -163,7 +163,7 @@ export let tests = suite(
         equal(release.units.length, 1);
         equal(release.units[0].unit.name, 'zena-cli');
         equal(release.unchanged.length, 2);
-        equal(release.unchanged[0], 'zena-compiler');
+        equal(release.unchanged[0], 'compiler');
         equal(release.unchanged[1], 'zena-runtime');
         equal(release.held.length, 0);
       }
@@ -174,17 +174,17 @@ export let tests = suite(
       () => {
         let both = plan(
           [
-            '## compiler\n\n### Added\n\n- A flag.\n\n## zena-cli\n\n### Fixed\n\n- A crash.\n'
+            '## compiler-js\n\n### Added\n\n- A flag.\n\n## zena-cli\n\n### Fixed\n\n- A crash.\n'
           ]
         );
         equal(both.length, 1);
         equal((both[0].next as Version).toString(), '0.0.3');
         equal(both[0].units.length, 1);
         equal(both[0].held.length, 1);
-        equal(both[0].held[0].unit.name, 'compiler');
-        isFalse(both[0].unchanged.contains('compiler'));
+        equal(both[0].held[0].unit.name, 'compiler-js');
+        isFalse(both[0].unchanged.contains('compiler-js'));
 
-        let heldOnly = plan(['## compiler\n\n### Added\n\n- A flag.\n']);
+        let heldOnly = plan(['## compiler-js\n\n### Added\n\n- A flag.\n']);
         equal(heldOnly.length, 1);
         isNull(heldOnly[0].next);
         equal(heldOnly[0].units.length, 0);
@@ -257,16 +257,16 @@ export let tests = suite(
       () => {
         let releases = plan(
           [
-            '## zena-compiler\n\n### Removed\n\n- **Breaking:** Renaming with\n  a colon.\n\n'
+            '## compiler\n\n### Removed\n\n- **Breaking:** Renaming with\n  a colon.\n\n'
               + '## zena-cli\n\n### Fixed\n\n- A crash.\n\n### Added\n\n- Raw mode.\n\n'
-              + '## compiler\n\n### Added\n\n- A flag.\n',
+              + '## compiler-js\n\n### Added\n\n- A flag.\n',
             '## terminal\n\nRequires: semver\n\n### Added\n\n- Prompts.\n\n## pds\n\n### Fixed\n\n- A leak.\n'
           ]
         );
         equal(
           formatStatus(releases),
           'toolchain 0.0.2 -> 0.0.3\n'
-            + '  zena-compiler\n'
+            + '  compiler\n'
             + '    Removed\n'
             + '      - **Breaking:** Renaming with\n'
             + '        a colon.\n'
@@ -276,7 +276,7 @@ export let tests = suite(
             + '    Fixed\n'
             + '      - A crash.\n'
             + '  no changes: zena-runtime\n'
-            + '  compiler (held, entries stay pending)\n'
+            + '  compiler-js (held, entries stay pending)\n'
             + '    Added\n'
             + '      - A flag.\n'
             + '\n'

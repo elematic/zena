@@ -460,7 +460,7 @@ safe even where the ABI allowed one:
   `future` on a synchronous export with the reason that "a stream or future is
   pumped by callback re-entries, which a synchronous export never gets; declare
   the export `async func`"
-  ([wit-module-synth.zena](../../packages/zena-compiler/zena/lib/wit-module-synth.zena)).
+  ([wit-module-synth.zena](../../packages/compiler/src/lib/wit-module-synth.zena)).
 
 The same two facts show the way out. A synchronous activation has no way to
 yield, so anything requiring the guest to make progress while an outer call is
@@ -1155,7 +1155,7 @@ world runtime {
 
 Typed record streams of exactly this shape already cross a composed boundary
 in both directions in
-[gfx-provider.zena](../../packages/zena-compiler/test-files/component/gfx-provider.zena)
+[gfx-provider.zena](../../packages/compiler/test-files/component/gfx-provider.zena)
 and its consumer, so the event streams need no new compiler work.
 
 ## The scene protocol
@@ -1581,10 +1581,10 @@ function.
 Shared state across components is a typed interface the owning component
 exports — a `stream<T>` of a record, or a function returning the current value
 plus a stream of changes. This is the shape the repository already exercises:
-[gfx-provider.zena](../../packages/zena-compiler/test-files/component/gfx-provider.zena)
+[gfx-provider.zena](../../packages/compiler/test-files/component/gfx-provider.zena)
 hands out a `stream<frame-event>` that a consumer in another component reads
 one record at a time, and
-[compose.wit](../../packages/zena-compiler/test-files/component/compose.wit)
+[compose.wit](../../packages/compiler/test-files/component/compose.wit)
 has a consumer awaiting a `future<s32>` that a different component settles.
 
 A host-side signal resource carrying a dynamically-typed
@@ -1700,9 +1700,9 @@ than be delegated to a third component.
 ### What already works
 
 The fixtures named here live under
-`packages/zena-compiler/test-files/component/`. Unless marked otherwise they
+`packages/compiler/test-files/component/`. Unless marked otherwise they
 are compiled, composed and run by
-`npm run test:component -w @zena-lang/zena-compiler`; the ones marked
+`npm run test:component -w @zena-lang/compiler-zena`; the ones marked
 compile-level are asserted by `component-emission_test.zena` instead.
 
 These fixtures are linked by `wasm-tools compose` rather than at run time,
@@ -1898,7 +1898,7 @@ described under the list.
    `zenafx` WIT sitting beside it: when the target emits a component, the CLI
    collects the source of every WIT-backed package in the manifest and splices
    it into the declared world's document before parsing
-   ([cli/main.zena](../../packages/zena-compiler/zena/cli/main.zena), the
+   ([cli/main.zena](../../packages/compiler/src/cli/main.zena), the
    `packagesWit` collection).
 
 The world the application is checked against:
@@ -1926,7 +1926,7 @@ follow the WIT-typed module conventions the compiler already uses: a `record`
 becomes a case class, a `variant` a sealed class whose cases are named for the
 variant and the case together, and an `option<T>` becomes `Option<T>` with
 `some`/`none` from `zena:core` — as in
-[geo-wit.zena](../../packages/zena-compiler/test-files/component/geo-wit.zena).
+[geo-wit.zena](../../packages/compiler/test-files/component/geo-wit.zena).
 A WIT `resource` becomes a `final class` implementing `Disposable`, which is how
 `node` reaches Zena.
 

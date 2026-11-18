@@ -51,7 +51,7 @@ the `zena` command. The design is in
      increment against existing `v*` tags before `.github/workflows/release.yml`
      builds release archives.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
-     (`zena-compiler/compile-file`), zebra, zenadoc, the language service and
+     (`compiler/compile-file`), zebra, zenadoc, the language service and
      the formatter linked
      in. Other programs (the VS Code extension's `lsp.wasm`, the
      playground) have their own entry points built from the same
@@ -161,11 +161,11 @@ the `zena` command. The design is in
      files hold such text in fixtures (`codegen-wat_test.zena`,
      `zir-backend_test.zena` and a dozen more), so `zena test` and
      `test:quick` fail on them for want of a `main` export; they run under
-     `npm run test:unit -w @zena-lang/zena-compiler`.
+     `npm run test:unit -w @zena-lang/compiler-zena`.
    - When more files are stale in the compile cache than copies run at
      once, they are compiled first, in that many copies
      (`zena test --compile <files...>`), each compiling its share in file
-     order on one `CompileSession` (`zena-compiler/compile-file`), so the
+     order on one `CompileSession` (`compiler/compile-file`), so the
      standard library and shared packages are checked once per copy.
      `compileIntoCache` stores each module with the files its program is
      made of (`CompileSession.sources`), not the files its compile read,
@@ -208,7 +208,7 @@ the `zena` command. The design is in
 5. **The bootstrap and the build order**
    - `zena-cli` (`build:binary`) runs the checked-in CLI module bootstrap
      (`ZENA_CLI_MODULE=packages/zena-cli/bootstrap/zena.wasm`) to build
-     Stage A (`zena-compiler:build:cli`), and `zena-run` runs Stage A to
+     Stage A (`compiler:build:cli`), and `zena-run` runs Stage A to
      build `out/zena.wasm` (`build:module`). The language service's
      `lsp.wasm`, which the playground and the VS Code extension load, is
      built from Stage A the same way, so neither waits for `out/zena.wasm`.

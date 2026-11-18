@@ -1,98 +1,76 @@
-# `@zena-lang/compiler`
+# `compiler`
 
-The [Zena](https://zena-lang.dev) compiler, language service, formatter, linter, and standard library packaged as a WebAssembly-GC module (`compiler.wasm`) with individual `stdlib/` `.zena` files and an asynchronous JavaScript/TypeScript API.
-
-## Installation
-
-```sh
-npm install @zena-lang/compiler @zena-lang/runtime
-```
+The Zena compiler, written in Zena. It parses, type-checks, and compiles Zena source code to WebAssembly (Wasm GC) and WebAssembly Text (WAT).
 
 ## Usage
 
-### Node.js or Static HTTP Hosts
+### Parsing a Single File
 
-`createCompiler()` loads `compiler.wasm` and reads standard library modules asynchronously on demand from `./stdlib/` (from disk in Node.js via `node:fs/promises`, or via `fetch()` when served over HTTP):
+Use `compiler/parser` to parse Zena source text into an AST (`Module`):
 
-```ts
-import {createCompiler} from '@zena-lang/compiler';
-import {instantiate, run} from '@zena-lang/runtime';
+```zena
+import { parse } from 'compiler/parser';
 
-const compiler = await createCompiler();
-
-const source = `
-  import { GrowableArray } from 'zena:core';
-  export let main = () => {
-    let items = new GrowableArray<i32>();
-    items.push(42);
-    console.log(\`\${items[0]}\`);
-  };
-`;
-
-const diagnostics = await compiler.check('main.zena', source);
-if (!diagnostics.some((d) => d.severity === 'error')) {
-  const wasm = await compiler.compileToWasm('main.zena', source);
-  if (wasm) {
-    const {instance} = await instantiate(wasm);
-    await run(instance);
-  }
-}
+let ast = parse('export let answer = 42;', 'example.zena');
 ```
 
-Pass `readFile` to resolve project-local imports alongside the standard library:
+### Loading and Checking a Program
 
-```ts
-import {readFile} from 'node:fs/promises';
-import {createCompiler} from '@zena-lang/compiler';
+Use `compiler` (`createCompiler` and `checkCompilation`) with a `CompilerHost` to resolve imports across a module graph and type-check a program:
 
-const compiler = await createCompiler({
-  readFile: async (path) => {
-    try {
-      return await readFile(path, 'utf8');
-    } catch {
-      return undefined;
-    }
-  },
+```zena
+import {
+  createCompiler, checkCompilation, buildStdlibConfig
+} from 'compiler';
+import { FsCompilerHost } from 'compiler/fs-host';
+
+let stdlibRoot = '/stdlib';
+let host = new FsCompilerHost(stdlibRoot);
+let packages = buildStdlibConfig(stdlibRoot, 'host');
+let compiler = createCompiler(host, {
+  stdlibRoot,
+  packages,
+});
+
+let result = await compiler.compile({
+  entry: '/workspace/main.zena',
+  target: 'host',
+});
+let checked = checkCompilation(result);
+```
+
+### Compiling a File to WebAssembly
+
+Use `compiler/compile-file` to compile an entry file on disk to a `.wasm` or `.wat` output file:
+
+```zena
+import { compileFile } from 'compiler/compile-file';
+
+let ok = await compileFile({
+  entry: 'src/main.zena',
+  outPath: 'out/main.wasm',
+  stdlibRoot: '/stdlib',
 });
 ```
 
-### Bundled Browser Workers
+## Libraries
 
-For single-file browser workers without static `stdlib/` file serving, bundle a `Record<string, string>` map and pass `createVirtualFileReader`:
-
-```ts
-import {createCompiler, createVirtualFileReader} from '@zena-lang/compiler';
-
-const compiler = await createCompiler({
-  wasm: '/assets/compiler.wasm',
-  readFile: createVirtualFileReader(stdlibMap),
-});
-```
-
-## Package Exports
-
-| Export path                         | Description                                                                                                                                                                                                |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@zena-lang/compiler`               | Compiler & language service API (`createCompiler`, `ZenaCompiler`, `createVirtualFileReader`, `compilerWasmUrl`, `stdlibUrl`, plus `createLanguageService` / `ZenaLanguageService` / `lspWasmUrl` aliases) |
-| `@zena-lang/compiler/compiler.wasm` | Direct asset path to the `-O2` `compiler.wasm` binary                                                                                                                                                      |
-| `@zena-lang/compiler/stdlib/*`      | Individual Zena standard library `.zena` and `.wit` source files                                                                                                                                           |
-
-## API Overview
-
-`await createCompiler(options)` returns a `ZenaCompiler` instance bound to one Wasm module:
-
-| Method                                  | Return type                                |
-| --------------------------------------- | ------------------------------------------ |
-| `check(path, source?)`                  | `Promise<Diagnostic[]>`                    |
-| `compileToWasm(path, source?, target?)` | `Promise<Uint8Array<ArrayBuffer> \| null>` |
-| `lint(path, source?)`                   | `Promise<LintFinding[]>`                   |
-| `format(source)`                        | `string`                                   |
-| `hover(path, offset, source?)`          | `Promise<HoverInfo \| null>`               |
-| `completions(path, offset, source?)`    | `Promise<CompletionItem[]>`                |
-| `definition(path, offset, source?)`     | `Promise<DefinitionInfo \| null>`          |
-| `documentSymbols(path, source?)`        | `Promise<DocumentSymbolInfo[]>`            |
-| `openDocument(path, source)`            | `void`                                     |
-| `closeDocument(path)`                   | `void`                                     |
+- `compiler` / `compiler/compiler` — compiler entry point (`Compiler`, `createCompiler`, `checkCompilation`, `ProgramCheckResult`)
+- `compiler/compile-file` — end-to-end file compilation (`compileFile`, `CompileFileOptions`)
+- `compiler/tokenizer` — lexer and token definitions (`tokenize`, `Token`, `TokenType`)
+- `compiler/parser` — recursive-descent parser (`parse`, `Parser`)
+- `compiler/ast` — AST node definitions (`Node`, `Module`, `Statement`, `Expression`, `TypeAnnotation`)
+- `compiler/visitor` — AST traversal helpers (`walk`, `Visitor`)
+- `compiler/scope` — lexical scope and symbol resolution (`ScopeBuilder`, `ScopeResult`, `Symbol`)
+- `compiler/checker` — static type checker (`checkModule`, `CheckResult`)
+- `compiler/semantic-model` — semantic queries over a checked module (`SemanticModel`)
+- `compiler/types` — compiler type representations (`Type`, `ClassType`, `FunctionType`, `typeToString`)
+- `compiler/diagnostics` — compiler diagnostics and source spans (`Diagnostic`, `DiagnosticCode`, `DiagnosticSeverity`, `SourceSpan`)
+- `compiler/package-manifest` — `zena-package.json` manifest and workspace loader (`loadWorkspace`, `loadPackageMap`)
+- `compiler/module-resolver` — package and relative module specifier resolution (`ModuleResolver`, `PackageConfig`)
+- `compiler/library-loader` — module graph loader (`LibraryLoader`, `CompilerHost`, `SourceFile`)
+- `compiler/codegen/binary-generator` — WebAssembly GC binary emitter (`BinaryGenerator`)
+- `compiler/codegen/wat-generator` — WebAssembly Text (WAT) emitter (`WatGenerator`)
 
 ## License
 

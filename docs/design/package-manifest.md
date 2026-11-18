@@ -323,7 +323,7 @@ newer one, it asks for a newer `zena`, and given an older one, or a
 lockfile without the field, it asks for the lockfile to be deleted and
 written again with `zena pkg update`. Both of `zena`'s readers check it,
 the package manager's (`package-manager/resolution`) and the
-compiler's (`zena-compiler/package-manifest`).
+compiler's (`compiler/package-manifest`).
 
 Each entry of `resolved` is keyed by a package's DID and version, since
 a workspace can use two versions of one package. It records:

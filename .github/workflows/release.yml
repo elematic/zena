@@ -114,7 +114,7 @@ jobs:
         run: |
           nix develop --command bash -c '
             npm run build:bundle-assets -w @zena-lang/zena-cli
-            npm run test:fixpoint -w @zena-lang/zena-compiler
+            npm run test:fixpoint -w @zena-lang/compiler-zena
           '
 
       - name: Upload CLI bundle assets
@@ -531,13 +531,13 @@ jobs:
 
           PACKAGES=(
             "packages/runtime"
-            "packages/compiler"
+            "packages/compiler-js"
             "packages/codemirror"
             "packages/wasm-web-ui"
             "packages/playground"
           )
 
-          COMPILER_VERSION="$(jq -r '.version' packages/compiler/package.json)"
+          COMPILER_VERSION="$(jq -r '.version' packages/compiler-js/package.json)"
           echo "npm_version=${COMPILER_VERSION}" >> "$GITHUB_OUTPUT"
 
           MANIFEST='[]'
@@ -658,7 +658,7 @@ jobs:
             printf '**macOS and Linux:**\n\n```sh\ncurl -fsSL https://zena-lang.dev/install.sh | ZENA_VERSION=%s sh\n```\n\n' "$TAG"
             printf '**Windows (PowerShell):**\n\n```powershell\n$env:ZENA_VERSION = '\''%s'\''; irm https://zena-lang.dev/install.ps1 | iex\n```\n\n' "$TAG"
             printf 'Omit `ZENA_VERSION` to install the latest release.\n\n'
-            printf '**VS Code Extension:**\n\n```sh\ncode --install-extension %s\n```\n\n' "$VSIX_VERSIONED"
+            printf '**VS Code Extension:**\n\n```sh\ncode --install-extension zena-lang.vscode-zena\n# Or from the attached VSIX:\ncode --install-extension %s\n```\n\n' "$VSIX_VERSIONED"
             printf '**npm Packages (`@zena-lang/*`):**\n\n```sh\nnpm install @zena-lang/compiler%s @zena-lang/runtime%s\n```\n\n' "$NPM_TAG_SUFFIX" "$NPM_TAG_SUFFIX"
             printf '### Downloads\n\n'
             printf '| Platform | Archive | SHA-256 |\n'
@@ -761,6 +761,7 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TRUSTED_PUBLISHING: ${{ vars.NPM_TRUSTED_PUBLISHING }}
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          VSCE_TRUSTED_PUBLISHING: ${{ vars.VSCE_TRUSTED_PUBLISHING }}
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: |
           HAS_NPM="false"
@@ -771,10 +772,10 @@ jobs:
           else
             echo "::notice::Neither NPM_TOKEN secret nor NPM_TRUSTED_PUBLISHING=true variable is configured; skipping npm publish."
           fi
-          if [ -n "${VSCE_PAT:-}" ]; then
+          if [ -n "${VSCE_PAT:-}" ] || [ "${VSCE_TRUSTED_PUBLISHING:-}" = "true" ]; then
             HAS_VSCE="true"
           else
-            echo "::notice::VSCE_PAT is not configured; skipping VS Code Marketplace publish."
+            echo "::notice::Neither VSCE_PAT secret nor VSCE_TRUSTED_PUBLISHING=true variable is configured; skipping VS Code Marketplace publish."
           fi
           if [ -n "${OVSX_PAT:-}" ]; then
             HAS_OVSX="true"
@@ -848,9 +849,17 @@ jobs:
         if: steps.creds.outputs.has_vsce == 'true'
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          VSCE_TRUSTED_PUBLISHING: ${{ vars.VSCE_TRUSTED_PUBLISHING }}
           VSIX_VERSION: ${{ needs.build-vscode.outputs.vsix_version }}
           PRERELEASE: ${{ needs.build-assets.outputs.prerelease }}
         run: |
+          AUTH_ARGS=()
+          if [ -n "${VSCE_PAT:-}" ]; then
+            export VSCE_PAT
+          elif [ "${VSCE_TRUSTED_PUBLISHING:-}" = "true" ]; then
+            unset VSCE_PAT
+            AUTH_ARGS=(--oidc)
+          fi
           PRERELEASE_ARGS=()
           if [ "$PRERELEASE" = "true" ]; then
             PRERELEASE_ARGS=(--pre-release)
@@ -858,6 +867,7 @@ jobs:
           nix develop --command ./node_modules/.bin/vsce publish \
             --packagePath "dist/vscode-zena-v${VSIX_VERSION}.vsix" \
             --skip-duplicate \
+            "${AUTH_ARGS[@]}" \
             "${PRERELEASE_ARGS[@]}"
 
       - name: Publish VSIX to Open VSX Registry

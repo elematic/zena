@@ -270,7 +270,7 @@ Exports {
 ```zena
 Workspace {
   members: [
-    "packages/zena-compiler",
+    "packages/compiler",
     "packages/stdlib",
     "packages/zena-cli",
     "packages/runtime",

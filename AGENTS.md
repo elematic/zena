@@ -187,13 +187,15 @@ the compiler's message for each mistake.
 
 ## The Compiler
 
-The compiler (`packages/zena-compiler`, package name
-`@zena-lang/zena-compiler`) is **self-hosted**: written in Zena, with a
+The compiler (`packages/compiler`, package name
+`@zena-lang/compiler-zena`) is **self-hosted**: written in Zena, with a
 ZIR (CFG+SSA IR) backend. See `docs/design/self-hosted-compiler.md` for
 the architecture. It is linked into the CLI module (`packages/zena-cli/out/zena.wasm`)
 and executed by `zena-cli` (`packages/zena-cli`), the Rust/wasmtime host.
-An earlier TypeScript implementation (`packages/compiler`, "the bootstrap
-compiler") has been deleted; older docs and comments may still refer to it.
+An earlier TypeScript implementation, "the bootstrap compiler", has been
+deleted. Older docs and comments may still refer to it, as
+`packages/compiler`, which held it, and they call this compiler
+`packages/zena-compiler`, where it was until the TypeScript one was gone.
 
 The compiler must pass the **portable tests** in `tests/language/`.
 
@@ -204,8 +206,8 @@ The repository bootstraps from a prebuilt, checked-in CLI module:
 `packages/zena-cli/out/zena.wasm` is built, `./target/release/zena-cli`
 falls back to `bootstrap/zena.wasm`, so `zena build`, `zena fmt` and
 `zena lint` work as soon as cargo builds `zena-cli`. During a build,
-`zena-compiler:build:cli` runs `bootstrap/zena.wasm` through `zena-cli`
-to produce the working Stage A compiler (`zena/out/cli.wasm`), which
+`compiler:build:cli` runs `bootstrap/zena.wasm` through `zena-cli`
+to produce the working Stage A compiler (`packages/compiler/out/cli.wasm`), which
 then builds `packages/zena-cli/out/zena.wasm` and everything else.
 Design doc: `docs/design/bootstrapping.md`. Rules:
 
@@ -230,7 +232,7 @@ directives. They're organized into three categories:
 - **`semantics/`** — Type checker tests. Directive: `// @mode: check` with `// @error:` on error lines.
 - **`execution/`** — Codegen tests. Directive: `// @mode: run` with `// @result:` for expected return value.
 
-The runners are Zena programs in `packages/zena-compiler/zena/test/`
+The runners are Zena programs in `packages/compiler/src/test/`
 (`portable_syntax`, `portable_semantics`, `portable_execution`). They
 discover tests by walking the directory — there is no list of tests or
 directories to add to. A test that cannot run yet says so in the file:
@@ -243,7 +245,7 @@ Skips are printed, with their reasons, in every run's summary. Run a single
 category (optionally filtered by path substring) with:
 
 ```bash
-npm run test:execution -w @zena-lang/zena-compiler -- variables
+npm run test:execution -w @zena-lang/compiler-zena -- variables
 ```
 
 When fixing bugs or adding features, prefer adding portable tests here.
@@ -256,10 +258,10 @@ workspace at the root for the Rust/wasmtime hosts).
 Directory-level orientation lives in `CONTEXT.md` files. Read the
 `CONTEXT.md` nearest your work before editing:
 
-- [packages/zena-compiler/CONTEXT.md](packages/zena-compiler/CONTEXT.md) — self-hosted compiler and codegen overview
-- [packages/zena-compiler/zena/lib/codegen/ir/CONTEXT.md](packages/zena-compiler/zena/lib/codegen/ir/CONTEXT.md) — ZIR backend (lowering, GVN, emit)
-- [packages/zena-compiler/zena/lib/checker/CONTEXT.md](packages/zena-compiler/zena/lib/checker/CONTEXT.md) — the type checker's libraries
-- [packages/zena-compiler/zena/lib/codegen/reachability/CONTEXT.md](packages/zena-compiler/zena/lib/codegen/reachability/CONTEXT.md) — RTA and specialization
+- [packages/compiler/CONTEXT.md](packages/compiler/CONTEXT.md) — self-hosted compiler and codegen overview
+- [packages/compiler/src/lib/codegen/ir/CONTEXT.md](packages/compiler/src/lib/codegen/ir/CONTEXT.md) — ZIR backend (lowering, GVN, emit)
+- [packages/compiler/src/lib/checker/CONTEXT.md](packages/compiler/src/lib/checker/CONTEXT.md) — the type checker's libraries
+- [packages/compiler/src/lib/codegen/reachability/CONTEXT.md](packages/compiler/src/lib/codegen/reachability/CONTEXT.md) — RTA and specialization
 - [packages/zena-cli/CONTEXT.md](packages/zena-cli/CONTEXT.md) — CLI module and Rust/wasmtime host
 - [packages/pds/CONTEXT.md](packages/pds/CONTEXT.md) — the PDS, ported from pds.js, and its managed accounts
 - [packages/registry/CONTEXT.md](packages/registry/CONTEXT.md) — the App View: the registry methods, the site, and the service
@@ -276,7 +278,8 @@ A new directory under `packages/` gets a `README.md`, a `CONTEXT.md`, a
 `CLAUDE.md` containing `@./CONTEXT.md`, and entries in both lists here and
 in the root `CLAUDE.md`.
 
-- **`packages/zena-compiler`**: The self-hosted compiler (`@zena-lang/zena-compiler`).
+- **`packages/compiler`**: The self-hosted compiler (`@zena-lang/compiler-zena`; imports name it `compiler`).
+- **`packages/compiler-js`**: The npm package `@zena-lang/compiler`: the compiler, language service, formatter and linter as one `compiler.wasm`, with the standard library and a JavaScript API, for Node.js and browsers. Published.
 - **`packages/stdlib`**: Standard library (`@zena-lang/stdlib`).
 - **`packages/zena-cli`**: The `zena` command (`@zena-lang/zena-cli`): the Zena CLI module (`zena/main.zena` → `out/zena.wasm`, with the checked-in bootstrap in `bootstrap/zena.wasm`) and the Rust/wasmtime binary that hosts it. Links in the compiler, test and bench runners, `zebra`, `zenadoc`, `zena-formatter`, `zena-lint`, and `language-service`.
 - **`packages/zena-runtime`**: Rust library shared by `zena-cli`, `zena-run`, and `zenafx`: the wasmtime engine configuration, the `.cwasm` cache, WASI 0.3, and the `zena:host` WIT imports (stack traces, process spawning, running Wasm modules, instantiating components and keeping them, raw terminal input). The Rust counterpart of `packages/runtime`.
@@ -600,7 +603,7 @@ script and everything after it, so keep inputs to what the script reads:
   package's `lib/`. A package's tests are inputs only of the script that
   runs them.
 - **A dependency's output.** When a script reads a file another script
-  writes (`zena/out/cli.wasm`), list the file and depend on that script
+  writes (`out/cli.wasm`), list the file and depend on that script
   with `"cascade": false`. It then reruns when the file's bytes change,
   and not whenever the other script reruns. It no longer inherits that
   script's inputs, so it lists everything else it reads itself.
@@ -675,7 +678,7 @@ npm run test:smoke
 npm run test:quick -- packages/stdlib/tests/regex
 
 # Run tests for a specific package
-npm test -w @zena-lang/zena-compiler
+npm test -w @zena-lang/compiler-zena
 
 # Run a specific TypeScript test file (note: path is relative, uses .js extension)
 npm test -w @zena-lang/runtime -- test/runtime_test.js
@@ -684,8 +687,8 @@ npm test -w @zena-lang/runtime -- test/runtime_test.js
 npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
 ```
 
-- Packages are referred to by **package name** (`@zena-lang/zena-compiler`), not path.
-- **NEVER** use `npm test packages/zena-compiler/...` or `npm test -- some/path`.
+- Packages are referred to by **package name** (`@zena-lang/compiler-zena`), not path.
+- **NEVER** use `npm test packages/compiler/...` or `npm test -- some/path`.
 - `npm run test:smoke` is `npm test` without `test:fixpoint`, which builds
   stage B and stage C of the compiler to compare them and is the longest
   chain in a cold run. It catches the compiler miscompiling itself, which no
@@ -723,7 +726,7 @@ npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
 import project modules because relative paths are broken.
 
 - If you truly need a temporary file for debugging, create temporary test files
-  in the **normal test directories** (e.g., `packages/zena-compiler/zena/test/`
+  in the **normal test directories** (e.g., `packages/compiler/src/test/`
   or `packages/runtime/src/test/`).
 - For portable tests, create them in `tests/language/`.
 - Keep them. Promote a scratch file to a permanent test, or leave it where it
@@ -806,8 +809,8 @@ interfaces, and the rest of that table. In addition:
 
 - New syntax, type-checking, or codegen features and bug fixes should include
   portable tests under `tests/language/` (`syntax/`, `semantics/`, `execution/`).
-- New AST nodes in `packages/zena-compiler/zena/lib/ast.zena` must be handled in
-  `ast-visitor.zena` and the reachability pass (`zena/lib/codegen/reachability/`).
+- New AST nodes in `packages/compiler/src/lib/ast.zena` must be handled in
+  `ast-visitor.zena` and the reachability pass (`src/lib/codegen/reachability/`).
 - Zena unit tests (`*_test.zena`) use `suite`, `test`, and `expect` from
   `zena:test` and can be run directly during iteration with
   `npm run test:quick -- <path>`. A test body may be `async`

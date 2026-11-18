@@ -22,7 +22,7 @@ const repoRoot = join(pkgRoot, '..', '..');
 const lspWasmPath =
   process.env['ZENA_COMPILER_WASM'] ??
   process.env['ZENA_LSP_WASM'] ??
-  join(repoRoot, 'packages', 'compiler', 'compiler.wasm');
+  join(repoRoot, 'packages', 'compiler-js', 'compiler.wasm');
 const stdlibRoot = join(repoRoot, 'packages', 'stdlib', 'zena');
 
 interface LspExports extends WebAssembly.Exports {

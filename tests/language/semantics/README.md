@@ -55,5 +55,5 @@ The runner:
 ## Porting & Testing Workflow
 
 1. Create the `.zena` file in the appropriate `tests/language/semantics/` directory.
-2. Run `npm test -w @zena-lang/zena-compiler` to verify it passes the checker.
+2. Run `npm test -w @zena-lang/compiler-zena` to verify it passes the checker.
 3. If the checker fails, either fix the checker or mark the test as known-failing (skip list in `portable_test.zena`).

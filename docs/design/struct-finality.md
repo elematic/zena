@@ -35,7 +35,7 @@ before the matching one was a call into the runtime.
 
 The compiler is the program this hits hardest, because it is written as
 matches over AST and type hierarchies. A sampling profile of it
-compiling `packages/zena-compiler/zena/test/portable_semantics.zena`
+compiling `packages/compiler/src/test/portable_semantics.zena`
 attributed 49% of the whole compile to `is_subtype_cached` reached
 through the `is_subtype` libcall ([#175](https://github.com/elematic/zena/issues/175)).
 
@@ -96,7 +96,7 @@ that decides whether a cast against the type is inline.
 
 ## Measurements
 
-The compiler's own module, `packages/zena-compiler/zena/out/cli-self.wasm`:
+The compiler's own module, `packages/compiler/out/cli-self.wasm`:
 
 |                | before | after |
 | -------------- | ------ | ----- |
