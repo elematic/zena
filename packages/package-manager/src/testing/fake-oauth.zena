@@ -1,0 +1,389 @@
+/**
+ * The fake PDS's authorization server, for testing atproto OAuth clients
+ * (`atproto/oauth`) without a browser. It serves the two metadata
+ * documents, PAR, an authorization endpoint that approves at once, the
+ * token endpoint with PKCE, DPoP and single-use refresh tokens, and
+ * revocation. `checkAccess` is the check the PDS's own methods make of a
+ * DPoP-bound access token: its proof, its binding and its scope.
+ *
+ * Every proof must carry the server's current nonce. A client's first
+ * request has none, so it is refused with `use_dpop_nonce`, as a real
+ * server's is, and the client tries again; `rotateNonce` makes that happen
+ * at any point.
+ *
+ * The authorization endpoint answers with a redirect to the client's
+ * redirect URI, which a test follows itself:
+ *
+ * ```zena
+ * let pending = await startAuthorization(client, handle, state, resolver);
+ * let redirect = await fetch(pending.url);  // 302, to the redirect URI
+ * let back = new URL(redirect.header('location'));
+ * let session = await finishAuthorization(pending, code, state, iss);
+ * ```
+ */
+
+import {Future} from 'zena:async';
+import {HashMap, HashSet} from 'zena:collections';
+import {Borrow, Own} from 'zena:core';
+import {Request, Response} from 'zena:http';
+import {JsonArray, JsonObject, stringify} from 'zena:json';
+import {EncodeSet, parseFormUrlencoded, percentEncode} from 'zena:url';
+import {now} from 'wasi:clocks/system-clock';
+import {DpopProof, accessTokenHash, verifyDpopProof} from 'atproto/dpop';
+import {pkceChallenge} from 'atproto/oauth';
+
+/** An authorization request pushed with PAR, and then the code that approves it. */
+final class PushedRequest {
+  clientId: String;
+  redirectUri: String;
+  scope: String;
+  state: String;
+  challenge: String;
+  /** The thumbprint of the DPoP key that pushed it, which the code must be traded with. */
+  jkt: String;
+  /** The account the login hint named. */
+  did: String;
+
+  new(this.clientId, this.redirectUri, this.scope, this.state, this.challenge, this.jkt, this.did);
+}
+
+/** What a token stands for: the account, and what it may do. */
+export final class Grant {
+  did: String;
+  clientId: String;
+  scope: String;
+  jkt: String;
+
+  new(this.did, this.clientId, this.scope, this.jkt);
+}
+
+/** The value of `name` in a form, or null. */
+function formValue(form: Array<(String, String)>, name: String): String | null {
+  for (let (key, value) in form) {
+    if (key == name) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function errorBody(error: String, description: String) {
+  let json = new JsonObject();
+  json['error'] = error;
+  json['error_description'] = description;
+  return stringify(json);
+}
+
+function strings(items: Array<String>) {
+  let array = new JsonArray();
+  for (let item in items) {
+    array.push(item);
+  }
+  return array;
+}
+
+/** The fake PDS's authorization server: its sessions, codes and tokens. */
+export final class FakeAuthorizationServer {
+  /** The nonce every proof must carry. */
+  var nonce = 'nonce-1';
+  var #nonceCount = 1;
+  /** How long an access token lasts, in seconds. */
+  var accessLifetime = 300 as i64;
+  /** The client ID of each request pushed, in order. */
+  clientIds = new GrowableArray<String>();
+  /** The scope of each request pushed, in order. */
+  scopes = new GrowableArray<String>();
+  /** How many refresh tokens it has taken. */
+  var refreshes = 0;
+  /** How many proofs it has refused for an old nonce or none. */
+  var nonceRefusals = 0;
+  /** The refresh tokens revoked. */
+  revoked = new GrowableArray<String>();
+  #requests = new HashMap<String, PushedRequest>();
+  #codes = new HashMap<String, PushedRequest>();
+  #access = new HashMap<String, Grant>();
+  #refresh = new HashMap<String, Grant>();
+  #jtis = new HashSet<String>();
+  var #count = 0;
+
+  /** Makes every proof from now on need a new nonce, as a server's rotation does. */
+  rotateNonce(): void {
+    this.#nonceCount += 1;
+    this.nonce = `nonce-${this.#nonceCount}`;
+  }
+
+  /** Makes every access token handed out so far invalid, as when they expire. */
+  expireAccessTokens(): void {
+    this.#access.clear();
+  }
+
+  #next(prefix: String): String {
+    this.#count += 1;
+    return `${prefix}-${this.#count}`;
+  }
+
+  /**
+   * Checks the DPoP proof of a request to `url`: valid, new, and carrying
+   * the current nonce. Answers the refusal itself, in the form `answer`
+   * gives, and returns null.
+   */
+  #proofOf(req: Borrow<Request>, res: Response, method: String, url: String,
+      refuse: (error: String, description: String) => void): DpopProof | null {
+    res.setHeader('dpop-nonce', this.nonce);
+    let header = req.getHeader('dpop');
+    if (header == null) {
+      refuse('invalid_dpop_proof', 'the request has no DPoP proof');
+      return null;
+    }
+    var proof: DpopProof | null = null;
+    try {
+      proof = verifyDpopProof(header, method, url, now().seconds);
+    } catch (e) {
+      refuse('invalid_dpop_proof', e.message);
+      return null;
+    }
+    let checked = proof;
+    if (checked.nonce != this.nonce) {
+      this.nonceRefusals += 1;
+      refuse('use_dpop_nonce', 'the proof needs the server\'s current nonce');
+      return null;
+    }
+    if (this.#jtis.has(checked.jti)) {
+      refuse('invalid_dpop_proof', 'the proof was used before');
+      return null;
+    }
+    this.#jtis.add(checked.jti);
+    return checked;
+  }
+
+  /** The answer of the token endpoint: a new access token and refresh token for `grant`. */
+  #tokens(grant: Grant): String {
+    let access = this.#next('oauth-access');
+    let refresh = this.#next('oauth-refresh');
+    this.#access[access] = grant;
+    this.#refresh[refresh] = grant;
+    let json = new JsonObject();
+    json['access_token'] = access;
+    json['token_type'] = 'DPoP';
+    json['expires_in'] = new Box<f64>(this.accessLifetime as f64);
+    json['refresh_token'] = refresh;
+    json['scope'] = grant.scope;
+    json['sub'] = grant.did;
+    return stringify(json);
+  }
+
+  /**
+   * Answers the request when it is for the authorization server, at the
+   * server whose origin is `origin`, and returns whether it was.
+   * `accountOf` finds the DID a login hint names.
+   */
+  async serve(req: Own<Request>, res: Response, origin: String,
+      accountOf: (hint: String) => String | null): Future<boolean> {
+    let path = req.path;
+    if (path == '/.well-known/oauth-protected-resource') {
+      let json = new JsonObject();
+      json['resource'] = origin;
+      json['authorization_servers'] = strings([origin]);
+      res.type = 'application/json';
+      res.body = stringify(json);
+      return true;
+    }
+    if (path == '/.well-known/oauth-authorization-server') {
+      let json = new JsonObject();
+      json['issuer'] = origin;
+      json['pushed_authorization_request_endpoint'] = `${origin}/oauth/par`;
+      json['authorization_endpoint'] = `${origin}/oauth/authorize`;
+      json['token_endpoint'] = `${origin}/oauth/token`;
+      json['revocation_endpoint'] = `${origin}/oauth/revoke`;
+      json['require_pushed_authorization_requests'] = new Box<boolean>(true);
+      json['response_types_supported'] = strings(['code']);
+      json['grant_types_supported'] = strings(['authorization_code', 'refresh_token']);
+      json['code_challenge_methods_supported'] = strings(['S256']);
+      json['dpop_signing_alg_values_supported'] = strings(['ES256']);
+      json['token_endpoint_auth_methods_supported'] = strings(['none']);
+      json['authorization_response_iss_parameter_supported'] = new Box<boolean>(true);
+      json['client_id_metadata_document_supported'] = new Box<boolean>(true);
+      res.type = 'application/json';
+      res.body = stringify(json);
+      return true;
+    }
+    if (path == '/oauth/authorize') {
+      let params = req.url.searchParams();
+      let requestUri = params.get('request_uri') ?? '';
+      if (let (true, pushed) = this.#requests.get(requestUri)) {
+        if (params.get('client_id') != pushed.clientId) {
+          res.statusCode = 400;
+          res.body = 'the client is not the one that pushed the request';
+          return true;
+        }
+        this.#requests.delete(requestUri);
+        let code = this.#next('code');
+        this.#codes[code] = pushed;
+        let back = `${pushed.redirectUri}?code=${percentEncode(code, EncodeSet.Component)}` +
+            `&state=${percentEncode(pushed.state, EncodeSet.Component)}&iss=${percentEncode(origin, EncodeSet.Component)}`;
+        res.statusCode = 302;
+        res.setHeader('location', back);
+        res.body = '';
+        return true;
+      }
+      res.statusCode = 400;
+      res.body = 'no such request';
+      return true;
+    }
+    if (path != '/oauth/par' && path != '/oauth/token' && path != '/oauth/revoke') {
+      return false;
+    }
+    res.type = 'application/json';
+    let refuse = (error: String, description: String) => {
+      res.statusCode = 400;
+      res.body = errorBody(error, description);
+    };
+    let url = `${origin}${path}`;
+    let proof = this.#proofOf(req, res, 'POST', url, refuse);
+    if (proof == null) {
+      return true;
+    }
+    let form = parseFormUrlencoded(await req.text());
+    let clientId = formValue(form, 'client_id') ?? '';
+    if (path == '/oauth/par') {
+      let scope = formValue(form, 'scope') ?? '';
+      let redirectUri = formValue(form, 'redirect_uri');
+      let state = formValue(form, 'state');
+      let challenge = formValue(form, 'code_challenge');
+      let did = accountOf(formValue(form, 'login_hint') ?? '');
+      if (clientId == '' || redirectUri == null || state == null || challenge == null ||
+          formValue(form, 'code_challenge_method') != 'S256' || formValue(form, 'response_type') != 'code') {
+        refuse('invalid_request', 'the request lacks a client, a redirect URI, a state or an S256 challenge');
+        return true;
+      }
+      if (!hasScope(scope, 'atproto')) {
+        refuse('invalid_scope', 'the scope has no atproto');
+        return true;
+      }
+      if (did == null) {
+        refuse('invalid_request', 'the login hint names no account here');
+        return true;
+      }
+      this.clientIds.push(clientId);
+      this.scopes.push(scope);
+      let requestUri = `urn:ietf:params:oauth:request_uri:${this.#next('request')}`;
+      this.#requests[requestUri] = new PushedRequest(clientId, redirectUri, scope, state, challenge,
+          proof.thumbprint, did);
+      let json = new JsonObject();
+      json['request_uri'] = requestUri;
+      json['expires_in'] = new Box<f64>(60);
+      res.statusCode = 201;
+      res.body = stringify(json);
+      return true;
+    }
+    if (path == '/oauth/revoke') {
+      let token = formValue(form, 'token') ?? '';
+      if (let (true, grant) = this.#refresh.get(token)) {
+        if (grant.clientId == clientId) {
+          this.#refresh.delete(token);
+          this.revoked.push(token);
+        }
+      }
+      res.body = '';
+      return true;
+    }
+    let grantType = formValue(form, 'grant_type');
+    if (grantType == 'authorization_code') {
+      let code = formValue(form, 'code') ?? '';
+      if (let (true, pushed) = this.#codes.get(code)) {
+        this.#codes.delete(code);
+        if (pushed.clientId != clientId || formValue(form, 'redirect_uri') != pushed.redirectUri) {
+          refuse('invalid_grant', 'the code is for another client or redirect URI');
+          return true;
+        }
+        if (pkceChallenge(formValue(form, 'code_verifier') ?? '') != pushed.challenge) {
+          refuse('invalid_grant', 'the code verifier does not match the challenge');
+          return true;
+        }
+        if (proof.thumbprint != pushed.jkt) {
+          refuse('invalid_dpop_proof', 'the code was pushed with another DPoP key');
+          return true;
+        }
+        res.body = this.#tokens(new Grant(pushed.did, clientId, pushed.scope, pushed.jkt));
+        return true;
+      }
+      refuse('invalid_grant', 'no such code, or it was used');
+      return true;
+    }
+    if (grantType == 'refresh_token') {
+      let token = formValue(form, 'refresh_token') ?? '';
+      if (let (true, grant) = this.#refresh.get(token)) {
+        if (grant.clientId != clientId || grant.jkt != proof.thumbprint) {
+          refuse('invalid_grant', 'the refresh token is for another client or DPoP key');
+          return true;
+        }
+        // Each refresh token is taken once.
+        this.#refresh.delete(token);
+        this.refreshes += 1;
+        res.body = this.#tokens(grant);
+        return true;
+      }
+      refuse('invalid_grant', 'no such refresh token, or it was used');
+      return true;
+    }
+    refuse('unsupported_grant_type', 'the grant is neither authorization_code nor refresh_token');
+    return true;
+  }
+
+  /**
+   * What the request's DPoP-bound access token grants, when the token is
+   * live and its proof is valid and made with its key. Otherwise it answers
+   * 401 itself, with the `WWW-Authenticate` a client reads, and returns
+   * null. The caller checks the grant's scope (`refuseScope`).
+   */
+  checkAccess(req: Borrow<Request>, res: Response, url: String): Grant | null {
+    let authorization = req.getHeader('authorization') ?? '';
+    let token = if (authorization.startsWith('DPoP ')) authorization.sliceBytes(5, authorization.length) else '';
+    let refuse = (error: String, description: String) => {
+      res.statusCode = 401;
+      res.setHeader('www-authenticate', `DPoP error="${error}", error_description="${description}"`);
+      res.type = 'application/json';
+      res.body = errorBody(error, description);
+    };
+    let proof = this.#proofOf(req, res, req.method, url, refuse);
+    if (proof == null) {
+      return null;
+    }
+    if (let (true, grant) = this.#access.get(token)) {
+      if (proof.ath != accessTokenHash(token) || proof.thumbprint != grant.jkt) {
+        refuse('invalid_dpop_proof', 'the proof is not for this token or its key');
+        return null;
+      }
+      return grant;
+    }
+    refuse('invalid_token', 'the access token is not live');
+    return null;
+  }
+}
+
+/** Answers that the token's scope does not allow the request. */
+export function refuseScope(res: Response): void {
+  res.statusCode = 403;
+  res.type = 'application/json';
+  res.body = errorBody('insufficient_scope', 'the token\'s scope does not allow this');
+}
+
+/** Whether the space-separated `scope` has `wanted` among its parts. */
+function hasScope(scope: String, wanted: String): boolean {
+  for (let part in scope.split(' ')) {
+    if (part == wanted) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Whether `scope` allows service-auth tokens for `method`: `rpc:<method>?aud=*`. */
+export function allowsServiceAuth(scope: String, method: String): boolean {
+  return hasScope(scope, `rpc:${method}?aud=*`);
+}
+
+/** Whether `scope` allows writing records of `collection`: `repo:<collection>`. */
+export function allowsRecords(scope: String, collection: String): boolean {
+  return hasScope(scope, `repo:${collection}`);
+}

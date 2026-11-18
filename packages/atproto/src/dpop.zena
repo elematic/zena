@@ -1,0 +1,271 @@
+/**
+ * DPoP (RFC 9449), which atproto's OAuth profile requires of every client:
+ * proof that whoever presents an access token holds the private key the
+ * token is bound to. With each request to the authorization server or the
+ * PDS, the client sends a short JWT signed with that key, its proof, in a
+ * `DPoP` header:
+ *
+ * ```json
+ * {"typ": "dpop+jwt", "alg": "ES256", "jwk": {"kty": "EC", "crv": "P-256", "x": "…", "y": "…"}}
+ * {"jti": "…", "htm": "POST", "htu": "https://pds.example/xrpc/…", "iat": 1792800000,
+ *  "nonce": "…", "ath": "…"}
+ * ```
+ *
+ * `htm` and `htu` are the request's method and URL, without its query.
+ * `nonce` is the one the server last sent in a `DPoP-Nonce` header, and
+ * `ath` the SHA-256 of the access token, on requests that carry one. A
+ * token is bound to the key whose thumbprint (RFC 7638) its `cnf.jkt`
+ * names.
+ *
+ * atproto requires ES256, the P-256 curve. This library has no imports
+ * from the host: whoever makes a key or a proof supplies the randomness
+ * and the time.
+ */
+
+import {EcdsaError, p256, sha256} from 'zena:crypto';
+import {base64Url} from 'zena:encoding';
+import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
+
+/** A proof that is malformed or does not pass a check. */
+export class DpopError extends Error {
+  new(message: String) : super(message);
+}
+
+/** How far a proof's `iat` may be from the checker's clock, in seconds. */
+export let DPOP_CLOCK_SKEW = 300 as i64;
+
+/** `bytes` as base64url, without padding. */
+function encoded(bytes: FixedArray<u8>) {
+  return base64Url.encode(bytes, false);
+}
+
+/** The JWK of a P-256 public key in SEC1 form, compressed or not. */
+function publicJwk(publicKey: FixedArray<u8>) {
+  let full = if (publicKey.length == 65) publicKey else p256.decompressPublicKey(publicKey);
+  let jwk = new JsonObject();
+  jwk['kty'] = 'EC';
+  jwk['crv'] = 'P-256';
+  jwk['x'] = encoded(full.slice(1, 33));
+  jwk['y'] = encoded(full.slice(33, 65));
+  return jwk;
+}
+
+/**
+ * The thumbprint of a P-256 JWK (RFC 7638): base64url of the SHA-256 of
+ * its required members, in order, with no spaces.
+ */
+export function jwkThumbprint(jwk: JsonObject): String {
+  let canonical = new JsonObject();
+  canonical['crv'] = jwk['crv'];
+  canonical['kty'] = jwk['kty'];
+  canonical['x'] = jwk['x'];
+  canonical['y'] = jwk['y'];
+  return encoded(sha256(stringify(canonical).toBytes()));
+}
+
+/** The `ath` of a proof: base64url of the SHA-256 of the access token. */
+export function accessTokenHash(accessToken: String): String {
+  return encoded(sha256(accessToken.toBytes()));
+}
+
+/** A URL without its query and fragment, as `htu` names it. */
+export function proofTarget(url: String): String {
+  var end = url.length;
+  for (var i = 0; i < url.length; i += 1) {
+    let b = url.getByteAt(i);
+    if (b == 63 || b == 35) { // '?' or '#'
+      end = i;
+      break;
+    }
+  }
+  return url.sliceBytes(0, end);
+}
+
+/** A session's DPoP key: a P-256 private key, which proves possession of its tokens. */
+export final class DpopKey {
+  #privateKey: FixedArray<u8>;
+  /** The public key, in uncompressed SEC1 form. */
+  publicKey: FixedArray<u8>;
+
+  /** The key for the 32-byte scalar `privateKey`. Throws `EcdsaError` for one out of range. */
+  new(privateKey: FixedArray<u8>)
+      : #privateKey = privateKey,
+        publicKey = p256.publicKey(privateKey, false);
+
+  /**
+   * A key from `random`, which gives 32 random bytes each time it is
+   * called. Bytes that are not a scalar of the curve, about one draw in
+   * 2^32, are drawn again, up to eight times.
+   */
+  static generate(random: () => FixedArray<u8>): DpopKey {
+    for (var attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        return new DpopKey(random());
+      } catch (e) {
+        if (!(e is EcdsaError)) {
+          throw e;
+        }
+      }
+    }
+    throw new DpopError('the random bytes were never a P-256 key');
+  }
+
+  /** The public key as a JWK. */
+  jwk(): JsonObject {
+    return publicJwk(this.publicKey);
+  }
+
+  /** The thumbprint a token bound to this key names in `cnf.jkt`. */
+  thumbprint(): String {
+    return jwkThumbprint(this.jwk());
+  }
+
+  /**
+   * A proof for a request of `method` to `url`, made at `iat`, in seconds
+   * since the epoch, with the unique `jti`. It carries the server's latest
+   * `nonce` and, for a request with an access token, its hash.
+   */
+  proof(method: String, url: String, iat: i64, jti: String, nonce: String | null = null,
+      accessToken: String | null = null): String {
+    let header = new JsonObject();
+    header['typ'] = 'dpop+jwt';
+    header['alg'] = 'ES256';
+    header['jwk'] = this.jwk();
+    let payload = new JsonObject();
+    payload['jti'] = jti;
+    payload['htm'] = method;
+    payload['htu'] = proofTarget(url);
+    payload['iat'] = new Box<f64>(iat as f64);
+    if (nonce != null) {
+      payload['nonce'] = nonce;
+    }
+    if (accessToken != null) {
+      payload['ath'] = accessTokenHash(accessToken);
+    }
+    let signingInput = `${encoded(stringify(header).toBytes())}.${encoded(stringify(payload).toBytes())}`;
+    let signature = p256.sign(this.#privateKey, signingInput.toBytes());
+    return `${signingInput}.${encoded(signature)}`;
+  }
+
+  /** The key as a private JWK, for keeping with a session. It is a secret. */
+  toJson(): JsonObject {
+    let jwk = this.jwk();
+    jwk['d'] = encoded(this.#privateKey);
+    return jwk;
+  }
+
+  /** Reads a key `toJson` wrote. Throws `DpopError`. */
+  static fromJson(json: JsonValue): DpopKey {
+    if (json is JsonObject) {
+      let d = json['d'];
+      if (d is String && json['crv'] == 'P-256') {
+        try {
+          return new DpopKey(base64Url.decode(d));
+        } catch (e) {
+          throw new DpopError('a stored DPoP key is not a P-256 key');
+        }
+      }
+    }
+    throw new DpopError('a stored DPoP key is not a P-256 private JWK');
+  }
+}
+
+/** What a valid proof says. */
+export final class DpopProof {
+  /** The thumbprint of the key that signed it. */
+  thumbprint: String;
+  jti: String;
+  iat: i64;
+  /** The nonce it carries, or null. */
+  nonce: String | null;
+  /** The access token hash it carries, or null. */
+  ath: String | null;
+
+  new(this.thumbprint, this.jti, this.iat, this.nonce, this.ath);
+}
+
+/**
+ * Checks the proof `proof` for a request of `method` to `url` at `now`, in
+ * seconds since the epoch: its form, its signature by the key it carries,
+ * its method, its URL and its time. The caller checks the nonce, the
+ * token's binding and that the `jti` is new. Throws `DpopError`.
+ */
+export function verifyDpopProof(proof: String, method: String, url: String, now: i64): DpopProof {
+  let parts = proof.split('.');
+  if (parts.length != 3) {
+    throw new DpopError('a DPoP proof is three base64url parts');
+  }
+  let header = decodePart(parts[0], 'header');
+  let payload = decodePart(parts[1], 'payload');
+  if (header['typ'] != 'dpop+jwt' || header['alg'] != 'ES256') {
+    throw new DpopError('a DPoP proof is a dpop+jwt signed with ES256');
+  }
+  let jwk = header['jwk'];
+  if (!(jwk is JsonObject) || jwk['kty'] != 'EC' || jwk['crv'] != 'P-256' || jwk.has('d')) {
+    throw new DpopError('a DPoP proof carries a public P-256 JWK');
+  }
+  let x = jwk['x'];
+  let y = jwk['y'];
+  if (!(x is String) || !(y is String)) {
+    throw new DpopError('a DPoP proof carries a public P-256 JWK');
+  }
+  var signature = new FixedArray<u8>(0, 0 as u8);
+  var publicKey = signature;
+  try {
+    signature = base64Url.decode(parts[2]);
+    publicKey = uncompressed(base64Url.decode(x), base64Url.decode(y));
+  } catch (e) {
+    throw new DpopError('a DPoP proof is not base64url');
+  }
+  if (!p256.verify(publicKey, `${parts[0]}.${parts[1]}`.toBytes(), signature, true)) {
+    throw new DpopError('a DPoP proof is not signed by the key it carries');
+  }
+  if (payload['htm'] != method) {
+    throw new DpopError(`a DPoP proof is for ${stringify(payload['htm'])}, not ${method}`);
+  }
+  if (payload['htu'] != proofTarget(url)) {
+    throw new DpopError(`a DPoP proof is for ${stringify(payload['htu'])}, not ${proofTarget(url)}`);
+  }
+  let jti = payload['jti'];
+  if (!(jti is String) || jti == '') {
+    throw new DpopError('a DPoP proof has no jti');
+  }
+  let iatValue = payload['iat'];
+  if (!(iatValue is Box<f64>)) {
+    throw new DpopError('a DPoP proof has no iat');
+  }
+  let iat = iatValue.value as i64;
+  if (iat > now + DPOP_CLOCK_SKEW || iat < now - DPOP_CLOCK_SKEW) {
+    throw new DpopError('a DPoP proof is too old or too new');
+  }
+  let nonce = payload['nonce'];
+  let ath = payload['ath'];
+  return new DpopProof(jwkThumbprint(jwk), jti, iat, if (nonce is String) nonce else null,
+      if (ath is String) ath else null);
+}
+
+/** The uncompressed SEC1 key with the coordinates `x` and `y`. */
+function uncompressed(x: FixedArray<u8>, y: FixedArray<u8>): FixedArray<u8> {
+  if (x.length != 32 || y.length != 32) {
+    throw new DpopError('a P-256 coordinate is 32 bytes');
+  }
+  let key = new FixedArray<u8>(65, 4 as u8);
+  for (var i = 0; i < 32; i += 1) {
+    key[1 + i] = x[i];
+    key[33 + i] = y[i];
+  }
+  return key;
+}
+
+function decodePart(part: String, what: String): JsonObject {
+  var json: JsonValue = null;
+  try {
+    json = parseJson(String.fromBytes(base64Url.decode(part)));
+  } catch (e) {
+    throw new DpopError(`a DPoP proof's ${what} is not base64url JSON`);
+  }
+  if (!(json is JsonObject)) {
+    throw new DpopError(`a DPoP proof's ${what} is not a JSON object`);
+  }
+  return json;
+}

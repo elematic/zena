@@ -23,7 +23,10 @@
  * `com.atproto.server.createSession`, refresh and end the session, ask
  * for service-auth tokens with `com.atproto.server.getServiceAuth`, which
  * are signed with KEY like everything else, and write records to its own
- * repository with `com.atproto.repo.putRecord`.
+ * repository with `com.atproto.repo.putRecord`. Any account can sign in
+ * with OAuth too, at the fake's authorization server (`oauth`, from
+ * `fake-oauth`), and make the same two calls with its DPoP-bound tokens,
+ * as far as their scope allows.
  *
  * The PLC directory also takes operations, as `POST /plc/<did>`, which a
  * package host sends for the accounts it creates elsewhere. It serves
@@ -33,7 +36,7 @@
 import {Future} from 'zena:async';
 import {HashMap, OrderedHashMap} from 'zena:collections';
 import {p256} from 'zena:crypto';
-import {Own, Unmanaged, parseI64} from 'zena:core';
+import {Borrow, Own, Unmanaged, parseI64} from 'zena:core';
 import {hex} from 'zena:encoding';
 import {App, Request, Response, Server} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
@@ -48,6 +51,7 @@ import {PlcOperation, didDocument as plcDidDocument, didOfGenesis} from 'atproto
 import {fetch} from 'zena:fetch';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto/service-auth';
 import {buildMst, compareKeys} from 'atproto/mst';
+import {FakeAuthorizationServer, Grant, allowsRecords, allowsServiceAuth, refuseScope} from './fake-oauth.zena';
 import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, RETRACTION_TYPE, Retraction} from '../records.zena';
 import {
   REPO_GET_RECORD, REPO_LIST_RECORDS, REPO_PUT_RECORD, SERVER_CREATE_SESSION, SERVER_DELETE_SESSION, SERVER_GET_SERVICE_AUTH,
@@ -210,6 +214,8 @@ export final class FakePds {
   var upstreamPlc: String | null = null;
   /** The `(aud, lxm)` of each service-auth token handed out, in order. */
   serviceAuthRequests = new GrowableArray<(String, String)>();
+  /** The authorization server, which signs in with OAuth. */
+  oauth = new FakeAuthorizationServer();
   /** Kept open: the fake runs until `close`, past the owner's scope. */
   var #server: Unmanaged<Server> | null = null;
 
@@ -392,6 +398,10 @@ function serve(pds: FakePds, port: i32): Own<Server> {
       };
       return;
     }
+    if (path.startsWith('/.well-known/oauth-') || path.startsWith('/oauth/')) {
+      await pds.oauth.serve(req, res, pds.origin, (hint) => accountNamed(pds, hint));
+      return;
+    }
     if (path.startsWith('/xrpc/com.atproto.server.')) {
       await serveSession(pds, req, res);
       return;
@@ -478,13 +488,51 @@ function errorJson(message: String): JsonObject {
 }
 
 /** The DID document the operation `operation` gives `did`. */
+/** The DID of the account a login hint, a DID or a handle, names, or null. */
+function accountNamed(pds: FakePds, hint: String): String | null {
+  var found: String | null = null;
+  pds.accounts.forEach((did, account) => {
+    if (did == hint || (account.handle != null && account.handle as String == hint)) {
+      found = did;
+    }
+  });
+  return found;
+}
+
+/**
+ * The account a request is signed in as: by a password session's bearer
+ * token, or by an OAuth access token and its proof, which `oauth` checks.
+ * Null when it is neither, after an OAuth refusal answers itself.
+ */
+function signedInAs(pds: FakePds, req: Borrow<Request>, res: Response): String | Grant | null {
+  let authorization = req.getHeader('authorization') ?? '';
+  if (authorization.startsWith('DPoP ')) {
+    return pds.oauth.checkAccess(req, res, `${pds.origin}${req.path}`);
+  }
+  let token = if (authorization.startsWith('Bearer ')) authorization.sliceBytes(7, authorization.length) else '';
+  if (let (true, did) = pds.accessTokens.get(token)) {
+    return did;
+  }
+  return null;
+}
+
 /** `com.atproto.repo.putRecord`, for a signed-in account's own repository. */
 async function servePutRecord(pds: FakePds, req: Own<Request>, res: Response): Future<void> {
-  let bearer = req.getHeader('authorization') ?? '';
-  let token = if (bearer.startsWith('Bearer ')) bearer.sliceBytes(7, bearer.length) else '';
+  let oauth = (req.getHeader('authorization') ?? '').startsWith('DPoP ');
+  let caller = signedInAs(pds, req, res);
+  if (caller == null && oauth) {
+    // checkAccess answered the refusal.
+    return;
+  }
   let input = parseJson(await req.text()) as JsonObject;
   res.type = 'application/json';
-  if (let (true, did) = pds.accessTokens.get(token)) {
+  if (caller is Grant && !allowsRecords(caller.scope, input['collection'] as String)) {
+    refuseScope(res);
+    return;
+  }
+  let signedIn: String | null = if (caller is Grant) caller.did else if (caller is String) caller else null;
+  if (signedIn != null) {
+    let did = signedIn;
     if (input['repo'] as String != did) {
       res.statusCode = 403;
       res.body = '{"error":"Forbidden","message":"not your repository"}';
@@ -546,10 +594,17 @@ async function serveSession(pds: FakePds, req: Own<Request>, res: Response): Fut
     return;
   }
   if (path == xrpcPath(SERVER_GET_SERVICE_AUTH)) {
-    if (let (true, did) = pds.accessTokens.get(token)) {
-      let params = req.url.searchParams();
-      let aud = params.get('aud') ?? '';
-      let lxm = params.get('lxm') ?? '';
+    let params = req.url.searchParams();
+    let aud = params.get('aud') ?? '';
+    let lxm = params.get('lxm') ?? '';
+    let caller = signedInAs(pds, req, res);
+    if (caller is Grant && !allowsServiceAuth(caller.scope, lxm)) {
+      refuseScope(res);
+      return;
+    }
+    let signedIn: String | null = if (caller is Grant) caller.did else if (caller is String) caller else null;
+    if (signedIn != null) {
+      let did = signedIn;
       let seconds = now().seconds;
       var expires = seconds + 60;
       if (let (true, exp) = parseI64(params.get('exp') ?? '')) {
@@ -563,7 +618,9 @@ async function serveSession(pds: FakePds, req: Own<Request>, res: Response): Fut
       res.body = stringify(body);
       return;
     }
-    fail(400, 'ExpiredToken');
+    if (!bearer.startsWith('DPoP ')) {
+      fail(400, 'ExpiredToken');
+    }
     return;
   }
   fail(400, 'InvalidRequest');

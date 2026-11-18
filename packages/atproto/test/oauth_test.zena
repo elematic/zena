@@ -1,0 +1,83 @@
+/**
+ * The parts of `atproto/oauth` that need no server. `package-manager`'s
+ * fake PDS, which is also an authorization server, tests the sign-in
+ * itself (`packages/package-manager/test/oauth_test.zena`).
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue, throws} from 'zena:assert';
+import {hex} from 'zena:encoding';
+import {JsonObject, parseJson, stringify} from 'zena:json';
+import {DpopKey} from 'atproto/dpop';
+import {AuthorizationServer, OAuthSession, pkceChallenge, randomToken} from 'atproto/oauth';
+
+let KEY = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+let ISSUER = 'https://pds.example';
+
+function metadata() {
+  return parseJson(`{
+    "issuer": "${ISSUER}",
+    "pushed_authorization_request_endpoint": "${ISSUER}/oauth/par",
+    "authorization_endpoint": "${ISSUER}/oauth/authorize",
+    "token_endpoint": "${ISSUER}/oauth/token",
+    "revocation_endpoint": "${ISSUER}/oauth/revoke",
+    "code_challenge_methods_supported": ["S256"],
+    "dpop_signing_alg_values_supported": ["ES256"]
+  }`) as JsonObject;
+}
+
+export let tests = suite('OAuth', () => {
+  test('the S256 challenge of RFC 7636, appendix B', (ctx) => {
+    equal(pkceChallenge('dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'),
+        'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM');
+    // 32 random bytes make a 43-character verifier, as PKCE asks.
+    equal(randomToken(32).length, 43);
+    isTrue(randomToken() != randomToken(), 'random');
+  });
+
+  test('reads an authorization server\'s metadata, and refuses what atproto cannot use', (ctx) => {
+    let server = AuthorizationServer.fromMetadata(metadata(), ISSUER);
+    equal(server.pushedAuthorizationEndpoint, `${ISSUER}/oauth/par`);
+    equal(server.tokenEndpoint, `${ISSUER}/oauth/token`);
+    equal(server.revocationEndpoint as String, `${ISSUER}/oauth/revoke`);
+    throws(() => {
+      AuthorizationServer.fromMetadata(metadata(), 'https://other.example');
+    });
+    let plain = metadata();
+    plain['code_challenge_methods_supported'] = parseJson('["plain"]');
+    throws(() => {
+      AuthorizationServer.fromMetadata(plain, ISSUER);
+    });
+    let noDpop = metadata();
+    noDpop.delete('dpop_signing_alg_values_supported');
+    throws(() => {
+      AuthorizationServer.fromMetadata(noDpop, ISSUER);
+    });
+    let noToken = metadata();
+    noToken.delete('token_endpoint');
+    throws(() => {
+      AuthorizationServer.fromMetadata(noToken, ISSUER);
+    });
+  });
+
+  test('a session is kept and read back, key and all', (ctx) => {
+    let server = AuthorizationServer.fromMetadata(metadata(), ISSUER);
+    let session = new OAuthSession('did:plc:alicealicealicealicealic', 'alice.test', ISSUER, server,
+        'https://app.example/client-metadata.json', new DpopKey(KEY), 'access-1', 'refresh-1',
+        1792800300 as i64, 'atproto');
+    let read = OAuthSession.fromJson(parseJson(stringify(session.toJson())));
+    equal(read.did, session.did);
+    equal(read.handle as String, 'alice.test');
+    equal(read.accessToken, 'access-1');
+    equal(read.refreshToken, 'refresh-1');
+    equal(read.expiresAt, 1792800300 as i64);
+    equal(read.server.tokenEndpoint, `${ISSUER}/oauth/token`);
+    isTrue(!read.refreshed, 'not refreshed');
+    // The key signs as the one stored did: the same thumbprint.
+    let headers = read.headers('GET', `${ISSUER}/xrpc/x`);
+    equal(headers[0], ('authorization', 'DPoP access-1'));
+    throws(() => {
+      OAuthSession.fromJson(parseJson('{"did": "did:plc:alicealicealicealicealic"}'));
+    });
+  });
+});

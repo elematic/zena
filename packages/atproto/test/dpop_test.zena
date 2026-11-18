@@ -1,0 +1,93 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue, throws} from 'zena:assert';
+import {sha256} from 'zena:crypto';
+import {base64Url, hex} from 'zena:encoding';
+import {JsonObject, parseJson, stringify} from 'zena:json';
+import {
+  DpopKey, accessTokenHash, jwkThumbprint, proofTarget, verifyDpopProof
+} from 'atproto/dpop';
+
+/** The P-256 key from RFC 6979, appendix A.2.5. */
+let KEY = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+let NOW = 1792800000 as i64;
+let URL = 'https://pds.example/xrpc/com.atproto.server.getServiceAuth';
+
+function payloadOf(proof: String) {
+  return parseJson(String.fromBytes(base64Url.decode(proof.split('.')[1]))) as JsonObject;
+}
+
+/** `proof` with one character of its signature changed. */
+function tampered(proof: String) {
+  let last = proof.sliceBytes(proof.length - 1, proof.length);
+  return proof.sliceBytes(0, proof.length - 1) + (if (last == 'A') 'B' else 'A');
+}
+
+export let tests = suite('DPoP', () => {
+  test('a proof verifies, and says what it was made with', (ctx) => {
+    let key = new DpopKey(KEY);
+    let proof = key.proof('GET', `${URL}?aud=did%3Aweb%3Ax&lxm=a.b.c`, NOW, 'jti-1', 'nonce-1', 'access-1');
+    let checked = verifyDpopProof(proof, 'GET', URL, NOW + 10);
+    equal(checked.thumbprint, key.thumbprint());
+    equal(checked.jti, 'jti-1');
+    equal(checked.nonce as String, 'nonce-1');
+    equal(checked.ath as String, accessTokenHash('access-1'));
+    // htu leaves out the query.
+    equal(payloadOf(proof)['htu'] as String, URL);
+    // A proof without a nonce or a token has neither.
+    let bare = verifyDpopProof(key.proof('POST', URL, NOW, 'jti-2'), 'POST', URL, NOW);
+    isTrue(bare.nonce == null && bare.ath == null, 'no nonce or ath');
+  });
+
+  test('a proof is refused for another request, another time, or a changed signature', (ctx) => {
+    let proof = new DpopKey(KEY).proof('POST', URL, NOW, 'jti-1');
+    throws(() => {
+      verifyDpopProof(proof, 'GET', URL, NOW);
+    });
+    throws(() => {
+      verifyDpopProof(proof, 'POST', 'https://other.example/xrpc/x', NOW);
+    });
+    throws(() => {
+      verifyDpopProof(proof, 'POST', URL, NOW + 3600);
+    });
+    throws(() => {
+      verifyDpopProof(tampered(proof), 'POST', URL, NOW);
+    });
+    throws(() => {
+      verifyDpopProof('not.a-proof', 'POST', URL, NOW);
+    });
+  });
+
+  test('the thumbprint is the hash of the JWK\'s required members, in order', (ctx) => {
+    let key = new DpopKey(KEY);
+    let jwk = key.jwk();
+    let canonical = `{"crv":"P-256","kty":"EC","x":"${jwk['x'] as String}","y":"${jwk['y'] as String}"}`;
+    equal(key.thumbprint(), base64Url.encode(sha256(canonical.toBytes()), false));
+    equal(jwkThumbprint(jwk), key.thumbprint());
+    equal(accessTokenHash('abc'), base64Url.encode(sha256('abc'.toBytes()), false));
+    equal(proofTarget('https://a.example/x?y=1#z'), 'https://a.example/x');
+  });
+
+  test('a key is stored and read back as a private JWK', (ctx) => {
+    let key = new DpopKey(KEY);
+    let stored = key.toJson();
+    isTrue(stored.has('d'), 'the private part');
+    let read = DpopKey.fromJson(parseJson(stringify(stored)));
+    equal(read.thumbprint(), key.thumbprint());
+    let proof = read.proof('GET', URL, NOW, 'jti-3');
+    equal(verifyDpopProof(proof, 'GET', URL, NOW).thumbprint, key.thumbprint());
+    throws(() => {
+      DpopKey.fromJson(key.jwk());
+    });
+  });
+
+  test('generate tries again for bytes out of range', (ctx) => {
+    var calls = 0;
+    let key = DpopKey.generate(() => {
+      calls += 1;
+      // Zero is not a valid scalar; then the RFC's key.
+      return if (calls == 1) new FixedArray<u8>(32, 0 as u8) else KEY;
+    });
+    equal(calls, 2);
+    equal(key.thumbprint(), new DpopKey(KEY).thumbprint());
+  });
+});
