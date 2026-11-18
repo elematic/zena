@@ -276,7 +276,7 @@ modular layers:
   provides host imports.
 - **`packages/zena-run`**: A lightweight binary dedicated solely to executing
   compiled Zena modules without loading compiler machinery.
-- **`packages/zena-cli`**: The complete developer command-line interface for
+- **`packages/cli`**: The complete developer command-line interface for
   compiling, running, testing, and benchmarking.
 - **`packages/zb`**: An early build orchestrator written entirely in Zena, based
   on Google's [Wireit npm script runner](https://github.com/google/wireit).

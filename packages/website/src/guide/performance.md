@@ -231,7 +231,7 @@ To inspect the generated WebAssembly bytecode and verify compiler optimizations:
 
 ```bash
 # Compile to WebAssembly Text format (.wat)
-npm run zena -w @zena-lang/zena-cli -- build main.zena -o main.wat
+npm run zena -w @zena-lang/cli -- build main.zena -o main.wat
 
 # Inspect section sizes using wasm-tools
 wasm-tools objdump main.wasm

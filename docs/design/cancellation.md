@@ -386,7 +386,7 @@ gives it.
 The timer that loses is cancelled the same way. `sleep` waits in a frame
 of its own and disarms its timer in a `finally`, which runs on the
 cancellation's unwind, so a program does not wait out the deadline of a
-timeout its work beat (`packages/zena-cli/tests/timers_test.zena`). On the
+timeout its work beat (`packages/cli/tests/timers_test.zena`). On the
 js target the `finally` calls `time.sleep_cancel`, which clears the host's
 `setTimeout`.
 

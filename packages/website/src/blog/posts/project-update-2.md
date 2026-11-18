@@ -21,7 +21,7 @@ a set of compiler and type checker fixes.
 ## 1. Self-Hosted CLI (`zena`)
 
 The `zena` command-line tool is now a Zena program
-(`packages/zena-cli/zena/main.zena`) compiled to WebAssembly. The native
+(`packages/cli/zena/main.zena`) compiled to WebAssembly. The native
 `zena-cli` executable is a thin Rust host (~100 lines) that configures
 filesystem preopens, enables process spawning, and calls `main`.
 

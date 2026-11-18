@@ -359,7 +359,7 @@ packages there:
    ```sh
    git switch main && git pull
    npm ci
-   npm run build -w @zena-lang/zena-cli
+   npm run build -w @zena-lang/cli
    ```
 
 2. Try it on this machine first: `npm test -w @zena-lang/registry`, and
@@ -449,10 +449,10 @@ another key.
 
 `zena` names its version to every registry call, in its `user-agent`
 (`zena/0.1.0 (linux-x86_64) compiler/0.1.0 package-manager/0.1.0`).
-Its version is the `version` in `packages/zena-cli/zena-package.json`,
+Its version is the `version` in `packages/cli/zena-package.json`,
 and the compiler's and the package manager's are in theirs. Raise the
 command's with each release, then run `npm run versions`, which copies
-them into `packages/zena-cli/zena/versions.zena`; a test fails while that
+them into `packages/cli/zena/versions.zena`; a test fails while that
 file is out of date. The App View logs each call to its methods as a JSON line, with
 the method, the caller, that client and the answer's status, which Cloud
 Logging keeps. It also keeps, for each release it completes, who

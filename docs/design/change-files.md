@@ -48,9 +48,9 @@ It differs in four ways:
 ## Terms
 
 - **Unit**: a directory under `packages/` that is versioned and has a
-  changelog. `packages/zena-cli` is one unit, though it has a
+  changelog. `packages/cli` is one unit, though it has a
   `zena-package.json`, a `package.json` and a `Cargo.toml`. A unit need
-  not be published: `zena-cli` is a program, released as the `zena`
+  not be published: `cli` is a program, released as the `zena`
   binary, and its version is what `zena --version` prints.
 - **Change file**: a Markdown file in `.changes/`, added by a pull
   request, that holds the changelog entries for that pull request.
@@ -74,7 +74,7 @@ The repository holds three kinds of package. A Zena package has a
 `zena-package.json`, an npm package a `package.json`, and a Rust crate a
 `Cargo.toml`. A manifest does not always mean a published package. Most
 directories have a private `package.json` that only holds the Wireit
-scripts, and `packages/zena-cli` has all three manifests while being
+scripts, and `packages/cli` has all three manifests while being
 published as none of the three: it is a program, built and released as
 the `zena` binary.
 
@@ -93,9 +93,9 @@ publishing (`runtime`, `playground`, `codemirror`, `wasm-web-ui`) are at
 
 The one release that exists is the toolchain's
 (`.github/workflows/release.yml`). It takes its version from
-`packages/zena-cli/zena-package.json`, checks it
-(`packages/zena-cli/dev/release-version.zena`), and copies that version's
-section of `packages/zena-cli/CHANGELOG.md` into the GitHub Release.
+`packages/cli/zena-package.json`, checks it
+(`packages/cli/dev/release-version.zena`), and copies that version's
+section of `packages/cli/CHANGELOG.md` into the GitHub Release.
 
 Language changes are recorded in the compiler's changelog, and a planned
 check asks for an entry when a language change lands
@@ -103,8 +103,8 @@ check asks for an entry when a language change lands
 
 ## Units
 
-A unit is named by its directory: `zena-cli`, `semver`, `terminal`. These
-are the names commit titles already use (`[zena-cli][terminal] ...`).
+A unit is named by its directory: `cli`, `semver`, `terminal`. These
+are the names commit titles already use (`[cli][terminal] ...`).
 
 The three ecosystems name packages differently. `packages/semver` is
 `semver` in the `zena-lang` scope to Zena and `@zena-lang/semver` to npm.
@@ -117,7 +117,7 @@ every manifest in the directory: `version` in `zena-package.json` and
 private `package.json` files get it too, so that a directory never states
 two versions. It then
 refreshes `package-lock.json` and `Cargo.lock`, and regenerates
-`packages/zena-cli/zena/versions.zena`.
+`packages/cli/zena/versions.zena`.
 
 A configuration file, `.changes/config.json`, lists the units:
 
@@ -126,7 +126,7 @@ A configuration file, `.changes/config.json`, lists the units:
   "groups": {
     "toolchain": {
       "versions": "patch",
-      "units": ["zena-cli", "compiler", "zena-runtime", "..."],
+      "units": ["cli", "compiler", "zena-runtime", "..."],
       "held": ["compiler-js", "runtime", "playground"]
     }
   },
@@ -166,7 +166,7 @@ under that, the Keep a Changelog sections that have entries:
 - **Breaking:** `{x: y}` field renaming in destructuring patterns; use
   `{x as y}` instead.
 
-## zena-cli
+## cli
 
 ### Added
 
@@ -221,7 +221,7 @@ The group holds the units with a strong dependency on the compiler or on
 its output:
 
 - `compiler`, with the standard library
-- `zena-cli`
+- `cli`
 - `zena-runtime`, and the hosts built on it: `zena-run`, `zenafx`
 - `zena-formatter`, `zena-lint`, `zenadoc`, `language-service`, which
   read the compiler's syntax tree
@@ -370,7 +370,7 @@ satisfies the dependent's range, so the range in a dependent's
 For this to work, the range a dependent publishes has to be kept
 somewhere. Today a workspace dependency is `{"path": "../semver"}`, and
 `zena pkg publish` writes the range `^<the dependency's current version>`
-(`dependenciesOf` in `packages/zena-cli/zena/pkg/publish.zena`). Every
+(`dependenciesOf` in `packages/cli/zena/pkg/publish.zena`). Every
 release of a dependent therefore raises its minimum to the newest
 dependency.
 
@@ -446,7 +446,7 @@ A program can now ask a question and read the answer key by key. ...
 - **Breaking:** `{x: y}` field renaming in destructuring patterns; use
   `{x as y}` instead. (#1201)
 
-### zena-cli
+### cli
 
 ...
 

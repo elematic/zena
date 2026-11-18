@@ -250,7 +250,7 @@ worth more than the keying work itself.
 ## Debugging the compiler
 
 - Print from the compiler with `console.log`, rebuild the CLI module
-  (`npm run build -w @zena-lang/zena-cli`), and compile a probe with
+  (`npm run build -w @zena-lang/cli`), and compile a probe with
   `./target/release/zena-cli build <probe>.zena -o <probe>.wasm`, which
   always compiles and prints the compiler's output. `zena run` reuses a
   cached module unless given `--no-cache`.
@@ -367,7 +367,7 @@ cache.
 
 `CompileSession` (`src/lib/compile-file.zena`) packages the same
 arrangement for other drivers, with the same cap; `zena test` compiles
-its files through it (`packages/zena-cli/CONTEXT.md`, "Tests").
+its files through it (`packages/cli/CONTEXT.md`, "Tests").
 
 Batching needed one compiler fix first, and it was not a codegen bug:
 generic instantiations are interned on the generic source, and the key

@@ -463,7 +463,7 @@ The fix is wasmtime's; it is reported, with that module, as
 Until a release has the fix, a step in compile time between two
 compiler builds says nothing about the change between them. To
 compare two builds, hold the CLI module fixed, with
-`ZENA_CLI_MODULE=<a copy of packages/zena-cli/out/zena.wasm>` and
+`ZENA_CLI_MODULE=<a copy of packages/cli/out/zena.wasm>` and
 `ZENA_COMPILER_WASM` naming each compiler; or put the change behind
 an environment toggle in one build; or time under V8. `npm test`
 rebuilds the CLI module, so timings from before and after a suite run

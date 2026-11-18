@@ -18,7 +18,7 @@
 # (alerts.sh), which is expected.
 #
 # It runs packages/registry/src/main.zena with the repository's zena-cli,
-# so build that first (npm run build -w @zena-lang/zena-cli).
+# so build that first (npm run build -w @zena-lang/cli).
 
 set -euo pipefail
 cd "$(dirname "$0")"

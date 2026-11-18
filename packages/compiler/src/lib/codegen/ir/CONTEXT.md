@@ -260,7 +260,7 @@ fixed input program instead.
 
 - `ZENA_EMIT_WAT=1` writes a `.wat` dump next to the output (huge; a
   second full generator pass — leave off otherwise).
-- Build with `-g` (`npm run zena -w @zena-lang/zena-cli -- -g build ...`)
+- Build with `-g` (`npm run zena -w @zena-lang/cli -- -g build ...`)
   for a name section; then map a trap PC with `wasm-tools print
 --print-offsets` and read the surrounding WAT against the source.
 - Suspected miscompile in the self-compile: add a temporary index-range

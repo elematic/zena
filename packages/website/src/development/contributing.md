@@ -97,7 +97,7 @@ If you are not using Nix, make sure your environment provides:
 
 - **Node.js 25 or newer**: Required for native WebAssembly exception handling
   (`exnref`).
-- **Rust toolchain** (`cargo`, `rustc`): Required to build `packages/zena-cli`.
+- **Rust toolchain** (`cargo`, `rustc`): Required to build `packages/cli`.
 - **Wasmtime 47 or newer**: Required to run tests (such as component end-to-end
   tests) and execute compiled WebAssembly modules.
 - **wasm-tools**: Required for component validation in the test suite and
@@ -120,7 +120,7 @@ An npm monorepo managed with [Wireit](https://github.com/google/wireit).
 | `packages/compiler`         | Self-hosted compiler, written in Zena    |
 | `packages/zena-formatter`   | Zena formatter, written in Zena          |
 | `packages/stdlib`           | Standard library                         |
-| `packages/zena-cli`         | Native Rust CLI, runs Zena via Wasmtime  |
+| `packages/cli`              | Native Rust CLI, runs Zena via Wasmtime  |
 | `packages/runtime`          | JS runtime helpers                       |
 | `packages/language-service` | Language server                          |
 | `packages/website`          | This site                                |

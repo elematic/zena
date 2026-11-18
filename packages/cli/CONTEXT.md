@@ -109,8 +109,8 @@ the `zena` command. The design is in
      walk finds the root's manifest, which lists its packages; a scratch
      directory a test or a script runs `zena` in needs a manifest of its
      own, or `zena pkg add` there changes the repository's. The standard
-     library and the CLI module (`packages/zena-cli/out/zena.wasm`, or
-     `packages/zena-cli/bootstrap/zena.wasm` before `out/zena.wasm` is
+     library and the CLI module (`packages/cli/out/zena.wasm`, or
+     `packages/cli/bootstrap/zena.wasm` before `out/zena.wasm` is
      built) come
      from the workspace when it is a checkout of Zena, as a worktree is,
      and otherwise from the checkout the binary was built in
@@ -207,7 +207,7 @@ the `zena` command. The design is in
 
 5. **The bootstrap and the build order**
    - `zena-cli` (`build:binary`) runs the checked-in CLI module bootstrap
-     (`ZENA_CLI_MODULE=packages/zena-cli/bootstrap/zena.wasm`) to build
+     (`ZENA_CLI_MODULE=packages/cli/bootstrap/zena.wasm`) to build
      Stage A (`compiler:build:cli`), and `zena-run` runs Stage A to
      build `out/zena.wasm` (`build:module`). The language service's
      `lsp.wasm`, which the playground and the VS Code extension load, is
@@ -227,7 +227,7 @@ the `zena` command. The design is in
 ## Agent Guidelines & Warnings
 
 - **A change to the CLI module needs a rebuild of the module**, not just of
-  the binary: `npm run build -w @zena-lang/zena-cli` does both.
+  the binary: `npm run build -w @zena-lang/cli` does both.
 - **Debugging**: `-g` names functions in compiled modules and turns off
   wasmtime's inlining for the runs the command starts. The CLI module is
   built with its name section, so a trap inside it prints a readable

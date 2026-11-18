@@ -2,7 +2,7 @@
 // `pds-js_test.zena`, and prints `{"dir": ..., "node": ...}`: the checkout,
 // and the Node.js to run its server with.
 //
-//   node packages/zena-cli/tests/pds-js/setup.mjs
+//   node packages/cli/tests/pds-js/setup.mjs
 //
 // The checkout is kept in the cache, `$ZENA_CACHE_DIR/pds.js/<revision>`
 // (default `~/.cache/zena`), or is the one `PDS_JS_DIR` names. Fetching it

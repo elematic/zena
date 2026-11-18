@@ -1,7 +1,7 @@
 //! `zena-cli`: the `zena` command.
 //!
 //! The command is a Zena program, the CLI module
-//! (`packages/zena-cli/zena/main.zena`, built to `out/zena.wasm` as a
+//! (`packages/cli/zena/main.zena`, built to `out/zena.wasm` as a
 //! component), which reads the command line, compiles, runs programs and
 //! tests, and builds targets. This binary is its host: it does what
 //! `zena-run` does for any component, plus three things the module
@@ -133,7 +133,7 @@ fn build_checkout() -> Option<PathBuf> {
         .parent()
         .and_then(|p| p.parent())
         .and_then(|p| clean_canonicalize(p).ok())?;
-    if root.join("packages/stdlib/zena").is_dir() && root.join("packages/zena-cli").is_dir() {
+    if root.join("packages/stdlib/zena").is_dir() && root.join("packages/cli").is_dir() {
         Some(root)
     } else {
         None
@@ -282,8 +282,8 @@ fn cli_module_from(env_override: Option<&str>, sources: Option<&Path>) -> Result
     }
     if let Some(root) = sources {
         for rel in [
-            "packages/zena-cli/out/zena.wasm",
-            "packages/zena-cli/bootstrap/zena.wasm",
+            "packages/cli/out/zena.wasm",
+            "packages/cli/bootstrap/zena.wasm",
         ] {
             let path = root.join(rel);
             if path.is_file() {
@@ -317,7 +317,7 @@ fn cli_module_from(env_override: Option<&str>, sources: Option<&Path>) -> Result
     }
     anyhow::bail!(
         "The zena command's module is not built or bundled. \
-         Build it with `npm run build -w @zena-lang/zena-cli`."
+         Build it with `npm run build -w @zena-lang/cli`."
     );
 }
 
@@ -535,8 +535,8 @@ mod tests {
     #[test]
     fn cli_module_falls_back_to_bootstrap_when_not_built() {
         let checkout = scratch("cli-module-fallback");
-        let bootstrap_dir = checkout.join("packages/zena-cli/bootstrap");
-        let out_dir = checkout.join("packages/zena-cli/out");
+        let bootstrap_dir = checkout.join("packages/cli/bootstrap");
+        let out_dir = checkout.join("packages/cli/out");
         std::fs::create_dir_all(&bootstrap_dir).unwrap();
         std::fs::create_dir_all(&out_dir).unwrap();
 

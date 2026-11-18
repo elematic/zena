@@ -26,11 +26,11 @@ same release of `zena` and the App View as the break.
 
 - The compiler has a version, the `version` in
   `packages/compiler/zena-package.json` (`0.0.1-preview.1` now).
-  `npm run versions` copies it into `packages/zena-cli/zena/versions.zena`,
+  `npm run versions` copies it into `packages/cli/zena/versions.zena`,
   `zena --version` prints it, and every call to a registry names it in its
   `user-agent` (`zena/0.0.1-preview.1 (linux-x86_64) compiler/…`).
 - The packages' versions change together when the toolchain is released
-  (`.github/workflows/release.yml`, `packages/zena-cli/dev/release-version.zena`),
+  (`.github/workflows/release.yml`, `packages/cli/dev/release-version.zena`),
   and the changes wait until then in change files in `.changes/`, which
   the release moves into each package's `CHANGELOG.md`
   ([change-files.md](change-files.md)).
