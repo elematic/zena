@@ -39,15 +39,16 @@ zena --version
 See [Install](/guide/install/) for the install script's options, the VS Code extension,
 manual downloads and building from source.
 
-`zena run` runs a program on its own, with the WebAssembly runtime it
-bundles. To run Zena's output elsewhere you need a runtime with WebAssembly
-GC:
+`zena run` runs a program directly. To run Zena's output elsewhere, you
+need a runtime with WebAssembly GC:
 
 - **Node.js 25 or newer**, for the `zena-js` target, with
   `@zena-lang/runtime`
 - **[wasmtime](https://wasmtime.dev/) 48 or newer**, for the `component`
   target
 - Any browser released since 2023, for the web
+- Any other WebAssembly runtime with GC, for the `core` target, or with the
+  component model and WASI 0.3 as well, for the `component` target
 
 ## Create a project
 
