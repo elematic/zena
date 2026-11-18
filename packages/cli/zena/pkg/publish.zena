@@ -40,7 +40,7 @@ import { now } from 'wasi:clocks/system-clock';
 import { Cid } from 'atproto/cid';
 import { BlobRef, fromJson, toJson } from 'atproto/data';
 import { KeyType, formatDidKey, publicKeyFor } from 'atproto/didkey';
-import { Session, getServiceAuth } from 'atproto/session';
+import { AccountSession, getServiceAuth } from 'atproto/session';
 import { XrpcClient, XrpcError } from 'atproto/xrpc';
 import { packSource } from 'package-manager/archive';
 import { SOURCE_MIME_TYPE, checkDependencies, checkMetadata, validateRelease } from 'package-manager/validate';
@@ -82,8 +82,10 @@ export final class Registry {
   domain: String;
   /** Whether only its admins and the accounts they list may create scopes (`scopeCreation` is `listed`). */
   var listsScopeCreators = false;
+  /** The origin of its site, where `zena`'s OAuth client is (`package-manager/cli-client`). */
+  var site: String;
 
-  new(origin: String, did: String, domain: String) : origin = origin, did = did, domain = domain;
+  new(origin: String, did: String, domain: String) : origin = origin, did = did, domain = domain, site = origin;
 }
 
 /** A failure to report, with no stack: the command's own errors. */
@@ -197,7 +199,7 @@ function refuseProblems(problems: Array<String>): void {
   throw new PublishError(message);
 }
 
-export async function signedIn(): Future<Session> {
+export async function signedIn(): Future<AccountSession> {
   let session = await currentSession();
   if (session == null) {
     throw new PublishError('sign in first, with zena pkg login');
@@ -205,7 +207,7 @@ export async function signedIn(): Future<Session> {
   return session;
 }
 
-export async function saveIfRefreshed(session: Session): Future<void> {
+export async function saveIfRefreshed(session: AccountSession): Future<void> {
   if (session.refreshed) {
     await saveSession(session);
   }
@@ -217,7 +219,7 @@ export async function saveIfRefreshed(session: Session): Future<void> {
  * registry issued (docs/design/package-manager.md, "Publishing a release").
  */
 export sealed class Caller {
-  case SignedIn(session: Session)
+  case SignedIn(session: AccountSession)
   case AutomationToken(token: String)
 }
 
@@ -234,7 +236,7 @@ export async function currentCaller(): Future<Caller> {
 }
 
 /** The session of `caller`, who must be a person: an automation token does only what CI publishes. */
-function personOf(caller: Caller, doing: String): Session {
+function personOf(caller: Caller, doing: String): AccountSession {
   if (let SignedIn {session} = caller) {
     return session;
   }
@@ -291,6 +293,10 @@ export async function findRegistry(args: ParsedArgs): Future<Registry> {
   }
   let registry = new Registry(origin, did, described['domain'] as String);
   registry.listsScopeCreators = described['scopeCreation'] == 'listed';
+  let site = described['site'];
+  if (site is String) {
+    registry.site = site;
+  }
   return registry;
 }
 
@@ -383,7 +389,7 @@ function trimSlash(url: String): String {
 }
 
 /** A client for `registry` that calls `method` as the signed-in maintainer. */
-export async function registryClient(session: Session, registry: Registry, method: String): Future<XrpcClient> {
+export async function registryClient(session: AccountSession, registry: Registry, method: String): Future<XrpcClient> {
   let token = await getServiceAuth(session, registry.did, method);
   let client = registryXrpc(registry.origin);
   client.authorization = `Bearer ${token}`;
@@ -434,7 +440,7 @@ async function checkScope(args: ParsedArgs, registry: Registry, target: Workspac
  * which must exist, and writes its DID into the manifest, with the scope
  * when only `--scope` named it. Returns the manifest's new text.
  */
-async function createPackage(args: ParsedArgs, session: Session, registry: Registry, target: WorkspacePackage): Future<String> {
+async function createPackage(args: ParsedArgs, session: AccountSession, registry: Registry, target: WorkspacePackage): Future<String> {
   let name = target.manifest.name as String;
   let found = scopeOf(args, target);
   if (found == null) {
@@ -449,7 +455,7 @@ async function createPackage(args: ParsedArgs, session: Session, registry: Regis
   let handle = `${name}.${scope}.${registry.domain}`;
   if (!args.getFlag('yes')) {
     throw new PublishError(
-        `${name} has no DID yet. Run again with --yes to create the package ${handle} on ${registry.origin}, maintained by ${session.handle}.`);
+        `${name} has no DID yet. Run again with --yes to create the package ${handle} on ${registry.origin}, maintained by ${session.handleOrDid()}.`);
   }
   let recoveryKeys = await recoveryDidKeys();
 
@@ -535,7 +541,7 @@ export async function scopePolicy(scopeDid: String): Future<Policy> {
  * Creates the scope `scope` on `registry`, owned by the signed-in maintainer,
  * and attests its maintainers record. Returns the scope's DID.
  */
-export async function createScope(session: Session, registry: Registry, scope: String): Future<String> {
+export async function createScope(session: AccountSession, registry: Registry, scope: String): Future<String> {
   let input = new JsonObject();
   input['name'] = scope;
   input['recoveryKeys'] = strings(await recoveryDidKeys());
@@ -694,7 +700,7 @@ export function approvals(answer: JsonObject): String {
 }
 
 /** Writes the maintainer's attestation of the record at `uri` to their own repository. */
-export async function attest(session: Session, uri: String, cid: Cid): Future<void> {
+export async function attest(session: AccountSession, uri: String, cid: Cid): Future<void> {
   let attestation = new Attestation(uri, cid, formatTimestamp(nowNanos()));
   let input = new JsonObject();
   input['repo'] = session.did;

@@ -28,7 +28,7 @@ import { JsonArray, JsonObject, JsonValue } from 'zena:json';
 import { getRandomBytes } from 'wasi:random/random';
 import { Cid } from 'atproto/cid';
 import { fromJson, toJson } from 'atproto/data';
-import { Session } from 'atproto/session';
+import { AccountSession } from 'atproto/session';
 import { XrpcClient } from 'atproto/xrpc';
 import {
   MAINTAINER, MAINTAINERS_TYPE, MEMBER, MEMBERS_TYPE, Maintainer, Maintainers, MemberEntry, Members, OWNER,
@@ -613,7 +613,7 @@ function commitmentsIn(maintainers: FixedArray<Maintainer>): GrowableArray<Cid> 
  * record, attests the new record, and asks the registry to write it
  * (`completeChange`). Returns whether it did.
  */
-async function write(session: Session, registry: Registry, method: String, input: JsonObject, what: String, approveAs: String)
+async function write(session: AccountSession, registry: Registry, method: String, input: JsonObject, what: String, approveAs: String)
     : Future<boolean> {
   let client = await registryClient(session, registry, method);
   let held = (await client.procedure(method, input)) as JsonObject;
@@ -629,7 +629,7 @@ async function write(session: Session, registry: Registry, method: String, input
  * whether it did; otherwise says what the change to `what` waits for, and
  * the command that approves it, `zena pkg approve <approveAs>`.
  */
-export async function completeChange(session: Session, registry: Registry, uri: String, cid: String, what: String,
+export async function completeChange(session: AccountSession, registry: Registry, uri: String, cid: String, what: String,
     approveAs: String): Future<boolean> {
   let input = new JsonObject();
   input['uri'] = uri;
@@ -672,7 +672,7 @@ function teamSettings(org: String, name: String, team: Team): String {
       }, or the owners of ${org}.`;
 }
 
-async function putTeam(session: Session, registry: Registry, org: String, account: String, name: String, team: Team,
+async function putTeam(session: AccountSession, registry: Registry, org: String, account: String, name: String, team: Team,
     fresh: Array<MemberEntry>, swap: String | null): Future<boolean> {
   let input = new JsonObject();
   input['organization'] = account;
@@ -853,7 +853,7 @@ function required(held: Held | null, missing: String): Held {
  * Changing a record needs them all, which only those who may change it
  * see from the registry.
  */
-async function allEntries(session: Session, registry: Registry, account: String, team: String | null, members: boolean,
+async function allEntries(session: AccountSession, registry: Registry, account: String, team: String | null, members: boolean,
     commitments: Array<Cid>, what: String): Future<GrowableArray<MemberEntry>> {
   let entries = await visibleEntries(session, registry, account, team, members);
   if (entries.length < commitments.length) {
@@ -868,7 +868,7 @@ async function allEntries(session: Session, registry: Registry, account: String,
  * commitments of `account`'s maintainers record, or of an organization's
  * members record with `members`, or of its team `team`.
  */
-export async function visibleEntries(session: Session, registry: Registry, account: String, team: String | null,
+export async function visibleEntries(session: AccountSession, registry: Registry, account: String, team: String | null,
     members: boolean = false): Future<GrowableArray<MemberEntry>> {
   let params = new GrowableArray<(String, String)>();
   params.push(('account', account));

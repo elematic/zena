@@ -3,10 +3,10 @@
 Status: **Proposed**, and partly built: the AT Protocol libraries
 (`packages/atproto`), the package records, source archives and fetching
 (`packages/package-manager`), the compiler's reading of pinned packages,
-`zena pkg add`, `zena pkg update` and `zena pkg fetch`, `zena pkg login` with app
-passwords (signing in with OAuth is designed in
-[Signing in from the command line](#signing-in-from-the-command-line), not
-built), `zena pkg publish`, `zena pkg create` and `zena pkg scope`, and an
+`zena pkg add`, `zena pkg update` and `zena pkg fetch`, `zena pkg login` with
+OAuth and with app passwords
+([Signing in from the command line](#signing-in-from-the-command-line)),
+`zena pkg publish`, `zena pkg create` and `zena pkg scope`, and an
 App View with the methods for publishing and for changing members,
 teams and maintainers, each held until its threshold has attested it. The
 App View (`packages/registry`) is a service of its own, which keeps its
@@ -2081,8 +2081,9 @@ does, so OAuth is the default.
 
 **Tests.** A stand-in authorization server beside `package-manager/testing`'s
 fake PDS implements PAR, the token endpoint with DPoP and nonces, and
-refresh. Tests answer the callback with an HTTP request in place of the
-browser.
+refresh. `zena pkg login`'s tests give it a browser of their own
+(`BROWSER`), a program that approves at that server and does what the
+callback page's script does, and paste the page's line through a pipe.
 
 **Alternatives considered.**
 

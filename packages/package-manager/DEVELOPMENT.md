@@ -18,7 +18,7 @@ lexicons/              AT Protocol lexicons (dev.zena-lang.*)
 - `scope/`: a scope's maintainers record of its owners and publishers, its policy for its packages, its profile, and the organization it belongs to.
 - `org/`: an organization's members and team records, and the private entries their commitments stand for.
 - `registry/`: the App View's XRPC methods ([docs/design/package-manager.md](../../docs/design/package-manager.md), "The App View's methods").
-- `authPublish.json`: the OAuth permission set `zena pkg login` asks for: writing attestations and calling the App View's methods.
+- `authPublish.json`: the OAuth permission set for writing attestations and calling the App View's methods, which is to replace the scope `zena pkg login` asks for (`package-manager/cli-client`) once the lexicon is published where PDSes resolve it.
 
 `test/lexicons_test.zena` checks that each file is named by its NSID, that its references resolve, and that the permission set covers every App View method.
 

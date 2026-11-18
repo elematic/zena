@@ -93,14 +93,14 @@ session, because the App View holds nothing that can write there
 
 ## People and accounts
 
-| Operation                                   | Who      | Exists                                                |
-| ------------------------------------------- | -------- | ----------------------------------------------------- |
-| Sign in and out of the pages                | a person | the pages (`createWebSession`)                        |
-| Sign in to `zena`                           | a person | `zena pkg login`, with an app password; OAuth to come |
-| See your scopes, teams and packages         | a person | `/me`; `getMemberships`                               |
-| Edit your profile: name, description, links | a person | no                                                    |
-| See approvals waiting for you               | a person | no                                                    |
-| Register approval keys (passkeys)           | a person | no                                                    |
+| Operation                                   | Who      | Exists                                          |
+| ------------------------------------------- | -------- | ----------------------------------------------- |
+| Sign in and out of the pages                | a person | the pages (`createWebSession`)                  |
+| Sign in to `zena`                           | a person | `zena pkg login`, with OAuth or an app password |
+| See your scopes, teams and packages         | a person | `/me`; `getMemberships`                         |
+| Edit your profile: name, description, links | a person | no                                              |
+| See approvals waiting for you               | a person | no                                              |
+| Register approval keys (passkeys)           | a person | no                                              |
 
 ## Scopes and organizations
 

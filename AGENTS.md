@@ -452,11 +452,14 @@ Subcommands (`./target/release/zena <subcommand>`):
     into the package cache, checking each against its pins.
     `ZENA_PLC_DIRECTORY` and `ZENA_DNS_OVER_HTTPS` replace the PLC
     directory and the DNS resolver handles are looked up with.
-  - **`pkg login <handle or DID> [--password-stdin]`**: Sign in to an
-    atproto account with an app password, from stdin, `ZENA_APP_PASSWORD`
-    or the terminal, keeping the session in `$ZENA_CONFIG_DIR/session.json`
+  - **`pkg login <handle or DID> [--no-browser] [--password-stdin]`**:
+    Sign in to an atproto account with OAuth, in the browser, whose answer
+    the registry's page hands back to `zena`; with `--no-browser`, or over
+    SSH, the page shows a line to paste into the terminal instead. With
+    `--password-stdin` or `ZENA_APP_PASSWORD` it signs in with an app
+    password. It keeps the session in `$ZENA_CONFIG_DIR/session.json`
     (default `~/.config/zena`), readable only by its owner. **`pkg logout`**
-    ends it.
+    revokes it.
   - **`pkg publish [--scope <name> --yes] [--registry <url>]`**: Publish the
     package you are in at its manifest's `version` to a registry
     (`ZENA_REGISTRY`), creating its account first when it has no `did`, in

@@ -1,16 +1,22 @@
 /**
- * `zena pkg login` and `zena pkg logout` against `tests/fixtures/login-pds.zena`,
- * whose one maintainer, `alice.test`, has the app password `app-password`.
- * What they vary is the command's configuration directory and its stdin.
+ * `zena pkg login` and `zena pkg logout`: with an app password, against
+ * `tests/fixtures/login-pds.zena`, whose one maintainer, `alice.test`, has
+ * the app password `app-password`; and with OAuth, against
+ * `tests/fixtures/publish-stack.zena`, whose registry gives the client and
+ * the callback page, in the browser `tests/fixtures/fake-browser.zena`.
+ * What they vary is the command's configuration directory, its stdin and
+ * its browser.
  */
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {Future} from 'zena:async';
 import {exists} from 'zena:fs';
-import {run} from 'zena:process';
+import {JsonObject, parseJson} from 'zena:json';
+import {ProcessResult, run} from 'zena:process';
 import {
-  Scratch, ZenaCommand, described, dnsBeside, ensureDir, fakePdsOrigin, read, startFakePds, stopFakePds, write
+  Scratch, ZenaCommand, described, dnsBeside, ensureDir, fakePdsOrigin, fixtureCache, read, repoRoot,
+  startFakePds, stopFakePds, write, zenaBinary
 } from './cli-support.zena';
 
 let ALICE = 'did:plc:alicealicealicealicealic';
@@ -19,6 +25,26 @@ let ALICE = 'did:plc:alicealicealicealicealic';
 async function modeOf(hostPath: String): Future<String> {
   let result = await run(['/bin/sh', '-c', 'stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"', 'sh', hostPath]);
   return result.stdout.trim();
+}
+
+/** `tests/fixtures/fake-browser.zena`, as the host names it. */
+function fakeBrowserSource() {
+  return `${repoRoot()}/packages/cli/tests/fixtures/fake-browser.zena`;
+}
+
+/**
+ * The fake browser, as `BROWSER`, compiled into the fixtures' cache, and
+ * keeping its log in `scratch`, which it sees as `/scratch`.
+ */
+function fakeBrowser(scratch: Scratch) {
+  return `env ZENA_CACHE_DIR=${fixtureCache()} ${zenaBinary()} run --dir ${scratch.host()}::/scratch ` +
+      `${fakeBrowserSource()} /scratch/browser.log`;
+}
+
+/** What a sign-in printed, and what its browser did, in the file `log`, for a failure message. */
+async function withLog(result: ProcessResult, log: String): Future<String> {
+  let browser = if (await exists(log)) await read(log) else '(nothing)';
+  return `${described(result)}\n--- browser ---\n${browser}`;
 }
 
 export let tests = suite('zena pkg login and zena pkg logout', () => {
@@ -51,12 +77,6 @@ export let tests = suite('zena pkg login and zena pkg logout', () => {
       isTrue(stored.contains(ALICE) && stored.contains('refreshJwt'), stored);
       equal(await modeOf(scratch.host('config/session.json')), '600');
 
-      // With no password given and no terminal, it says how to give one.
-      let noTerminal = await zena.run(['pkg', 'login', 'alice.test'], '');
-      isTrue(!noTerminal.succeeded(), 'zena pkg login signed in with no password');
-      isTrue(noTerminal.stderr.contains('--password-stdin') &&
-          noTerminal.stderr.contains('ZENA_APP_PASSWORD'), described(noTerminal));
-
       // The password can come from the environment.
       let fromEnv = await zena.set('ZENA_APP_PASSWORD', 'app-password').run(['pkg', 'login', ALICE]);
       isTrue(fromEnv.succeeded(), described(fromEnv));
@@ -66,6 +86,75 @@ export let tests = suite('zena pkg login and zena pkg logout', () => {
       isTrue(!(await exists(session)), 'zena pkg logout kept the session');
     } finally {
       await stopFakePds(pds);
+      await scratch.remove();
+    }
+  });
+
+  test('sign in with OAuth, in the browser or by pasting, and publish as the session', async (ctx) => {
+    let scratch = await Scratch.create('oauth-login');
+    let stack = await startFakePds(scratch, 'publish-stack.zena');
+    try {
+      await fakePdsOrigin(scratch, stack);
+      let addresses = parseJson(await read(scratch.at('pds/stack.json'))) as JsonObject;
+      await write(scratch.at('lib/zena-package.json'),
+          '{"name": "acme:greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}\n');
+      await write(scratch.at('lib/src/greet.zena'), 'export function answer(): i32 { return 42; }\n');
+      let zena = new ZenaCommand(scratch.at('lib'), scratch.host('cache'))
+        .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
+        .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
+        .set('ZENA_REGISTRY', addresses['registry'] as String)
+        .set('ZENA_CONFIG_DIR', scratch.host('config'))
+        .set('BROWSER', fakeBrowser(scratch));
+      let session = scratch.at('config/session.json');
+
+      // The browser approves at the PDS, whose answer the callback page
+      // hands to zena's server. Nothing is pasted.
+      let login = zena.spawn(['pkg', 'login', ALICE], '');
+      let signedIn = await login.waitFor(120000 as i64);
+      let browserLog = scratch.at('browser.log');
+      isTrue(signedIn.succeeded() && signedIn.stdout.contains(`Signed in as ${ALICE}`),
+          await withLog(signedIn, browserLog));
+      let stored = await read(session);
+      isTrue(stored.contains('"kind": "oauth"') && stored.contains('dpopKey') && !stored.contains('refreshJwt'),
+          stored);
+      equal(await modeOf(scratch.host('config/session.json')), '600');
+      isTrue((await read(browserLog)).contains('zena answered 200'), await read(browserLog));
+
+      // Its tokens call the registry, which needs service-auth tokens, and
+      // write the release's attestation to the maintainer's repository.
+      let scope = await zena.run(['pkg', 'scope', 'create', 'acme', '--yes']);
+      isTrue(scope.succeeded() && scope.stdout.contains('Created the scope acme.pkg.test'), described(scope));
+      let publish = await zena.run(['pkg', 'publish', '--yes']);
+      isTrue(publish.succeeded() && publish.stdout.contains('Published greet 1.0.0'), described(publish));
+
+      // Signing out revokes the session at the PDS.
+      let kept = await read(session);
+      let logout = await zena.run(['pkg', 'logout']);
+      isTrue(logout.succeeded() && logout.stdout.contains(`Signed out ${ALICE}`) &&
+          !logout.stderr.contains('did not end the session'), described(logout));
+      isTrue(!(await exists(session)), 'zena pkg logout kept the session');
+
+      // A copy of it is of no use then: its PDS refuses its tokens, and
+      // refuses to refresh them, as when a session is two weeks old.
+      await write(session, kept);
+      let ended = await zena.run(['pkg', 'scope', 'create', 'other', '--yes']);
+      isTrue(!ended.succeeded() && ended.stderr.contains('has ended') &&
+          ended.stderr.contains('sign in again with zena pkg login'), described(ended));
+
+      // With no browser, as over SSH, the page shows the line to paste,
+      // which reaches zena on its stdin through a named pipe.
+      let pasting = zena.spawnShell(
+          'mkfifo "$2" && "$1" pkg login --no-browser "$3" < "$2" | ' +
+            'env ZENA_CACHE_DIR="$4" "$1" run --dir "$5::/scratch" "$6" --paste /scratch/paste.log > "$2"',
+          [scratch.host('answer'), ALICE, fixtureCache(), scratch.host(), fakeBrowserSource()]);
+      let pasted = await pasting.waitFor(120000 as i64);
+      let pasteLog = scratch.at('paste.log');
+      let pastedText = if (await exists(pasteLog)) await read(pasteLog) else '';
+      isTrue(pasted.succeeded() && pastedText.contains('pasted code=') && pastedText.contains(`Signed in as ${ALICE}`),
+          await withLog(pasted, pasteLog));
+      isTrue((await read(session)).contains('"kind": "oauth"'), 'the pasted sign-in stored no session');
+    } finally {
+      await stopFakePds(stack);
       await scratch.remove();
     }
   });

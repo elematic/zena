@@ -42,7 +42,7 @@ import {
   saveIfRefreshed, signedIn
 } from './publish.zena';
 import { GET_PENDING_CHANGES, GET_PENDING_RELEASES } from 'package-manager/registry-methods';
-import { Session } from 'atproto/session';
+import { AccountSession } from 'atproto/session';
 
 let USAGE = 'zena pkg approve [<package>@]<version> | <scope> | <package> [--yes]';
 
@@ -72,7 +72,7 @@ export async function approveCommand(args: ParsedArgs, options: Options): Future
 }
 
 /** Shows, and with `--yes` approves, the release `version` of the package `given` names, or of this one. */
-async function approveRelease(args: ParsedArgs, session: Session, registry: Registry, given: String, named: boolean,
+async function approveRelease(args: ParsedArgs, session: AccountSession, registry: Registry, given: String, named: boolean,
     version: String): Future<void> {
   let name = given.sliceBytes(0, given.length - version.length - 1);
   let pkg = if (named) await namedPackage(registry, name) else await currentPackageDid();
@@ -97,7 +97,7 @@ async function approveRelease(args: ParsedArgs, session: Session, registry: Regi
     if (mine) {
       console.log(`You have approved it. Run again with --yes to ask ${registry.origin} to complete it.`);
     } else {
-      console.log(`Run again with --yes to approve it as ${session.handle}.`);
+      console.log(`Run again with --yes to approve it as ${session.handleOrDid()}.`);
     }
     return;
   }
@@ -133,7 +133,7 @@ function describeRelease(entry: JsonObject, label: String): void {
  * the scope `<scope>`, a name with no `:` or `.`, or the package `given`
  * names.
  */
-async function approveChanges(args: ParsedArgs, session: Session, registry: Registry, given: String): Future<void> {
+async function approveChanges(args: ParsedArgs, session: AccountSession, registry: Registry, given: String): Future<void> {
   let isScope = !given.startsWith('did:') && !given.contains(':') && !given.contains('.');
   let account = if (isScope) await scopeDid(registry, given)
       else await namedPackage(registry, given);
@@ -155,7 +155,7 @@ async function approveChanges(args: ParsedArgs, session: Session, registry: Regi
     if (unapproved == 0) {
       console.log(`You have approved them. Run again with --yes to ask ${registry.origin} to complete them.`);
     } else {
-      console.log(`Run again with --yes to approve ${if (changes.length == 1) 'it' else 'them'} as ${session.handle}.`);
+      console.log(`Run again with --yes to approve ${if (changes.length == 1) 'it' else 'them'} as ${session.handleOrDid()}.`);
     }
     return;
   }
@@ -195,7 +195,7 @@ function whatChanges(change: JsonObject, given: String): String {
 }
 
 /** Prints a change waiting to one of `account`'s records: who it adds and removes, and the thresholds it changes. */
-async function describeChange(session: Session, registry: Registry, account: String, given: String, change: JsonObject): Future<void> {
+async function describeChange(session: AccountSession, registry: Registry, account: String, given: String, change: JsonObject): Future<void> {
   let collection = change['collection'] as String;
   let rkey = change['rkey'] as String;
   console.log(`${whatChanges(change, given)}, asked for by ${change['proposer'] as String} at ${change['heldAt'] as String}`);

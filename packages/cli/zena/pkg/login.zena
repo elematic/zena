@@ -1,27 +1,50 @@
 /**
  * `zena pkg login` and `zena pkg logout`: signing in to the maintainer's own
  * atproto account, which publishing needs (docs/design/package-manager.md,
- * "Creating a package"). Until the command signs in with OAuth, it signs in
- * with an app password, which the maintainer's PDS issues (on bsky.social:
- * Settings, Privacy and security, App passwords) and can revoke on its own.
+ * "Signing in from the command line").
  *
- * The session, which holds the access and refresh tokens, is kept in
- * `session.json` in the command's configuration directory, a file only its
- * owner can read. `currentSession` reads it for the commands that act as
- * the maintainer, and `saveSession` writes it again after a refresh.
+ * `zena pkg login <handle or DID>` signs in with atproto OAuth, in the
+ * browser, as the client of the registry `ZENA_REGISTRY` names
+ * (`package-manager/cli-client`). The maintainer approves at their PDS,
+ * which sends the browser to the registry's callback page. The page hands
+ * the answer to this command's server on `127.0.0.1`, at the port the
+ * sign-in's `state` names, or shows it as a line to paste here, as over
+ * SSH, where the port is 0. With `--password-stdin` or `ZENA_APP_PASSWORD`
+ * it signs in with an app password instead, for a machine with no browser
+ * and for tests.
+ *
+ * The session is kept in `session.json` in the command's configuration
+ * directory, a file only its owner can read. `currentSession` reads it for
+ * the commands that act as the maintainer. An OAuth session's refresh
+ * token can be used once, so a refresh takes a lock, the directory
+ * `session.lock`, reads the file again in case another `zena` refreshed
+ * it, and saves the session before letting the lock go.
  */
 
 import { ParsedArgs } from 'zena:args';
-import { Future } from 'zena:async';
+import { Completer, Future } from 'zena:async';
 import { getEnv, readStdin } from 'zena:cli';
-import { exists, readFile, unlink } from 'zena:fs';
-import { parseJson, stringify } from 'zena:json';
+import { exists, mkdir, readFile, rmdir, unlink } from 'zena:fs';
+import { App, Server } from 'zena:http';
+import { JsonObject, JsonValue, parseJson, stringify } from 'zena:json';
 import { dirname } from 'zena:path';
-import { Session, createSession, deleteSession } from 'atproto/session';
-import { readHidden, writePrivate } from 'zena:host/secrets';
+import { spawnWith } from 'zena:process';
+import { milliseconds, sleep } from 'zena:time';
+import { parseFormUrlencoded } from 'zena:url';
+import {
+  OAuthError, OAuthSession, PendingAuthorization, RefreshGuard, finishAuthorization, randomToken, startAuthorization
+} from 'atproto/oauth';
+import { AccountSession, Session, createSession, deleteSession } from 'atproto/session';
+import { writePrivate } from 'zena:host/secrets';
+import { LOOPBACK_CALLBACK_PATH, callbackState, cliClient } from 'package-manager/cli-client';
+import { Output } from 'zena-lang:terminal/output';
 import { ensureDir } from '../compile.zena';
 import { Options } from '../env.zena';
 import { packageResolver } from './fetch.zena';
+import { findRegistry } from './publish.zena';
+
+/** How long `zena pkg login` waits for the maintainer to approve, in milliseconds: ten minutes. */
+let APPROVAL_MILLIS = 600000 as i64;
 
 /**
  * The command's configuration directory: `$ZENA_CONFIG_DIR`, else
@@ -47,20 +70,38 @@ function sessionPath() {
   return `${configDir()}/session.json`;
 }
 
+function lockPath() {
+  return `${configDir()}/session.lock`;
+}
+
+/** A stored session as it was read: an OAuth one, marked so, or a password one. */
+function sessionOf(json: JsonValue): AccountSession {
+  if (json is JsonObject && json['kind'] == 'oauth') {
+    let session = OAuthSession.fromJson(json);
+    session.refreshGuard = new SessionFileGuard();
+    return session;
+  }
+  return Session.fromJson(json);
+}
+
 /** The signed-in session, or null when no one is signed in. */
-export async function currentSession(): Future<Session | null> {
+export async function currentSession(): Future<AccountSession | null> {
   let path = sessionPath();
   if (!(await exists(path))) {
     return null;
   }
-  return Session.fromJson(parseJson(await readFile(path)));
+  return sessionOf(parseJson(await readFile(path)));
 }
 
 /** Writes `session` where `currentSession` reads it, readable only by its owner. */
-export async function saveSession(session: Session): Future<void> {
+export async function saveSession(session: AccountSession): Future<void> {
   let path = sessionPath();
   await ensureDir(dirname(path));
-  match (writePrivate(path, stringify(session.toJson(), '  ').toBytes())) {
+  let json = session.toJson();
+  if (session is OAuthSession) {
+    json['kind'] = 'oauth';
+  }
+  match (writePrivate(path, stringify(json, '  ').toBytes())) {
     case (true, _): {}
     case (false, let why): {
       throw new Error(`could not save the session: ${why}`);
@@ -69,9 +110,79 @@ export async function saveSession(session: Session): Future<void> {
 }
 
 /**
- * `zena pkg login <handle or DID>`. The app password comes from
- * `--password-stdin`, then `ZENA_APP_PASSWORD`, then the terminal, with
- * echo off.
+ * Takes the session file's lock: a directory, which only one program can
+ * make. It waits for another program to let it go, and after ten seconds
+ * takes a lock left by a program that ended holding it.
+ */
+async function lockSession(): Future<void> {
+  await ensureDir(configDir());
+  for (var attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await mkdir(lockPath());
+      return;
+    } catch (e) {
+      await sleep(milliseconds(50 as i64));
+    }
+  }
+  try {
+    await rmdir(lockPath());
+  } catch (e) {
+    // Another program let it go meanwhile.
+  }
+  await mkdir(lockPath());
+}
+
+async function unlockSession(): Future<void> {
+  try {
+    await rmdir(lockPath());
+  } catch (e) {
+    // Already gone: taken as stale by another program.
+  }
+}
+
+/**
+ * Refreshes an OAuth session under the session file's lock. When another
+ * `zena` has refreshed it meanwhile, the stored session holds a newer
+ * refresh token, which this one takes up instead of spending its own,
+ * already spent token. A refresh token the server refuses means the
+ * session has ended: it was revoked, or is two weeks old.
+ */
+final class SessionFileGuard implements RefreshGuard {
+  async guard(session: OAuthSession, refresh: () => Future<void>): Future<void> {
+    await lockSession();
+    try {
+      await refreshOrTakeUp(session, refresh);
+      await saveSession(session);
+    } catch (e) {
+      if (e is OAuthError && e.error == 'invalid_grant') {
+        throw new Error(`your session at ${session.pds} has ended (a session lasts up to two weeks); ` +
+            'sign in again with zena pkg login');
+      }
+      throw e;
+    } finally {
+      await unlockSession();
+    }
+  }
+}
+
+async function refreshOrTakeUp(session: OAuthSession, refresh: () => Future<void>): Future<void> {
+  let path = sessionPath();
+  if (await exists(path)) {
+    let json = parseJson(await readFile(path));
+    if (json is JsonObject && json['kind'] == 'oauth') {
+      let stored = OAuthSession.fromJson(json);
+      if (stored.did == session.did && stored.refreshToken != session.refreshToken) {
+        session.takeTokens(stored);
+        return;
+      }
+    }
+  }
+  await refresh();
+}
+
+/**
+ * `zena pkg login <handle or DID>`: with OAuth, or with an app password
+ * from `--password-stdin` or `ZENA_APP_PASSWORD`.
  */
 export async function loginCommand(args: ParsedArgs, options: Options): Future<i32> {
   if (args.rest.length != 1) {
@@ -79,14 +190,155 @@ export async function loginCommand(args: ParsedArgs, options: Options): Future<i
     return 2;
   }
   let identifier = args.rest[0];
-  let password = await readPassword(identifier, args.getFlag('password-stdin'));
-  if (password == null) {
-    return 1;
+  let fromEnv = getEnv('ZENA_APP_PASSWORD') ?? '';
+  if (args.getFlag('password-stdin') || fromEnv != '') {
+    let password = if (args.getFlag('password-stdin')) trimLineEnd(await readStdin()) else fromEnv;
+    let session = await createSession(identifier, password, packageResolver());
+    await saveSession(session);
+    console.log(`Signed in as ${session.handle} (${session.did}) at ${session.pds}.`);
+    return 0;
   }
-  let session = await createSession(identifier, password, packageResolver());
+  let output = new Output();
+  output.intro('zena pkg login');
+  return await output.run(() => signInWithOAuth(identifier, args, output));
+}
+
+async function signInWithOAuth(identifier: String, args: ParsedArgs, output: Output): Future<i32> {
+  let registry = await findRegistry(args);
+  let client = cliClient(registry.site);
+  let browser = if (args.getFlag('no-browser')) null else browserCommand();
+  let answers = new Completer<String>();
+  // Where the callback page hands the answer, when the browser is on this
+  // machine. The server closes when this function returns.
+  let app = new App();
+  app.use(async (req, res, next): Future<void> => {
+    if (req.path != LOOPBACK_CALLBACK_PATH) {
+      res.statusCode = 404;
+      res.body = '';
+      return;
+    }
+    let query = req.url.search;
+    answers.tryComplete(if (query.startsWith('?')) query.sliceBytes(1, query.length) else query);
+    res.type = 'text/html; charset=utf-8';
+    res.body = '<!doctype html><meta charset="utf-8"><title>zena</title>' +
+        '<p>zena has your sign-in. You can close this tab, and go back to the terminal.</p>';
+  });
+  let server = new Server(app, 0 as u16);
+  server.start();
+  let port = if (browser == null) 0 else server.port as i32;
+  let pending = await output.waitFor<PendingAuthorization>(`Asking the PDS of ${identifier} to sign you in`,
+      startAuthorization(client, identifier, callbackState(port, randomToken()), packageResolver()));
+  if (browser != null && openBrowser(browser, pending.url)) {
+    output.step('Opened your browser to sign in at', pending.server.issuer);
+    output.lines(`If it did not open, open this address:\n${pending.url}`);
+  } else {
+    output.step('Open this address in a browser to sign in', '');
+    output.lines(pending.url);
+  }
+  output.lines('Approve there. zena goes on by itself, or paste the line the page shows here and press Enter.');
+  waitForPaste(answers);
+  timeOut(answers);
+  // The page's line is the answer's query; a pasted address has it after
+  // the `?`, where the parameters' percent-encoding leaves the only one.
+  let answer = (await answers.future).split('?');
+  let params = parseFormUrlencoded(answer[answer.length - 1]);
+  let error = valueOf(params, 'error');
+  if (error != null) {
+    return output.fail(`Your PDS did not sign you in: ${valueOf(params, 'error_description') ?? error}`);
+  }
+  let session = await output.waitFor<OAuthSession>('Finishing the sign-in',
+      finishAuthorization(pending, valueOf(params, 'code') ?? '', valueOf(params, 'state') ?? '',
+          valueOf(params, 'iss') ?? ''));
+  session.refreshGuard = new SessionFileGuard();
   await saveSession(session);
-  console.log(`Signed in as ${session.handle} (${session.did}) at ${session.pds}.`);
+  output.outro(`Signed in as ${session.handleOrDid()} (${session.did}) at ${session.pds}`);
   return 0;
+}
+
+function valueOf(params: Array<(String, String)>, name: String): String | null {
+  for (let (key, value) in params) {
+    if (key == name) {
+      return value;
+    }
+  }
+  return null;
+}
+
+/** Completes `answers` with the first line pasted on stdin that is not empty. */
+async function waitForPaste(answers: Completer<String>): Future<void> {
+  var buffered = '';
+  // An empty chunk is the end of the input: only the browser can answer then.
+  var chunk = await readStdin();
+  while (chunk != '') {
+    buffered = `${buffered}${chunk}`;
+    let lines = buffered.split('\n');
+    // The last piece is a line still being pasted.
+    for (var i = 0; i < lines.length - 1; i += 1) {
+      let line = lines[i].trim();
+      if (line != '') {
+        answers.tryComplete(line);
+        return;
+      }
+    }
+    buffered = lines[lines.length - 1];
+    chunk = await readStdin();
+  }
+}
+
+/** Gives up waiting after `APPROVAL_MILLIS`. */
+async function timeOut(answers: Completer<String>): Future<void> {
+  await sleep(milliseconds(APPROVAL_MILLIS));
+  answers.tryFail(new Error('no answer came back from the browser in ten minutes'));
+}
+
+/**
+ * The command that opens a URL in a browser here, the URL to be added:
+ * the one `BROWSER` names, else the platform's, or null where none would
+ * show it to the maintainer, as over SSH or with no display.
+ */
+function browserCommand(): Array<String> | null {
+  let named = getEnv('BROWSER') ?? '';
+  if (named.trim() != '') {
+    let argv = new GrowableArray<String>();
+    for (let part in named.trim().split(' ')) {
+      if (part != '') {
+        argv.push(part);
+      }
+    }
+    return argv;
+  }
+  if ((getEnv('SSH_CONNECTION') ?? '') != '' || (getEnv('SSH_TTY') ?? '') != '') {
+    return null;
+  }
+  let platform = getEnv('ZENA_HOST_PLATFORM') ?? '';
+  if (platform.startsWith('macos-')) {
+    return ['open'];
+  }
+  if (platform.startsWith('windows-')) {
+    return ['cmd', '/c', 'start', ''];
+  }
+  if ((getEnv('DISPLAY') ?? '') == '' && (getEnv('WAYLAND_DISPLAY') ?? '') == '') {
+    return null;
+  }
+  return ['xdg-open'];
+}
+
+/**
+ * Opens `url` with `command`, without waiting for it, so that the
+ * callback server answers while it runs. Returns whether it started.
+ */
+function openBrowser(command: Array<String>, url: String): boolean {
+  let argv = new GrowableArray<String>();
+  for (let part in command) {
+    argv.push(part);
+  }
+  argv.push(url);
+  try {
+    spawnWith(argv, {});
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 /** `zena pkg logout`: ends the session at the PDS and forgets it. */
@@ -98,35 +350,19 @@ export async function logoutCommand(args: ParsedArgs, options: Options): Future<
   }
   let signedIn = session;
   try {
-    await deleteSession(signedIn);
+    if (signedIn is OAuthSession) {
+      await signedIn.revoke();
+    } else if (signedIn is Session) {
+      await deleteSession(signedIn);
+    }
   } catch (e) {
     // The session is forgotten either way; a PDS that cannot be reached,
     // or that already ended it, leaves nothing to undo here.
     console.error(`Warning: ${signedIn.pds} did not end the session: ${e.message}`);
   }
   await unlink(sessionPath());
-  console.log(`Signed out ${signedIn.handle}.`);
+  console.log(`Signed out ${signedIn.handleOrDid()}.`);
   return 0;
-}
-
-async function readPassword(identifier: String, fromStdin: boolean): Future<String | null> {
-  if (fromStdin) {
-    return trimLineEnd(await readStdin());
-  }
-  let fromEnv = getEnv('ZENA_APP_PASSWORD');
-  if (fromEnv != null && fromEnv != '') {
-    return fromEnv;
-  }
-  match (readHidden(`App password for ${identifier}: `)) {
-    case (true, let password): {
-      return password;
-    }
-    case (false, let why): {
-      console.error(
-          `Error: could not read a password (${why}). Pipe it with --password-stdin, or set ZENA_APP_PASSWORD.`);
-      return null;
-    }
-  }
 }
 
 function trimLineEnd(text: String): String {
