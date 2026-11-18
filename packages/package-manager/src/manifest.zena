@@ -45,10 +45,8 @@ export final class Manifest {
   /** The package's DID, once it has been created on a package host. */
   did: String | null;
   /**
-   * The scope on a package host the package is created in, or null: the
-   * part of `name` before its `:`, or else the `scope` field. At a
-   * workspace's root, also the scope of each workspace package that names
-   * none (package-manifest.md, "name").
+   * The scope on a package host the package is created in, the part of
+   * `name` before its `:`, or null (package-manifest.md, "name").
    */
   var scope: String | null = null;
   /** What the package is for, in a sentence: publishing requires it. */
@@ -260,24 +258,10 @@ export function readManifest(text: String | null): Manifest {
       scopes[scope] = domain;
     });
   }
-  // The scope is given in the name. The `scope` field is still read, since
-  // the bootstrap compiler, which reads every manifest in the Zena
-  // repository, takes no scope in a name, and that repository's manifests
-  // keep the field until the bootstrap does.
-  var scope = optionalString(root, 'scope');
-  if (scope != null && !isValidScopeName(scope)) {
-    throw new ManifestError(`zena-package.json: '${scope}' is not a valid scope name`);
-  }
-  if (nameScope != null) {
-    if (scope != null) {
-      throw new ManifestError(`zena-package.json: the scope is in the name, '${nameScope}:${name ?? ''}', so leave out the scope field`);
-    }
-    scope = nameScope;
-  }
   let manifest = new Manifest(name, did, requirements, paths, workspacePackages, scopes, version);
   manifest.wits = wits;
   manifest.pathRanges = pathRanges;
-  manifest.scope = scope;
+  manifest.scope = nameScope;
   let scopedNames = root['scopedNames'];
   if (scopedNames != null) {
     if (!(scopedNames is Box<boolean>)) {
@@ -512,8 +496,8 @@ export function writeDependencies(text: String | null, requirements: OrderedHash
 /**
  * `zena-package.json` text with its `did` set to `did`, and, when a `scope`
  * is given, its `name` to `<scope>:<name>`, as `zena pkg publish` writes it
- * when it creates the package. A new `did` goes after `name`, a `scope`
- * field goes, and every other key stays where it was.
+ * when it creates the package. A new `did` goes after `name`, and every
+ * other key stays where it was.
  */
 export function writeDid(text: String, did: String, scope: String | null = null): String {
   var root = parse(text);
@@ -528,7 +512,6 @@ export function writeDid(text: String, did: String, scope: String | null = null)
       throw new ManifestError('zena-package.json has no name to give the scope in');
     }
     root['name'] = `${scope}:${name}`;
-    root.delete('scope');
   }
   return stringify(root, '  ');
 }

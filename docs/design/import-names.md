@@ -108,9 +108,9 @@ off once, and its imports read `router/server`.
 
 ## Workspace packages
 
-A workspace package with a `scope` in its manifest, its own or the
-workspace root's, is `<scope>:<name>` in its workspace; one without a
-scope is `<name>`. Its own libraries and tests can also import it by its
+A workspace package is called in its workspace by the `name` in its
+manifest: `<scope>:<name>` for a package in a scope, and `<name>` for
+one without. Its own libraries and tests can also import it by its
 plain `name`, unless one of its dependencies has that name, and
 `zena pkg add` refuses to give a dependency that name. A package that
 depends on it by path calls it by the dependency's key, which can be
@@ -124,8 +124,8 @@ So giving a package a scope renames nothing in its workspace. Its
 published dependents import it as `<scope>:<name>`, the name
 `zena pkg add` gives it, which is what its README's examples show.
 
-In this repository, the packages the Zena project publishes have
-`"scope": "zena-lang"`. The compiler imports `packages/wit-parser` as
+In this repository, the packages the Zena project publishes are named
+`zena-lang:<name>`. The compiler imports `packages/wit-parser` as
 `zena-lang:wit-parser` and the registry imports `packages/markdown` as
 `markdown`; the root manifest names `workflow` and `zebra` for the
 libraries of the `zena` command, which are in no package.
@@ -150,7 +150,8 @@ reserves both, and its operator creates `zena-lang`.
 - The resolver reads scopes, packages without one, imports with no
   library, and WIT namespaces as scopes. The manifest's `dependencies`
   take keys of both forms.
-- A workspace package's name comes from its `name` and its `scope`.
+- A workspace package's name comes from its `name`, which carries its
+  scope.
 - `zena pkg add` takes and writes `<scope>:<name>`, unless
   `scopedNames` is false; `--name` takes either form.
 - `packages/wit-parser` gets its scope, and its importers are renamed.

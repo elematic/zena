@@ -138,23 +138,23 @@ export let tests = suite('package-manager/workspace', () => {
     equal(workspace.packageAt('/ws').dir, '/ws');
   });
 
-  test('names a package in a scope scope:name, with the root scope inside the workspace', async (ctx) => {
+  test('names a package in a scope scope:name, by its own name', async (ctx) => {
     let plain = await readWorkspace('/ws', files());
     equal(plain.localNameOf(plain.packages[1]) as String, 'lib');
 
     let scoped = files()
-      .add('/ws/zena-package.json', '{"name": "app", "scope": "acme", "workspace": {"packages": ["packages/*"]}}')
+      .add('/ws/zena-package.json', '{"name": "acme:app", "workspace": {"packages": ["packages/*"]}}')
       .add('/ws/packages/lib/zena-package.json',
           '{"name": "lib", "dependencies": {"tool": {"path": "../../../tool"}}}')
-      .add('/ws/packages/wit/zena-package.json', '{"name": "wit", "scope": "zena-lang"}');
+      .add('/ws/packages/wit/zena-package.json', '{"name": "zena-lang:wit"}');
     let workspace = await readWorkspace('/ws', scoped);
     let names = new GrowableArray<String>();
     for (let pkg in workspace.packages) {
       names.push(workspace.localNameOf(pkg) ?? '-');
     }
-    // The root's scope is its packages' unless they name one, and not that
-    // of tool, outside the workspace.
-    equal(join(names, ' '), 'acme:app acme:lib tool zena-lang:wit');
+    // A package's scope is the one in its own name: lib, in the root's
+    // workspace, has none.
+    equal(join(names, ' '), 'acme:app lib tool zena-lang:wit');
   });
 
   test('reads a root with no manifest yet as an empty one', async (ctx) => {

@@ -115,7 +115,7 @@ export async function publishCommand(args: ParsedArgs, options: Options): Future
       await checkScope(args, registry, target);
     }
     let manifest = readManifest(manifestText);
-    let scope = await scopeOf(args, target);
+    let scope = scopeOf(args, target);
     let approveAs = if (scope != null) `${scope}:${manifest.name as String}` else manifest.did as String;
     await publish(caller, registry, target, manifest, await prepareRelease(target, manifest, manifest.did as String, manifestText),
         approveAs);
@@ -392,11 +392,11 @@ export async function registryClient(session: Session, registry: Registry, metho
 
 /**
  * The scope `target` is in: `--scope`, which must agree with the manifest
- * when the manifest names one, else the manifest's, in its name, else its
- * workspace root's (package-manifest.md, "name"). Null when none names one.
+ * when the manifest names one, else the one in its name (package-manifest.md,
+ * "name"). Null when neither names one.
  */
-async function scopeOf(args: ParsedArgs, target: WorkspacePackage): Future<String | null> {
-  let named = target.manifest.scope ?? (await rootScope());
+function scopeOf(args: ParsedArgs, target: WorkspacePackage): String | null {
+  let named = target.manifest.scope;
   if (let (true, given) = args.getOption('scope')) {
     if (named != null && named != given) {
       throw new PublishError(`${target.manifestPath()} puts ${target.manifest.name as String} in the scope ${named}, not ${given}`);
@@ -404,11 +404,6 @@ async function scopeOf(args: ParsedArgs, target: WorkspacePackage): Future<Strin
     return given;
   }
   return named;
-}
-
-/** The scope the workspace's root manifest names for its packages, or null. */
-async function rootScope(): Future<String | null> {
-  return (await readWorkspace(workspaceRoot().value, new DiskFiles())).root.manifest.scope;
 }
 
 /**
@@ -420,7 +415,7 @@ async function rootScope(): Future<String | null> {
  * domain, is not checked.
  */
 async function checkScope(args: ParsedArgs, registry: Registry, target: WorkspacePackage): Future<void> {
-  let scope = await scopeOf(args, target);
+  let scope = scopeOf(args, target);
   if (scope == null) {
     return;
   }
@@ -441,7 +436,7 @@ async function checkScope(args: ParsedArgs, registry: Registry, target: Workspac
  */
 async function createPackage(args: ParsedArgs, session: Session, registry: Registry, target: WorkspacePackage): Future<String> {
   let name = target.manifest.name as String;
-  let found = await scopeOf(args, target);
+  let found = scopeOf(args, target);
   if (found == null) {
     throw new PublishError(
         `${name} has no DID yet; name the scope to create it in, with "scope" in ${target.manifestPath()} or --scope <name>`);
@@ -475,8 +470,7 @@ async function createPackage(args: ParsedArgs, session: Session, registry: Regis
     throw e;
   };
   let did = created['did'] as String;
-  let text = writeDid(target.text as String, did,
-      if (target.manifest.scope == null && (await rootScope()) != scope) scope else null);
+  let text = writeDid(target.text as String, did, if (target.manifest.scope == null) scope else null);
   await writeFile(target.manifestPath(), text);
   console.log(`Created ${created['handle'] as String} (${did}), and wrote its DID into ${target.manifestPath()}.`);
   return text;
