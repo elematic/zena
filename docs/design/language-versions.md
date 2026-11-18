@@ -31,8 +31,9 @@ same release of `zena` and the App View as the break.
   `user-agent` (`zena/0.0.1-preview.1 (linux-x86_64) compiler/…`).
 - The packages' versions change together when the toolchain is released
   (`.github/workflows/release.yml`, `packages/zena-cli/dev/release-version.zena`),
-  and each package's `CHANGELOG.md` collects changes under
-  `## [Unreleased]` until then.
+  and the changes wait until then in change files in `.changes/`, which
+  the release moves into each package's `CHANGELOG.md`
+  ([change-files.md](change-files.md)).
 - A release record (`dev.zena-lang.package.release`) holds the version, the
   artifacts, the dependencies and when it was made. Listing a package's
   versions reads every release record (`listVersions`). The lockfile pins
@@ -59,9 +60,11 @@ is all a reader concludes.
 
 The version changes when the toolchain is released, with every
 package's. A language change is recorded where the release will find it:
-an entry under `## [Unreleased]` in `packages/compiler/CHANGELOG.md`,
-in `### Removed` or `### Changed` for one that breaks code that compiled
-before, and `### Added` for a new feature. A release then carries every
+an entry under `## compiler` in a change file in `.changes/`
+([change-files.md](change-files.md)), in `### Removed` or `### Changed`
+and starting with `**Breaking:**` for one that breaks code that compiled
+before, and in `### Added` for a new feature. The release moves the
+entries into `packages/compiler/CHANGELOG.md`. A release then carries every
 language change since the last one, and a breaking entry is where the
 release decides whether the break goes on the list of known breaks.
 
@@ -78,8 +81,8 @@ pull request, since CI does not run the rest of the pre-push check.
 AGENTS.md already has every language change update
 `docs/language-reference.md`, so a commit range that changes that file or
 a file under `tests/language/`, or adds or removes an `export` in
-`packages/stdlib/zena/`, and adds nothing under `## [Unreleased]` in the
-compiler's changelog, fails the check. A change to those files that is
+`packages/stdlib/zena/`, and adds no entry under `## compiler` in a change
+file, fails the check. A change to those files that is
 not a language change, such as a fixed typo in the reference, says so with
 a `Language-Version: unchanged` trailer in its commit message.
 

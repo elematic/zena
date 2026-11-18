@@ -13,9 +13,10 @@ Partly built, in `packages/changes`:
   `version` asks the person to refresh; the check that a pull request
   adds a change file.
 
-No change file exists yet. Changelogs are still edited by hand under
-`## [Unreleased]`, as [Background](#background) describes, and `version`
-refuses to release a unit whose changelog has entries there.
+Changes are recorded in change files. The changelogs have no
+`## [Unreleased]` heading, and `version` refuses to release a unit whose
+changelog has entries under one. [Background](#background) describes how
+changes were recorded before.
 
 ## Overview
 
@@ -77,10 +78,10 @@ scripts, and `packages/zena-cli` has all three manifests while being
 published as none of the three: it is a program, built and released as
 the `zena` binary.
 
-Twenty-one packages have a `CHANGELOG.md` in the Keep a Changelog format.
-A pull request adds its entries under `## [Unreleased]` by hand. Two pull
-requests that add an entry to one changelog conflict, and the second has
-to rebase.
+Eighteen packages have a `CHANGELOG.md` in the Keep a Changelog format.
+Before change files, a pull request added its entries under
+`## [Unreleased]` by hand. Two pull requests that added an entry to one
+changelog conflicted, and the second had to rebase.
 
 Versions are also written by hand. The Zena packages, the Rust crates
 and the toolchain are at `0.0.1-preview.1`, in every manifest of their
