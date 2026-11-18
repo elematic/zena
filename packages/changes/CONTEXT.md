@@ -33,7 +33,7 @@ run from the repository root as `npm run changes -- <command>`.
 - `src/notes.zena`: a group's release notes, from the change files'
   prose and the releases' entries. `.changes/config.json` says which
   group has notes and where they go (`notes`), and
-  `packages/zena-cli/dev/release-version.zena` knows that path too
+  `packages/cli/dev/release-version.zena` knows that path too
   (`releaseNotesPath`), for the release check.
 - `bin/changes.zena`: the command. It does the reading of files; the
   libraries take text.

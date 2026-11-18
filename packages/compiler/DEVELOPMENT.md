@@ -17,7 +17,7 @@ Make sure you have the Nix environment active (`direnv allow` or `nix develop`) 
 Run scripts via npm to use the Wireit cache:
 
 ```bash
-# Build the self-hosted compiler CLI (stage A, compiled by packages/zena-cli/bootstrap/zena.wasm)
+# Build the self-hosted compiler CLI (stage A, compiled by packages/cli/bootstrap/zena.wasm)
 npm run build:cli -w @zena-lang/compiler-zena
 
 # Build all TypeScript scripts and Wasm test runners
@@ -41,13 +41,13 @@ To run a single Zena unit test file directly:
 
 ## Reseeding the Bootstrap Binary
 
-When compiler changes need to be available to stage A (`packages/zena-cli/bootstrap/zena.wasm`), reseed the bootstrap from the repository root after all tests and the fixpoint check pass:
+When compiler changes need to be available to stage A (`packages/cli/bootstrap/zena.wasm`), reseed the bootstrap from the repository root after all tests and the fixpoint check pass:
 
 ```bash
 npm run reseed
 ```
 
-See `packages/zena-cli/bootstrap/README.md` and `docs/design/bootstrapping.md` for details on the bootstrap stages and verification.
+See `packages/cli/bootstrap/README.md` and `docs/design/bootstrapping.md` for details on the bootstrap stages and verification.
 
 ## Benchmarking
 

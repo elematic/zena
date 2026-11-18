@@ -21,7 +21,7 @@ components, and `extensions` when it uses `zena:extensions` to load
 components as extensions: long-lived instances it calls through
 objects. Those interfaces, the engine flags Zena output needs, and the
 `.cwasm` cache come from the [`zena-runtime`](../zena-runtime) crate,
-which [`zena-cli`](../zena-cli) shares. The difference between the two
+which [`zena-cli`](../cli) shares. The difference between the two
 binaries is that `zena-cli` also bundles the compiler and the test and
 benchmark runners, and so needs a checkout (or installed tree) of this
 repository; `zena-run` needs only the component. A component built for

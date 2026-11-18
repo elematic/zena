@@ -12,7 +12,7 @@ building targets, documentation, formatting, and a language server. The Rust bin
 gives it a small set of host imports; it contains no command-line logic
 of its own.
 
-The source is `packages/zena-cli/zena/`: `main.zena` reads the command
+The source is `packages/cli/zena/`: `main.zena` reads the command
 line and dispatches to `compile.zena`, `run.zena`, `test-run.zena` and
 `bench-run.zena`, and to `pkg/command.zena` for the `zena pkg` commands
 in `pkg/`, and `env.zena` holds what the host tells the module.
@@ -273,7 +273,7 @@ to stdout. [lsp.md](./lsp.md) describes the server.
 
 ## The host binary
 
-With all of that in the module, `zena-cli` (`packages/zena-cli/src/main.rs`,
+With all of that in the module, `zena-cli` (`packages/cli/src/main.rs`,
 about 130 lines) does what `zena-run` does, plus three things:
 
 - It finds the workspace by walking up from where the command runs: the
@@ -299,7 +299,7 @@ installing `zena` is one file plus the module.
 ## Building the CLI module
 
 The checked-in bootstrap is a prebuilt CLI module at
-`packages/zena-cli/bootstrap/zena.wasm`. When `packages/zena-cli/out/zena.wasm`
+`packages/cli/bootstrap/zena.wasm`. When `packages/cli/out/zena.wasm`
 does not exist yet, `zena-cli` falls back to `bootstrap/zena.wasm`, so
 `cargo build --release -p zena-cli` gives a working `zena` command
 (`build`, `fmt`, `lint`, `run`, `test`) before any Zena target is built.
@@ -313,7 +313,7 @@ never require a reseed:
 ```
 cargo build                         → zena-cli, zena-run
 zena-cli + bootstrap/zena.wasm      → packages/compiler/out/cli.wasm
-zena-run + out/cli.wasm        → packages/zena-cli/out/zena.wasm   (the CLI module)
+zena-run + out/cli.wasm        → packages/cli/out/zena.wasm   (the CLI module)
 zena-cli (+ out/zena.wasm)          → everything else
 ```
 
@@ -341,7 +341,7 @@ checks byte-for-byte self-reproduction before replacing it.
    library, with an LSP server beside it, and `zena lsp` runs the server
    over stdin and stdout. `zena:cli` gained `readStdin`.
 
-5. **The CLI module as the bootstrap**. `packages/zena-cli/bootstrap/zena.wasm`
+5. **The CLI module as the bootstrap**. `packages/cli/bootstrap/zena.wasm`
    replaced `packages/compiler/bootstrap/cli.wasm`, with `zena-cli`
    falling back to `bootstrap/zena.wasm` until `out/zena.wasm` is built
    while keeping Stage A (`out/cli.wasm`) so non-compiler packages

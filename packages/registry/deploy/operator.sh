@@ -17,7 +17,7 @@
 #   ... operator.sh check-store
 #
 # It runs packages/registry/src/main.zena with the repository's zena-cli,
-# so build that first (npm run build -w @zena-lang/zena-cli). The access
+# so build that first (npm run build -w @zena-lang/cli). The access
 # token lasts an hour, which is more than any of these takes.
 
 set -euo pipefail

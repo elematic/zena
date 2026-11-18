@@ -33,7 +33,7 @@ it decide.
 ## Changing a skill
 
 Every `zena` code block in a skill is a complete library, and
-`packages/zena-cli/tests/skill_test.zena` compiles each one. Write an
+`packages/cli/tests/skill_test.zena` compiles each one. Write an
 example as a block, so that it fails the build when the language moves, and
 put a claim about a compiler message in a table only after running the
 code. When a language change makes the skill wrong, change the skill in the

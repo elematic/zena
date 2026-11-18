@@ -35,7 +35,7 @@ ONLY=${MEM_BENCH_ONLY:-}   # alloc | live | time, or empty for all
 
 declare -A ENTRY=(
   [hello]=packages/compiler/src/test/hello_test.zena
-  [cli-module]=packages/zena-cli/zena/main.zena
+  [cli-module]=packages/cli/zena/main.zena
   [self-hosted]=packages/compiler/src/cli/main.zena
   [lsp]=packages/language-service/src/lsp.zena
 )

@@ -32,7 +32,7 @@ cache hits.
 ## How the build bootstraps
 
 The Zena compiler and CLI are written in Zena, so a fresh checkout
-builds from **the bootstrap**: `packages/zena-cli/bootstrap/zena.wasm`,
+builds from **the bootstrap**: `packages/cli/bootstrap/zena.wasm`,
 a prebuilt, checked-in build of the CLI module and the only prebuilt
 artifact in the repository.
 
@@ -42,7 +42,7 @@ zena-cli + bootstrap → zena/out/cli.wasm        (Stage A: the working compiler
 zena/out/cli.wasm    → out/zena.wasm, and rest  (CLI module, stdlib tests, LSP, …)
 ```
 
-Before `packages/zena-cli/out/zena.wasm` is built, `zena-cli` falls back
+Before `packages/cli/out/zena.wasm` is built, `zena-cli` falls back
 to `bootstrap/zena.wasm`, so `zena build`, `zena fmt` and `zena lint`
 work immediately after `cargo build --release -p zena-cli`.
 
@@ -123,7 +123,7 @@ matches one of these:
   needs from its wasmtime host (engine flags, `.cwasm` cache, the
   stack-trace and `zena:process` imports). The Rust counterpart of
   `packages/runtime`.
-- `packages/zena-cli` — Rust host that executes the compiler and Zena
+- `packages/cli` — Rust host that executes the compiler and Zena
   programs under wasmtime; also the test, bench and doc runners.
 - `packages/zena-run` — Rust host that runs one compiled module and
   nothing else.

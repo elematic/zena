@@ -12,8 +12,8 @@ document; this one stays current.)
 
 ## The bootstrap
 
-`packages/zena-cli/bootstrap/zena.wasm` is **the bootstrap**: a
-prebuilt, checked-in build of the CLI module (`packages/zena-cli/zena/main.zena`),
+`packages/cli/bootstrap/zena.wasm` is **the bootstrap**: a
+prebuilt, checked-in build of the CLI module (`packages/cli/zena/main.zena`),
 with the self-hosted compiler, zebra, the formatter, the linter, zenadoc,
 the language service and the package manager linked in. It is the base
 case that enables bootstrapping — the one artifact that exists before
@@ -22,16 +22,16 @@ anything is built. Everything else compiles from source:
 ```
 cargo build             → zena-cli, zena-run      (the Rust/wasmtime hosts, from source)
 zena-cli + bootstrap    → out/cli.wasm       (Stage A: the working compiler, from source)
-zena-run + cli.wasm     → packages/zena-cli/out/zena.wasm (the working CLI module, from source)
+zena-run + cli.wasm     → packages/cli/out/zena.wasm (the working CLI module, from source)
 zena-cli (+ zena.wasm)  → everything else         (stdlib tests, LSP, formatter, …)
 ```
 
-Before `packages/zena-cli/out/zena.wasm` is built, `zena-cli` falls back
-to `packages/zena-cli/bootstrap/zena.wasm`, so once cargo has built
+Before `packages/cli/out/zena.wasm` is built, `zena-cli` falls back
+to `packages/cli/bootstrap/zena.wasm`, so once cargo has built
 `zena-cli` a fresh checkout can already run `zena build` (including
 zebra target builds), `zena fmt`, `zena lint`, `zena run` and
 `zena test`. During a build, `build:cli` in `packages/compiler`
-sets `ZENA_CLI_MODULE=../zena-cli/bootstrap/zena.wasm` explicitly so
+sets `ZENA_CLI_MODULE=../cli/bootstrap/zena.wasm` explicitly so
 Stage A is always compiled by the bootstrap even when `out/zena.wasm`
 already exists on disk. Only the Wasm module is prebuilt; the host that
 executes it is built by cargo at HEAD, so the bootstrap never pins a
@@ -53,12 +53,12 @@ repository history per re-baseline, which is on-demand and rare.
 A, B and C are the same program — the self-hosted compiler, built from the
 source in the tree. They differ only in which compiler emitted them.
 
-| Stage     | Built by           | Artifact                                            | Differs from the stage before it when                                                                                                  |
-| --------- | ------------------ | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| bootstrap | a past re-baseline | `packages/zena-cli/bootstrap/zena.wasm`, checked in | —                                                                                                                                      |
-| A         | the bootstrap      | `out/cli.wasm` (`build:cli`)                        | the compiler's **source** has changed since the re-baseline                                                                            |
-| B         | stage A            | `out/cli-self.wasm` (`build:self-hosted`)           | the compiler's **output** has changed: A emits what the source in the tree says to, and the bootstrap emitted what its own commit said |
-| C         | stage B            | `out/cli-self2.wasm` (`test:fixpoint`)              | never — **B ≡ C** is the invariant below                                                                                               |
+| Stage     | Built by           | Artifact                                       | Differs from the stage before it when                                                                                                  |
+| --------- | ------------------ | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| bootstrap | a past re-baseline | `packages/cli/bootstrap/zena.wasm`, checked in | —                                                                                                                                      |
+| A         | the bootstrap      | `out/cli.wasm` (`build:cli`)                   | the compiler's **source** has changed since the re-baseline                                                                            |
+| B         | stage A            | `out/cli-self.wasm` (`build:self-hosted`)      | the compiler's **output** has changed: A emits what the source in the tree says to, and the bootstrap emitted what its own commit said |
+| C         | stage B            | `out/cli-self2.wasm` (`test:fixpoint`)         | never — **B ≡ C** is the invariant below                                                                                               |
 
 A and B are expected to differ, and nothing compares them. B and C are
 emitted by compilers built from the same source, so they must emit the same
@@ -78,7 +78,7 @@ same thing under both.
 What each stage is for:
 
 - **A** is what everything in the repository compiles with. `zena-cli`'s
-  module (`packages/zena-cli/out/zena.wasm`) is compiled by it, and so
+  module (`packages/cli/out/zena.wasm`) is compiled by it, and so
   every package that compiles Zena reaches A's output, along with the
   compiler's own test program and the component fixtures.
 - **B** is the re-baseline candidate and the subject of the fixpoint check.
@@ -110,7 +110,7 @@ rather than the bootstrap's output.
 ## Provenance
 
 The bootstrap's provenance is its git history: the commit that last
-changed `packages/zena-cli/bootstrap/zena.wasm` is the re-baseline commit, and the
+changed `packages/cli/bootstrap/zena.wasm` is the re-baseline commit, and the
 re-baseline procedure (below) builds the artifact from that same
 commit's source. There is no separate provenance file to keep in sync.
 
@@ -123,13 +123,13 @@ re-baseline commit, build `zena-cli`'s binary
 the bootstrap:
 
 ```bash
-ZENA_GC_RESERVE_MB=1536 ZENA_CLI_MODULE=packages/zena-cli/bootstrap/zena.wasm \
-  ./target/release/zena-cli -g -O2 build packages/zena-cli/zena/main.zena \
-  -o packages/zena-cli/out/audit.wasm
-cmp packages/zena-cli/out/audit.wasm packages/zena-cli/bootstrap/zena.wasm
+ZENA_GC_RESERVE_MB=1536 ZENA_CLI_MODULE=packages/cli/bootstrap/zena.wasm \
+  ./target/release/zena-cli -g -O2 build packages/cli/zena/main.zena \
+  -o packages/cli/out/audit.wasm
+cmp packages/cli/out/audit.wasm packages/cli/bootstrap/zena.wasm
 ```
 
-`build:module`'s output (`packages/zena-cli/out/zena.wasm`) does not
+`build:module`'s output (`packages/cli/out/zena.wasm`) does not
 match: it is built at `-O1` rather than `-O2`.
 
 ## The invariant
@@ -154,7 +154,7 @@ builds a green HEAD is a good bootstrap.
 You cannot _accidentally_ land a change the bootstrap can't compile.
 `build:cli`'s inputs are the entire compiler source
 (`zena/**/*.zena`), the stdlib source, and
-`packages/zena-cli/bootstrap/zena.wasm`
+`packages/cli/bootstrap/zena.wasm`
 itself — so **any** edit to compiler or stdlib source invalidates the
 cached result and reruns compilation _through the bootstrap_. If the
 bootstrap can't compile the new source, `build:cli` fails right there,
@@ -220,14 +220,14 @@ npm run reseed
 ```
 
 `reseed` is gated: it depends on the full workspace test suite
-(fixpoint included), compiles `packages/zena-cli/zena/main.zena` at
-`-g -O2` with `packages/zena-cli/out/zena.wasm`, compiles it once more
+(fixpoint included), compiles `packages/cli/zena/main.zena` at
+`-g -O2` with `packages/cli/out/zena.wasm`, compiles it once more
 with the candidate bootstrap to verify byte-for-byte self-reproduction,
-and then moves it into `packages/zena-cli/bootstrap/zena.wasm`. After it
+and then moves it into `packages/cli/bootstrap/zena.wasm`. After it
 runs, run `npm test` once more: the changed bootstrap invalidates
 `build:cli`, so this second pass rebuilds and tests everything _from
 the new bootstrap_, which is the "is the new bootstrap good?"
-check. Commit the new `packages/zena-cli/bootstrap/zena.wasm` together
+check. Commit the new `packages/cli/bootstrap/zena.wasm` together
 with whatever change motivated the re-baseline.
 
 Reseed after the commit's last source change. The bootstrap a commit

@@ -3,7 +3,7 @@
 //
 //   PDS_JS_DIR=<pds.js checkout> node packages/atproto/test/fixtures/plc/generate.mjs
 //
-// packages/zena-cli/tests/pds-js/setup.mjs prepares a checkout and prints
+// packages/cli/tests/pds-js/setup.mjs prepares a checkout and prints
 // its directory. The signatures are random, so running this again changes
 // every operation and DID.
 import {writeFileSync} from 'node:fs';

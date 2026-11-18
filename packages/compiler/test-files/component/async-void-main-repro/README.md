@@ -20,19 +20,19 @@ needed to reproduce it; the fixtures here import nothing at all.
 
 ## Reproducing
 
-Both paths are relative to `packages/zena-cli`, which is where the
+Both paths are relative to `packages/cli`, which is where the
 `zena` script runs, and is what `component-e2e.ts` does too.
 
 ```bash
 # used to fail; now builds
-npm run zena -w @zena-lang/zena-cli -- build \
+npm run zena -w @zena-lang/cli -- build \
   ../compiler/test-files/component/async-void-main-repro/fails.zena \
   -o /tmp/fails.wasm --target component \
   --wit ../compiler/test-files/component/async-void-main-repro/fails.wit \
   --world app
 
 # the control — identical, plus a second async export
-npm run zena -w @zena-lang/zena-cli -- build \
+npm run zena -w @zena-lang/cli -- build \
   ../compiler/test-files/component/async-void-main-repro/works.zena \
   -o /tmp/works.wasm --target component \
   --wit ../compiler/test-files/component/async-void-main-repro/works.wit \

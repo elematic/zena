@@ -37,7 +37,7 @@ const stageB = join(pkgDir, stageBRel);
 const stageC = join(pkgDir, stageCRel);
 
 /**
- * Which compiler `zena-cli` uses, defined in packages/zena-cli/zena/compile.zena
+ * Which compiler `zena-cli` uses, defined in packages/cli/zena/compile.zena
  * — a path to a .wasm. Without it, the compiler linked into the CLI module
  * compiles, and that is HEAD's compiler too.
  */
@@ -80,7 +80,7 @@ try {
     '  would be built by the default compiler and this check would',
   );
   console.error(
-    '  compare stage B against itself. See packages/zena-cli/zena/compile.zena.',
+    '  compare stage B against itself. See packages/cli/zena/compile.zena.',
   );
   process.exit(1);
 } catch {

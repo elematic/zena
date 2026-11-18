@@ -18,7 +18,7 @@ the same crate to run any compiled module.
 ## Building
 
 ```bash
-npm run build -w @zena-lang/zena-cli
+npm run build -w @zena-lang/cli
 ```
 
 That builds the binary (`build:host`), then the compiler from the

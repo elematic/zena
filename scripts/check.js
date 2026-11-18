@@ -250,7 +250,7 @@ if (linted.length > 0) {
 for (const {sha, merge, subject} of messages) {
   if (!merge && !SUBJECT.test(subject)) {
     errors.push(
-      `${sha}: subject needs package tags, like "[stdlib] Add ..." or "[pds][zena-cli] Fix ...": ${subject}`,
+      `${sha}: subject needs package tags, like "[stdlib] Add ..." or "[pds][cli] Fix ...": ${subject}`,
     );
   }
 }

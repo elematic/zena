@@ -70,7 +70,7 @@
 
 - Incremental build orchestrator for Zena (`zena-package.json`), standalone Zebra (`zebra.json`), and Wireit (`package.json`) workspaces.
 
-## zena-cli
+## cli
 
 ### Added
 

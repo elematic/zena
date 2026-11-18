@@ -254,7 +254,7 @@ scripts: {
     command: 'zena-cli build src/cli/main.zena -o out/cli.wasm',
     files: ['zena/**/*.zena', 'bootstrap/cli.wasm'],
     output: ['out/cli.wasm'],
-    dependencies: ['../zena-cli:build'],
+    dependencies: ['../cli:build'],
   },
   'build:scripts': typescript({tsconfig: 'tsconfig.json'}),
 }

@@ -74,7 +74,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.WORKSPACE_CRATES }}
-          key: rust-workspace-${{ runner.os }}-${{ hashFiles('.github/workflows/test.yml', 'scripts/ci-cargo-freshness.py', 'Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/zena-cli/Cargo.toml', 'packages/zena-cli/build.rs', 'packages/zena-cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
+          key: rust-workspace-${{ runner.os }}-${{ hashFiles('.github/workflows/test.yml', 'scripts/ci-cargo-freshness.py', 'Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/cli/Cargo.toml', 'packages/cli/build.rs', 'packages/cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
           restore-keys: rust-workspace-${{ runner.os }}-
 
       - name: Restore the Rust sources' times from the cached build
@@ -89,22 +89,22 @@ jobs:
       - name: Build CLI binary and module
         env:
           WIREIT_PARALLEL: 3
-        run: nix develop --command npm run build -w @zena-lang/zena-cli
+        run: nix develop --command npm run build -w @zena-lang/cli
 
       - name: Verify release version, changelog, and tag progression
         id: verify-version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p .zena packages/zena-cli/out
+          mkdir -p .zena packages/cli/out
           {
             git tag -l
             gh release list --limit 1000 --json tagName --jq '.[].tagName'
           } | sort -u > .zena/release-tags.txt
           rm -f .zena/github-output.txt
-          ./target/release/zena-cli run --dir . packages/zena-cli/dev/check-release-version.zena \
+          ./target/release/zena-cli run --dir . packages/cli/dev/check-release-version.zena \
             --tags-file .zena/release-tags.txt \
-            --notes-out packages/zena-cli/out/release-notes.md \
+            --notes-out packages/cli/out/release-notes.md \
             --github-output .zena/github-output.txt
           cat .zena/github-output.txt >> "$GITHUB_OUTPUT"
 
@@ -113,7 +113,7 @@ jobs:
           WIREIT_PARALLEL: 3
         run: |
           nix develop --command bash -c '
-            npm run build:bundle-assets -w @zena-lang/zena-cli
+            npm run build:bundle-assets -w @zena-lang/cli
             npm run test:fixpoint -w @zena-lang/compiler-zena
           '
 
@@ -122,9 +122,9 @@ jobs:
         with:
           name: cli-bundle-assets
           path: |
-            packages/zena-cli/out/zena.wasm
-            packages/zena-cli/out/stdlib_bundle.rs
-            packages/zena-cli/out/release-notes.md
+            packages/cli/out/zena.wasm
+            packages/cli/out/stdlib_bundle.rs
+            packages/cli/out/release-notes.md
           if-no-files-found: error
           retention-days: 7
 
@@ -177,7 +177,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: cli-bundle-assets
-          path: packages/zena-cli/out
+          path: packages/cli/out
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -396,7 +396,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.WORKSPACE_CRATES }}
-          key: rust-workspace-${{ runner.os }}-${{ hashFiles('.github/workflows/test.yml', 'scripts/ci-cargo-freshness.py', 'Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/zena-cli/Cargo.toml', 'packages/zena-cli/build.rs', 'packages/zena-cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
+          key: rust-workspace-${{ runner.os }}-${{ hashFiles('.github/workflows/test.yml', 'scripts/ci-cargo-freshness.py', 'Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/cli/Cargo.toml', 'packages/cli/build.rs', 'packages/cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
           restore-keys: rust-workspace-${{ runner.os }}-
 
       - name: Restore the Rust sources' times from the cached build
@@ -501,7 +501,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ env.WORKSPACE_CRATES }}
-          key: rust-workspace-${{ runner.os }}-${{ hashFiles('.github/workflows/test.yml', 'scripts/ci-cargo-freshness.py', 'Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/zena-cli/Cargo.toml', 'packages/zena-cli/build.rs', 'packages/zena-cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
+          key: rust-workspace-${{ runner.os }}-${{ hashFiles('.github/workflows/test.yml', 'scripts/ci-cargo-freshness.py', 'Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/cli/Cargo.toml', 'packages/cli/build.rs', 'packages/cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
           restore-keys: rust-workspace-${{ runner.os }}-
 
       - name: Restore the Rust sources' times from the cached build
