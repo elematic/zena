@@ -465,6 +465,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       npm_version: ${{ steps.pack-npm.outputs.npm_version }}
+      npm_count: ${{ steps.pack-npm.outputs.npm_count }}
     env:
       WORKSPACE_CRATES: |
         target/zena-rust-sources.tsv
@@ -540,8 +541,17 @@ jobs:
           COMPILER_VERSION="$(jq -r '.version' packages/compiler-js/package.json)"
           echo "npm_version=${COMPILER_VERSION}" >> "$GITHUB_OUTPUT"
 
+          # This workflow releases the toolchain group, so it publishes the
+          # group's units that are not held (.changes/config.json,
+          # docs/design/change-files.md). The other packages are left out.
+          RELEASED="$(jq -c '.groups.toolchain | (.units - (.held // []))' .changes/config.json)"
+
           MANIFEST='[]'
           for dir in "${PACKAGES[@]}"; do
+            if [ "$(jq -n --argjson released "$RELEASED" --arg unit "${dir#packages/}" '$released | index($unit) != null')" != "true" ]; then
+              echo "::notice::Not publishing ${dir}: it is held, or is not in the toolchain group (.changes/config.json)."
+              continue
+            fi
             if [ "$(jq -r '.private // false' "${dir}/package.json")" = "true" ]; then
               echo "::error::Expected ${dir} to be a public npm package, but private=true"
               exit 1
@@ -563,6 +573,7 @@ jobs:
 
           printf '%s\n' "$MANIFEST" | jq . > dist-npm/manifest.json
           cat dist-npm/manifest.json
+          echo "npm_count=$(jq 'length' dist-npm/manifest.json)" >> "$GITHUB_OUTPUT"
 
       - name: Upload npm tarballs
         uses: actions/upload-artifact@v7
@@ -602,6 +613,7 @@ jobs:
           PRERELEASE: ${{ needs.build-assets.outputs.prerelease }}
           VSIX_VERSION: ${{ needs.build-vscode.outputs.vsix_version }}
           NPM_VERSION: ${{ needs.build-npm.outputs.npm_version }}
+          NPM_COUNT: ${{ needs.build-npm.outputs.npm_count }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           cd dist
@@ -659,7 +671,9 @@ jobs:
             printf '**Windows (PowerShell):**\n\n```powershell\n$env:ZENA_VERSION = '\''%s'\''; irm https://zena-lang.dev/install.ps1 | iex\n```\n\n' "$TAG"
             printf 'Omit `ZENA_VERSION` to install the latest release.\n\n'
             printf '**VS Code Extension:**\n\n```sh\ncode --install-extension zena-lang.vscode-zena\n# Or from the attached VSIX:\ncode --install-extension %s\n```\n\n' "$VSIX_VERSIONED"
-            printf '**npm Packages (`@zena-lang/*`):**\n\n```sh\nnpm install @zena-lang/compiler%s @zena-lang/runtime%s\n```\n\n' "$NPM_TAG_SUFFIX" "$NPM_TAG_SUFFIX"
+            if [ "${NPM_COUNT:-0}" -gt 0 ]; then
+              printf '**npm Packages (`@zena-lang/*`):**\n\n```sh\nnpm install @zena-lang/compiler%s @zena-lang/runtime%s\n```\n\n' "$NPM_TAG_SUFFIX" "$NPM_TAG_SUFFIX"
+            fi
             printf '### Downloads\n\n'
             printf '| Platform | Archive | SHA-256 |\n'
             printf '| --- | --- | --- |\n'
@@ -697,6 +711,11 @@ jobs:
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # The only job that can publish. The environment is limited to main and
+    # holds the variables and any secrets that publishing reads, and npm's
+    # trusted publisher for each package names it, so nothing publishes from
+    # another job, workflow or branch.
+    environment: release
     permissions:
       contents: write
       id-token: write
