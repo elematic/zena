@@ -251,10 +251,8 @@ final class WorkspaceLoader {
   #keys = new Map<String, String>();
   // Directories by package key, to report two packages with one name.
   #dirs = new Map<String, String>();
-  // The workspace's root, and its manifest's `scope`, which is also the
-  // scope of each package in the workspace that names none.
+  // The workspace's root.
   var #root = ".";
-  var #rootScope: String | null = null;
   // The lockfile's `workspace` section: the pins each workspace package's
   // names stand for, by the package's directory relative to the root.
   var #workspacePins = new Map<String, HashMap<String, String>>();
@@ -284,7 +282,6 @@ final class WorkspaceLoader {
     }
     let manifest = await this.#readJson(joinPath(root, "zena-package.json"));
     this.#root = normalizePath(root);
-    this.#rootScope = scopeOf(manifest, `${this.#root}/zena-package.json`);
     if (manifest.has("name")) {
       await this.#loadPackage(root, manifest);
     } else {
@@ -337,9 +334,8 @@ final class WorkspaceLoader {
   }
 
   // Loads the package in `dir`, whose manifest is `manifest`, and returns
-  // its key: `<scope>:<name>` when it has a scope, its own or, inside the
-  // workspace, the root's; its `name` when it has none; and its directory
-  // when it has no name (docs/design/import-names.md, "Workspace
+  // its key: its `name`, which gives a scope as `<scope>:<name>`, or its
+  // directory when it has no name (docs/design/import-names.md, "Workspace
   // packages"). A package in a scope also names itself by its plain
   // `name`, unless one of its dependencies has that name.
   async #loadPackage(dir: String, manifest: JsonObject): Future<String> {
@@ -351,22 +347,13 @@ final class WorkspaceLoader {
       if (!(nameValue is String)) {
         throw new Error(`${path}/zena-package.json: the name is not a package name`);
       }
-      // A name gives its scope as `scope:name`. The `scope` field is still
-      // read, for manifests the checked-in bootstrap reads, which takes no
-      // scope in a name.
       let colon = indexOfByte(nameValue, 58); // ':'
       let plain = if (colon < 0) nameValue else nameValue.sliceBytes(colon + 1, nameValue.length);
       let nameScope = if (colon < 0) null else nameValue.sliceBytes(0, colon);
       if (!isPackageName(plain) || (nameScope != null && !isScopeName(nameScope))) {
         throw new Error(`${path}/zena-package.json: the name is not a package name`);
       }
-      let fieldScope = scopeOf(manifest, `${path}/zena-package.json`);
-      if (nameScope != null && fieldScope != null) {
-        throw new Error(`${path}/zena-package.json: the scope is in the name, so leave out the scope field`);
-      }
-      let scope = nameScope ?? fieldScope ??
-          (if (isInside(path, this.#root)) this.#rootScope else null);
-      name = if (scope != null) `${scope}:${plain}` else plain;
+      name = nameValue;
       plainName = plain;
     }
     let key = name ?? path;
@@ -564,33 +551,6 @@ function isScopeName(name: String): boolean {
 // without the `/` and `:` that imports are made of.
 function isNamePart(part: String): boolean {
   return part != "" && !part.contains("/") && !part.contains(":");
-}
-
-// Whether `path`, a package's directory, is in the workspace whose root is
-// `root`, as both are normalized: a relative path that does not climb out
-// of a root of `.`, or one under the root's own path.
-function isInside(path: String, root: String): boolean {
-  if (root == ".") {
-    return !path.startsWith("/") && path != ".." && !path.startsWith("../");
-  }
-  return path == root || path.startsWith(`${root}/`);
-}
-
-// The `scope` of a manifest, or null when it has none. `manifestPath`
-// names the manifest in an error.
-function scopeOf(manifest: JsonObject, manifestPath: String): String | null {
-  let value = manifest["scope"];
-  if (value == null) {
-    return null;
-  }
-  if (!(value is String)) {
-    throw new Error(`${manifestPath}: the scope is not a scope's name`);
-  }
-  let scope = value;
-  if (!isScopeName(scope)) {
-    throw new Error(`${manifestPath}: the scope is not a scope's name`);
-  }
-  return scope;
 }
 
 // The directory a manifest's libraries are in, relative to the manifest:

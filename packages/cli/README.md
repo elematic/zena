@@ -128,9 +128,9 @@ describes one. Publishing never creates a scope.
 `zena-package.json` gives, which needs a `description` and an SPDX
 `license`, such as `"MIT"`. The first time, the package has no `did`, and
 `zena pkg publish --yes` creates it on the registry in the scope its
-manifest's `"scope"` names, else its workspace root's, else `--scope`.
-It writes the DID into the manifest, with the scope when only `--scope`
-gave it. Later publishes check that the package's handle is still in that
+manifest's `name` gives (`"name": "acme:router"`), else `--scope`. It
+writes the DID into the manifest, and the scope into the name when only
+`--scope` gave it. Later publishes check that the package's handle is still in that
 scope.
 
 The release holds the files the manifest's `files` patterns name, such as
@@ -155,7 +155,7 @@ approves it with `--yes`. Raise `version` to publish again.
 
 ```bash
 zena pkg scope create acme --yes       # once per scope
-zena pkg publish --scope acme --yes    # the first time, or with "scope": "acme"
+zena pkg publish --scope acme --yes    # the first time, or with "name": "acme:router"
 zena pkg publish                       # after raising "version"
 zena pkg retract 1.4.1 --reason "Routes with a trailing slash matched the wrong handler"
 ```

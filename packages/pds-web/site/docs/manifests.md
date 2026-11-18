@@ -37,7 +37,6 @@ A package is defined by the `zena-package.json` manifest at its root: its name, 
 | -------------- | ---------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `name`         | `string`                     | Any package    | The package's name, after the scope it is created in: `acme:router`; suggested to dependents as their local name |
 | `did`          | `string`                     | Any package    | The package's AT Protocol DID, written by `zena pkg publish` or `zena pkg create`                                |
-| `scope`        | `string`                     | Any package    | The scope of a `name` that has none; give it in the name instead                                                 |
 | `version`      | `string`                     | Any package    | Semantic version (`1.4.2`, `2.0.0-rc.1`) published by the next `zena pkg publish`                                |
 | `description`  | `string`                     | Any package    | One-sentence summary of the package; required to publish                                                         |
 | `license`      | `string`                     | Any package    | SPDX license expression (`MIT`, `Apache-2.0`, `(MIT OR Apache-2.0)`); required to publish                        |

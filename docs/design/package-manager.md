@@ -1336,9 +1336,8 @@ the package's own name:
 ```
 
 The first publish creates the package in that scope, and `--scope` gives
-one for a manifest without it, which it writes into the name. A workspace
-root's `scope` is the default for its workspace packages (see
-[package-manifest.md](package-manifest.md#scope)). `acme:router` is also
+one for a manifest without it, which it writes into the name (see
+[package-manifest.md](package-manifest.md#name)). `acme:router` is also
 the name dependents import the package by, and `zena pkg add`'s shorthand
 for its handle, `router.acme.<domain>`.
 

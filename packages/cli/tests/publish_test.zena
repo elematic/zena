@@ -157,20 +157,6 @@ export let tests = suite('zena pkg publish', () => {
       let created = await zenaIn('other').run(['pkg', 'create', '--yes']);
       isTrue(created.succeeded() && created.stdout.contains('Created other.acme.pkg.test'), described(created));
       isTrue(!created.stdout.contains('Published'), described(created));
-
-      // A workspace's root names the scope of its packages.
-      await write(scratch.at('ws/zena-package.json'), '{"workspace": {"packages": ["pkgs/*"]}, "scope": "acme"}\n');
-      await write(scratch.at('ws/pkgs/third/zena-package.json'), '{"name": "third", "description": "A package for tests", "license": "MIT", "version": "0.1.0"}\n');
-      await write(scratch.at('ws/pkgs/third/third.zena'), 'export let y = 2;\n');
-      let third = await new ZenaCommand(scratch.at('ws/pkgs/third'), scratch.host('cache'))
-        .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
-        .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
-        .set('ZENA_REGISTRY', addresses['registry'] as String)
-        .set('ZENA_CONFIG_DIR', scratch.host('config'))
-        .run(['pkg', 'create', '--yes']);
-      isTrue(third.succeeded() && third.stdout.contains('Created third.acme.pkg.test'), described(third));
-      isTrue(!(await read(scratch.at('ws/pkgs/third/zena-package.json'))).contains('"scope"'),
-          'a scope the root gives is not written into the package');
       let other = await zenaIn('other').run(['pkg', 'publish']);
       isTrue(other.succeeded() && other.stdout.contains('Published other 0.1.0'), described(other));
 

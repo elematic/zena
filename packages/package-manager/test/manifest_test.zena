@@ -121,8 +121,6 @@ export let tests = suite('package-manager/manifest', () => {
     for (let name in ['Acme:app', 'zena:app', 'acme:', ':app', 'acme:app:x', 'acme:zena']) {
       rejects(`{"name": "${name}"}`);
     }
-    // The scope is given once, in the name.
-    rejects('{"name": "acme:app", "scope": "acme"}');
     rejects('{"dependencies": {"router": {"did": "router", "version": "1.4.2"}}}');
     rejects(`{"dependencies": {"router": {"did": "${ROUTER}", "version": "one"}}}`);
     rejects(`{"dependencies": {"router": {"did": "${ROUTER}"}}}`);
@@ -132,8 +130,6 @@ export let tests = suite('package-manager/manifest', () => {
     rejects('{"workspace": {"packages": "packages/*"}}');
     rejects('{"scopes": {"@widgets": "widgets.alt-pkg.org"}}');
     rejects('{"scopedNames": "no"}');
-    rejects('{"scope": "Acme"}');
-    rejects('{"scope": 3}');
   });
 
   test('reads and keeps a WIT dependency, which it has nothing to fetch for', (ctx) => {
@@ -288,14 +284,13 @@ export let tests = suite('package-manager/manifest', () => {
     equal(readManifest(written).did as String, did);
   });
 
-  test('reads the scope from the name, or else from the scope field', (ctx) => {
+  test('reads the scope from the name', (ctx) => {
     let scoped = readManifest('{"name": "acme:router"}');
     equal(scoped.name as String, 'router');
     equal(scoped.scope as String, 'acme');
-    let field = readManifest('{"name": "router", "scope": "acme"}');
-    equal(field.name as String, 'router');
-    equal(field.scope as String, 'acme');
     isTrue(readManifest('{"name": "router"}').scope == null, 'no scope');
+    // A field of another name, scope included, is no part of the name.
+    isTrue(readManifest('{"name": "router", "scope": "acme"}').scope == null, 'a scope field');
   });
 
   test('writes the scope into the name', (ctx) => {
@@ -304,9 +299,7 @@ export let tests = suite('package-manager/manifest', () => {
     equal(written,
         '{\n  "name": "acme:router",\n  "did": "did:plc:routerrouterrouterrouter",\n  "version": "1.0.0"\n}\n');
     equal(readManifest(written).scope as String, 'acme');
-    // A scope field goes, and a scope already in the name is replaced.
-    jsonEqual(parseJson(writeDid('{"scope": "old", "name": "router"}', did, 'acme')),
-        parseJson(`{"name": "acme:router", "did": "${did}"}`));
+    // A scope already in the name is replaced.
     jsonEqual(parseJson(writeDid('{"name": "old:router"}', did, 'acme')),
         parseJson(`{"name": "acme:router", "did": "${did}"}`));
   });

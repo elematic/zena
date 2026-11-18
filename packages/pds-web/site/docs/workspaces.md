@@ -23,7 +23,6 @@ my-workspace/
 
 ```json [my-workspace/zena-package.json]
 {
-  "scope": "acme",
   "workspace": {
     "packages": ["packages/*"]
   }
@@ -31,7 +30,7 @@ my-workspace/
 ```
 
 - If the root `zena-package.json` also has a `name`, the root directory is a workspace package alongside the directories in `workspace.packages`.
-- If the root `zena-package.json` has `scope`, member packages without their own `scope` inherit it when publishing.
+- A package in a scope gives the scope in its own `name`, such as `"acme:server"`. The root's manifest gives its packages no scope.
 
 ## Cross-package dependencies
 

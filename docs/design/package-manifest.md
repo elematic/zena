@@ -46,22 +46,21 @@ else moved.
 }
 ```
 
-| Field          | Type                            | Where          | Description                                                                      |
-| -------------- | ------------------------------- | -------------- | -------------------------------------------------------------------------------- |
-| `name`         | `string`                        | any package    | The package's name, after the scope it is created in, if any                     |
-| `did`          | `string`                        | any package    | The package's DID, once it has been created on an App View                       |
-| `scope`        | `string`                        | any package    | The scope of a `name` that has none; read until the bootstrap reads scoped names |
-| `description`  | `string`                        | any package    | What the package is for, in a sentence; required to publish                      |
-| `license`      | `string`                        | any package    | An SPDX license expression, such as `MIT`; required to publish                   |
-| `version`      | `string`                        | any package    | The version `zena pkg publish` publishes next                                    |
-| `source`       | `string`                        | any package    | The directory the package's libraries are in; `src` by default                   |
-| `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                          |
-| `main`         | `string`                        | any package    | The library an import of the package's name alone imports; `main` by default     |
-| `files`        | `string[]`                      | any package    | The files a published release holds, as patterns                                 |
-| `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name                      |
-| `workspace`    | `{packages: string[]}`          | workspace root | The directories of the workspace's other packages                                |
-| `scopes`       | `Record<string, string>`        | workspace root | Domains for `scope:name` (see package-manager.md, "Names and scopes")            |
-| `scopedNames`  | `boolean`                       | workspace root | Whether `zena pkg add` names a package in a scope `scope:name`; true by default  |
+| Field          | Type                            | Where          | Description                                                                     |
+| -------------- | ------------------------------- | -------------- | ------------------------------------------------------------------------------- |
+| `name`         | `string`                        | any package    | The package's name, after the scope it is created in, if any                    |
+| `did`          | `string`                        | any package    | The package's DID, once it has been created on an App View                      |
+| `description`  | `string`                        | any package    | What the package is for, in a sentence; required to publish                     |
+| `license`      | `string`                        | any package    | An SPDX license expression, such as `MIT`; required to publish                  |
+| `version`      | `string`                        | any package    | The version `zena pkg publish` publishes next                                   |
+| `source`       | `string`                        | any package    | The directory the package's libraries are in; `src` by default                  |
+| `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                         |
+| `main`         | `string`                        | any package    | The library an import of the package's name alone imports; `main` by default    |
+| `files`        | `string[]`                      | any package    | The files a published release holds, as patterns                                |
+| `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name                     |
+| `workspace`    | `{packages: string[]}`          | workspace root | The directories of the workspace's other packages                               |
+| `scopes`       | `Record<string, string>`        | workspace root | Domains for `scope:name` (see package-manager.md, "Names and scopes")           |
+| `scopedNames`  | `boolean`                       | workspace root | Whether `zena pkg add` names a package in a scope `scope:name`; true by default |
 
 All paths are relative to the directory the manifest is in.
 
@@ -94,20 +93,6 @@ the name.
 `zena pkg publish` writes the DID when it creates the package's account (see
 package-manager.md, "Creating a package"), so that later releases are
 published to the same package.
-
-### `scope`
-
-The scope of a package whose `name` has none, read as the scope in the
-name would be. A workspace root's `scope` is also the scope of each
-workspace package that has none of its own. The field is read because the
-compiler checked in as the bootstrap ([bootstrapping.md](bootstrapping.md)),
-which reads every manifest in the Zena repository, takes no scope in a
-name, so that repository's manifests keep the field until the bootstrap
-does. The field is removed then. A manifest that gives a scope in both is
-refused.
-
-`scope` is unrelated to `scopes`, below, which says where `zena pkg add`
-looks up the packages of other scopes.
 
 ### `description` and `license`
 
