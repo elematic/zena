@@ -843,6 +843,11 @@ All prose — design docs, commit messages, comments — follows
   `[stdlib] Add String.repeat`, `[pds][zena-cli] ...`, `[docs] ...` for
   documentation alone. PRs are squash-merged, so the title becomes the
   commit on `main`.
+- **A change that a package's users can see adds a change file**: a
+  Markdown file in `.changes/` with the changelog entries, under a
+  heading for each package (`.changes/README.md`). Do not edit a
+  `CHANGELOG.md`: a release writes those from the change files. Run
+  `npm run changes -- check` after writing one.
 - **After pushing**, find out about merges, failing checks and comments
   without being told: subscribe to the PR (`subscribe_pr_activity`) if
   your harness has the tool, or else run `npm run watch-prs -- <numbers>`
