@@ -455,7 +455,7 @@ caring which representation it was handed.
 
 Measured with the workload pairs under `benchmarks/workloads/`
 (`npm run bench -- --build --speed <workload>`; each is built at `-O2`
-and timed by `zena-cli bench`), against a concretely typed baseline in
+and timed by `zena bench`), against a concretely typed baseline in
 the same run:
 
 1. **No concrete-typed regression.** `concrete-param` (a two-loop sum

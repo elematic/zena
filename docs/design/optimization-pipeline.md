@@ -448,7 +448,7 @@ Counters and suite-wide numbers track progress; these milestones define
 _done_ for the abstractions the language most wants to be free. Each is
 a pair of programs — the same workload written abstractly and written
 concretely — compiled by the same compiler and compared with the
-existing harness: `zena-cli bench`'s Welch's-t sampling must call their
+existing harness: `zena bench`'s Welch's-t sampling must call their
 speeds indistinguishable (or the abstract form faster), and WAT
 invariants must assert the structural facts, since a timing tie can
 also mean both sides missed. They live as workload pairs under

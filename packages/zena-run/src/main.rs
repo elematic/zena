@@ -8,7 +8,7 @@
 //! core module — a `core` build, hand-written `.wat` — runs with
 //! no imports, so `--dir`, `--allow-spawn`, `--allow-extensions` and the
 //! arguments do not reach it. It does
-//! not compile Zena source; `zena-cli` bundles the compiler and hands
+//! not compile Zena source; `zena` bundles the compiler and hands
 //! programs it builds to the same runtime crate.
 
 use anyhow::{Context, Result};

@@ -16,7 +16,7 @@ import {fileURLToPath} from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
 const repoRoot = join(pkgDir, '..', '..');
-const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+const zenaCli = join(repoRoot, 'target', 'release', 'zena');
 const outFile = join(pkgDir, '_generated', 'stdlib-api.json');
 
 mkdirSync(dirname(outFile), {recursive: true});

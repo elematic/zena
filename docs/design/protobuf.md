@@ -33,7 +33,7 @@ It covers three decisions, in order of how much they affect the result:
   generated.
 - Generated service clients call a small transport interface. Unary calls
   can use Google's gRPC fallback protocol over HTTP/1.1. Streaming calls
-  need gRPC over HTTP/2, which `zena-cli` and `zena-run` support and
+  need gRPC over HTTP/2, which `zena` and `zena-run` support and
   wasmtime's default outgoing handler does not.
 - The generator is a Zena library that turns `.proto` text into Zena
   source. It runs as a command-line program or a build step, and the
@@ -528,7 +528,7 @@ connections and HTTP/2 a host requirement for production servers in
 general.
 
 Zena's own runtime (`packages/zena-runtime`) overrides
-`send_request` (`src/http_client.rs`), so programs run by `zena-cli`
+`send_request` (`src/http_client.rs`), so programs run by `zena`
 and `zena-run` get both. One client per process keeps idle
 connections open for reuse. `https://` connections offer `h2` and
 `http/1.1` through ALPN and use HTTP/2 when the server chooses it;
@@ -631,7 +631,7 @@ names, `int64` as strings, and per-type rules for the well-known types.
 | HTTP/2 to `*.googleapis.com`               | gRPC                                  | `zena-runtime`; not in wasmtime's default handler |
 | An outgoing-request hook in `zena-runtime` | running servers under Zena's own host | done (`src/http_client.rs`)                       |
 
-The guest side needs nothing new. Under `zena-cli` and `zena-run` the
+The guest side needs nothing new. Under `zena` and `zena-run` the
 host side is in place too; under stock `wasmtime`, outgoing requests
 still open a connection each and use HTTP/1.1.
 
@@ -786,7 +786,7 @@ types to Firestore documents (see [Typed documents](#typed-documents)).
 Firestore module, with a transport that answers with canned bytes, and a
 baseline that uses the same standard library pieces (a future, a
 `HashMap`, a console line) without protobuf. Built with
-`zena-cli -O <n> build`:
+`zena -O <n> build`:
 
 | Program                                                                                   | `-O0`   | `-O1`  | `-O2`  |
 | ----------------------------------------------------------------------------------------- | ------- | ------ | ------ |
@@ -861,7 +861,7 @@ the two share one design: [typed-documents.md](typed-documents.md).
 Every call goes through the generated client, so the transport is a
 constructor option, and the constructor names no transport of its own.
 `Firestore.connect()` uses gRPC, which production servers under
-`zena-cli` speak, and reads `FIRESTORE_EMULATOR_HOST` as Google's client
+`zena` speak, and reads `FIRESTORE_EMULATOR_HOST` as Google's client
 libraries do, talking gRPC to the emulator with the token `owner`.
 `Firestore.connectFallback()` uses the fallback transport, for stock
 hosts. Each entry point names only its own transport, so a program
@@ -951,7 +951,7 @@ Done:
 Remaining:
 
 1. A test against the real Firestore, with both transports, locally and
-   on Cloud Run under `zena-cli`, once the first draft of everything is
+   on Cloud Run under `zena`, once the first draft of everything is
    in.
 2. Typed documents.
 3. Loader plugins, with WIT and protobuf as the first two users.

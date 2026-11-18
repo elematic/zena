@@ -122,7 +122,7 @@ duplicates:
 - `cache`: ahead-of-time compiled `.cwasm` files kept beside each `.wasm`
   (or `.wat`; wasmtime reads the text format for components too), written
   under a file lock (`foo.lock`, beside it too) so concurrent processes
-  compile a component once. `zena-cli` and `zena-run` share these files:
+  compile a component once. `zena` and `zena-run` share these files:
   the cache is keyed by the component's path, and both binaries build
   their engines from the same config and the same wasmtime version (one
   `Cargo.lock` at the repository root), so a `.cwasm` written by one loads
@@ -130,7 +130,7 @@ duplicates:
   interruptible engine a `.interruptible.cwasm`, since a cwasm only loads
   into an engine with the same compile-affecting settings. The other
   cache, compiled Zena source under `.zena/cache` or the user's cache
-  directory, belongs to `zena-cli` alone, because only it compiles source.
+  directory, belongs to `zena` alone, because only it compiles source.
 
 ## Use
 
@@ -164,7 +164,7 @@ same result record and nothing to capture.
 
 Two binaries in this repository embed the crate: [`zena-run`](../zena-run)
 runs one compiled component or core module and nothing else;
-[`zena-cli`](../cli) adds the compiler and the test and benchmark
+[`zena`](../cli) adds the compiler and the test and benchmark
 runners.
 
 `examples/components_spike.rs` is a harness for the mechanism behind

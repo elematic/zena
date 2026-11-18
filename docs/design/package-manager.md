@@ -2799,7 +2799,7 @@ across the scopes that belong to it, will join these (#988).
   DAG-CBOR, CAR, MST proofs, commit verification, P-256 and secp256k1
   signature verification, DID and handle resolution, and an XRPC client.
   Creating a `did:plc` package also needs signing.
-- **Outgoing HTTP** with methods and headers on the `zena-cli` target,
+- **Outgoing HTTP** with methods and headers on the `zena-component` target,
   which `wasi:http` provides directly.
 - **The `zena` command**: `login`, `add`, `update`, `fetch`, `publish`,
   `approve`, `retract`, `scope`, `owner`, `team`, `package create` and

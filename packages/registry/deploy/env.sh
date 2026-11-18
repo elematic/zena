@@ -35,7 +35,7 @@
 # replacing it only changes the App View's DID document. The operator's
 # offline rotation keys, ranked above the online one, are
 # OFFLINE_ROTATION_KEYS: their did:keys, each from
-# `zena-cli run packages/registry/src/main.zena -- generate-key`, whose
+# `zena run packages/registry/src/main.zena -- generate-key`, whose
 # private keys are kept offline, apart. Production needs two, so that
 # losing one leaves the other.
 

@@ -50,10 +50,10 @@ stdlib module:
   capability by implementing that interface; under a host that doesn't
   (e.g. the `wasmtime` CLI), instantiation fails with an unknown-import
   error, which is the capability model working as intended.
-- **Run time**: only the `zena-cli` host implements the `zena_process`
+- **Run time**: only the `zena` host implements the `zena_process`
   wasm imports, and only for invocations it trusts — its own
   orchestrator programs (the bench and test runners) and repo tests get
-  real implementations; `zena-cli run` links them only with
+  real implementations; `zena run` links them only with
   `--allow-spawn` (or `ZENA_ALLOW_SPAWN=1`). Everything else gets stubs
   that trap with an explanatory message on first call, so merely
   importing the library never breaks a program that doesn't use it.

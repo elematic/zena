@@ -263,7 +263,7 @@ export async function main(): Future<i32> {
 
 console.log(`corpus: ${cases.length} cases`);
 execFileSync(
-  './target/release/zena-cli',
+  './target/release/zena',
   ['run', '--no-cache', '--dir=.', 'scratch/fp-host-runner.zena'],
   {cwd: root, stdio: ['ignore', 'inherit', 'inherit']},
 );
@@ -286,7 +286,7 @@ export let parse = (s: String): f64 => parseF64(s);
 `,
 );
 execFileSync(
-  './target/release/zena-cli',
+  './target/release/zena',
   [
     'build',
     'scratch/fp-host-js.zena',

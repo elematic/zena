@@ -16,7 +16,7 @@
 #   ... operator.sh plc-rekey [--yes] < offline-key.txt
 #   ... operator.sh check-store
 #
-# It runs packages/registry/src/main.zena with the repository's zena-cli,
+# It runs packages/registry/src/main.zena with the repository's zena,
 # so build that first (npm run build -w @zena-lang/cli). The access
 # token lasts an hour, which is more than any of these takes.
 
@@ -38,4 +38,4 @@ export_service_environment "${APP_VIEW_VARS[@]}"
 
 echo "running $1 against $PDS_ENV as $SERVICE_ACCOUNT_EMAIL"
 cd ../../..
-exec ./target/release/zena-cli run packages/registry/src/main.zena -- "$@"
+exec ./target/release/zena run packages/registry/src/main.zena -- "$@"

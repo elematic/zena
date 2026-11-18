@@ -39,8 +39,8 @@ From the repository root:
 npm test -w @zena-lang/workflow
 ```
 
-Or directly with `zena-cli`:
+Or directly with `zena`:
 
 ```sh
-./target/release/zena-cli test "packages/workflow/test/*_test.zena"
+./target/release/zena test "packages/workflow/test/*_test.zena"
 ```

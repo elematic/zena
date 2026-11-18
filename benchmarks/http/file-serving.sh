@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Throughput of serving one file over HTTP from zena-cli (issue #323).
+# Throughput of serving one file over HTTP from zena (issue #323).
 #
 # Writes a file of random bytes, serves it with file-server.zena, and
 # fetches it with curl: through `serve`, where the host copies the file
@@ -10,7 +10,7 @@
 # Usage: benchmarks/http/file-serving.sh
 #        SIZE_MB=256 RUNS=25 benchmarks/http/file-serving.sh
 #
-# Run it from a checkout whose zena-cli is built: a dev build compiles
+# Run it from a checkout whose zena is built: a dev build compiles
 # against the standard library of the checkout it was built from.
 set -euo pipefail
 
@@ -70,7 +70,7 @@ measure() {
     }' <<< "$times"
 }
 
-./target/release/zena-cli run --dir "$dir::/data" \
+./target/release/zena run --dir "$dir::/data" \
     benchmarks/http/file-server.zena > "$dir/server.log" 2>&1 &
 pids+=($!)
 wait_for "http://127.0.0.1:$ZENA_PORT/"

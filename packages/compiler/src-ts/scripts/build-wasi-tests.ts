@@ -38,7 +38,7 @@ const pkgDir = join(__dirname, '..');
 const testDir = join(pkgDir, 'src', 'test');
 const outDir = join(pkgDir, 'out', 'test-self');
 const repoRoot = join(pkgDir, '..', '..');
-const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+const zenaCli = join(repoRoot, 'target', 'release', 'zena');
 
 /**
  * One module holding every compiler test: the unit suites and the three
@@ -94,7 +94,7 @@ export async function main(): Future<i32> {
   }
   if (command == 'execution') {
     // Drop the subcommand so the runner sees the vector it always has:
-    // args[1] is the zena-cli path, args[2] the worker count.
+    // args[1] is the zena path, args[2] the worker count.
     let forwarded = new Array<String>(args.length);
     forwarded.push(args[0]);
     var i = 2;

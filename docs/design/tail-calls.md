@@ -177,7 +177,7 @@ the wrapper still tail-calls.
 ## 5. Runtime support
 
 Tail calls are a finished WebAssembly proposal, shipped in V8 and
-Wasmtime. `zena-cli` enables `wasm_tail_call` on its wasmtime `Config`
+Wasmtime. `zena` enables `wasm_tail_call` on its wasmtime `Config`
 alongside GC, function references and exceptions.
 
 ## 6. Not in this design

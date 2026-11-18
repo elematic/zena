@@ -79,8 +79,8 @@ Zena builds on TypeScript-like syntax while enforcing strict static guarantees:
 
 Zena provides a self-hosted toolchain and specialized execution runtimes on Wasmtime:
 
-- **`zena-cli` (`zena`)**: The primary developer tool, bundling the self-hosted compiler, test runner, benchmark runner, and documentation generator (`zena doc`).
-- **`zena-run`**: A lightweight standalone runner that executes compiled Zena modules (`zena-cli` target) on Wasmtime without compiler overhead.
+- **`zena`**: The primary developer tool, bundling the self-hosted compiler, test runner, benchmark runner, and documentation generator (`zena doc`).
+- **`zena-run`**: A lightweight standalone runner that executes compiled Zena modules (`zena-component` target) on Wasmtime without compiler overhead.
 - **`zfx` (`zenafx`)**: An experimental graphical runtime for WebAssembly components, providing GPU-accelerated rendering (`wasi:webgpu`) and OS window presentation (`wasi-gfx:surface`).
 - **Integrated tools**: Language server (LSP), CodeMirror 6 support, VS Code extension, and an interactive online playground.
 

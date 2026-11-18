@@ -516,7 +516,7 @@ otherwise unchanged `-O2` build measures that part alone:
 | other benchmarks | 1                   | 0                 | 7–13 KB   | +5–6%                      |
 | zb               | 5                   | 20                | 181,841   | 211,818 (+16.5%)           |
 | the compiler     | 15                  | 46                | 1,854,767 | 2,179,226 (+17.5%)         |
-| zena-cli module  | 123                 | 50                | 2,474,390 | 2,847,322 (+15.1%)         |
+| zena module      | 123                 | 50                | 2,474,390 | 2,847,322 (+15.1%)         |
 
 The root's own slot, supertype and identity operators would add to
 that. The chain is one function of one test per introducing class.

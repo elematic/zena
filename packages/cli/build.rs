@@ -8,7 +8,7 @@
 //!
 //! With the feature the real bundle is required, and its absence is an error.
 //! This used to be a file-existence check that silently fell back to the stub,
-//! so `cargo build -p zena-cli` on a fresh clone produced a binary that
+//! so `cargo build -p zena` on a fresh clone produced a binary that
 //! claimed to be a release build and shipped an empty standard library.
 
 use std::path::PathBuf;

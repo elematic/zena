@@ -8,7 +8,7 @@
 The `zena` command is a Zena program. It is compiled to one Wasm
 component, the **CLI module**, which holds everything the command does:
 reading the command line, compiling, running programs, running tests,
-building targets, documentation, formatting, and a language server. The Rust binary `zena-cli` loads that component and
+building targets, documentation, formatting, and a language server. The Rust binary `zena` loads that component and
 gives it a small set of host imports; it contains no command-line logic
 of its own.
 
@@ -19,12 +19,12 @@ in `pkg/`, and `env.zena` holds what the host tells the module.
 
 ## The command before
 
-`zena-cli` was a Rust program with a Zena compiler inside it. clap read
+`zena` was a Rust program with a Zena compiler inside it. clap read
 the command line, the `glob` and `walkdir` crates found test files, and
 Rust decided what to compile and in what order. The compiler, the test
 orchestrator, the benchmark orchestrator, and zenadoc were Zena programs
 that the Rust side compiled and ran one at a time. The test runner
-started one `zena-cli` process per test file, and each of those
+started one `zena` process per test file, and each of those
 processes compiled and ran its test in Rust.
 
 So the logic was split across two languages, and the Zena half could not
@@ -273,7 +273,7 @@ to stdout. [lsp.md](./lsp.md) describes the server.
 
 ## The host binary
 
-With all of that in the module, `zena-cli` (`packages/cli/src/main.rs`,
+With all of that in the module, `zena` (`packages/cli/src/main.rs`,
 about 130 lines) does what `zena-run` does, plus three things:
 
 - It finds the workspace by walking up from where the command runs: the
@@ -300,8 +300,8 @@ installing `zena` is one file plus the module.
 
 The checked-in bootstrap is a prebuilt CLI module at
 `packages/cli/bootstrap/zena.wasm`. When `packages/cli/out/zena.wasm`
-does not exist yet, `zena-cli` falls back to `bootstrap/zena.wasm`, so
-`cargo build --release -p zena-cli` gives a working `zena` command
+does not exist yet, `zena` falls back to `bootstrap/zena.wasm`, so
+`cargo build --release -p zena` gives a working `zena` command
 (`build`, `fmt`, `lint`, `run`, `test`) before any Zena target is built.
 
 Building `out/zena.wasm` from HEAD source still goes through Stage A
@@ -311,10 +311,10 @@ packages in the CLI module (`zebra`, `zenadoc`, `zena-lint`,
 never require a reseed:
 
 ```
-cargo build                         → zena-cli, zena-run
-zena-cli + bootstrap/zena.wasm      → packages/compiler/out/cli.wasm
+cargo build                         → zena, zena-run
+zena + bootstrap/zena.wasm      → packages/compiler/out/cli.wasm
 zena-run + out/cli.wasm        → packages/cli/out/zena.wasm   (the CLI module)
-zena-cli (+ out/zena.wasm)          → everything else
+zena (+ out/zena.wasm)          → everything else
 ```
 
 The rules in [bootstrapping.md](./bootstrapping.md) keep `test:fixpoint`
@@ -330,7 +330,7 @@ checks byte-for-byte self-reproduction before replacing it.
    inherited stdio.
 2. **The CLI module** (#669). `zena build` (files and targets), `run`,
    `test`, `doc`, `fmt` and `bench`, with the compile cache in Zena, the
-   build steps above, and `zena-cli` as the small host. The benchmark
+   build steps above, and `zena` as the small host. The benchmark
    suite runner moved into `zena:bench` as `runSuite`.
 3. **Components on WASI 0.3** (#684), which came after and moved
    everything above onto components: the CLI module, the bootstrap and
@@ -342,14 +342,14 @@ checks byte-for-byte self-reproduction before replacing it.
    over stdin and stdout. `zena:cli` gained `readStdin`.
 
 5. **The CLI module as the bootstrap**. `packages/cli/bootstrap/zena.wasm`
-   replaced `packages/compiler/bootstrap/cli.wasm`, with `zena-cli`
+   replaced `packages/compiler/bootstrap/cli.wasm`, with `zena`
    falling back to `bootstrap/zena.wasm` until `out/zena.wasm` is built
    while keeping Stage A (`out/cli.wasm`) so non-compiler packages
    remain compiled by HEAD's compiler.
 
 ## Open questions
 
-- **Installed layout.** Whether an installed `zena-cli` embeds the
+- **Installed layout.** Whether an installed `zena` embeds the
   module in its binary or keeps it as a file beside it. A file is
   simpler to build; embedding makes the install one file.
 - **The standard library at run time.** The compiler reads the standard

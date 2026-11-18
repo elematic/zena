@@ -17,7 +17,7 @@
 # delete it. Deleting it sends the alert for destructive changes
 # (alerts.sh), which is expected.
 #
-# It runs packages/registry/src/main.zena with the repository's zena-cli,
+# It runs packages/registry/src/main.zena with the repository's zena,
 # so build that first (npm run build -w @zena-lang/cli).
 
 set -euo pipefail
@@ -117,7 +117,7 @@ set +e
   set -e
   export_service_environment "${DRILL_VARS[@]}"
   cd ../../..
-  ./target/release/zena-cli run packages/registry/src/main.zena -- check-store
+  ./target/release/zena run packages/registry/src/main.zena -- check-store
 )
 STATUS=$?
 set -e

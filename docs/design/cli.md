@@ -10,7 +10,7 @@ Standard input is `stdin()`, a `Stream<u8>` over `wasi:cli/stdin`'s
 `read-via-stream`, and `readStdin(max): Future<String>` reads one chunk of
 it; `readStdinSync` is the same read waited for in `blockOn`, for a
 synchronous `main` ([async-fs-cli.md](./async-fs-cli.md)).
-The module resolves on the `zena-cli` and `component` targets, which are
+The module resolves on the `zena-component` and `component` targets, which are
 both components. The WASI preview 1 implementation this document describes
 below, with its linear-memory buffers and C strings, was deleted with the
 rest of preview 1; those sections are kept as the record of the first

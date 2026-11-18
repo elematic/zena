@@ -1,6 +1,6 @@
 /**
  * Hydration: an element that arrives with a shadow root the server
- * rendered (`renderElement` on the `zena-cli` target, through
+ * rendered (`renderElement` on the `zena-component` target, through
  * `ssr/render.zena`) attaches lit-html's parts to that markup on its
  * first update instead of rendering, and updates in place afterwards.
  *
