@@ -527,7 +527,7 @@ call from a Cloud Run server, protobuf or not. That makes pooled
 connections and HTTP/2 a host requirement for production servers in
 general.
 
-Zena's own runtime (`packages/zena-runtime`) overrides
+Zena's own runtime (`packages/runtime-wasmtime`) overrides
 `send_request` (`src/http_client.rs`), so programs run by `zena`
 and `zena-run` get both. One client per process keeps idle
 connections open for reuse. `https://` connections offer `h2` and

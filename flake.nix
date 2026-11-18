@@ -111,7 +111,7 @@
           npmRebuildFlags = [ "--ignore-scripts" ];
 
           # `npm run build` compiles the Rust crates (packages/cli,
-          # packages/zena-run, packages/zenafx, and the packages/zena-runtime
+          # packages/zena-run, packages/zenafx, and the packages/runtime-wasmtime
           # library they share, `cargo build --release`). Vendor their crates
           # from Cargo.lock so cargo runs offline in the sandbox;
           # cargoSetupHook wires up CARGO_HOME + the vendored registry.

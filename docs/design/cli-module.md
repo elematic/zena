@@ -82,7 +82,7 @@ host:
 The `zena:host` interfaces are declared in
 `packages/stdlib/zena/host-wit/host.wit` (package `zena:host@1.0.0`)
 and implemented in the `zena-runtime` crate
-(`packages/zena-runtime/src/component.rs`), so `zena-run` provides the
+(`packages/runtime-wasmtime/src/component.rs`), so `zena-run` provides the
 same set. File watching, which zebra's watch mode needs, will be a further
 import when that lands; see [workflow.md](./workflow.md#file-watching).
 

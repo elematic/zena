@@ -41,7 +41,7 @@ PATHS = [
     'Cargo.toml',
     'Cargo.lock',
     'packages/workspace-hack',
-    'packages/zena-runtime',
+    'packages/runtime-wasmtime',
     'packages/zena-run',
     'packages/cli/Cargo.toml',
     'packages/cli/build.rs',
