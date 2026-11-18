@@ -10,7 +10,9 @@ import {
 } from 'zena-lang:changes/change-file';
 import {Config, VersionPolicy} from 'zena-lang:changes/config';
 import {
+  cargoManifestName,
   cargoManifestVersion,
+  jsonManifestName,
   jsonManifestVersion,
 } from 'zena-lang:changes/manifests';
 import {
@@ -136,6 +138,39 @@ export let tests = suite(
             '[package]\nname = "x"\nversion.workspace = true\n'
           )
             ?? 'none',
+          'none'
+        );
+      }
+    );
+
+    test(
+      'reads the name a package is installed by from each kind of manifest',
+      () => {
+        equal(
+          jsonManifestName('{"name": "zena-lang:semver", "version": "0.0.1"}')
+            ?? '',
+          'zena-lang:semver'
+        );
+        equal(
+          jsonManifestName('{"name": "@zena-lang/runtime"}') ?? '',
+          '@zena-lang/runtime'
+        );
+        // A private package.json holds build scripts and names nothing to install.
+        equal(
+          jsonManifestName('{"name": "@zena-lang/semver", "private": true}')
+            ?? 'none',
+          'none'
+        );
+        equal(jsonManifestName('{"version": "0.0.1"}') ?? 'none', 'none');
+        equal(
+          cargoManifestName(
+            '[workspace]\nname = "w"\n\n[package]\nname = "zena-runtime"\nversion = "0.0.1"\n'
+          )
+            ?? '',
+          'zena-runtime'
+        );
+        equal(
+          cargoManifestName('[dependencies]\nname = "x"\n') ?? 'none',
           'none'
         );
       }

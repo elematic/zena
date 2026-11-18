@@ -73,8 +73,23 @@ export final class Group {
   notesDir: String?;
   /** What the release notes call a release: `Zena` in `# Zena 0.0.3`. */
   notesTitle: String;
+  /**
+   * What comes before the version in the Git tag of one of the group's
+   * releases: `v` for `v0.0.3`. A group that names none is tagged as a
+   * unit is (`unitTagPrefix`).
+   */
+  tagPrefix: String;
 
-  new(this.name, this.policy, this.units, this.notesDir, this.notesTitle) {}
+  new(this.name, this.policy, this.units, this.notesDir, this.notesTitle, this.tagPrefix) {}
+}
+
+/**
+ * What comes before the version in the Git tag of a release of the
+ * independent unit, or the group without a `tag`, called `name`:
+ * `semver@` for `semver@0.0.3`.
+ */
+export function unitTagPrefix(name: String): String {
+  return `${name}@`;
 }
 
 /** Everything `.changes/config.json` says. */
@@ -116,7 +131,15 @@ export final class Config {
         (groupName, value) => {
           let what = `group '${groupName}'`;
           let group = objectOf(value, what);
-          onlyKeys(group, ['versions', 'units', 'held', 'notes'], what);
+          onlyKeys(group, ['versions', 'units', 'held', 'notes', 'tag'], what);
+          var tagPrefix = unitTagPrefix(groupName);
+          if (group.has('tag')) {
+            if (let (true, tag) = group.stringAt('tag')) {
+              tagPrefix = tag;
+            } else {
+              throw new ConfigError(`${what}: "tag" is not a string`);
+            }
+          }
           var notesDir: String? = null;
           var notesTitle = groupName;
           if (group.has('notes')) {
@@ -166,7 +189,8 @@ export final class Config {
             policyOf(group, what),
             names,
             notesDir,
-            notesTitle
+            notesTitle,
+            tagPrefix
           );
         }
       );

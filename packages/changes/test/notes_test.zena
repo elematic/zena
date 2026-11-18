@@ -73,7 +73,7 @@ export let tests = suite(
     );
 
     test(
-      'writes the prose, then the group\'s units, then the other releases',
+      'writes the prose, then every package released, by the name it is installed by and its version',
       () => {
         let changes = files(
           [
@@ -89,18 +89,20 @@ export let tests = suite(
           'toolchain' => '0.0.3',
           'terminal' => '0.0.3'
         };
-        let others = new GrowableArray<ReleasePlan>();
-        others.push(releases[1]);
-        others.push(releases[2]);
+        // A unit with no name of its own is listed by its unit's name.
+        let names: HashMap<String, String> = {
+          'compiler' => 'zena-lang:compiler',
+          'terminal' => 'zena-lang:terminal'
+        };
         equal(
           releaseNotes(
             'Zena',
             '0.0.3',
             '2026-12-01',
             notableChanges(changes),
-            releases[0],
-            others,
-            versions
+            releases,
+            versions,
+            names
           ),
           '# Zena 0.0.3\n'
             + '\n'
@@ -112,15 +114,15 @@ export let tests = suite(
             + '\n'
             + 'A program can ask.\n'
             + '\n'
-            + '## Toolchain\n'
+            + '## Packages\n'
             + '\n'
-            + '### compiler\n'
+            + '### zena-lang:compiler 0.0.3\n'
             + '\n'
             + '#### Removed\n'
             + '\n'
             + '- **Breaking:** Renaming with a colon.\n'
             + '\n'
-            + '### zena-cli\n'
+            + '### zena-cli 0.0.3\n'
             + '\n'
             + '#### Added\n'
             + '\n'
@@ -131,9 +133,7 @@ export let tests = suite(
             + '\n'
             + '- A crash.\n'
             + '\n'
-            + '## Packages\n'
-            + '\n'
-            + '### terminal 0.0.3\n'
+            + '### zena-lang:terminal 0.0.3\n'
             + '\n'
             + '#### Added\n'
             + '\n'
@@ -160,11 +160,23 @@ export let tests = suite(
             '0.0.3',
             '2026-12-01',
             '',
-            releases[0],
-            [],
+            releases,
+            new HashMap<String, String>(),
             new HashMap<String, String>()
           ),
-          '# Zena 0.0.3\n\n2026-12-01\n\n## Toolchain\n\n### zena-cli\n\n#### Fixed\n\n- A crash.\n'
+          '# Zena 0.0.3\n\n2026-12-01\n\n## Packages\n\n### zena-cli\n\n#### Fixed\n\n- A crash.\n'
+        );
+        equal(
+          releaseNotes(
+            'Zena',
+            '0.0.3',
+            '2026-12-01',
+            '',
+            new GrowableArray<ReleasePlan>(),
+            new HashMap<String, String>(),
+            new HashMap<String, String>()
+          ),
+          '# Zena 0.0.3\n\n2026-12-01\n'
         );
       }
     );

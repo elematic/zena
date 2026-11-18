@@ -74,3 +74,65 @@ export async function readUnitVersion(dir: String): Future<Version?> {
   }
   return null;
 }
+
+/**
+ * The `name` of a `zena-package.json` or `package.json`, when it has one
+ * and, for a `package.json`, is not `"private": true`: a private one
+ * holds this repository's build scripts and names nothing people install.
+ */
+export function jsonManifestName(text: String): inline (true, String) | (false, _) {
+  var root: JsonValue = null;
+  try {
+    root = parseJson(text);
+  } catch (e) {
+    throw new ManifestError(`not JSON: ${e.message}`);
+  };
+  if (root is JsonObject) {
+    if (root.boolAt('private') ?? false) {
+      return (false, _);
+    }
+    return root.stringAt('name');
+  }
+  return (false, _);
+}
+
+/** The `name` under `[package]` in a `Cargo.toml`, when it has one. */
+export function cargoManifestName(text: String): inline (true, String) | (false, _) {
+  var inPackage = false;
+  for (let raw in text.split('\n')) {
+    let line = raw.trim();
+    if (line.startsWith('[')) {
+      inPackage = line == '[package]';
+    } else if (inPackage && line.startsWith('name')) {
+      let parts = line.split('"');
+      if (parts.length >= 3 && parts[0].trim() == 'name =') {
+        return (true, parts[1]);
+      }
+    }
+  }
+  return (false, _);
+}
+
+/**
+ * The name people install the package in `dir` by: its
+ * `zena-package.json`'s (`zena-lang:semver`), or else its public
+ * `package.json`'s (`@zena-lang/runtime`), or else its `Cargo.toml`'s.
+ * Null when no manifest there gives one.
+ */
+export async function readUnitName(dir: String): Future<String?> {
+  for (let name in ['zena-package.json', 'package.json']) {
+    let path = `${dir}/${name}`;
+    if (await exists(path)) {
+      if (let (true, found) = jsonManifestName(await readFile(path))) {
+        return found;
+      }
+    }
+  }
+  let path = `${dir}/Cargo.toml`;
+  if (await exists(path)) {
+    if (let (true, found) = cargoManifestName(await readFile(path))) {
+      return found;
+    }
+  }
+  return null;
+}

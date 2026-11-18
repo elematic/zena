@@ -14,17 +14,15 @@
  *
  * A program can now ask a question and read the answer key by key.
  *
- * ## Toolchain
+ * ## Packages
  *
- * ### cli
+ * ### cli 0.0.3
  *
  * #### Added
  *
  * - Raw mode.
  *
- * ## Packages
- *
- * ### terminal 0.0.2
+ * ### zena-lang:terminal 0.0.2
  *
  * #### Added
  *
@@ -39,6 +37,7 @@ import {StringBuilder} from 'zena:core';
 import {HashMap} from 'zena:collections';
 import {join} from 'zena:string';
 import {ChangeFile, Entry, SECTIONS, sectionName} from './change-file.zena';
+import {UPDATED_DEPENDENCIES} from './dependencies.zena';
 import {ReleasePlan} from './plan.zena';
 
 /** The path of a release's notes: `docs/releases/0.0.3.md`. */
@@ -73,38 +72,39 @@ function appendEntries(out: StringBuilder, entries: Array<Entry>) {
 }
 
 /**
- * The notes of `release`, a group's release, as `version` on `date`.
+ * The notes of a group's release, as `version` on `date`.
  *
- * `title` is what the document calls the release (`Zena`), `notable`
- * the prose (`notableChanges`), and `packages` the other releases made
- * with it, each listed with `versions`' version for its name, or with no
- * version when it has none there. Units of the group with no entries of
- * their own are left out, and so are parts with nothing in them.
+ * `title` is what the document calls the release (`Zena`) and `notable`
+ * the prose (`notableChanges`). `releases` are the group's release and
+ * the others made with it, in the order to list them. Every package
+ * released with entries is listed under one heading, by the name in
+ * `names` for its unit, which is the name people install it by
+ * (`zena-lang:semver`), or else its unit's name, and with the version in
+ * `versions` for its release's name, or with none when it has none
+ * there. A group's units with no entries of their own are left out, and
+ * so are parts with nothing in them.
  */
-export function releaseNotes(title: String, version: String, date: String, notable: String, release: ReleasePlan, packages: Array<ReleasePlan>, versions: HashMap<String, String>): String {
+export function releaseNotes(title: String, version: String, date: String, notable: String, releases: Array<ReleasePlan>, versions: HashMap<String, String>, names: HashMap<String, String>): String {
   let out = new StringBuilder();
   out.append(`# ${title} ${version}\n\n${date}\n`);
   if (!notable.isEmpty) {
     out.append(`\n## Notable changes\n\n${notable}\n`);
   }
-  if (release.units.length > 0) {
-    out.append('\n## Toolchain\n');
-    for (let unit in release.units) {
-      out.append(`\n### ${unit.unit.name}\n`);
-      appendEntries(out, unit.entries);
-    }
-  }
   var first = true;
-  for (let other in packages) {
-    for (let unit in other.units) {
+  for (let release in releases) {
+    for (let unit in release.units) {
       if (first) {
         out.append('\n## Packages\n');
         first = false;
       }
-      if (let (true, released) = versions.get(other.name)) {
-        out.append(`\n### ${unit.unit.name} ${released}\n`);
+      let name = names.get(unit.unit.name) ?? unit.unit.name;
+      if (let (true, released) = versions.get(release.name)) {
+        out.append(`\n### ${name} ${released}\n`);
       } else {
-        out.append(`\n### ${unit.unit.name}\n`);
+        out.append(`\n### ${name}\n`);
+      }
+      if (unit.entries.length == 0) {
+        out.append(`\n${UPDATED_DEPENDENCIES}\n`);
       }
       appendEntries(out, unit.entries);
     }

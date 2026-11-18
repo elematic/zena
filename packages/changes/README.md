@@ -45,19 +45,27 @@ date in the changelog headings and the notes, which is otherwise today's.
 
 A release of the toolchain also writes its release notes,
 `docs/releases/<version>.md`: the prose under `## Release notes` in the
-change files, then the entries of the toolchain's packages, then those of
-the other packages released with it. Edit that file in the release's
-pull request. The release workflow publishes it as the GitHub Release's
-text.
+change files, then every package released, each under the name people
+install it by and its version (`### zena-lang:semver 0.0.3`). Edit that
+file in the release's pull request. The release workflow publishes it as
+the GitHub Release's text.
 
 A preview release writes the manifests and the release notes, and leaves
-the changelogs and the change files alone.
+the changelogs and the change files alone. Its number follows the last
+preview of that version that has a Git tag (`v0.0.3-preview.1`), so
+making a preview again before it is released gives its version again,
+with the notes written afresh. The command runs `git tag --list` for
+this.
 
-`notes` writes the release notes alone, for a release at a version the
-manifests already state:
+`--as` names the version exactly, preview or not:
+`version toolchain --as 0.0.3-preview.4`.
+
+`notes` writes the release notes `version` would write with the same
+arguments, and nothing else:
 
 ```sh
-npm run changes -- notes toolchain --as 0.0.1-preview.1
+npm run changes -- notes             # the next release's
+npm run changes -- notes --preview   # the next preview's
 ```
 
 `version` also keeps the ranges right that packages here publish their

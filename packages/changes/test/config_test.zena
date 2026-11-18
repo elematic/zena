@@ -1,6 +1,11 @@
 import {suite, test} from 'zena:test';
 import {equal, isFalse, isNull, isTrue} from 'zena:assert';
-import {Config, ConfigError, VersionPolicy} from 'zena-lang:changes/config';
+import {
+  Config,
+  ConfigError,
+  VersionPolicy,
+  unitTagPrefix,
+} from 'zena-lang:changes/config';
 
 /** The message of the `ConfigError` that reading `text` throws. */
 function refusal(text: String) {
@@ -98,6 +103,23 @@ export let tests = suite(
             '{"groups": {"a": {"units": ["x"], "notes": {"title": "Zena"}}}}'
           ),
           `group 'a': "notes" has no "dir"`
+        );
+      }
+    );
+
+    test(
+      'a group says what comes before the version in its releases\' tags',
+      () => {
+        let config = Config.parse(
+          '{"groups": {"toolchain": {"units": ["x"], "tag": "v"}, "tools": {"units": ["y"]}}}'
+        );
+        equal(config.groups['toolchain'].tagPrefix, 'v');
+        // A group that names none is tagged as a unit is.
+        equal(config.groups['tools'].tagPrefix, 'tools@');
+        equal(unitTagPrefix('semver'), 'semver@');
+        equal(
+          refusal('{"groups": {"a": {"units": ["x"], "tag": 1}}}'),
+          `group 'a': "tag" is not a string`
         );
       }
     );
