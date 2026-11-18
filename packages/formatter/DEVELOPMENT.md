@@ -1,6 +1,6 @@
 # Development
 
-Notes for working on `zena-formatter`.
+Notes for working on `formatter`.
 
 ## Layout
 
@@ -12,11 +12,11 @@ Notes for working on `zena-formatter`.
 ## Running Tests
 
 ```bash
-npm test -w @zena-lang/zena-formatter
+npm test -w @zena-lang/formatter
 ```
 
 Or run a single test file directly:
 
 ```bash
-./target/release/zena test packages/zena-formatter/test/formatter_test.zena
+./target/release/zena test packages/formatter/test/formatter_test.zena
 ```

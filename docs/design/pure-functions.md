@@ -221,11 +221,11 @@ body, so a variable or field named `pure` keeps working.
 
 Two tools surface inferred purity:
 
-- A lint rule in `packages/zena-lint`, `declare-pure`, reports an
+- A lint rule in `packages/lint`, `declare-pure`, reports an
   exported function or a public method the compiler infers pure and
   that does not say so, and its fix adds the modifier. `zena lint --fix`
   over a package marks its API in one pass, and the fix is kept only
-  when the result type-checks, as every zena-lint fix is. The rule is
+  when the result type-checks, as every lint fix is. The rule is
   off for functions that are not exported; purity inside a library is
   the compiler's business.
 - The language service shows purity on hover over a function or method:

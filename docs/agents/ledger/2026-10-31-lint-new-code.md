@@ -3,7 +3,7 @@
 - Signal: non-idiomatic Zena was the most frequent correction in October
   (26 in sessions and reviews, across 11 PRs: needless casts, `let` +
   `if` instead of an `if` expression, string concatenation, empty
-  constructors). `zena-lint` already had rules for most of these, but
+  constructors). `lint` already had rules for most of these, but
   nothing ran it: of 2,000 findings on `main`, 970 were in files added
   after 2026-10-17. AGENTS.md's own first example was a top-level
   `let f = (…) =>`, which the `function-declaration` rule rejects.

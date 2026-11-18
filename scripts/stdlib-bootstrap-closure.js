@@ -36,10 +36,7 @@ const STDLIB = 'packages/stdlib/zena';
 const MANIFEST = 'packages/stdlib/stdlib-manifest.json';
 const PRELUDE = 'packages/compiler/src/lib/prelude.zena';
 const ENTRY = 'packages/compiler/src/cli/main.zena';
-const ALSO_COMPILED = [
-  'packages/wit-parser/src',
-  'packages/zena-formatter/src',
-];
+const ALSO_COMPILED = ['packages/wit-parser/src', 'packages/formatter/src'];
 
 /** `build:cli` builds no component, so a virtual module's component entry is
  * never resolved by the bootstrap — nor is anything only that entry imports.

@@ -243,7 +243,7 @@ worth more than the keying work itself.
 - Parentheses are not nodes. `(a + b)` parses to the `BinaryExpression`
   itself, so nothing in the tree records them.
 - A lint rule that needs a node's whole source text uses `RuleContext`'s
-  `extent`, `start` and `end` (`packages/zena-lint/zena/lib/context.zena`),
+  `extent`, `start` and `end` (`packages/lint/zena/lib/context.zena`),
   which span the node's descendants and widen over the parentheses
   around them.
 

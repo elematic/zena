@@ -907,7 +907,7 @@ suite('packaged vscode-zena extension (.vsix)', () => {
     textDocuments.pop();
   });
 
-  test('surfaces zena-lint warnings and applies quick-fixes', async () => {
+  test('surfaces lint warnings and applies quick-fixes', async () => {
     const lintUri = MockUri.from({
       scheme: 'vscode-vfs',
       authority: 'github',

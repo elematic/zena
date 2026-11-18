@@ -102,7 +102,7 @@ the first of these that is practical:
 
 1. Remove the cause: fix the compiler, standard library or tool, or change
    an API so the mistake cannot be written.
-2. Check it mechanically: a `zena-lint` rule whose message says what to
+2. Check it mechanically: a `lint` rule whose message says what to
    write instead, a check in `scripts/check.js`, a test, a CI job.
 3. Make the right way the easy way: a script or a skill.
 4. Write it down: one line in AGENTS.md or the nearest CONTEXT.md, with a

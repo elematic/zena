@@ -160,7 +160,7 @@ The VS Code extension still loads `lsp.wasm` in process.
   including cross-module jumps
 - Hover (type string + contextual label for variables, parameters, classes,
   members, `this`)
-- Document formatting via the zena-formatter
+- Document formatting via the formatter
 - Multi-file diagnostics (errors in dependencies shown under the dep's URI)
 - Persistent LanguageService — compiler and LibraryLoader kept alive across
   calls, per-file scope/compilation caches, incremental `checkCompilation()`
@@ -245,7 +245,7 @@ delegates queries.
 
 ### Step 5: Document Formatting ✅ Complete
 
-- `format()` export calls zena-formatter, returns formatted source
+- `format()` export calls formatter, returns formatted source
 - VS Code `DocumentFormattingEditProvider` wired up
 
 ### Step 6: Persistent LanguageService ✅ Complete

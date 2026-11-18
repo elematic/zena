@@ -26,7 +26,7 @@ The `zena` command-line tool is now a Zena program
 filesystem preopens, enables process spawning, and calls `main`.
 
 The CLI module links the compiler, build orchestrator (`zb`), doc generator
-(`zenadoc`), and code formatter (`zena-formatter`) in-process:
+(`zenadoc`), and code formatter (`formatter`) in-process:
 
 - **`zena build`**: Compiles Zena modules in-process using `compileFile`. Wireit
   targets can be run via `zena build <target>` with `zb`.

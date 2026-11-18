@@ -39,7 +39,7 @@ stale wasmtime configuration.
 
 Keeping Stage A between the bootstrap and `out/zena.wasm` decouples the
 rest of the repository from the bootstrap's age: changes to `zebra`,
-`zena-lint`, `zena-formatter`, `zenadoc`, `pds` or `zena` are
+`lint`, `formatter`, `zenadoc`, `pds` or `zena` are
 compiled by Stage A and take effect without re-baselining.
 
 It is checked into git (not fetched) so that a clone plus cargo is a

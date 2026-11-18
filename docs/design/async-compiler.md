@@ -100,7 +100,7 @@ interface CompilerHost {
 A missing file fails the future, as it throws today. There are eleven
 implementations: `FileHost` (`compile-file.zena`), `DiskHost`
 (`fs-host.zena`), `DocumentHost` (the language service), `ManifestHost`
-(`zena`'s `lsp.zena`), the hosts in `zenadoc` and `zena-lint`, and
+(`zena`'s `lsp.zena`), the hosts in `zenadoc` and `lint`, and
 five in the compiler's tests and benchmarks. A host that holds its
 sources in memory declares the methods `async` and returns directly.
 
@@ -194,7 +194,7 @@ become `async function main(): Future<i32>`. The commands that compile
 (`build`, `run`, `test`, `bench`, `lint`, `doc`, `lsp`) become
 asynchronous down to the call that reaches the compiler. That takes in
 `compileTo`, `compileCached` and `compileIntoCache` in `zena`'s
-`compile.zena`, `zenadoc`'s `documentPackage`, and `zena-lint`'s
+`compile.zena`, `zenadoc`'s `documentPackage`, and `lint`'s
 `Project` (`checking.zena`), which type-checks each fix before keeping
 it.
 

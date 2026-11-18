@@ -737,15 +737,15 @@ checkin bootstrap as well, because that is what the sequence is protecting.
 Mechanical rewrites, one library at a time, each independently revertible.
 The current site counts, by area:
 
-| Area                       | Files importing `zena:` |
-| -------------------------- | ----------------------- |
-| `tests/`                   | 193                     |
-| `packages/compiler/`       | 125                     |
-| `packages/stdlib/`         | 111                     |
-| `packages/wit-parser/`     | 13                      |
-| `benchmarks/`              | 6                       |
-| `packages/zena-formatter/` | 6                       |
-| `examples/`                | 2                       |
+| Area                   | Files importing `zena:` |
+| ---------------------- | ----------------------- |
+| `tests/`               | 193                     |
+| `packages/compiler/`   | 125                     |
+| `packages/stdlib/`     | 111                     |
+| `packages/wit-parser/` | 13                      |
+| `benchmarks/`          | 6                       |
+| `packages/formatter/`  | 6                       |
+| `examples/`            | 2                       |
 
 16–20. One pull request per new entrypoint (`core`, `collections`,
 `component`, `async`, `bench`), each rewriting every site across all

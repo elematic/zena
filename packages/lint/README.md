@@ -1,4 +1,4 @@
-# `zena-lint`
+# `lint`
 
 Lint rules for Zena source code, each with an automated fix. The compiler and type checker drive every rule, and when a fix is applied it is type-checked again before it is kept.
 
@@ -18,9 +18,9 @@ The language server (`zena lsp`) publishes the findings as warnings and offers e
 ### Library API
 
 ```zena
-import { LintOptions, lintFile } from 'zena-lint';
-import { Project } from 'zena-lint/checking';
-import { allRules } from 'zena-lint/rules';
+import { LintOptions, lintFile } from 'lint';
+import { Project } from 'lint/checking';
+import { allRules } from 'lint/rules';
 
 let project = new Project();
 let options = new LintOptions(allRules());
@@ -51,14 +51,14 @@ let report = await lintFile(project, 'src/main.zena', options);
 
 ## Libraries
 
-- `zena-lint` / `zena-lint/lint` — lint driver (`lintFile`, `lintSource`, `LintOptions`, `FileReport`)
-- `zena-lint/checking` — compiler project wrapper and overlay host (`Project`, `CheckedFile`)
-- `zena-lint/checked` — checked module wrapper (`CheckedFile`)
-- `zena-lint/rules` — rule registry (`allRules`, `ruleNamed`)
-- `zena-lint/rule` — rule runner (`NamedRule`, `proposeEdits`, `messageOf`)
-- `zena-lint/context` — rule traversal context (`RuleContext`)
-- `zena-lint/source` — byte-range edits (`Edit`, `applyEdits`, `columnOf`)
-- `zena-lint/files` — `.zena` file discovery (`collectZenaFiles`)
+- `lint` / `lint/lint` — lint driver (`lintFile`, `lintSource`, `LintOptions`, `FileReport`)
+- `lint/checking` — compiler project wrapper and overlay host (`Project`, `CheckedFile`)
+- `lint/checked` — checked module wrapper (`CheckedFile`)
+- `lint/rules` — rule registry (`allRules`, `ruleNamed`)
+- `lint/rule` — rule runner (`NamedRule`, `proposeEdits`, `messageOf`)
+- `lint/context` — rule traversal context (`RuleContext`)
+- `lint/source` — byte-range edits (`Edit`, `applyEdits`, `columnOf`)
+- `lint/files` — `.zena` file discovery (`collectZenaFiles`)
 
 ## License
 

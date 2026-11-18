@@ -306,8 +306,8 @@ does not exist yet, `zena` falls back to `bootstrap/zena.wasm`, so
 
 Building `out/zena.wasm` from HEAD source still goes through Stage A
 (`packages/compiler/out/cli.wasm`) so that edits to non-compiler
-packages in the CLI module (`zebra`, `zenadoc`, `zena-lint`,
-`zena-formatter`, `package-manager`) compile with HEAD's compiler and
+packages in the CLI module (`zebra`, `zenadoc`, `lint`,
+`formatter`, `package-manager`) compile with HEAD's compiler and
 never require a reseed:
 
 ```

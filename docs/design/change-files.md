@@ -223,7 +223,7 @@ its output:
 - `compiler`, with the standard library
 - `cli`
 - `zena-runtime`, and the hosts built on it: `zena-run`, `zenafx`
-- `zena-formatter`, `zena-lint`, `zenadoc`, `language-service`, which
+- `formatter`, `lint`, `zenadoc`, `language-service`, which
   read the compiler's syntax tree
 - the npm packages `compiler-js` and `runtime`, which are the compiler and
   the runtime for its JavaScript target, and `playground`, which bundles
