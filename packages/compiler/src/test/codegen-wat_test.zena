@@ -1,0 +1,953 @@
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { CompileFileOptions, compileFile } from '../lib/compile-file.zena';
+import { Module } from '../lib/ast.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { readFile, writeFile, exists, mkdir } from 'zena:fs';
+import { makeCompiler, MockHost, errorDiagnostics, stdlibRoot } from './test-utils.zena';
+import { checkCompilation, createCompiler } from '../lib/compiler.zena';
+import { PackageConfig } from '../lib/module-resolver.zena';
+import { getEnv } from 'zena:cli';
+import { assertFunctionUses, assertFunctionUsesTimes, assertFunctionOmits, assertNoAllocation } from './wat-invariants.zena';
+import { growable } from 'zena:core';
+
+async function assertSnapshot(name: String, content: String) {
+  let snapDir = 'packages/compiler/test-files/snapshots';
+  if (!await exists(snapDir)) {
+    await mkdir(snapDir);
+  }
+  let snapFile = `${snapDir}/${name}.snap`;
+  if (getEnv("UPDATE_SNAPSHOTS") != null) {
+    await writeFile(snapFile, content);
+    equal(content, content);
+  } else if (await exists(snapFile)) {
+    let expected = await readFile(snapFile);
+    equal(content, expected);
+  } else {
+    await writeFile(snapFile, content);
+    equal(content, content);
+  }
+}
+
+/**
+ * Generate wat for `entry` out of `host`, with `packages` registered on
+ * the compiler so the program can import across a package specifier.
+ */
+async function generateWat(
+    host: MockHost,
+    entry: String,
+    packages: Map<String, PackageConfig> | null,
+    wideArithmetic: boolean) {
+  let compiler = makeCompiler(host, packages);
+  let compResult = await compiler.compile({entry, target: 'js'});
+  let checkRes = checkCompilation(compResult);
+  
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+  
+  let program = new Program(units, entryUnit);
+  let generator = new WatGenerator();
+  generator.wideArithmetic = wideArithmetic;
+  return generator.generate(program);
+}
+
+let stringConstantsEntry = 'packages/compiler/test-files/imported-string-constants.zena';
+let stringConstantsOut = 'packages/compiler/out/imported-string-constants.wat';
+
+/** The WAT `compileFile` writes for `options`, which must compile. */
+async function stringConstantsWat(options: CompileFileOptions) {
+  equal(await compileFile(options), 0);
+  return await readFile(options.outPath);
+}
+
+async function compileAndGenerateWatWith(source: String, wideArithmetic: boolean) {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+  return await generateWat(host, "test.zena", null, wideArithmetic);
+}
+
+async function compileAndGenerateWat(source: String) {
+  return await compileAndGenerateWatWith(source, false);
+}
+
+export let tests = suite('WatGenerator', () => {
+  test('main returns i32 with block statement', async (ctx) => {
+    let result = await compileAndGenerateWat('export let main = (): i32 => { return 42; };');
+    await assertSnapshot('main_returns_i32_block', result);
+  });
+
+  test('main returns i32 with expression body', async (ctx) => {
+    let result = await compileAndGenerateWat('export let main = (): i32 => 42;');
+    await assertSnapshot('main_returns_i32_expr', result);
+  });
+
+  test('main returns 1 + 2', async (ctx) => {
+    let result = await compileAndGenerateWat('export let main = (): i32 => 1 + 2;');
+    await assertSnapshot('main_returns_1_plus_2', result);
+  });
+
+  test('multiple exported functions', async (ctx) => {
+    let result = await compileAndGenerateWat('export let foo = (): i32 => 1; export let bar = (): i32 => 2;');
+    await assertSnapshot('multiple_exported_functions', result);
+  });
+
+  test('external function import and call', async (ctx) => {
+    let host = new MockHost();
+    let source = "@external(\"env\", \"consoleLog\")\ndeclare function consoleLog(msg: i32): void;\nexport let main = (): void => { consoleLog(42); };";
+    host.addFile("test.zena", source);
+    
+    let compiler = makeCompiler(host);
+    let compResult = await compiler.compile({entry: "test.zena", target: 'zena-js'});
+    let checkRes = checkCompilation(compResult);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkRes.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    // Using simple asserts for the import since snapshots will change based on ast/model
+    // if new logic is added. Just ensuring it generates `(import "env" "consoleLog" ...)` 
+    // and calls it.
+    await assertSnapshot('external_function_import', result);
+  });
+
+  test('parameter default dependency optimization skips locals', async (ctx) => {
+    let host = new MockHost();
+    let source = "let testFn = (a: i32 = 1, b: i32 = 2): i32 => a + b;\nexport let foo = (): i32 => testFn();";
+    host.addFile("test.zena", source);
+    
+    let compiler = makeCompiler(host);
+    let compResult = await compiler.compile({entry: "test.zena", target: 'zena-js'});
+    let checkRes = checkCompilation(compResult);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkRes.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    await assertSnapshot('param_default_opt', result);
+  });
+
+  test('parameter default dependency optimization skips locals when dependent default is not run', async (ctx) => {
+    let host = new MockHost();
+    let source = "let testFn = (a: i32, b: i32 = a, c: i32 = 10): i32 => a + b + c;\nexport let foo = (): i32 => testFn(1, 2);";
+    host.addFile("test.zena", source);
+    
+    let compiler = makeCompiler(host);
+    let compResult = await compiler.compile({entry: "test.zena", target: 'zena-js'});
+    let checkRes = checkCompilation(compResult);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkRes.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    await assertSnapshot('param_default_opt_run_check', result);
+  });
+
+  test('record property access casting', async (ctx) => {
+    let host = new MockHost();
+    let source = "export let main = (): i32 => {\n  let record = { a: 10, b: { c: 20 } };\n  return record.b.c;\n};";
+    host.addFile("test.zena", source);
+    
+    let compiler = makeCompiler(host);
+    let compResult = await compiler.compile({entry: "test.zena", target: 'zena-js'});
+    let checkRes = checkCompilation(compResult);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkRes.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator();
+    generator.generate(program);
+  });
+  
+  test('function adaptation deduplication', async (ctx) => {
+    let host = new MockHost();
+    let source = "export let main = (): void => {\n" +
+                 "  let f1 = (a: i32): i32 => a;\n" +
+                 "  let f2 = (a: i32): i32 => a;\n" +
+                 "  let u1: (a: i32, b: i32) => i32 = f1;\n" +
+                 "  let u2: (a: i32, b: i32) => i32 = f2;\n" +
+                 "  let f3 = (a: f64): f64 => a;\n" +
+                 "  let u3: (a: f64, b: f64) => f64 = f3;\n" +
+                 "  u1(10, 20);\n" +
+                 "  u2(30, 40);\n" +
+                 "  u3(50.0, 60.0);\n" +
+                 "};";
+    host.addFile("test.zena", source);
+    
+    let compiler = makeCompiler(host);
+    let compResult = await compiler.compile({entry: "test.zena", target: 'zena-js'});
+    let checkRes = checkCompilation(compResult);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkRes.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    await assertSnapshot('function_adaptation_deduplication', result);
+  });
+
+  test('inline tuple multi-value return', async (ctx) => {
+    let host = new MockHost();
+    let source = "export let pair = (): inline (i32, i32) => ((1, 2));";
+    host.addFile("test.zena", source);
+    
+    let compiler = makeCompiler(host);
+    let compResult = await compiler.compile({entry: "test.zena", target: 'zena-js'});
+    let checkRes = checkCompilation(compResult);
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      if (!file.isStdlib) {
+        let res = checkRes.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator();
+    let result = generator.generate(program);
+    
+    await assertSnapshot('inline_tuple_multi_value_return', result);
+  });
+
+  test('compile console with target zena-js generates JS console imports', async (ctx) => {
+    let host = new MockHost();
+    // The prelude names `zena:core`, so its entry has to exist and
+    // re-export the stubs behind it.
+    host.addFile("zena:core/index.zena",
+        "export * from './string.zena';" +
+        "export * from './array.zena';" +
+        "export * from './iterator.zena';" +
+        "export * from './ownership.zena';" +
+        "export * from './hashable.zena';");
+    host.addFile("zena:core/string.zena", "export enum Encoding { WTF8, WTF16 } export class ByteArray {} export class String { #data: ByteArray; #start: i32; #end: i32; #encoding: Encoding; }");
+    host.addFile("zena:core/string-js.zena",
+        "export enum Encoding { WTF8, WTF16 } " +
+        "export class ByteArray {} " +
+        "export class String { " +
+        "  #handle: externref; " +
+        "  new #fromHandle(handle: externref) : #handle = handle; " +
+        "  handle: externref { get { return this.#handle; } } " +
+        "  length: i32 { get { return 0; } } " +
+        "  static fromHandle(handle: externref): String { return new String.#fromHandle(handle); } " +
+        "} " +
+        "export function $stringCreate(handle: externref): String { return String.fromHandle(handle); } " +
+        "export function $stringGetHandle(s: String): externref { return s.handle; } " +
+        "export function $stringGetLength(s: String): i32 { return s.length; }");
+    host.addFile("zena:core/array.zena", "export class Array {} export class FixedArray<T> {} export class GrowableArray<T> {}");
+    host.addFile("zena:console/interface.zena", "import { String } from 'zena:core'; export interface Console { log(message: String): void; }");
+    host.addFile("zena:console/host.zena", "import { String } from 'zena:core'; import { Console } from './interface.zena'; @external('console', 'log_string') declare function log_string(s: String, len: i32): void; export class HostConsole implements Console { log(message: String): void { log_string(message, 0); } } export let console = new HostConsole();");
+    host.addFile("zena:console/js.zena",
+        "import { String } from 'zena:core'; " +
+        "import { Console } from './interface.zena'; " +
+        "@external('console', 'log_string') " +
+        "declare function log_string(s: externref): void; " +
+        "export class HostConsole implements Console { " +
+        "  log(message: String): void { log_string(message.handle); } " +
+        "} " +
+        "export let console = new HostConsole();");
+    host.addFile("zena:console/wasi.zena", "import { String } from 'zena:core'; import { Console } from './interface.zena'; @intrinsic('wasi_write_string') declare function wasi_write_string(fd: i32, s: String): void; export class WasiConsole implements Console { log(message: String): void { wasi_write_string(1, message); } } export let console = new WasiConsole();");
+    host.addFile("zena:console", await host.readFile("zena:console/js.zena"));
+    host.addFile("zena:core/iterator.zena", "export interface Iterator<T> {} export interface Iterable<T> {}");
+    host.addFile("zena:core/ownership.zena", "export class Resource {}");
+    host.addFile("zena:core/hashable.zena", "export interface Hashable {}");
+    host.addFile("zena:async", "export class Future<T> {}");
+    host.addFile("test.zena", "export let main = (): void => { console.log('hello'); };");
+
+    let packages = new Map<String, PackageConfig>();
+    let compiler = createCompiler(host, {stdlibRoot: "/stdlib", packages});
+
+    let compResult = await compiler.compile({entry: "test.zena", target: 'zena-js'});
+    let checkRes = checkCompilation(compResult);
+    let errs = errorDiagnostics(checkRes.diagnostics);
+    isTrue(errs.length == 0, if (errs.length > 0) errs[0].message else "");
+    
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    
+    for (let file in compResult.files) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+    
+    let program = new Program(units, entryUnit);
+    let generator = new WatGenerator("zena-js");
+    let result = generator.generate(program);
+    
+    await assertSnapshot('console_target_js', result);
+  });
+
+  // A module is compiled with one `importedStringConstants` name, and a
+  // host can fix it: WebAssembly ESM integration uses
+  // `wasm:js/string-constants`. The fixture's literals come from a
+  // `console.log` argument and a template's two quasis.
+  test('string literals import from the importedStringConstants module', async (ctx) => {
+    let wat = await stringConstantsWat({
+      entry: stringConstantsEntry,
+      outPath: stringConstantsOut,
+      target: 'js',
+      stdlibRoot,
+      importedStringConstants: 'wasm:js/string-constants',
+    });
+    for (let literal in ['hello', 'Hello, ', '!']) {
+      isTrue(wat.contains(
+          `(import "wasm:js/string-constants" "${literal}" (global (ref extern)))`),
+          literal);
+    }
+    isFalse(wat.contains('(import "_"'));
+  });
+
+  test('string literals import from "_" by default', async (ctx) => {
+    let wat = await stringConstantsWat({
+      entry: stringConstantsEntry,
+      outPath: stringConstantsOut,
+      target: 'js',
+      stdlibRoot,
+    });
+    for (let literal in ['hello', 'Hello, ', '!']) {
+      isTrue(wat.contains(`(import "_" "${literal}" (global (ref extern)))`), literal);
+    }
+  });
+
+  // Nothing is emitted at an erasure. A generic named from inside
+  // another generic's body carries that body's type parameters, which
+  // key as "erased" (getTypeKeyForSpecialization) — specializing on
+  // them emitted a body per generic per module at arguments no call
+  // site supplies (87 in the compiler's own module), and those bodies
+  // cannot lower `hash`/`eq`, which dispatch on their operand's type.
+  //
+  // Module-wide on purpose: an erased body is named for the erasure it
+  // belongs to, so no single function is the one to scope this to. The
+  // erased STRUCT may still appear — erased signatures and fields name
+  // it — so this asserts on the two shapes an erased FUNCTION name
+  // takes: `fill_spec_erased` and `Full_s867_erased.<constructor>`.
+  test('no function is emitted at an erasure', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      class Full<T> { value: T; new(value: T) : value = value; }
+      function fill<T>(value: T): Full<T> { return new Full(value); }
+      function outer<T>(v: T): T { return fill<T>(v).value; }
+      export let main = (): i32 => outer<i32>(42) + (if (outer<boolean>(true)) 2 else 0);
+    `);
+    equal(result.contains('_spec_erased'), false);
+    equal(result.contains('_erased.'), false);
+  });
+
+  // The five SIMD emitter hooks differ only in which immediates follow
+  // the opcode, and the binary emitter's version of that is checked by
+  // running the programs in tests/language/execution/simd/. Nothing
+  // else reads the WAT emitter's, so this asserts the text forms
+  // directly: the instruction NAME recovered from the opcode, and each
+  // immediate in the position wasm's text format puts it.
+  test('SIMD instructions emit their wasm text forms', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      @intrinsic('v128.const')
+      declare function vconst(a: i32, b: i32, c: i32, d: i32): v128;
+      @intrinsic('i32x4.add')
+      declare function vadd(a: v128, b: v128): v128;
+      @intrinsic('i32x4.extract_lane')
+      declare function vext(a: v128, lane: i32): i32;
+      @intrinsic('i8x16.shuffle')
+      declare function vshuf(a: v128, b: v128, l0: i32, l1: i32, l2: i32,
+          l3: i32, l4: i32, l5: i32, l6: i32, l7: i32, l8: i32, l9: i32,
+          l10: i32, l11: i32, l12: i32, l13: i32, l14: i32, l15: i32): v128;
+      @intrinsic('v128.load')
+      declare function vload(ptr: i32): v128;
+      @intrinsic('v128.store8_lane')
+      declare function vstore8lane(ptr: i32, v: v128, lane: i32): void;
+      export let main = (): i32 => {
+        let a = vconst(1, 0, 0, 0);
+        let b = vadd(a, vload(16));
+        let s = vshuf(a, b, 0, 1, 2, 3, 16, 17, 18, 19, 4, 5, 6, 7, 8, 9, 10, 11);
+        vstore8lane(32, s, 5);
+        return vext(s, 2);
+      };
+    `);
+    let ops = new Array<String>();
+    // The 16 bytes of a v128.const are the four words little-endian.
+    ops.push('v128.const i8x16 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0');
+    ops.push('i32x4.add');
+    // Lane index after the name, with no align/offset.
+    ops.push('i32x4.extract_lane 2');
+    ops.push('i8x16.shuffle 0 1 2 3 16 17 18 19 4 5 6 7 8 9 10 11');
+    // Natural alignment for a full vector load is 2^4 = 16 bytes.
+    ops.push('v128.load align=4 offset=0');
+    // A lane store carries the memarg AND the lane, in that order.
+    ops.push('v128.store8_lane align=0 offset=0 5');
+    assertFunctionUses(result, '$main', ops,
+        'the WAT emitter should spell each SIMD shape the way wasm text does');
+  });
+
+  // `x as (false, i32)` on a union of tuples tests the literal in field 0,
+  // since the members share a struct: both are two `i32`s. A value whose
+  // literal does not match traps through a cast to `nullref`, which fails
+  // for any value but null, so the trap reads as a cast failure (#600)
+  // rather than the bare `unreachable` it was. Both trap; only the
+  // property says which.
+  test('a failed cast to a tuple union member traps as a cast', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type R = (true, i32) | (false, i32);
+      function pick(ok: boolean): R {
+        if (ok) {
+          return (true, 1);
+        }
+        return (false, 2);
+      }
+      export let main = (): i32 => {
+        let y = pick(true) as (false, i32);
+        return y[1];
+      };
+    `);
+    assertFunctionUses(result, '$main', growable<String>(['ref.cast (ref null none)']),
+        'a failed tag test should trap through a cast');
+  });
+
+  // An inline parameter is passed as its slots and an inline `let` holds
+  // them (docs/design/inline-parameters.md), so neither a callee that
+  // reads one nor a caller that passes a literal, forwards one or passes
+  // an inline result allocates. Boxing would still run, so only the
+  // property says it regressed.
+  test('inline parameters and lets allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Span = (i32, i32);
+      function width(s: inline Span): i32 {
+        let (start, end) = s;
+        return end - start + s[0];
+      }
+      function clamp(s: inline Span, limit: i32): inline Span {
+        let (start, end) = s;
+        return (start, if (end > limit) limit else end);
+      }
+      function forward(s: inline Span): i32 {
+        let kept = s;
+        return width(kept) + width(clamp(s, 3));
+      }
+      export let main = (): i32 => forward((1, 9)) + width((2, 4));
+    `);
+    assertNoAllocation(result, '$width', 'an inline parameter is read from its slots');
+    assertNoAllocation(result, '$clamp', 'an inline parameter forwarded to an inline result');
+    assertNoAllocation(result, '$forward',
+        'an inline let and an inline result are passed on as slots');
+    assertNoAllocation(result, '$main', 'a literal argument is written into the slots');
+  });
+
+  // An inline record parameter is passed as its fields, and the record
+  // its body binds is rebuilt from them only for reads to answer from, so
+  // dead code elimination deletes it.
+  test('inline record parameters and lets allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Point = {x: i32, y: i32};
+      function sum(p: inline Point): i32 {
+        let {x, y} = p;
+        return x + y + p.x;
+      }
+      function forward(p: inline Point): i32 {
+        let kept = p;
+        let swapped: inline Point = {x: p.y, y: p.x};
+        return sum(kept) + sum(swapped);
+      }
+      export let main = (): i32 => forward({x: 1, y: 9}) + sum({x: 2, y: 4});
+    `);
+    assertNoAllocation(result, '$sum', 'an inline record parameter is read from its fields');
+    assertNoAllocation(result, '$forward',
+        'an inline record let and parameter are passed on as fields');
+    assertNoAllocation(result, '$main', 'a record literal argument is written as fields');
+  });
+
+  // An inline `if` or `match` in a `let` or as an inline argument merges
+  // its arms' slots at the join (#810), one block parameter per slot, so
+  // neither the arms nor the join box the value.
+  test('an inline if or match merges slots without allocating', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Span = (i32, i32);
+      type Point = {x: i32, y: i32};
+      function width(s: inline Span): i32 {
+        let (a, b) = s;
+        return b - a;
+      }
+      function norm(p: inline Point): i32 {
+        return p.x + p.y;
+      }
+      function pick(c: boolean, s: inline Span, t: inline Span): i32 {
+        let chosen = if (c) s else t;
+        let literal: inline Span = if (c) (1, 7) else (0, 0);
+        return width(chosen) + width(literal);
+      }
+      function classify(n: i32, s: inline Span): i32 {
+        return width(match (n) {
+          case 0: s
+          case _: if (n > 5) (0, 50) else (0, 5)
+        });
+      }
+      function choose(c: boolean, p: inline Point, q: inline Point): i32 {
+        let r = if (c) p else q;
+        return norm(r) + norm(if (c) ({x: 1, y: 1}) else ({x: 2, y: 2}));
+      }
+      export let main = (): i32 =>
+        pick(true, (3, 9), (0, 1)) + classify(3, (1, 2)) +
+        choose(true, {x: 1, y: 2}, {x: 3, y: 4});
+    `);
+    assertNoAllocation(result, '$pick', 'an inline if in a let merges its slots');
+    assertNoAllocation(result, '$classify', 'an inline match as an argument merges its slots');
+    assertNoAllocation(result, '$choose', 'an inline record if merges its fields');
+  });
+
+  // An inline record result is returned as its fields, and the caller
+  // holds them as the record it reads, so neither side builds it.
+  test('inline record results allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Point = {x: i32, y: i32};
+      function swap(p: inline Point): inline Point {
+        return {x: p.y, y: p.x};
+      }
+      function pick(c: boolean, p: inline Point): inline Point {
+        return if (c) p else swap(p);
+      }
+      export let main = (): i32 => {
+        let {x, y} = pick(false, {x: 1, y: 9});
+        return x + swap({x: 2, y: 4}).y + y;
+      };
+    `);
+    assertNoAllocation(result, '$swap', 'a record literal result is returned as fields');
+    assertNoAllocation(result, '$pick', 'an if returns each arm as fields');
+    assertNoAllocation(result, '$main', 'a call result is read from its fields');
+  });
+
+  // An inline record inside an inline tuple is its fields, as the tuple's
+  // slots (#811): binding it, destructuring it and forwarding it into a
+  // nested position build nothing.
+  test('nested inline records allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Point = {x: i32, y: i32};
+      function labelled(n: i32, p: inline Point): inline (i32, inline Point) {
+        return (n, p);
+      }
+      function sum(t: inline (i32, inline Point)): i32 {
+        let (n, p) = t;
+        let (_, {x, y}) = t;
+        return n + p.x + x + y + t[1].y;
+      }
+      export let main = (): i32 => sum(labelled(2, {x: 1, y: 3}));
+    `);
+    assertNoAllocation(result, '$labelled', 'a record forwarded into a nested position');
+    assertNoAllocation(result, '$sum', 'a nested record read by name, pattern and index');
+    assertNoAllocation(result, '$main', 'a record literal written into nested slots');
+  });
+
+  // An inline field of an inline record is its own leaves, so a record
+  // with one is passed, read and returned as all of them (#811).
+  test('inline fields of inline records allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Vec = {x: i32, y: i32};
+      type Sprite = inline {pos: inline Vec, id: i32};
+      function reach(s: Sprite): i32 {
+        let {pos} = s;
+        return s.pos.x + pos.y + s.id;
+      }
+      function moved(s: Sprite, by: i32): Sprite {
+        return {pos: {x: s.pos.x + by, y: s.pos.y}, id: s.id};
+      }
+      export let main = (): i32 => reach(moved({pos: {x: 1, y: 2}, id: 3}, 4));
+    `);
+    assertNoAllocation(result, '$reach', 'an inline field is read from its leaves');
+    assertNoAllocation(result, '$moved', 'a literal with an inline field returns leaves');
+    assertNoAllocation(result, '$main', 'a literal with an inline field is passed as leaves');
+  });
+
+  // An inline union inside an inline tuple is distributed over the outer
+  // tuple (#811), so writing, matching and forwarding it move slots and
+  // test its literal, and box nothing.
+  // A union of inline records is its members' fields in slots, told
+  // apart by their literal field (#811): matching, narrowing and passing
+  // a literal read and write slots, and box nothing.
+  test('unions of inline records allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Outcome = inline {kind: 0, ok: i32} | {kind: 1, err: i32};
+      function make(good: boolean): Outcome {
+        return if (good) ({kind: 0, ok: 5}) else ({kind: 1, err: 7});
+      }
+      function score(o: Outcome): i32 {
+        return match (o) {
+          case {kind: 0, ok}: ok
+          case {kind: 1, err}: err * 10
+        };
+      }
+      function viaIf(o: Outcome): i32 {
+        if (o.kind == 0) {
+          return o.ok;
+        }
+        if (let {kind: 1, err} = o) {
+          return err;
+        }
+        return 0;
+      }
+      export let main = (): i32 => score(make(true)) + viaIf({kind: 1, err: 2});
+    `);
+    assertNoAllocation(result, '$make', 'record literals written into slots');
+    assertNoAllocation(result, '$score', 'a match reads the literal field and slots');
+    assertNoAllocation(result, '$viaIf', 'narrowing and if-let read slots');
+    assertNoAllocation(result, '$main', 'a literal argument passed as slots');
+  });
+
+  // `==`, `!=` and `is` on inline values compare and test slot by slot
+  // (#812), so neither operand is boxed.
+  test('comparing inline values allocates nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Reply = (true, i32) | (false, i32);
+      function same(a: inline (i32, i32), b: inline (i32, i32)): boolean {
+        return a == b || a != (1, 2);
+      }
+      function sameReply(a: inline Reply, b: inline Reply): boolean {
+        return a == b && a is (true, i32);
+      }
+      export let main = (): i32 =>
+        (if (same((1, 2), (1, 2)) && sameReply((true, 1), (true, 1))) 1 else 0);
+    `);
+    assertNoAllocation(result, '$same', 'inline tuples compared slot by slot');
+    assertNoAllocation(result, '$sameReply', 'an inline union compared and tested by its slots');
+    assertNoAllocation(result, '$main', 'literals compared as slots');
+  });
+
+  test('nested inline unions allocate nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Reply = (true, i32) | (false, i32);
+      function make(n: i32, ok: boolean): inline (i32, inline Reply) {
+        return if (ok) (n, (true, n * 2)) else (n, (false, -n));
+      }
+      function score(t: inline (i32, inline Reply)): i32 {
+        return match (t) {
+          case (let n, (true, let v)): n + v
+          case (let n, (false, let w)): n * 100 + w
+        };
+      }
+      function relabel(n: i32, r: inline Reply): inline (i32, inline Reply) {
+        return (n + 1, r);
+      }
+      export let main = (): i32 => score(make(3, true)) + score(relabel(1, (false, 5)));
+    `);
+    assertNoAllocation(result, '$make', 'nested union members written into slots');
+    assertNoAllocation(result, '$score', 'a match reads the nested literal and slots');
+    assertNoAllocation(result, '$relabel', 'a nested union forwarded as its slots');
+    assertNoAllocation(result, '$main', 'nested literals passed as slots');
+  });
+
+  // The shaped vector types (`I32x4` and friends in `zena:simd`) are
+  // extension classes over `v128`, and their whole value proposition is
+  // that the shape is a compile-time view: no wrapper object, so no
+  // allocation and no unpacking. A snapshot would not catch a
+  // regression that started boxing them — the diff would just look
+  // different — so assert the property.
+  test('a shaped vector type allocates nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      @intrinsic('i32x4.splat')
+      declare function splat(x: i32): v128;
+      @intrinsic('i32x4.add')
+      declare function add(a: v128, b: v128): v128;
+      @intrinsic('i32x4.extract_lane')
+      declare function lane(a: v128, i: i32): i32;
+      final extension class I32x4 on v128 {
+        static of(v: i32): I32x4 { return splat(v) as I32x4; }
+        x: i32 { get { return lane(this as v128, 0); } }
+        operator +(other: I32x4): I32x4 {
+          return add(this as v128, other as v128) as I32x4;
+        }
+      }
+      export let main = (): i32 => {
+        let a = I32x4.of(20);
+        let b = I32x4.of(22);
+        return (a + b).x;
+      };
+    `);
+    assertNoAllocation(result, '$main',
+        'an extension class over v128 is erased — there is nothing to allocate');
+    // The shape must still be a v128 in the signature: that is what says
+    // it was not widened to a reference somewhere along the way.
+    equal(result.contains('(param v128) (param v128) (result v128)'), true);
+  });
+
+  // `Step<T>` unboxes a tuple element (`(1, inline? T, _)`), so a step of
+  // pairs is four wasm results and neither the iterator nor a loop that
+  // destructures it allocates. Boxing would still type-check and run, so
+  // only the property says it regressed. (This compiler's standard
+  // library is a stub, so the step type is declared here as zena:core
+  // declares it.)
+  test('a step of tuples allocates nothing', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      type Step<T> = inline (0, _, _) | (1, inline? T, _);
+      function step(i: i32): Step<(i32, i32)> {
+        if (i > 2) {
+          return (0, _, _);
+        }
+        return (1, (i, i * 2), _);
+      }
+      export let main = (): i32 => {
+        var total = 0;
+        var i = 0;
+        while (let (1, (a, b), _) = step(i)) {
+          total += a + b;
+          i += 1;
+        }
+        return total;
+      };
+    `);
+    assertNoAllocation(result, '$step',
+        'a Step<(A, B)> returns A and B as results of their own');
+    assertNoAllocation(result, '$main',
+        "a tuple pattern reads the step's values without boxing them");
+  });
+
+  // -- the wide-arithmetic proposal ------------------------------------
+  //
+  // `WasmModule.wideArithmetic` chooses between emitting the
+  // proposal's instructions and emitting the sequences that mean the
+  // same thing. Both directions are pinned here: the point of the flag
+  // is that it is the ONLY thing that decides, so a lowering that
+  // ignored it — or one that emitted the instructions by default,
+  // which V8 would reject — has to fail something.
+  // The inputs arrive as parameters: constant operands would let the
+  // simplifier fold the whole software sequence away, and these tests
+  // assert the sequence's shape.
+  let wideSource = `
+    @intrinsic('i64.mul_wide_u')
+    declare function mulWide(x: u64, y: u64): inline (u64, u64);
+    @intrinsic('i64.add128')
+    declare function add128(al: u64, ah: u64, bl: u64, bh: u64): inline (u64, u64);
+    let wide = (x: u64, y: u64): i64 => {
+      let (lo, hi) = mulWide(x, y);
+      let (sl, sh) = add128(lo, hi, 1 as u64, 0 as u64);
+      return (sl + sh) as i64;
+    };
+    export let main = (): i64 => wide(7 as u64, 9 as u64);
+  `;
+
+  test('wide arithmetic lowers to a software sequence by default', async (ctx) => {
+    let result = await compileAndGenerateWatWith(wideSource, false);
+    let absent = growable<String>(['i64.mul_wide_u', 'i64.add128']);
+    assertFunctionOmits(result, '$wide', absent,
+        'the proposal is off by default — V8 does not implement it yet, ' +
+        'and the stdlib has to run under node');
+    // What it emits instead: the 32x32 partial products and the
+    // compare-and-add carry.
+    let present = growable<String>(['i64.mul', 'i64.shr_u', 'i64.lt_u']);
+    assertFunctionUses(result, '$wide', present,
+        'the software lowering multiplies 32-bit halves and derives ' +
+        'the carry from an unsigned compare');
+  });
+
+  test('wide arithmetic lowers to the real instructions when enabled', async (ctx) => {
+    let result = await compileAndGenerateWatWith(wideSource, true);
+    let present = growable<String>(['i64.mul_wide_u', 'i64.add128']);
+    assertFunctionUses(result, '$wide', present,
+        'with the flag on, each intrinsic is one instruction');
+    // And the partial-product sequence is gone entirely.
+    let absent = growable<String>(['i64.shr_u']);
+    assertFunctionOmits(result, '$wide', absent,
+        'the native instructions replace the halves-and-carries sequence, ' +
+        'they do not sit alongside it');
+  });
+  // -- tail calls (docs/design/tail-calls.md) ---------------------------
+  //
+  // `tail return` is a guarantee, not a hint: the whole point is that a
+  // program written against constant stack usage does not silently get
+  // a growing one. A snapshot would not tell a fallback to `call` from
+  // any other emission change, so assert the instruction.
+
+  test('tail return emits return_call and no ordinary call', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      function down(n: i32, acc: i32): i32 {
+        if (n == 0) { return acc; }
+        tail return down(n - 1, acc + 1);
+      }
+      export let main = (): i32 => down(3, 0);
+    `);
+    let present = growable<String>(['return_call $down']);
+    assertFunctionUses(result, '$down', present,
+        'the recursive call is annotated tail, so it discards the frame');
+    // Once, not alongside an ordinary call: the rewrite replaces the
+    // call rather than emitting a second one.
+    assertFunctionUsesTimes(result, '$down', 'call $down', 1,
+        'the tail call IS the call — there is no plain one left');
+  });
+
+  test('a tail call through a funcref emits return_call_ref', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      interface Hop {
+        hop(n: i32): i32;
+      }
+      class Decrement implements Hop {
+        hop(n: i32): i32 { return n - 1; }
+      }
+      function viaClosure(f: (x: i32) => i32, n: i32): i32 {
+        tail return f(n);
+      }
+      function viaInterface(h: Hop, n: i32): i32 {
+        tail return h.hop(n);
+      }
+      export let main = (): i32 => {
+        let d = new Decrement();
+        return viaClosure((x: i32) => x + 1, 1) + viaInterface(d, 1);
+      };
+    `);
+    // A closure value and a virtual method are the two callee shapes
+    // that dispatch through a funcref, and neither is a direct call.
+    let present = growable<String>(['return_call_ref']);
+    assertFunctionUses(result, '$viaClosure', present,
+        'calling a closure parameter goes through the funcref in its pair struct');
+    assertFunctionUses(result, '$viaInterface', present,
+        'an interface call reads its target out of the vtable');
+  });
+
+  test('an unannotated call in tail position stays an ordinary call', async (ctx) => {
+    let result = await compileAndGenerateWat(`
+      function down(n: i32, acc: i32): i32 {
+        if (n == 0) { return acc; }
+        return down(n - 1, acc + 1);
+      }
+      export let main = (): i32 => down(3, 0);
+    `);
+    let present = growable<String>(['call $down']);
+    assertFunctionUses(result, '$down', present,
+        'tail-call elimination is opt-in; nothing infers it');
+    let absent = growable<String>(['return_call']);
+    assertFunctionOmits(result, '$down', absent,
+        'tail-call elimination is opt-in; nothing infers it');
+  });
+
+  // A `function` declaration imported across a package specifier and
+  // handed to a higher-order function. The value needs a wrapper that
+  // reachability registers, and the wrapper is keyed by the declaration
+  // the import names. Resolving the import by its specifier text does
+  // not find that declaration — "dep/mod" is no unit's path — so
+  // reachability follows the specifier's symbol link instead. Without
+  // that, nothing registers the wrapper and lowering fails with
+  // "non-local identifier: addOne". See
+  // https://github.com/elematic/zena/issues/159.
+  test('a package-imported function used as a value lowers', async (ctx) => {
+    let host = new MockHost();
+    host.addFile('/dep/mod.zena',
+        'export function addOne(x: i32): i32 { return x + 1; }\n');
+    host.addFile('/project/main.zena',
+        "import { addOne } from 'dep/mod';\n" +
+        'let apply = (f: (x: i32) => i32, x: i32): i32 => f(x);\n' +
+        'export let main = (): i32 => apply(addOne, 41);\n');
+    let packages: HashMap<String, PackageConfig> = {
+      'dep' => new PackageConfig('/dep', null),
+    };
+
+    let result = await generateWat(host, '/project/main.zena', packages, false);
+
+    isTrue(result.contains('$addOne_valwrapper_'),
+        'the module has no value wrapper around the imported addOne');
+  });
+});

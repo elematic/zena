@@ -35,7 +35,7 @@ const PRETTIER_EXTENSIONS = /\.(cjs|html|js|json|md|ts)$/;
 const LINTED = /^packages\/.*\.zena$/;
 const NOT_LINTED = [
   // Inputs the compiler's own tests compile, many deliberately unidiomatic.
-  /^packages\/zena-compiler\/test-files\//,
+  /^packages\/compiler\/test-files\//,
   /^packages\/zena-lint\/test\/fixtures\//,
 ];
 const SUBJECT = /^(\[[a-z0-9][a-z0-9.-]*\])+ \S/;
@@ -132,6 +132,18 @@ const changed = [
 const untracked = new Set(
   lines(git('ls-files', '--others', '--exclude-standard')),
 );
+/**
+ * The path each moved file had at `base`. A diff of the new path alone
+ * shows every line as added, so a moved file is diffed with its old path.
+ */
+const movedFrom = new Map(
+  lines(git('diff', '--name-status', '-M', '--diff-filter=R', base)).map(
+    (line) => {
+      const [, from, to] = line.split('\t');
+      return [to, from];
+    },
+  ),
+);
 
 /** Added lines per file, as a map from file to [line number, text] pairs. */
 const addedLines = (file) => {
@@ -140,9 +152,12 @@ const addedLines = (file) => {
       .split('\n')
       .map((text, i) => [i + 1, text]);
   }
+  const paths = movedFrom.has(file) ? [movedFrom.get(file), file] : [file];
   const added = [];
   let next = 0;
-  for (const line of git('diff', '-U0', base, '--', file).split('\n')) {
+  for (const line of git('diff', '-U0', '-M', base, '--', ...paths).split(
+    '\n',
+  )) {
     const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
     if (hunk) {
       next = Number(hunk[1]);

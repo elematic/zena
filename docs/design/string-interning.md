@@ -80,7 +80,7 @@ across the whole module graph, where a name introduced in one file is looked
 up while checking another. While this was being measured a
 `CompilerOptions.internStrings` option selected it and `ZENA_INTERN=1` turned
 it on — which is what made the A/B below possible, and
-what `zena/test/interning_test.zena` pins in both directions.
+what `src/test/interning_test.zena` pins in both directions.
 
 ### Declining long strings
 
@@ -114,7 +114,7 @@ hits `==`'s reference-equal fast path against an already-hashed key.
 
 ## The corpus
 
-`packages/zena-compiler/zena/bench/interning.zena`, via `zena:bench`, over
+`packages/compiler/src/bench/interning.zena`, via `zena:bench`, over
 the compiler's own `zena/lib`:
 
 ```
@@ -137,7 +137,7 @@ exactly as much as that ratio is far from 1:1.
 Run from the repository root:
 
 ```sh
-zena-cli run packages/zena-compiler/zena/bench/interning.zena --dir .
+zena-cli run packages/compiler/src/bench/interning.zena --dir .
 ```
 
 `zena:bench` samples variants round-robin and reports the CI of the
@@ -179,7 +179,7 @@ What does not reproduce:
   happened to exclude zero.
 
 **Compiling the compiler is neither measurably faster nor slower.** Twenty
-alternating pairs of `zena-cli build zena/cli/main.zena --time`, paired
+alternating pairs of `zena-cli build src/cli/main.zena --time`, paired
 differences with 95% CIs:
 
 | phase     | baseline | difference with interning  |            |

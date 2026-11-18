@@ -127,7 +127,7 @@ URL implementation work**, since they also pay off immediately for `console`.
    - Bootstrap: `packages/stdlib/src/lib/module-loader.ts`
      (`loadStdlibModule`) plus wherever the compiler host resolves stdlib
      specifiers.
-   - Self-hosted: `packages/zena-compiler/zena/lib/module-resolver.zena`
+   - Self-hosted: `packages/compiler/src/lib/module-resolver.zena`
      (`resolvePackage` / the stdlib file-path branch).
 
 2. **Virtual modules map to files, not module names** (the `console` fix):

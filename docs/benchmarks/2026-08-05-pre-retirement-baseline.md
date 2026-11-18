@@ -3,6 +3,9 @@
 **Captured**: 2026-08-05 (superseding a partial capture of 2026-08-04)
 **Commit**: `6299d9ca2768300e203cf5dab5afad5d640fd75f`
 
+The paths are as they were then: the self-hosted compiler has since moved
+from `packages/zena-compiler` to `packages/compiler`.
+
 ## Why this file exists
 
 This is the last point at which Zena has **two independent compiler

@@ -1037,7 +1037,7 @@ Only the event loop exports the adapters call are kept by name:
 (plus `finishVoidTask` when `main` is `async`).
 
 An `async main` with an empty body
-(`packages/zena-compiler/test-files/component/async-noop.zena`) is a
+(`packages/compiler/test-files/component/async-noop.zena`) is a
 7,810-byte component. The event loop records what each in-flight
 handle is owed — the task waiting on it and the completer its event
 resolves — in one array indexed by handle; the host hands out handles

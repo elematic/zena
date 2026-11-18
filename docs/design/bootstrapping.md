@@ -21,7 +21,7 @@ anything is built. Everything else compiles from source:
 
 ```
 cargo build             → zena-cli, zena-run      (the Rust/wasmtime hosts, from source)
-zena-cli + bootstrap    → zena/out/cli.wasm       (Stage A: the working compiler, from source)
+zena-cli + bootstrap    → out/cli.wasm       (Stage A: the working compiler, from source)
 zena-run + cli.wasm     → packages/zena-cli/out/zena.wasm (the working CLI module, from source)
 zena-cli (+ zena.wasm)  → everything else         (stdlib tests, LSP, formatter, …)
 ```
@@ -30,7 +30,7 @@ Before `packages/zena-cli/out/zena.wasm` is built, `zena-cli` falls back
 to `packages/zena-cli/bootstrap/zena.wasm`, so once cargo has built
 `zena-cli` a fresh checkout can already run `zena build` (including
 zebra target builds), `zena fmt`, `zena lint`, `zena run` and
-`zena test`. During a build, `build:cli` in `packages/zena-compiler`
+`zena test`. During a build, `build:cli` in `packages/compiler`
 sets `ZENA_CLI_MODULE=../zena-cli/bootstrap/zena.wasm` explicitly so
 Stage A is always compiled by the bootstrap even when `out/zena.wasm`
 already exists on disk. Only the Wasm module is prebuilt; the host that
@@ -56,9 +56,9 @@ source in the tree. They differ only in which compiler emitted them.
 | Stage     | Built by           | Artifact                                            | Differs from the stage before it when                                                                                                  |
 | --------- | ------------------ | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | bootstrap | a past re-baseline | `packages/zena-cli/bootstrap/zena.wasm`, checked in | —                                                                                                                                      |
-| A         | the bootstrap      | `zena/out/cli.wasm` (`build:cli`)                   | the compiler's **source** has changed since the re-baseline                                                                            |
-| B         | stage A            | `zena/out/cli-self.wasm` (`build:self-hosted`)      | the compiler's **output** has changed: A emits what the source in the tree says to, and the bootstrap emitted what its own commit said |
-| C         | stage B            | `zena/out/cli-self2.wasm` (`test:fixpoint`)         | never — **B ≡ C** is the invariant below                                                                                               |
+| A         | the bootstrap      | `out/cli.wasm` (`build:cli`)                        | the compiler's **source** has changed since the re-baseline                                                                            |
+| B         | stage A            | `out/cli-self.wasm` (`build:self-hosted`)           | the compiler's **output** has changed: A emits what the source in the tree says to, and the bootstrap emitted what its own commit said |
+| C         | stage B            | `out/cli-self2.wasm` (`test:fixpoint`)              | never — **B ≡ C** is the invariant below                                                                                               |
 
 A and B are expected to differ, and nothing compares them. B and C are
 emitted by compilers built from the same source, so they must emit the same
@@ -139,7 +139,7 @@ match: it is built at `-O1` rather than `-O2`.
 Both halves matter. It is not enough that the bootstrap can compile
 current HEAD; the compiler it produces must itself be correct. The
 gate is automatic and continuous: every `npm test` run builds
-`zena/out/cli.wasm` from the bootstrap and then exercises that output
+`out/cli.wasm` from the bootstrap and then exercises that output
 — the portable execution suites, every package that compiles Zena, and
 `test:fixpoint`, which requires stage B and stage C to agree
 byte-for-byte. CI (`nix flake check`) runs all of it hermetically from a

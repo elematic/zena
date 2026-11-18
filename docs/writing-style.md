@@ -146,7 +146,7 @@ context is missing.
 ## Commit messages and PR descriptions
 
 - Say what was done, concisely. A short title (scope tags like
-  `[zena-compiler]` are fine), then a body only if the change needs
+  `[compiler]` are fine), then a body only if the change needs
   explanation beyond the diff.
 - Describe the change, not the process. Leave out how the work unfolded
   ("after investigating...", "first tried...").

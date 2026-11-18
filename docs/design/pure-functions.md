@@ -2,7 +2,7 @@
 
 Status: **Partly implemented.** Inference, and the check on `static`
 clauses and `old`, are in the compiler
-(`packages/zena-compiler/zena/lib/analysis/purity.zena`). The `pure`
+(`packages/compiler/src/lib/analysis/purity.zena`). The `pure`
 modifier, the evaluator, the lint and the hover are not; see
 [Implementation steps](#implementation-steps).
 
