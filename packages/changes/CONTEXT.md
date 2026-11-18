@@ -25,6 +25,11 @@ run from the repository root as `npm run changes -- <command>`.
 - `src/plan.zena`: `planReleases` joins the three into `ReleasePlan`s,
   one for each group and independent unit with entries, and
   `formatStatus` prints them.
+- `src/changelog.zena`: a release's section of a `CHANGELOG.md`, and
+  where it goes in the file.
+- `src/release.zena`: the rest of what `version` writes: the version
+  line of each kind of manifest, the version of a preview release, and a
+  change file without the units that were released.
 - `bin/changes.zena`: the command. It does the reading of files; the
   libraries take text.
 

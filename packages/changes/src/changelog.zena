@@ -1,0 +1,121 @@
+/**
+ * A unit's `CHANGELOG.md`, in the Keep a Changelog format
+ * (docs/design/change-files.md, "Changelogs"). A release adds a section
+ * for its version above the earlier ones:
+ *
+ * ```md
+ * ## [0.0.3] - 2026-12-01
+ *
+ * ### Added
+ *
+ * - Prompts: `confirm`, `select` and `text`.
+ * ```
+ */
+
+import {StringBuilder} from 'zena:core';
+import {join} from 'zena:string';
+import {Entry, SECTIONS, sectionName} from './change-file.zena';
+
+/** What a changelog that does not exist yet starts with. */
+export let CHANGELOG_HEADER = '# Changelog\n'
+  + '\n'
+  + 'All notable changes to this package will be documented in this file.\n'
+  + '\n'
+  + 'The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),\n'
+  + 'and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).\n';
+
+/** The section of a release with no entries of its own. */
+export let NO_CHANGES = 'No changes.';
+
+let UNRELEASED = '## [Unreleased]';
+
+/** The heading of a version's section: `## [0.0.3] - 2026-12-01`. */
+export function versionHeading(version: String, date: String): String {
+  return `## [${version}] - ${date}`;
+}
+
+/** The heading of a release of a unit with no version: `## 2026-12-01`. */
+export function dateHeading(date: String): String {
+  return `## ${date}`;
+}
+
+/**
+ * A release's section: its heading, then the entries under their
+ * sections in Keep a Changelog's order, each section's in the order
+ * given. With no entries the section says `No changes.`
+ */
+export function releaseSection(heading: String, entries: Array<Entry>): String {
+  let out = new StringBuilder();
+  out.append(`${heading}\n`);
+  if (entries.length == 0) {
+    out.append(`\n${NO_CHANGES}\n`);
+    return out.toString();
+  }
+  for (let section in SECTIONS) {
+    let texts = new GrowableArray<String>();
+    for (let entry in entries) {
+      if (entry.section == section) {
+        texts.push(entry.text);
+      }
+    }
+    if (texts.length > 0) {
+      out.append(`\n### ${sectionName(section)}\n\n${join(texts, '\n')}\n`);
+    }
+  }
+  return out.toString();
+}
+
+/**
+ * Whether a changelog still has entries under `## [Unreleased]`, which a
+ * release would leave behind. They belong in a change file.
+ */
+export function hasUnreleasedEntries(changelog: String): boolean {
+  var inUnreleased = false;
+  for (let line in changelog.split('\n')) {
+    if (line.startsWith('## ')) {
+      inUnreleased = line.trim() == UNRELEASED;
+    } else if (inUnreleased && !line.trim().isEmpty) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The changelog with a release's section added above the earlier
+ * releases, and below `## [Unreleased]` where a changelog still has that
+ * heading.
+ */
+export function addRelease(changelog: String, section: String): String {
+  let lines = changelog.split('\n');
+  var at = lines.length;
+  for (let i in 0..lines.length) {
+    if (lines[i].startsWith('## ') && lines[i].trim() != UNRELEASED) {
+      at = i;
+      break;
+    }
+  }
+  // What comes before ends with one blank line, whatever it had.
+  var before = at;
+  while (before > 0 && lines[before - 1].trim().isEmpty) {
+    before -= 1;
+  }
+  let out = new StringBuilder();
+  for (let i in 0..before) {
+    out.append(`${lines[i]}\n`);
+  }
+  if (before > 0) {
+    out.append('\n');
+  }
+  out.append(section);
+  if (at < lines.length) {
+    out.append('\n');
+    for (let i in at..lines.length) {
+      out.append(lines[i]);
+      if (i < lines.length - 1) {
+        out.append('\n');
+      }
+    }
+  }
+  return out.toString();
+}

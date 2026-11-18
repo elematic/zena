@@ -1,0 +1,164 @@
+/**
+ * What making a release changes besides the changelogs: the version in
+ * each manifest, and the change files, which lose the entries that were
+ * released (docs/design/change-files.md, "Units", "Groups" and "Preview
+ * releases").
+ */
+
+import {StringBuilder, parseI32} from 'zena:core';
+import {HashSet} from 'zena:collections';
+import {join} from 'zena:string';
+import {Version} from 'zena-lang:semver';
+import {
+  ChangeFile,
+  RELEASE_NOTES,
+  SECTIONS,
+  sectionName,
+} from './change-file.zena';
+import {PlanError, ReleasePlan} from './plan.zena';
+
+/**
+ * The releases among `releases` that `names` ask for: all of them when
+ * no name is given. A name is a group's or an independent unit's. Throws
+ * `PlanError` for a name with nothing to release.
+ */
+export function selectReleases(releases: Array<ReleasePlan>, names: Array<String>): GrowableArray<ReleasePlan> {
+  let selected = new GrowableArray<ReleasePlan>();
+  if (names.length == 0) {
+    for (let release in releases) {
+      selected.push(release);
+    }
+    return selected;
+  }
+  for (let name in names) {
+    var found = false;
+    for (let release in releases) {
+      if (release.name == name) {
+        selected.push(release);
+        found = true;
+      }
+    }
+    if (!found) {
+      throw new PlanError(
+        `'${name}' has no entries to release, or is not a group or an independent unit`
+      );
+    }
+  }
+  return selected;
+}
+
+/**
+ * The version of a preview release of `next`, given the version now:
+ * `0.0.3-preview.1`, or the preview after `current` when `current` is
+ * already a preview of `next`.
+ */
+export function previewVersion(current: Version, next: Version): Version {
+  var number = 1;
+  let pre = current.prerelease;
+  if (current.hasSameCore(next) && pre.length == 2 && pre[0] == 'preview') {
+    if (let (true, n) = parseI32(pre[1])) {
+      number = n + 1;
+    }
+  }
+  return Version.parse(
+    `${next.major}.${next.minor}.${next.patch}-preview.${number}`
+  );
+}
+
+/** The line of a manifest that states its version, with another version. */
+function versionLine(line: String, version: String) {
+  let parts = line.split('"');
+  // `  "version": "0.0.1",` splits at its four quotes, and
+  // `version = "0.1.0"` at its two.
+  let last = parts.length - 1;
+  let out = new StringBuilder();
+  for (let i in 0..parts.length) {
+    out.append(if (i == last - 1) version else parts[i]);
+    if (i < last) {
+      out.append('"');
+    }
+  }
+  return out.toString();
+}
+
+function withLine(lines: Array<String>, at: i32, line: String) {
+  let out = new GrowableArray<String>();
+  for (let i in 0..lines.length) {
+    out.push(if (i == at) line else lines[i]);
+  }
+  return join(out, '\n');
+}
+
+/**
+ * The text of a `zena-package.json` or `package.json` with its top-level
+ * `version` set, and the rest as it was. Nothing when the manifest states
+ * no version. The field is found by its indentation of two spaces, which
+ * is how this repository's manifests are formatted.
+ */
+export function setJsonManifestVersion(text: String, version: String): inline (true, String) | (false, _) {
+  let lines = text.split('\n');
+  for (let i in 0..lines.length) {
+    if (lines[i].startsWith('  "version": "')) {
+      return (true, withLine(lines, i, versionLine(lines[i], version)));
+    }
+  }
+  return (false, _);
+}
+
+/**
+ * The text of a `Cargo.toml` with the `version` under `[package]` set,
+ * and the rest as it was. Nothing when it states no version there.
+ */
+export function setCargoManifestVersion(text: String, version: String): inline (true, String) | (false, _) {
+  let lines = text.split('\n');
+  var inPackage = false;
+  for (let i in 0..lines.length) {
+    let line = lines[i].trim();
+    if (line.startsWith('[')) {
+      inPackage = line == '[package]';
+    } else if (inPackage && line.startsWith('version = "')) {
+      return (true, withLine(lines, i, versionLine(lines[i], version)));
+    }
+  }
+  return (false, _);
+}
+
+/**
+ * A change file's text without the units in `released`, or nothing when
+ * no unit and no release notes are left, and the file can be deleted.
+ * The file is written again from what was read: its release notes, then
+ * each unit with its `Requires:` line and its sections in a changelog's
+ * order.
+ */
+export function withoutUnits(file: ChangeFile, released: HashSet<String>): inline (true, String) | (false, _) {
+  let parts = new GrowableArray<String>();
+  if (!file.releaseNotes.isEmpty) {
+    parts.push(`## ${RELEASE_NOTES}\n\n${file.releaseNotes}\n`);
+  }
+  for (let changes in file.units) {
+    if (released.has(changes.unit)) {
+      continue;
+    }
+    let out = new StringBuilder();
+    out.append(`## ${changes.unit}\n`);
+    if (changes.requires.length > 0) {
+      out.append(`\nRequires: ${join(changes.requires, ', ')}\n`);
+    }
+    for (let section in SECTIONS) {
+      let texts = new GrowableArray<String>();
+      for (let entry in changes.entries) {
+        if (entry.section == section) {
+          texts.push(entry.text);
+        }
+      }
+      if (texts.length > 0) {
+        out.append(`\n### ${sectionName(section)}\n\n${join(texts, '\n')}\n`);
+      }
+    }
+    parts.push(out.toString());
+  }
+  if (parts.length == 0) {
+    return (false, _);
+  }
+  return (true, join(parts, '\n'));
+}

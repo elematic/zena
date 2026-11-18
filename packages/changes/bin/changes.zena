@@ -6,24 +6,45 @@
  *   version each group and unit would be released at.
  * - `check` reports what is wrong with the configuration and the change
  *   files, and exits 1 when anything is.
+ * - `version [<group or unit>...]` makes a release: it writes the new
+ *   versions to the manifests, moves the entries into the changelogs,
+ *   and takes them out of the change files.
  */
 
-import {ArgParser} from 'zena:args';
+import {ArgParser, OptionType, ParsedArgs} from 'zena:args';
 import {Future} from 'zena:async';
 import {exit, getArguments} from 'zena:cli';
-import {HashMap} from 'zena:collections';
-import {exists, listDir, readFile} from 'zena:fs';
+import {HashMap, HashSet} from 'zena:collections';
+import {exists, listDir, readFile, unlink, writeFile} from 'zena:fs';
+import {formatTimestamp} from 'zena:time';
+import {now} from 'wasi:clocks/system-clock';
 import {Version} from 'zena-lang:semver';
 import {
   ChangeFile,
+  Entry,
   Problem,
   checkChangeFile,
   formatProblem,
   parseChangeFile,
 } from '../src/change-file.zena';
+import {
+  CHANGELOG_HEADER,
+  addRelease,
+  dateHeading,
+  hasUnreleasedEntries,
+  releaseSection,
+  versionHeading,
+} from '../src/changelog.zena';
 import {Config} from '../src/config.zena';
 import {readUnitVersion} from '../src/manifests.zena';
-import {formatStatus, planReleases} from '../src/plan.zena';
+import {ReleasePlan, formatStatus, planReleases} from '../src/plan.zena';
+import {
+  previewVersion,
+  selectReleases,
+  setCargoManifestVersion,
+  setJsonManifestVersion,
+  withoutUnits,
+} from '../src/release.zena';
 
 let CHANGES_DIR = '.changes';
 let CONFIG_PATH = '.changes/config.json';
@@ -68,6 +89,18 @@ function report(problems: GrowableArray<Problem>) {
   }
 }
 
+/** The releases the change files call for. Throws when a change file has a problem. */
+async function readReleases(config: Config, files: GrowableArray<ChangeFile>): Future<GrowableArray<ReleasePlan>> {
+  let versions = new HashMap<String, Version>();
+  for (let {value as unit} in config.units) {
+    let version = await readUnitVersion(unit.dir);
+    if (version != null) {
+      versions[unit.name] = version;
+    }
+  }
+  return planReleases(config, files, versions);
+}
+
 async function status(): Future<i32> {
   let config = await readConfig();
   let problems = new GrowableArray<Problem>();
@@ -76,14 +109,7 @@ async function status(): Future<i32> {
     report(problems);
     return 1;
   }
-  let versions = new HashMap<String, Version>();
-  for (let {value as unit} in config.units) {
-    let version = await readUnitVersion(unit.dir);
-    if (version != null) {
-      versions[unit.name] = version;
-    }
-  }
-  console.log(formatStatus(planReleases(config, files, versions)).trim());
+  console.log(formatStatus(await readReleases(config, files)).trim());
   return 0;
 }
 
@@ -112,6 +138,167 @@ async function check(): Future<i32> {
   return 0;
 }
 
+/** Today's date in UTC, as `2026-12-01`. */
+function today() {
+  let instant = now();
+  let nanos = instant.seconds * (1000000000 as i64)
+    + (instant.nanoseconds as i64);
+  return formatTimestamp(nanos).sliceBytes(0, 10);
+}
+
+/** Writes `version` to each manifest in `dir` that states a version. */
+async function writeManifests(dir: String, version: String): Future<void> {
+  for (let name in ['zena-package.json', 'package.json']) {
+    let path = `${dir}/${name}`;
+    if (await exists(path)) {
+      if (let (true, text) = setJsonManifestVersion(
+        await readFile(path),
+        version
+      )) {
+        await writeFile(path, text);
+      }
+    }
+  }
+  let path = `${dir}/Cargo.toml`;
+  if (await exists(path)) {
+    if (let (true, text) = setCargoManifestVersion(
+      await readFile(path),
+      version
+    )) {
+      await writeFile(path, text);
+    }
+  }
+}
+
+/** The changelog in `dir`, or the start of one when there is none. */
+async function readChangelog(dir: String): Future<String> {
+  let path = `${dir}/CHANGELOG.md`;
+  return if (await exists(path)) await readFile(path) else CHANGELOG_HEADER;
+}
+
+/** Adds a release's section to the changelog in `dir`. */
+async function writeChangelog(dir: String, heading: String, entries: Array<Entry>): Future<void> {
+  let changelog = await readChangelog(dir);
+  await writeFile(
+    `${dir}/CHANGELOG.md`,
+    addRelease(changelog, releaseSection(heading, entries))
+  );
+}
+
+/** The directories of the units a release writes to. */
+function releaseDirs(release: ReleasePlan, config: Config) {
+  let dirs = new GrowableArray<String>();
+  for (let plan in release.units) {
+    dirs.push(plan.unit.dir);
+  }
+  for (let name in release.unchanged) {
+    dirs.push(config.units[name].dir);
+  }
+  return dirs;
+}
+
+/**
+ * Refuses a release that would leave entries behind under a changelog's
+ * `## [Unreleased]`, before anything is written.
+ */
+async function refuseUnreleasedEntries(releases: Array<ReleasePlan>, config: Config): Future<void> {
+  for (let release in releases) {
+    for (let dir in releaseDirs(release, config)) {
+      if (hasUnreleasedEntries(await readChangelog(dir))) {
+        throw new Error(
+          `${dir}/CHANGELOG.md has entries under '## [Unreleased]'; move them to a change file in ${CHANGES_DIR}/`
+        );
+      }
+    }
+  }
+}
+
+async function version(args: ParsedArgs): Future<i32> {
+  let config = await readConfig();
+  let problems = new GrowableArray<Problem>();
+  let files = await readChangeFiles(config, problems);
+  if (problems.length > 0) {
+    report(problems);
+    return 1;
+  }
+  let releases = selectReleases(await readReleases(config, files), args.rest);
+  let preview = args.getFlag('preview');
+  let date = args.getOption('date') ?? today();
+  var named: Version? = null;
+  if (let (true, text) = args.getOption('as')) {
+    if (releases.length != 1 || !releases[0].versioned) {
+      throw new Error(
+        '--as needs the name of one group or unit that has a version'
+      );
+    }
+    named = Version.parse(text);
+  }
+  if (!preview) {
+    await refuseUnreleasedEntries(releases, config);
+  }
+
+  let none = new GrowableArray<Entry>();
+  let released = new HashSet<String>();
+  var count = 0;
+  for (let release in releases) {
+    let current = release.current;
+    let next = named ?? release.next;
+    var heading = dateHeading(date);
+    var target: String? = null;
+    if (release.versioned) {
+      if (current == null || next == null) {
+        console.log(
+          `${release.name}: not released, since only held units have entries`
+        );
+        continue;
+      }
+      let version = if (preview) previewVersion(current, next) else next;
+      target = version.toString();
+      heading = versionHeading(version.toString(), date);
+    } else if (preview) {
+      continue;
+    }
+    for (let plan in release.units) {
+      if (target != null) {
+        await writeManifests(plan.unit.dir, target);
+      }
+      if (!preview) {
+        await writeChangelog(plan.unit.dir, heading, plan.entries);
+        released.add(plan.unit.name);
+      }
+    }
+    for (let name in release.unchanged) {
+      let dir = config.units[name].dir;
+      if (target != null) {
+        await writeManifests(dir, target);
+      }
+      if (!preview) {
+        await writeChangelog(dir, heading, none);
+      }
+    }
+    console.log(`${release.name} ${target ?? date}`);
+    count += 1;
+  }
+  if (count == 0) {
+    console.log('Nothing to release.');
+    return 0;
+  }
+  if (!preview) {
+    for (let file in files) {
+      if (let (true, text) = withoutUnits(file, released)) {
+        await writeFile(file.path, text);
+      } else {
+        await unlink(file.path);
+      }
+    }
+  }
+  console.log(
+    '\nNow run \'npm run versions\', \'npm install --package-lock-only\' and \'cargo update -w --offline\','
+      + ' which this command does not do yet.'
+  );
+  return 0;
+}
+
 export async function main(): Future<void> {
   let parser = new ArgParser(
     {
@@ -123,6 +310,21 @@ export async function main(): Future<void> {
         },
         'check' => {
           help: 'Report what is wrong with the configuration and the change files'
+        },
+        'version' => {
+          help: 'Make a release of the named groups and units, or of everything with entries',
+          options: {
+            'preview' => {
+              type: OptionType.Flag,
+              help: 'Write <next version>-preview.N to the manifests and leave the entries where they are'
+            },
+            'as' => {
+              help: 'The version to release, in place of the one the entries give'
+            },
+            'date' => {
+              help: 'The release\'s date, as 2026-12-01 (default: today, UTC)'
+            }
+          }
         }
       }
     }
@@ -131,10 +333,13 @@ export async function main(): Future<void> {
   var code = 2;
   try {
     let command = parsed.commandName;
+    let args = parsed.commandArgs;
     if (command == 'status') {
       code = await status();
     } else if (command == 'check') {
       code = await check();
+    } else if (command == 'version' && args != null) {
+      code = await version(args);
     } else {
       console.error(parser.formatHelp());
     };

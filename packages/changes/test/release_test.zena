@@ -1,0 +1,296 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {HashMap, HashSet} from 'zena:collections';
+import {Version} from 'zena-lang:semver';
+import {
+  ChangeFile,
+  Problem,
+  parseChangeFile,
+} from 'zena-lang:changes/change-file';
+import {
+  CHANGELOG_HEADER,
+  addRelease,
+  dateHeading,
+  hasUnreleasedEntries,
+  releaseSection,
+  versionHeading,
+} from 'zena-lang:changes/changelog';
+import {Config} from 'zena-lang:changes/config';
+import {PlanError, planReleases} from 'zena-lang:changes/plan';
+import {
+  previewVersion,
+  selectReleases,
+  setCargoManifestVersion,
+  setJsonManifestVersion,
+  withoutUnits,
+} from 'zena-lang:changes/release';
+
+function read(text: String) {
+  let problems = new GrowableArray<Problem>();
+  let file = parseChangeFile('.changes/example.md', text, problems);
+  equal(problems.length, 0);
+  return file;
+}
+
+function preview(current: String, next: String) {
+  return previewVersion(Version.parse(current), Version.parse(next)).toString();
+}
+
+function set(names: Array<String>) {
+  let all = new HashSet<String>();
+  for (let name in names) {
+    all.add(name);
+  }
+  return all;
+}
+
+let CHANGES = '## Release notes\n'
+  + '\n'
+  + '### Prompts\n'
+  + '\n'
+  + 'A program can ask a question.\n'
+  + '\n'
+  + '## terminal\n'
+  + '\n'
+  + 'Requires: semver\n'
+  + '\n'
+  + '### Fixed\n'
+  + '\n'
+  + '- A crash.\n'
+  + '\n'
+  + '### Added\n'
+  + '\n'
+  + '- Prompts, which\n'
+  + '  read keys.\n'
+  + '- Colors.\n'
+  + '\n'
+  + '## semver\n'
+  + '\n'
+  + '### Removed\n'
+  + '\n'
+  + '- **Breaking:** `lowest`.\n';
+
+let CHANGELOG = '# Changelog\n'
+  + '\n'
+  + 'All notable changes.\n'
+  + '\n'
+  + '## [0.0.1] - 2026-11-12\n'
+  + '\n'
+  + '### Added\n'
+  + '\n'
+  + '- Everything.\n';
+
+export let tests = suite(
+  'zena-lang:changes/release',
+  () => {
+    test(
+      'writes a release section in a changelog\'s order',
+      () => {
+        let terminal = read(CHANGES).units[0];
+        equal(versionHeading('0.0.2', '2026-12-01'), '## [0.0.2] - 2026-12-01');
+        equal(dateHeading('2026-12-01'), '## 2026-12-01');
+        equal(
+          releaseSection('## [0.0.2] - 2026-12-01', terminal.entries),
+          '## [0.0.2] - 2026-12-01\n'
+            + '\n'
+            + '### Added\n'
+            + '\n'
+            + '- Prompts, which\n'
+            + '  read keys.\n'
+            + '- Colors.\n'
+            + '\n'
+            + '### Fixed\n'
+            + '\n'
+            + '- A crash.\n'
+        );
+        equal(
+          releaseSection('## [0.0.2] - 2026-12-01', []),
+          '## [0.0.2] - 2026-12-01\n\nNo changes.\n'
+        );
+      }
+    );
+
+    test(
+      'adds a release above the earlier ones',
+      () => {
+        let section = '## [0.0.2] - 2026-12-01\n\nNo changes.\n';
+        equal(
+          addRelease(CHANGELOG, section),
+          '# Changelog\n'
+            + '\n'
+            + 'All notable changes.\n'
+            + '\n'
+            + '## [0.0.2] - 2026-12-01\n'
+            + '\n'
+            + 'No changes.\n'
+            + '\n'
+            + '## [0.0.1] - 2026-11-12\n'
+            + '\n'
+            + '### Added\n'
+            + '\n'
+            + '- Everything.\n'
+        );
+      }
+    );
+
+    test(
+      'adds the first release to a new changelog, and below an empty Unreleased heading',
+      () => {
+        let section = '## [0.0.1] - 2026-12-01\n\nNo changes.\n';
+        equal(
+          addRelease(CHANGELOG_HEADER, section),
+          `${CHANGELOG_HEADER}\n${section}`
+        );
+        equal(
+          addRelease(
+            '# Changelog\n\n## [Unreleased]\n\n## [0.0.0] - 2026-01-01\n\n- a\n',
+            section
+          ),
+          `# Changelog\n\n## [Unreleased]\n\n${section}\n## [0.0.0] - 2026-01-01\n\n- a\n`
+        );
+      }
+    );
+
+    test(
+      'finds entries left under Unreleased',
+      () => {
+        isFalse(hasUnreleasedEntries(CHANGELOG));
+        isFalse(
+          hasUnreleasedEntries(
+            '# Changelog\n\n## [Unreleased]\n\n## [0.0.1] - 2026-11-12\n\n- a\n'
+          )
+        );
+        isTrue(
+          hasUnreleasedEntries(
+            '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- b\n\n## [0.0.1] - 2026-11-12\n'
+          )
+        );
+      }
+    );
+
+    test(
+      'sets the version in each kind of manifest and nothing else',
+      () => {
+        let json = '{\n  "name": "semver",\n  "version": "0.0.1-preview.1",\n  "dependencies": {\n'
+          + '    "x": {\n      "version": "^1.0.0"\n    }\n  }\n}\n';
+        equal(
+          setJsonManifestVersion(json, '0.0.1') ?? '',
+          '{\n  "name": "semver",\n  "version": "0.0.1",\n  "dependencies": {\n'
+            + '    "x": {\n      "version": "^1.0.0"\n    }\n  }\n}\n'
+        );
+        equal(
+          setJsonManifestVersion('{\n  "name": "semver"\n}\n', '0.0.1')
+            ?? 'none',
+          'none'
+        );
+
+        let cargo = '[package]\nname = "zena-cli"\nversion = "0.0.1-preview.1"\nedition = "2021"\n\n'
+          + '[dependencies]\nwasmtime = { version = "30" }\n';
+        equal(
+          setCargoManifestVersion(cargo, '0.0.1') ?? '',
+          '[package]\nname = "zena-cli"\nversion = "0.0.1"\nedition = "2021"\n\n'
+            + '[dependencies]\nwasmtime = { version = "30" }\n'
+        );
+        equal(
+          setCargoManifestVersion('[dependencies]\nversion = "1"\n', '0.0.1')
+            ?? 'none',
+          'none'
+        );
+      }
+    );
+
+    test(
+      'numbers preview releases',
+      () => {
+        equal(preview('0.0.2', '0.0.3'), '0.0.3-preview.1');
+        equal(preview('0.0.3-preview.1', '0.0.3'), '0.0.3-preview.2');
+        equal(preview('0.0.3-preview.9', '0.0.3'), '0.0.3-preview.10');
+        equal(preview('0.0.3-preview.2', '0.1.0'), '0.1.0-preview.1');
+        equal(preview('0.0.3-rc.2', '0.0.3'), '0.0.3-preview.1');
+      }
+    );
+
+    test(
+      'takes released units out of a change file',
+      () => {
+        let file = read(CHANGES);
+        equal(
+          withoutUnits(file, set(['semver'])) ?? '',
+          '## Release notes\n'
+            + '\n'
+            + '### Prompts\n'
+            + '\n'
+            + 'A program can ask a question.\n'
+            + '\n'
+            + '## terminal\n'
+            + '\n'
+            + 'Requires: semver\n'
+            + '\n'
+            + '### Added\n'
+            + '\n'
+            + '- Prompts, which\n'
+            + '  read keys.\n'
+            + '- Colors.\n'
+            + '\n'
+            + '### Fixed\n'
+            + '\n'
+            + '- A crash.\n'
+        );
+        // What is written can be read again.
+        let again = read(withoutUnits(file, set([])) ?? '');
+        equal(again.units.length, 2);
+        equal(again.units[0].entries.length, 3);
+        equal(again.units[0].requires[0], 'semver');
+        equal(again.releaseNotes, file.releaseNotes);
+
+        equal(
+          withoutUnits(file, set(['semver', 'terminal'])) ?? '',
+          '## Release notes\n\n### Prompts\n\nA program can ask a question.\n'
+        );
+        let entriesOnly = read('## semver\n\n### Fixed\n\n- a\n');
+        equal(
+          withoutUnits(entriesOnly, set(['semver'])) ?? 'deleted',
+          'deleted'
+        );
+      }
+    );
+
+    test(
+      'selects releases by the name of a group or an independent unit',
+      () => {
+        let config = Config.parse(
+          '{"groups": {"toolchain": {"units": ["compiler", "zena-cli"]}}, "units": {"semver": {}, "terminal": {}}}'
+        );
+        let versions = new HashMap<String, Version>();
+        for (let name in ['compiler', 'zena-cli', 'semver', 'terminal']) {
+          versions[name] = Version.parse('0.0.1');
+        }
+        let files = [
+          read(
+            '## zena-cli\n\n### Fixed\n\n- a\n\n## semver\n\n### Fixed\n\n- b\n'
+          )
+        ];
+        let releases = planReleases(config, files, versions);
+        equal(selectReleases(releases, []).length, 2);
+        let one = selectReleases(releases, ['semver']);
+        equal(one.length, 1);
+        equal(one[0].name, 'semver');
+        equal(selectReleases(releases, ['toolchain'])[0].name, 'toolchain');
+
+        for (let name in ['terminal', 'zena-cli', 'nothing']) {
+          var message = '';
+          try {
+            selectReleases(releases, [name]);
+          } catch (e) {
+            isTrue(e is PlanError);
+            message = e.message;
+          };
+          equal(
+            message,
+            `'${name}' has no entries to release, or is not a group or an independent unit`
+          );
+        }
+      }
+    );
+  }
+);
