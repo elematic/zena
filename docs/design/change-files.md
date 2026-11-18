@@ -9,11 +9,15 @@ Partly built, in `packages/changes`:
   changelogs, change files and release notes, with `--preview` and
   `--as`. `notes` writes the release notes alone. The release check
   (`packages/cli/dev/check-release-version.zena`) takes a release's
-  notes from the notes file.
+  notes from the notes file. A path dependency states the range it is
+  published with, `zena pkg publish` writes it, and `check` fails on a
+  range that leaves out the version at its path.
 - Not built: `add`; in the release notes, the links to pull requests and
   the packages released between two toolchain releases; `status` listing
-  breaking entries with no prose; dependents' ranges and `Requires:`,
-  which is read and not acted on; the lockfiles and `versions.zena`,
+  breaking entries with no prose; `version` changing dependents' ranges,
+  so a release leaves the exact ranges inside the toolchain group behind
+  until they are edited by hand, and `Requires:`, which is read and not
+  acted on; the lockfiles and `versions.zena`,
   which `version` asks the person to refresh; the check that a pull
   request adds a change file.
 
@@ -374,20 +378,28 @@ satisfies the dependent's range, so the range in a dependent's
 ### The published range
 
 For this to work, the range a dependent publishes has to be kept
-somewhere. Today a workspace dependency is `{"path": "../semver"}`, and
-`zena pkg publish` writes the range `^<the dependency's current version>`
-(`dependenciesOf` in `packages/cli/zena/pkg/publish.zena`). Every
-release of a dependent therefore raises its minimum to the newest
-dependency.
+somewhere. A workspace dependency that is only `{"path": "../semver"}` is
+published as `^<the dependency's current version>`, so every release of
+the dependent raises its minimum to the newest dependency.
 
-The manifest gains a range beside the path:
+The manifest states the range beside the path
+([package-manifest.md](package-manifest.md), "Publishing a workspace
+package"):
 
 ```json
-"zena-lang:semver": {"path": "../semver", "version": "~0.0.1"}
+"zena-lang:semver": {"path": "../semver", "version": "~0.0.1-preview.1"}
 ```
 
-Builds in the workspace use the path. Publishing writes the range. A
-release changes the range only as this section describes.
+Builds in the workspace use the path. `zena pkg publish` writes the
+range, and refuses one that leaves out the version at the path. A release
+changes the range only as this section describes.
+
+The packages here that will be published state their ranges: a tilde
+range on an independent package, and the exact version between two units
+of the toolchain group. The ranges name `0.0.1-preview.1` because a range
+admits a pre-release only when it names one of the same version, and the
+packages are at that pre-release. `npm run changes -- check` fails when a
+range leaves out the version at its path.
 
 ### Raising the minimum on purpose
 

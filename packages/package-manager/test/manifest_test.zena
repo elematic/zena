@@ -3,7 +3,7 @@ import {equal, isNull, isTrue, jsonEqual} from 'zena:assert';
 import {OrderedHashMap} from 'zena:collections';
 import {join} from 'zena:core';
 import {parseJson} from 'zena:json';
-import {ManifestError, readManifest, writeDependencies, writeDid} from 'package-manager/manifest';
+import {ManifestError, publishedRange, readManifest, writeDependencies, writeDid} from 'package-manager/manifest';
 import {Requirement} from 'package-manager/resolve';
 import {Range, Version} from 'zena-lang:semver';
 
@@ -202,6 +202,69 @@ export let tests = suite('package-manager/manifest', () => {
       "router": {"did": "${ROUTER}", "version": "1.5.0"},
       "json": {"did": "did:web:json.example.com", "version": "2.1.0"}
     }}`));
+  });
+
+  test('reads the range a path dependency is published with, and keeps it', (ctx) => {
+    let text = `{
+      "name": "app",
+      "dependencies": {
+        "lib": {"path": "./packages/lib", "version": "~0.0.3"},
+        "tools": {"path": "./packages/tools"},
+        "router": {"did": "${ROUTER}", "version": "1.4.2"}
+      }
+    }`;
+    let manifest = readManifest(text);
+    equal(manifest.paths['lib'], './packages/lib');
+    equal(manifest.paths['tools'], './packages/tools');
+    equal(manifest.pathRanges.size, 1);
+    equal(manifest.pathRanges['lib'].text, '~0.0.3');
+    isTrue(manifest.pathRanges['lib'].includes(Version.parse('0.0.5')));
+    isTrue(!manifest.requirements.has('lib'), 'a path dependency is not a published one');
+
+    // Writing the dependencies again keeps the range beside its path.
+    manifest.requirements['router'] = new Requirement(ROUTER, Range.parse('1.5.0'));
+    jsonEqual(parseJson(writeDependencies(text, manifest.requirements, manifest.paths)), parseJson(`{
+      "name": "app",
+      "dependencies": {
+        "lib": {"path": "./packages/lib", "version": "~0.0.3"},
+        "tools": {"path": "./packages/tools"},
+        "router": {"did": "${ROUTER}", "version": "1.5.0"}
+      }
+    }`));
+
+    rejects('{"dependencies": {"lib": {"path": "./lib", "version": "one"}}}');
+    rejects('{"dependencies": {"lib": {"path": "./lib", "version": 3}}}');
+    rejects(`{"dependencies": {"lib": {"path": "./lib", "version": "~0.0.3", "did": "${ROUTER}"}}}`);
+  });
+
+  test('publishes a path dependency with its range, or else the caret of its version', (ctx) => {
+    let manifest = readManifest(`{
+      "name": "app",
+      "dependencies": {
+        "lib": {"path": "./packages/lib", "version": "~0.0.3"},
+        "tools": {"path": "./packages/tools"},
+        "early": {"path": "./packages/early", "version": "~0.0.1-preview.1"}
+      }
+    }`);
+    equal(publishedRange(manifest, 'lib', Version.parse('0.0.3')).text, '~0.0.3');
+    // The range stays where it is while the dependency moves within it.
+    equal(publishedRange(manifest, 'lib', Version.parse('0.0.9')).text, '~0.0.3');
+    equal(publishedRange(manifest, 'tools', Version.parse('1.4.2')).text, '^1.4.2');
+    equal(publishedRange(manifest, 'early', Version.parse('0.0.1-preview.2')).text, '~0.0.1-preview.1');
+    equal(publishedRange(manifest, 'early', Version.parse('0.0.4')).text, '~0.0.1-preview.1');
+
+    // A range that leaves out the version at the path is refused.
+    for (let version in ['0.0.2', '0.1.0', '0.0.4-preview.1']) {
+      var message = '';
+      try {
+        publishedRange(manifest, 'lib', Version.parse(version));
+      } catch (e) {
+        isTrue(e is ManifestError);
+        message = e.message;
+      }
+      equal(message,
+          `zena-package.json: dependency 'lib' is published as ~0.0.3, which leaves out ${version}, the version at its path`);
+    }
   });
 
   test('reads the version a package publishes next', (ctx) => {

@@ -35,6 +35,11 @@ run from the repository root as `npm run changes -- <command>`.
   group has notes and where they go (`notes`), and
   `packages/cli/dev/release-version.zena` knows that path too
   (`releaseNotesPath`), for the release check.
+- `src/dependencies.zena`: the ranges a unit's `zena-package.json` gives
+  beside its path dependencies, and whether each admits the version at
+  its path. It reads the JSON itself and does not depend on
+  `package-manager`, whose `publishedRange` applies the same rule when
+  `zena pkg publish` runs.
 - `bin/changes.zena`: the command. It does the reading of files; the
   libraries take text.
 

@@ -45,7 +45,7 @@ import { XrpcClient, XrpcError } from 'atproto/xrpc';
 import { packSource } from 'package-manager/archive';
 import { SOURCE_MIME_TYPE, checkDependencies, checkMetadata, validateRelease } from 'package-manager/validate';
 import { PublishedFiles } from 'package-manager/files';
-import { Manifest, readManifest, writeDid } from 'package-manager/manifest';
+import { Manifest, publishedRange, readManifest, writeDid } from 'package-manager/manifest';
 import {
   ATTESTATION_TYPE, Artifact, Attestation, Dependency, Maintainer, Maintainers, OWNER, POLICY_TYPE, Policy, Profile,
   Release, SOURCE
@@ -712,8 +712,9 @@ export async function attest(session: Session, uri: String, cid: Cid): Future<vo
 
 /**
  * The release's dependencies: the manifest's published ones, and each path
- * dependency as the DID and version its own manifest gives, so a package
- * another depends on is published first.
+ * dependency as the DID its own manifest gives and the range this
+ * manifest gives beside the path, or else `^` its version
+ * (`publishedRange`), so a package another depends on is published first.
  */
 async function dependenciesOf(target: WorkspacePackage, manifest: Manifest): Future<FixedArray<Dependency>> {
   let all = new GrowableArray<Dependency>();
@@ -727,7 +728,13 @@ async function dependenciesOf(target: WorkspacePackage, manifest: Manifest): Fut
     if (other.did == null || other.version == null) {
       throw new PublishError(`${name} (${dir}) has no DID and version yet; publish it first`);
     }
-    all.push(new Dependency(other.did as String, Range.parse(`^${(other.version as Version).toString()}`), name));
+    var range = Range.parse('*');
+    try {
+      range = publishedRange(manifest, name, other.version as Version);
+    } catch (e) {
+      throw new PublishError(`${target.dir}/${e.message}`);
+    }
+    all.push(new Dependency(other.did as String, range, name));
   }
   let fixed = new FixedArray<Dependency>(all.length, new Dependency('', Range.parse('*'), ''));
   for (var i = 0; i < all.length; i += 1) {

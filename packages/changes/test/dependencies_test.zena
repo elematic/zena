@@ -1,0 +1,91 @@
+import {suite, test} from 'zena:test';
+import {equal, isNull, isTrue} from 'zena:assert';
+import {Version} from 'zena-lang:semver';
+import {
+  PathDependency,
+  pathDependencies,
+  rangeProblem,
+} from 'zena-lang:changes/dependencies';
+import {ManifestError} from 'zena-lang:changes/manifests';
+
+let MANIFEST = `{
+  "name": "package-manager",
+  "version": "0.0.3",
+  "dependencies": {
+    "atproto": {"path": "../atproto", "version": "~0.0.2"},
+    "tools": {"path": "../tools"},
+    "zena-lang:semver": {"path": "../semver", "version": "0.0.3"},
+    "router": {"did": "did:web:router.example.com", "version": "^1.4.2"},
+    "gfx": {"wit": "./wit"}
+  }
+}`;
+
+function problem(range: String, version: String) {
+  return rangeProblem(
+    new PathDependency('semver', '../semver', range),
+    Version.parse(version)
+  )
+    ?? 'none';
+}
+
+export let tests = suite(
+  'zena-lang:changes/dependencies',
+  () => {
+    test(
+      'finds the path dependencies that state a range',
+      () => {
+        let found = pathDependencies(MANIFEST);
+        equal(found.length, 2);
+        isTrue(
+          found[0] == new PathDependency('atproto', '../atproto', '~0.0.2')
+        );
+        isTrue(
+          found[1]
+            == new PathDependency('zena-lang:semver', '../semver', '0.0.3')
+        );
+        equal(pathDependencies('{"name": "semver"}').length, 0);
+
+        var message = '';
+        try {
+          pathDependencies('{');
+        } catch (e) {
+          isTrue(e is ManifestError);
+          message = e.message;
+        };
+        isTrue(message.startsWith('not JSON: '));
+      }
+    );
+
+    test(
+      'a range admits the version at its path, or is a problem',
+      () => {
+        isNull(
+          rangeProblem(
+            new PathDependency('semver', '../semver', '~0.0.2'),
+            Version.parse('0.0.5')
+          )
+        );
+        equal(problem('~0.0.2', '0.0.2'), 'none');
+        equal(problem('0.0.3', '0.0.3'), 'none');
+        equal(problem('~0.0.1-preview.1', '0.0.1-preview.2'), 'none');
+        equal(problem('~0.0.1-preview.1', '0.0.4'), 'none');
+        equal(
+          problem('~0.0.2', '0.1.0'),
+          'dependency \'semver\' is published as ~0.0.2, which leaves out 0.1.0, the version at ../semver'
+        );
+        equal(
+          problem('0.0.3', '0.0.4'),
+          'dependency \'semver\' is published as 0.0.3, which leaves out 0.0.4, the version at ../semver'
+        );
+        // A pre-release is in a range only when the range names one of its version.
+        equal(
+          problem('~0.0.2', '0.0.3-preview.1'),
+          'dependency \'semver\' is published as ~0.0.2, which leaves out 0.0.3-preview.1, the version at ../semver'
+        );
+        isTrue(
+          problem('nonsense', '0.0.3').startsWith('dependency \'semver\': ')
+        );
+      }
+    );
+  }
+);

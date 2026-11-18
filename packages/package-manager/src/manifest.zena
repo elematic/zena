@@ -65,6 +65,14 @@ export final class Manifest {
    */
   paths: OrderedHashMap<String, String>;
   /**
+   * The range of versions each package on disk is published as a
+   * dependency with, by local name, for those whose entry gives a
+   * `version` beside its `path`. Builds use the directory; only
+   * `zena pkg publish` reads the range (package-manifest.md,
+   * "dependencies").
+   */
+  var pathRanges = new OrderedHashMap<String, Range>();
+  /**
    * At a workspace's root, the directories of the workspace's other
    * packages, or patterns ending in `/*`. Empty elsewhere.
    */
@@ -172,6 +180,7 @@ export function readManifest(text: String | null): Manifest {
 
   let requirements = new OrderedHashMap<String, Requirement>();
   let paths = new OrderedHashMap<String, String>();
+  let pathRanges = new OrderedHashMap<String, Range>();
   let wits = new OrderedHashMap<String, String>();
   let dependencies = member(root, 'dependencies');
   if (dependencies != null) {
@@ -194,9 +203,18 @@ export function readManifest(text: String | null): Manifest {
       }
       let path = entry['path'];
       if (path != null) {
-        if (!(path is String) || entry.has('did') || entry.has('version')) {
+        if (!(path is String) || entry.has('did')) {
           throw new ManifestError(
-              `zena-package.json: dependency '${localName}' has a path and a DID or version, or a path that is not a string`);
+              `zena-package.json: dependency '${localName}' has a path and a DID, or a path that is not a string`);
+        }
+        // A version beside a path is the range the dependency is published
+        // with. The package is still the one in the directory.
+        if (entry.has('version')) {
+          let range = entry['version'];
+          if (!(range is String)) {
+            throw new ManifestError(`zena-package.json: dependency '${localName}' has a version that is not a string`);
+          }
+          pathRanges[localName] = parseRange(range, localName);
         }
         paths[localName] = path;
         return;
@@ -258,6 +276,7 @@ export function readManifest(text: String | null): Manifest {
   }
   let manifest = new Manifest(name, did, requirements, paths, workspacePackages, scopes, version);
   manifest.wits = wits;
+  manifest.pathRanges = pathRanges;
   manifest.scope = scope;
   let scopedNames = root['scopedNames'];
   if (scopedNames != null) {
@@ -415,17 +434,38 @@ function underSource(source: String, file: String): String {
 }
 
 /**
+ * The range a release of `manifest`'s package states for its path
+ * dependency `localName`, which is at `version` in its directory: the
+ * range the manifest gives beside the path, or else `^<version>`.
+ *
+ * Throws `ManifestError` when the range the manifest gives leaves out
+ * `version`, since the package was built and tested against that one.
+ */
+export function publishedRange(manifest: Manifest, localName: String, version: Version): Range {
+  if (let (true, range) = manifest.pathRanges.get(localName)) {
+    if (!range.includes(version)) {
+      throw new ManifestError(
+          `zena-package.json: dependency '${localName}' is published as ${range.text}, which leaves out ${version.toString()}, the version at its path`);
+    }
+    return range;
+  }
+  return Range.parse(`^${version.toString()}`);
+}
+
+/**
  * `zena-package.json` text with its `dependencies` replaced by
  * `requirements` and `paths`, or a new manifest holding only them when
  * `text` is null. A dependency the file already has keeps its place, new
  * ones follow, and every other key stays where it was. A WIT dependency
- * stays as the file has it.
+ * stays as the file has it, and a path dependency keeps the `version`
+ * the file gives beside its path.
  */
 export function writeDependencies(text: String | null, requirements: OrderedHashMap<String, Requirement>,
     paths: OrderedHashMap<String, String>): String {
   let root = parse(text);
   let section = new JsonObject();
   let written = new HashSet<String>();
+  let existing = member(root, 'dependencies');
   let write = (localName: String) => {
     if (written.has(localName)) {
       return;
@@ -439,11 +479,16 @@ export function writeDependencies(text: String | null, requirements: OrderedHash
     } else if (let (true, path) = paths.get(localName)) {
       let entry = new JsonObject();
       entry['path'] = path;
+      if (existing != null) {
+        let before = existing[localName];
+        if (before is JsonObject && before.has('path') && before.has('version')) {
+          entry['version'] = before['version'];
+        }
+      }
       section[localName] = entry;
       written.add(localName);
     }
   };
-  let existing = member(root, 'dependencies');
   if (existing != null) {
     existing.forEach((localName, value) => {
       if (value is JsonObject && value.has('wit') && !requirements.has(localName) && !paths.has(localName)) {

@@ -11,7 +11,7 @@
 
 - A workspace package's `name` may give its scope, `"name": "zena-lang:markdown"`, which names it as the `scope` field did. A manifest that gives both is refused.
 
-## zena-cli
+## cli
 
 ### Changed
 
