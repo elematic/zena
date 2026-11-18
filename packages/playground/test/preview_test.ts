@@ -131,6 +131,31 @@ describe('BareModuleTransformer & CdnModuleRegistry', () => {
     );
   });
 
+  it('rewrites a dynamic import with its quotes, and leaves globs and import.meta', async () => {
+    const registry = createTestRegistry();
+    const transformer = new BareModuleTransformer(registry);
+
+    const source = [
+      "const runtime = import('@zena-lang/runtime');",
+      'const page = import(`./pages/${name}.js`);',
+      'console.log(import.meta.url);',
+    ].join('\n');
+
+    const result = await transformer.transformModule(
+      {name: 'demo.js', content: source},
+      {},
+    );
+
+    assert.equal(
+      result.content,
+      [
+        "const runtime = import('./node_modules/@zena-lang/runtime@0.0.1/index.js');",
+        'const page = import(`./pages/${name}.js`);',
+        'console.log(import.meta.url);',
+      ].join('\n'),
+    );
+  });
+
   it('rewrites bare specifiers inside node_modules JS files using relative paths', async () => {
     const registry = createTestRegistry();
     const transformer = new BareModuleTransformer(registry);
