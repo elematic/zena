@@ -36,7 +36,7 @@ Then open a new terminal and check it:
 zena --version
 ```
 
-[Install](/guide/install/) has the script's options, the VS Code extension,
+See [Install](/guide/install/) for the install script's options, the VS Code extension,
 manual downloads and building from source.
 
 `zena run` runs a program on its own, with the WebAssembly runtime it
