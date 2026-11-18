@@ -254,7 +254,11 @@ one of these kinds:
   point outside the workspace, as to a package in a sibling checkout
   (`{"path": "../zena/packages/atproto/zena"}`), for developing against
   a package before it is published. The directory must hold a
-  `zena-package.json`.
+  `zena-package.json`. The entry can also give the range of versions the
+  dependency is published with: `{"path": "./packages/lib", "version":
+"~0.0.3"}`. Compiling, `zena pkg add` and `zena pkg update` use the
+  directory and ignore the range; only `zena pkg publish` reads it
+  ("Publishing a workspace package").
 - **A WIT-backed package**, by the `.wit` file or directory that declares
   its interfaces: `{"wit": "./wit"}`. Its libraries are WIT interfaces,
   imported as `<name>:<interface>`, and the compiler synthesizes their
@@ -405,10 +409,22 @@ only the workspace's own packages.
 
 `zena pkg publish` publishes one workspace package at a time. Its release
 lists the dependencies in its manifest, with each path dependency
-replaced by the depended-on package's DID and the version of it the
-workspace uses, so a workspace package that others depend on is published
-first. A package without a `did`, such as one only on disk, cannot be a
-published package's dependency.
+replaced by the depended-on package's DID and a range of its versions, so
+a workspace package that others depend on is published first. A package
+without a `did`, such as one only on disk, cannot be a published
+package's dependency.
+
+The range is the one the dependency's entry gives in `version`. Suppose
+`router` depends on `{"path": "../json", "version": "~0.0.3"}` and `json`
+is at `0.0.5` in the workspace. The release of `router` depends on `json`
+`~0.0.3`: it was written against `0.0.3` and still works with `0.0.5`, and
+a project that already has `json` `0.0.4` keeps it. An entry with no
+`version` is published as `^` the version in the workspace, `^0.0.5`
+here, which raises the minimum with every release of `json`.
+
+`zena pkg publish` refuses a range that leaves out the version in the
+workspace, since that is the version the package was built and tested
+with.
 
 ## The `zena` package (the standard library)
 

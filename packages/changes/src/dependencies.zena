@@ -1,0 +1,73 @@
+/**
+ * The ranges a unit's `zena-package.json` publishes its dependencies on
+ * other packages in the repository with
+ * (docs/design/change-files.md, "The published range").
+ *
+ * ```json
+ * "dependencies": {
+ *   "zena-lang:semver": {"path": "../semver", "version": "~0.0.3"}
+ * }
+ * ```
+ *
+ * Builds use the path. `zena pkg publish` writes the range into the
+ * release, and refuses one that leaves out the version at the path.
+ */
+
+import {JsonObject, JsonValue, parseJson} from 'zena:json';
+import {Range, Version} from 'zena-lang:semver';
+import {ManifestError} from './manifests.zena';
+
+/**
+ * A dependency on a package on disk whose entry gives a range: the name
+ * the manifest calls it, its directory relative to the manifest's, and
+ * the range's text.
+ */
+export class PathDependency(name: String, path: String, range: String)
+
+/**
+ * The path dependencies of a `zena-package.json` that state a range, in
+ * the file's order. Throws `ManifestError` for text that is not JSON.
+ */
+export function pathDependencies(text: String): GrowableArray<PathDependency> {
+  var root: JsonValue = null;
+  try {
+    root = parseJson(text);
+  } catch (e) {
+    throw new ManifestError(`not JSON: ${e.message}`);
+  };
+  let found = new GrowableArray<PathDependency>();
+  if (root is JsonObject) {
+    if (let (true, dependencies) = root.objectAt('dependencies')) {
+      dependencies.forEach(
+        (name, value) => {
+          if (value is JsonObject) {
+            let path = value['path'];
+            let range = value['version'];
+            if (path is String && range is String) {
+              found.push(new PathDependency(name, path, range));
+            }
+          }
+        }
+      );
+    }
+  }
+  return found;
+}
+
+/**
+ * What is wrong with a dependency's range when the package at its path
+ * is at `version`, or null: a range that cannot be read, or one that
+ * leaves the version out, which `zena pkg publish` would refuse.
+ */
+export function rangeProblem(dependency: PathDependency, version: Version): String? {
+  var range = Range.parse('*');
+  try {
+    range = Range.parse(dependency.range);
+  } catch (e) {
+    return `dependency '${dependency.name}': ${e.message}`;
+  };
+  if (!range.includes(version)) {
+    return `dependency '${dependency.name}' is published as ${dependency.range}, which leaves out ${version.toString()}, the version at ${dependency.path}`;
+  }
+  return null;
+}

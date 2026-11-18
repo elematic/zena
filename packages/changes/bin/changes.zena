@@ -16,6 +16,7 @@ import {Future} from 'zena:async';
 import {exit, getArguments} from 'zena:cli';
 import {HashMap, HashSet} from 'zena:collections';
 import {exists, listDir, mkdir, readFile, unlink, writeFile} from 'zena:fs';
+import {join2} from 'zena:path';
 import {formatTimestamp} from 'zena:time';
 import {now} from 'wasi:clocks/system-clock';
 import {Version} from 'zena-lang:semver';
@@ -36,6 +37,7 @@ import {
   versionHeading,
 } from '../src/changelog.zena';
 import {Config} from '../src/config.zena';
+import {pathDependencies, rangeProblem} from '../src/dependencies.zena';
 import {readUnitVersion} from '../src/manifests.zena';
 import {notableChanges, notesPath, releaseNotes} from '../src/notes.zena';
 import {ReleasePlan, formatStatus, planReleases} from '../src/plan.zena';
@@ -127,6 +129,29 @@ async function check(): Future<i32> {
           `unit '${unit.name}' has no directory ${unit.dir}`
         )
       );
+      continue;
+    }
+    // The ranges the unit publishes its dependencies in the repository
+    // with: each admits the version at its path.
+    let manifest = `${unit.dir}/zena-package.json`;
+    if (await exists(manifest)) {
+      for (let dependency in pathDependencies(await readFile(manifest))) {
+        let version = await readUnitVersion(join2(unit.dir, dependency.path));
+        if (version == null) {
+          problems.push(
+            new Problem(
+              manifest,
+              1,
+              `dependency '${dependency.name}': ${dependency.path} states no version`
+            )
+          );
+        } else {
+          let problem = rangeProblem(dependency, version);
+          if (problem != null) {
+            problems.push(new Problem(manifest, 1, problem));
+          }
+        }
+      }
     }
   }
   report(problems);
