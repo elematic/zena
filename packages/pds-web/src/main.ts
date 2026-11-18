@@ -3,7 +3,8 @@
  * on the server (`packages/registry/src/web`) or built statically (`site/docs/`);
  * this defines the shared Zena website custom elements (`packages/website-client`)
  * and does what must happen in the browser: signing in and out with atproto
- * OAuth (`./auth.ts`, loaded only when it is needed).
+ * OAuth (`./auth.ts`, loaded only when it is needed), and handing the answer
+ * of `zena pkg login` to the `zena` that asked.
  */
 
 import '../../website-client/src/zena-appearance.js';
@@ -102,6 +103,19 @@ const finishSignIn = async () => {
 };
 
 /**
+ * On the page `zena pkg login` comes back to, sends the browser on to the
+ * `zena` that asked, at `127.0.0.1` and the port the page names, with the
+ * answer. With no port, the page only shows the answer, to be pasted.
+ */
+const handToZena = () => {
+  const port = document.querySelector<HTMLElement>('[data-cli-callback]')
+    ?.dataset['cliCallback'];
+  if (port !== undefined && /^[0-9]{4,5}$/.test(port)) {
+    location.replace(`http://127.0.0.1:${port}/callback${location.search}`);
+  }
+};
+
+/**
  * With no web session, as when its cookie has expired, makes one from the
  * OAuth session the browser still has, once per tab.
  */
@@ -135,6 +149,8 @@ wireSignIn();
 wireSignOut();
 if (location.pathname === '/oauth/callback') {
   void finishSignIn();
+} else if (location.pathname === '/oauth/cli-callback') {
+  handToZena();
 } else if (isStaticPage) {
   const domainEl = document.querySelector<HTMLElement>('[data-host-domain]');
   if (domainEl && location.host) {

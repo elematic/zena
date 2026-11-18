@@ -2027,25 +2027,30 @@ client of the registry `ZENA_REGISTRY` names. When a release of `zena`
 calls a method the session's scope lacks, it asks the maintainer to sign
 in again.
 
-**Signing in.**
+**Signing in.** `zena` reads the client from the registry it signs in
+through: `describeRegistry` gives the registry's site, and the client's
+metadata and callback page are below it
+(`package-manager/cli-client`).
 
 1. `zena` resolves the maintainer's handle or DID to their PDS, and the PDS
    to its authorization server (`/.well-known/oauth-protected-resource`,
    then `/.well-known/oauth-authorization-server`).
 2. It makes a DPoP key for the session (ES256), a PKCE verifier (S256) and
-   a `state`. It starts an HTTP server on a free port of `127.0.0.1`, and
-   puts the port in `state`.
+   a `state`, `<port>.<random>`. When it can open a browser on this
+   machine, it starts an HTTP server on a free port of `127.0.0.1` and
+   names the port; otherwise, as over SSH, the port is 0.
 3. It pushes the authorization request (PAR), with the maintainer's handle
    or DID as `login_hint`. It opens the browser at the authorization
    endpoint with the `request_uri` it got back, and prints the URL too, for
    a machine where opening a browser fails.
 4. The maintainer approves at their PDS, which redirects to the callback
    page with `code`, `state` and `iss`.
-5. The page's script reads the port from `state` and sends the browser on
-   to `http://127.0.0.1:<port>/callback` with the same three. When that
-   cannot work, as when the browser is on another machine than `zena`, or
-   a browser will not leave the page for `127.0.0.1`, the page shows the
-   three as one line to paste into the terminal. `zena` waits for either.
+5. The page shows the three as one line to paste into the terminal, and
+   when `state` names a port, the page's script sends the browser on to
+   `http://127.0.0.1:<port>/callback` with the same three. So when the
+   browser is on another machine than `zena`, or will not leave the page
+   for `127.0.0.1`, the line is still there. `zena` waits for either. The
+   page is not cached, and sends no referrer.
 6. `zena` checks `state` and `iss` and exchanges the code for tokens, with
    the verifier and a DPoP proof. It checks that the tokens' `sub` is the
    DID it resolved, and that the DID's PDS names this authorization

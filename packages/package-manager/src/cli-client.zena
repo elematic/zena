@@ -1,0 +1,108 @@
+/**
+ * What `zena pkg login` signs in as with OAuth: the client each App View
+ * describes at `CLI_CLIENT_METADATA_PATH` below its site, the page the
+ * person's PDS sends the browser back to, and the scope it asks for
+ * (package-manager.md, "Signing in from the command line"). The App View
+ * serves the metadata and the page (`registry/xrpc/web`,
+ * `registry/web/pages/sign-in`), and `zena` signs in with them, so both
+ * read them from here.
+ */
+
+import {JsonArray, JsonObject} from 'zena:json';
+import {OAuthClient} from 'atproto/oauth';
+import {ATTESTATION_TYPE} from './records.zena';
+import {CREATE_WEB_SESSION, REGISTRY_METHODS} from './registry-methods.zena';
+
+/** Where an App View serves `zena`'s client metadata, below its site: the client's `client_id`. */
+export let CLI_CLIENT_METADATA_PATH = '/oauth/cli-client-metadata.json';
+
+/** The page, below the site, that the person's PDS sends the browser back to, and that hands the answer to `zena`. */
+export let CLI_CALLBACK_PATH = '/oauth/cli-callback';
+
+/** Where `zena`'s own server takes the answer, on `127.0.0.1` and the port `state` names. */
+export let LOOPBACK_CALLBACK_PATH = '/callback';
+
+/**
+ * The scope `zena pkg login` asks for: writing attestation records, the
+ * only records `zena` writes to a maintainer's repository, and
+ * service-auth tokens for each of the registry's methods but the site's
+ * `createWebSession`, addressed to any service. A scope cannot name a
+ * prefix of methods, and a DID in one must name a service, which a
+ * `getServiceAuth` request's bare DID does not match.
+ */
+export function cliScope(): String {
+  var scope = `atproto repo:${ATTESTATION_TYPE}`;
+  for (let method in REGISTRY_METHODS) {
+    if (method != CREATE_WEB_SESSION) {
+      scope = `${scope} rpc:${method}?aud=*`;
+    }
+  }
+  return scope;
+}
+
+/** `zena`'s client at the App View whose site is at `site`, such as `https://pkg.zena-lang.dev`. */
+export function cliClient(site: String): OAuthClient {
+  return new OAuthClient(`${site}${CLI_CLIENT_METADATA_PATH}`, `${site}${CLI_CALLBACK_PATH}`, cliScope());
+}
+
+/**
+ * The metadata document of `zena`'s client at the App View whose site is
+ * at `site`: a native public client, with DPoP, whose one redirect URI is
+ * the callback page on the same origin.
+ */
+export function cliClientMetadata(site: String): JsonObject {
+  let client = cliClient(site);
+  let redirects = new JsonArray();
+  redirects.push(client.redirectUri);
+  let grants = new JsonArray();
+  grants.push('authorization_code');
+  grants.push('refresh_token');
+  let responses = new JsonArray();
+  responses.push('code');
+  let metadata = new JsonObject();
+  metadata['client_id'] = client.clientId;
+  metadata['client_name'] = 'zena';
+  metadata['client_uri'] = site;
+  metadata['application_type'] = 'native';
+  metadata['redirect_uris'] = redirects;
+  metadata['scope'] = client.scope;
+  metadata['grant_types'] = grants;
+  metadata['response_types'] = responses;
+  metadata['token_endpoint_auth_method'] = 'none';
+  metadata['dpop_bound_access_tokens'] = new Box<boolean>(true);
+  return metadata;
+}
+
+/**
+ * The `state` of a sign-in whose answer the callback page hands to `zena`
+ * on `127.0.0.1:<port>`, or, with port 0, shows to be pasted:
+ * `<port>.<random>`. `random` is what makes it this sign-in's.
+ */
+export function callbackState(port: i32, random: String): String {
+  return `${port}.${random}`;
+}
+
+/**
+ * The port `state` names, as the callback page reads it: a number from
+ * 1024 to 65535 before the first `.`, or 0 when it names none, for the
+ * page to show the answer instead.
+ */
+export function portOfState(state: String): i32 {
+  var port = 0;
+  var i = 0;
+  while (i < state.length && i < 6) {
+    let b = state.getByteAt(i);
+    if (b == 46) { // '.'
+      break;
+    }
+    if (b < 48 || b > 57) {
+      return 0;
+    }
+    port = port * 10 + (b - 48);
+    i += 1;
+  }
+  if (i == 0 || i >= state.length || state.getByteAt(i) != 46 || port < 1024 || port > 65535) {
+    return 0;
+  }
+  return port;
+}
