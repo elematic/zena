@@ -268,6 +268,7 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 - [packages/pds-web/CONTEXT.md](packages/pds-web/CONTEXT.md) — the App View's server-rendered pages and their assets (Radica)
 - [packages/markdown/CONTEXT.md](packages/markdown/CONTEXT.md) — CommonMark and GFM parser, AST, plugin API, and HTML renderer
 - [packages/semver/CONTEXT.md](packages/semver/CONTEXT.md) — semantic versions and npm's version ranges
+- [packages/changes/CONTEXT.md](packages/changes/CONTEXT.md) — change files, units and groups, and release versions
 - [packages/terminal/CONTEXT.md](packages/terminal/CONTEXT.md) — colors, Clack-style layout and a spinner for command-line programs
 - [packages/workspace-hack/CONTEXT.md](packages/workspace-hack/CONTEXT.md) — the generated crate that gives the Rust crates one set of dependency features
 
@@ -297,6 +298,7 @@ in the root `CLAUDE.md`.
 - **`packages/runtime`**: JS runtime helpers (`@zena-lang/runtime`).
 - **`packages/atproto`**: AT Protocol libraries: the data model, DAG-CBOR, CIDs, repositories and their proofs, keys and signatures, identity resolution, XRPC, service auth and sessions (`@zena-lang/atproto`).
 - **`packages/semver`**: Semantic versions and npm's version ranges (`zena-lang:semver`): parsing, precedence, whether a version is in a range, and the highest or lowest version in one.
+- **`packages/changes`**: The `changes` command (`npm run changes -- status|check`) and its libraries: change files in `.changes/`, the units and groups in `.changes/config.json`, and the version each release would get. (See [change-files.md](docs/design/change-files.md)).
 - **`packages/package-manager`**: The package manager's libraries: records, source archives, fetching, version selection, manifests and workspaces, and the registry's lexicons (`@zena-lang/package-manager`).
 - **`packages/pds`**: An AT Protocol PDS written in Zena, ported from pds.js, with managed accounts for the App Views it trusts (`@zena-lang/pds`). (See [pds.md](docs/design/pds.md)).
 - **`packages/registry`**: The Zena App View, the package manager's service: the registry methods, the site, and the service that runs them with the PDS (`@zena-lang/registry`). (See [package-manager.md](docs/design/package-manager.md)).

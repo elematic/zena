@@ -1,0 +1,433 @@
+/**
+ * Change files: the Markdown files in `.changes/` that hold a pull
+ * request's changelog entries (docs/design/change-files.md, "Change
+ * files").
+ *
+ * ```md
+ * ## Release notes
+ *
+ * ### Prompts in the terminal
+ *
+ * A program can now ask a question and read the answer key by key.
+ *
+ * ## terminal
+ *
+ * Requires: semver
+ *
+ * ### Added
+ *
+ * - Prompts: `confirm`, `select` and `text`.
+ *
+ * ### Removed
+ *
+ * - **Breaking:** `ask`; use `text`.
+ * ```
+ *
+ * A file is read line by line. Each entry keeps its Markdown as written,
+ * since a release copies it into a changelog.
+ */
+
+import {join} from 'zena:string';
+import {Config} from './config.zena';
+
+/** Keep a Changelog's kinds of change, in the order a changelog lists them. */
+export enum Section {
+  Added,
+  Changed,
+  Deprecated,
+  Removed,
+  Fixed,
+  Security
+}
+
+/** Every section, in a changelog's order. */
+export let SECTIONS = [
+  Section.Added,
+  Section.Changed,
+  Section.Deprecated,
+  Section.Removed,
+  Section.Fixed,
+  Section.Security
+];
+
+/** A section's heading text. */
+export function sectionName(section: Section): String {
+  return match (section) {
+    case Section.Added: 'Added'
+    case Section.Changed: 'Changed'
+    case Section.Deprecated: 'Deprecated'
+    case Section.Removed: 'Removed'
+    case Section.Fixed: 'Fixed'
+    case Section.Security: 'Security'
+  };
+}
+
+function sectionNamed(name: String): inline (true, Section) | (false, _) {
+  for (let section in SECTIONS) {
+    if (sectionName(section) == name) {
+      return (true, section);
+    }
+  }
+  return (false, _);
+}
+
+/** How far an entry moves a version, smallest first. */
+export enum Size {
+  Fix,
+  Feature,
+  Breaking
+}
+
+/** The larger of two sizes. */
+export function largerSize(a: Size, b: Size): Size {
+  if (a == Size.Breaking || b == Size.Breaking) {
+    return Size.Breaking;
+  }
+  if (a == Size.Feature || b == Size.Feature) {
+    return Size.Feature;
+  }
+  return Size.Fix;
+}
+
+/** The marker an entry that breaks its users starts with. */
+export let BREAKING = '**Breaking:**';
+
+/** The heading of a change file's prose for the release notes. */
+export let RELEASE_NOTES = 'Release notes';
+
+/** One bullet of a change file. */
+export final class Entry {
+  section: Section;
+  /** The bullet's Markdown as written, from its `- ` to its last line. */
+  text: String;
+  /** The line of the file the bullet starts on, from 1. */
+  line: i32;
+
+  new(this.section, this.text, this.line) {}
+
+  /** Whether the entry starts with `**Breaking:**`. */
+  breaking: boolean {
+    get {
+      return this.text.startsWith(`- ${BREAKING}`);
+    }
+  }
+
+  size: Size {
+    get {
+      if (this.breaking) {
+        return Size.Breaking;
+      }
+      return match (this.section) {
+        case Section.Added: Size.Feature
+        case Section.Deprecated: Size.Feature
+        case _: Size.Fix
+      };
+    }
+  }
+}
+
+/** What a change file says about one unit. */
+export final class UnitChanges {
+  unit: String;
+  /** The line of the unit's heading, from 1. */
+  line: i32;
+  /** The dependencies whose minimum version the unit's next release raises. */
+  requires: GrowableArray<String> = new GrowableArray<String>();
+  entries: GrowableArray<Entry> = new GrowableArray<Entry>();
+
+  new(this.unit, this.line) {}
+}
+
+/** A change file, as read. */
+export final class ChangeFile {
+  path: String;
+  units: GrowableArray<UnitChanges> = new GrowableArray<UnitChanges>();
+  /** The prose under `## Release notes`, or empty. */
+  var releaseNotes: String = '';
+
+  new(this.path) {}
+}
+
+/** Something wrong in a change file. */
+export class Problem(path: String, line: i32, message: String)
+
+/** A problem as `path:line: message`. */
+export function formatProblem(problem: Problem): String {
+  return `${problem.path}:${problem.line}: ${problem.message}`;
+}
+
+function afterPrefix(line: String, prefix: String) {
+  return line.sliceBytes(prefix.utf8.length, line.utf8.length).trim();
+}
+
+function trimmedBlock(lines: GrowableArray<String>) {
+  var end = lines.length;
+  while (end > 0 && lines[end - 1].trim().isEmpty) {
+    end -= 1;
+  }
+  var start = 0;
+  while (start < end && lines[start].trim().isEmpty) {
+    start += 1;
+  }
+  let kept = new GrowableArray<String>();
+  for (let i in start..end) {
+    kept.push(lines[i]);
+  }
+  return join(kept, '\n');
+}
+
+/** Where the reader is in a file. */
+enum Place {
+  /** Before the first `##` heading. */
+  Top,
+  /** Under `## Release notes`. */
+  Notes,
+  /** Under a unit's heading, before its first section. */
+  Unit,
+  /** Under a section's heading. */
+  Section
+}
+
+class Reader {
+  #file: ChangeFile;
+  #problems: GrowableArray<Problem>;
+  var #place: Place = Place.Top;
+  var #unit: UnitChanges? = null;
+  var #section: Section = Section.Added;
+  var #sectionLine: i32 = 0;
+  var #sectionEntries: i32 = 0;
+  /** The lines of the entry being read, or of the release notes. */
+  var #block: GrowableArray<String> = new GrowableArray<String>();
+  var #blockLine: i32 = 0;
+  var #inEntry: boolean = false;
+  var #inFence: boolean = false;
+  var #sawNotes: boolean = false;
+  /** How many problems there were when the current unit's heading was read. */
+  var #problemsBeforeUnit: i32 = 0;
+
+  new(file: ChangeFile, problems: GrowableArray<Problem>) : #file = file, #problems = problems {}
+
+  #problem(line: i32, message: String): void {
+    this.#problems.push(new Problem(this.#file.path, line, message));
+  }
+
+  #endEntry(): void {
+    if (!this.#inEntry) {
+      return;
+    }
+    this.#inEntry = false;
+    let entry = new Entry(
+      this.#section,
+      trimmedBlock(this.#block),
+      this.#blockLine
+    );
+    this.#block = new GrowableArray<String>();
+    if (entry.section == Section.Removed && !entry.breaking) {
+      this.#problem(
+        entry.line,
+        `an entry under Removed must start with ${BREAKING}`
+      );
+    }
+    (this.#unit as UnitChanges).entries.push(entry);
+    this.#sectionEntries += 1;
+  }
+
+  #endSection(): void {
+    this.#endEntry();
+    if (this.#place == Place.Section && this.#sectionEntries == 0) {
+      this.#problem(
+        this.#sectionLine,
+        `'### ${sectionName(this.#section)}' has no entries`
+      );
+    }
+  }
+
+  /** Ends whatever a `##` heading or the end of the file ends. */
+  #endPart(): void {
+    if (this.#place == Place.Notes) {
+      this.#file.releaseNotes = trimmedBlock(this.#block);
+      this.#block = new GrowableArray<String>();
+      if (this.#file.releaseNotes.isEmpty) {
+        this.#problem(this.#blockLine, `'## ${RELEASE_NOTES}' has no text`);
+      }
+      return;
+    }
+    this.#endSection();
+    let unit = this.#unit;
+    // Only when nothing else was reported under the unit, which would be
+    // the reason it has no entries.
+    if (unit != null
+      && unit.entries.length == 0
+      && unit.requires.length == 0
+      && this.#problems.length == this.#problemsBeforeUnit) {
+      this.#problem(unit.line, `'## ${unit.unit}' has no entries`);
+    }
+    this.#unit = null;
+  }
+
+  #unitHeading(name: String, number: i32): void {
+    this.#endPart();
+    if (name == RELEASE_NOTES) {
+      if (this.#sawNotes) {
+        this.#problem(number, `a second '## ${RELEASE_NOTES}'`);
+      }
+      this.#sawNotes = true;
+      this.#place = Place.Notes;
+      this.#blockLine = number;
+      return;
+    }
+    for (let other in this.#file.units) {
+      if (other.unit == name) {
+        this.#problem(
+          number,
+          `a second '## ${name}'; put its entries under the first`
+        );
+      }
+    }
+    this.#problemsBeforeUnit = this.#problems.length;
+    let unit = new UnitChanges(name, number);
+    this.#file.units.push(unit);
+    this.#unit = unit;
+    this.#place = Place.Unit;
+  }
+
+  #sectionHeading(name: String, number: i32): void {
+    this.#endSection();
+    this.#place = Place.Section;
+    this.#sectionLine = number;
+    this.#sectionEntries = 0;
+    if (let (true, section) = sectionNamed(name)) {
+      this.#section = section;
+      for (let entry in (this.#unit as UnitChanges).entries) {
+        if (entry.section == section) {
+          this.#problem(
+            number,
+            `a second '### ${name}'; put its entries under the first`
+          );
+          break;
+        }
+      }
+    } else {
+      this.#problem(
+        number,
+        `'${name}' is not a section: Added, Changed, Deprecated, Removed, Fixed or Security`
+      );
+      // Entries under it are still read, so each problem in them is reported.
+      this.#sectionEntries = 1;
+    }
+  }
+
+  line(line: String, number: i32): void {
+    if (this.#place == Place.Notes) {
+      if (line.trim().startsWith('```')) {
+        this.#inFence = !this.#inFence;
+      }
+      if (this.#inFence || !line.startsWith('## ')) {
+        this.#block.push(line);
+        return;
+      }
+    }
+    if (line.startsWith('## ')) {
+      this.#unitHeading(afterPrefix(line, '## '), number);
+      return;
+    }
+    let blank = line.trim().isEmpty;
+    if (this.#place == Place.Top) {
+      if (!blank) {
+        this.#problem(number, 'expected \'## <unit>\' or \'## Release notes\'');
+      }
+      return;
+    }
+    if (line.startsWith('### ')) {
+      this.#sectionHeading(afterPrefix(line, '### '), number);
+      return;
+    }
+    if (this.#place == Place.Unit) {
+      if (line.startsWith('Requires:')) {
+        for (let name in afterPrefix(line, 'Requires:').split(',')) {
+          if (name.trim().isEmpty) {
+            this.#problem(number, '\'Requires:\' names no unit');
+          } else {
+            (this.#unit as UnitChanges).requires.push(name.trim());
+          }
+        }
+      } else if (!blank) {
+        this.#problem(
+          number,
+          'expected \'Requires: <unit>\' or a section such as \'### Added\''
+        );
+      }
+      return;
+    }
+    if (line.startsWith('- ')) {
+      this.#endEntry();
+      this.#inEntry = true;
+      this.#blockLine = number;
+      this.#block.push(line);
+      return;
+    }
+    if (this.#inEntry
+      && (blank || line.startsWith(' ') || line.startsWith('\t'))) {
+      this.#block.push(line);
+      return;
+    }
+    if (!blank) {
+      this.#problem(number, 'expected an entry, which starts with \'- \'');
+    }
+  }
+
+  end(lineCount: i32): void {
+    this.#endPart();
+    if (this.#file.units.length == 0 && !this.#sawNotes) {
+      this.#problem(lineCount, 'the file has no entries');
+    }
+  }
+}
+
+/**
+ * Reads a change file's text. What is wrong with its form is added to
+ * `problems`, and the file is read as far as it can be.
+ */
+export function parseChangeFile(path: String, text: String, problems: GrowableArray<Problem>): ChangeFile {
+  let file = new ChangeFile(path);
+  let reader = new Reader(file, problems);
+  let lines = text.split('\n');
+  for (let i in 0..lines.length) {
+    reader.line(lines[i], i + 1);
+  }
+  reader.end(lines.length);
+  return file;
+}
+
+/**
+ * Adds to `problems` what is wrong with a change file given the
+ * configuration: units it names that are not units.
+ */
+export function checkChangeFile(file: ChangeFile, config: Config, problems: GrowableArray<Problem>): void {
+  for (let changes in file.units) {
+    if (!config.units.has(changes.unit)) {
+      problems.push(
+        new Problem(
+          file.path,
+          changes.line,
+          `'${changes.unit}' is not a unit in .changes/config.json`
+        )
+      );
+    }
+    for (let name in changes.requires) {
+      if (!config.units.has(name)) {
+        problems.push(
+          new Problem(
+            file.path,
+            changes.line,
+            `'Requires: ${name}' names something that is not a unit in .changes/config.json`
+          )
+        );
+      } else if (name == changes.unit) {
+        problems.push(
+          new Problem(file.path, changes.line, `'${name}' requires itself`)
+        );
+      }
+    }
+  }
+}

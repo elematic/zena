@@ -1,0 +1,296 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isNull, isTrue} from 'zena:assert';
+import {HashMap} from 'zena:collections';
+import {Version} from 'zena-lang:semver';
+import {
+  ChangeFile,
+  Problem,
+  Size,
+  parseChangeFile,
+} from 'zena-lang:changes/change-file';
+import {Config, VersionPolicy} from 'zena-lang:changes/config';
+import {
+  cargoManifestVersion,
+  jsonManifestVersion,
+} from 'zena-lang:changes/manifests';
+import {
+  PlanError,
+  ReleasePlan,
+  formatStatus,
+  planReleases,
+} from 'zena-lang:changes/plan';
+import {nextVersion} from 'zena-lang:changes/versions';
+
+let CONFIG = `{
+  "groups": {
+    "toolchain": {
+      "versions": "patch",
+      "units": ["compiler", "zena-cli", "zena-runtime", "compiler-js"],
+      "held": ["compiler-js"]
+    }
+  },
+  "units": {
+    "semver": {},
+    "terminal": {},
+    "pds": {"versioned": false}
+  }
+}`;
+
+function files(texts: Array<String>) {
+  let problems = new GrowableArray<Problem>();
+  let read = new GrowableArray<ChangeFile>();
+  for (let i in 0..texts.length) {
+    read.push(parseChangeFile(`.changes/${i}.md`, texts[i], problems));
+  }
+  equal(problems.length, 0);
+  return read;
+}
+
+function versions(pairs: Array<(String, String)>) {
+  let map = new HashMap<String, Version>();
+  for (let (unit, version) in pairs) {
+    map[unit] = Version.parse(version);
+  }
+  return map;
+}
+
+let NOW = [
+  ('compiler', '0.0.2'),
+  ('zena-cli', '0.0.2'),
+  ('zena-runtime', '0.0.2'),
+  ('compiler-js', '0.0.1'),
+  ('semver', '0.0.4'),
+  ('terminal', '0.3.1')
+];
+
+function plan(texts: Array<String>) {
+  return planReleases(Config.parse(CONFIG), files(texts), versions(NOW));
+}
+
+function next(current: String, size: Size, policy: VersionPolicy = VersionPolicy.Semver) {
+  return nextVersion(Version.parse(current), size, policy).toString();
+}
+
+export let tests = suite(
+  'zena-lang:changes/plan',
+  () => {
+    test(
+      'at 0.0.x every release is the next patch',
+      () => {
+        equal(next('0.0.3', Size.Fix), '0.0.4');
+        equal(next('0.0.3', Size.Feature), '0.0.4');
+        equal(next('0.0.3', Size.Breaking), '0.0.4');
+      }
+    );
+
+    test(
+      'from 0.1.0 a breaking entry moves the minor number, and from 1.0.0 the major',
+      () => {
+        equal(next('0.2.1', Size.Fix), '0.2.2');
+        equal(next('0.2.1', Size.Feature), '0.2.2');
+        equal(next('0.2.1', Size.Breaking), '0.3.0');
+        equal(next('1.4.2', Size.Fix), '1.4.3');
+        equal(next('1.4.2', Size.Feature), '1.5.0');
+        equal(next('1.4.2', Size.Breaking), '2.0.0');
+      }
+    );
+
+    test(
+      'under the patch policy every release is the next patch',
+      () => {
+        equal(next('0.2.1', Size.Breaking, VersionPolicy.Patch), '0.2.2');
+        equal(next('1.4.2', Size.Breaking, VersionPolicy.Patch), '1.4.3');
+      }
+    );
+
+    test(
+      'a preview is followed by the version it previews',
+      () => {
+        equal(next('0.0.1-preview.1', Size.Breaking), '0.0.1');
+        equal(next('1.5.0-preview.3', Size.Fix), '1.5.0');
+        equal(next('0.0.3-preview.2', Size.Fix, VersionPolicy.Patch), '0.0.3');
+      }
+    );
+
+    test(
+      'reads the version of each kind of manifest',
+      () => {
+        equal(
+          jsonManifestVersion(
+            '{"name": "semver", "version": "0.0.1-preview.1"}'
+          )
+            ?? '',
+          '0.0.1-preview.1'
+        );
+        equal(jsonManifestVersion('{"name": "semver"}') ?? 'none', 'none');
+        equal(
+          cargoManifestVersion(
+            '[workspace]\nversion = "9.9.9"\n\n[package]\nname = "zena-cli"\nversion = "0.1.0"\n\n'
+              + '[dependencies]\nwasmtime = { version = "30" }\n'
+          )
+            ?? '',
+          '0.1.0'
+        );
+        equal(
+          cargoManifestVersion(
+            '[package]\nname = "x"\nversion.workspace = true\n'
+          )
+            ?? 'none',
+          'none'
+        );
+      }
+    );
+
+    test(
+      'nothing to release with no change files',
+      () => {
+        let releases = plan([]);
+        equal(releases.length, 0);
+        equal(formatStatus(releases), 'No change files: nothing to release.\n');
+      }
+    );
+
+    test(
+      'one entry in a group releases the whole group at one version',
+      () => {
+        let releases = plan(['## zena-cli\n\n### Fixed\n\n- A crash.\n']);
+        equal(releases.length, 1);
+        let release = releases[0];
+        equal(release.name, 'toolchain');
+        isTrue(release.isGroup);
+        equal((release.current as Version).toString(), '0.0.2');
+        equal((release.next as Version).toString(), '0.0.3');
+        equal(release.units.length, 1);
+        equal(release.units[0].unit.name, 'zena-cli');
+        equal(release.unchanged.length, 2);
+        equal(release.unchanged[0], 'compiler');
+        equal(release.unchanged[1], 'zena-runtime');
+        equal(release.held.length, 0);
+      }
+    );
+
+    test(
+      'a held unit is left out, and its entries stay pending',
+      () => {
+        let both = plan(
+          [
+            '## compiler-js\n\n### Added\n\n- A flag.\n\n## zena-cli\n\n### Fixed\n\n- A crash.\n'
+          ]
+        );
+        equal(both.length, 1);
+        equal((both[0].next as Version).toString(), '0.0.3');
+        equal(both[0].units.length, 1);
+        equal(both[0].held.length, 1);
+        equal(both[0].held[0].unit.name, 'compiler-js');
+        isFalse(both[0].unchanged.contains('compiler-js'));
+
+        let heldOnly = plan(['## compiler-js\n\n### Added\n\n- A flag.\n']);
+        equal(heldOnly.length, 1);
+        isNull(heldOnly[0].next);
+        equal(heldOnly[0].units.length, 0);
+        equal(heldOnly[0].unchanged.length, 0);
+        equal(heldOnly[0].held.length, 1);
+      }
+    );
+
+    test(
+      'independent units get their own versions, and entries from every file',
+      () => {
+        let releases = plan(
+          [
+            '## terminal\n\nRequires: semver\n\n### Added\n\n- Prompts.\n\n## semver\n\n### Fixed\n\n- Ranges.\n',
+            '## terminal\n\n### Changed\n\n- **Breaking:** Colors.\n\n## pds\n\n### Fixed\n\n- A leak.\n'
+          ]
+        );
+        equal(releases.length, 3);
+
+        let semver = releases[0];
+        equal(semver.name, 'semver');
+        isFalse(semver.isGroup);
+        equal((semver.next as Version).toString(), '0.0.5');
+
+        let terminal = releases[1];
+        equal((terminal.current as Version).toString(), '0.3.1');
+        equal((terminal.next as Version).toString(), '0.4.0');
+        equal(terminal.units[0].entries.length, 2);
+        equal(terminal.units[0].requires.length, 1);
+
+        let pds = releases[2];
+        isFalse(pds.versioned);
+        isNull(pds.current);
+        isNull(pds.next);
+        equal(pds.units[0].entries.length, 1);
+      }
+    );
+
+    test(
+      'refuses a unit with no version, and a name that is not a unit',
+      () => {
+        var message = '';
+        try {
+          planReleases(
+            Config.parse(CONFIG),
+            files(['## semver\n\n### Fixed\n\n- a\n']),
+            versions([])
+          );
+        } catch (e) {
+          isTrue(e is PlanError);
+          message = e.message;
+        };
+        equal(message, 'packages/semver has no manifest that states a version');
+
+        try {
+          plan(['## nothing\n\n### Fixed\n\n- a\n']);
+        } catch (e) {
+          isTrue(e is PlanError);
+          message = e.message;
+        };
+        equal(
+          message,
+          '.changes/0.md: \'nothing\' is not a unit in .changes/config.json'
+        );
+      }
+    );
+
+    test(
+      'prints the releases',
+      () => {
+        let releases = plan(
+          [
+            '## compiler\n\n### Removed\n\n- **Breaking:** Renaming with\n  a colon.\n\n'
+              + '## zena-cli\n\n### Fixed\n\n- A crash.\n\n### Added\n\n- Raw mode.\n\n'
+              + '## compiler-js\n\n### Added\n\n- A flag.\n',
+            '## terminal\n\nRequires: semver\n\n### Added\n\n- Prompts.\n\n## pds\n\n### Fixed\n\n- A leak.\n'
+          ]
+        );
+        equal(
+          formatStatus(releases),
+          'toolchain 0.0.2 -> 0.0.3\n'
+            + '  compiler\n'
+            + '    Removed\n'
+            + '      - **Breaking:** Renaming with\n'
+            + '        a colon.\n'
+            + '  zena-cli\n'
+            + '    Added\n'
+            + '      - Raw mode.\n'
+            + '    Fixed\n'
+            + '      - A crash.\n'
+            + '  no changes: zena-runtime\n'
+            + '  compiler-js (held, entries stay pending)\n'
+            + '    Added\n'
+            + '      - A flag.\n'
+            + '\n'
+            + 'terminal 0.3.1 -> 0.3.2\n'
+            + '  Added\n'
+            + '    - Prompts.\n'
+            + '  Requires: semver\n'
+            + '\n'
+            + 'pds (no version)\n'
+            + '  Fixed\n'
+            + '    - A leak.\n'
+            + '\n'
+        );
+      }
+    );
+  }
+);
