@@ -141,14 +141,15 @@ mod imp {
             fn open() -> Pty {
                 let (mut controller, mut terminal) = (0, 0);
                 // SAFETY: `openpty` writes the two descriptors and reads
-                // the null name, settings and size as "none".
+                // the null name, settings and size as "none". `termp` and
+                // `winp` are `*const` on Linux and `*mut` on BSD/macOS.
                 let opened = unsafe {
                     libc::openpty(
                         &mut controller,
                         &mut terminal,
                         std::ptr::null_mut(),
-                        std::ptr::null(),
-                        std::ptr::null(),
+                        std::ptr::null_mut::<libc::termios>() as _,
+                        std::ptr::null_mut::<libc::winsize>() as _,
                     )
                 };
                 assert_eq!(opened, 0, "openpty: {}", std::io::Error::last_os_error());
@@ -199,7 +200,11 @@ mod imp {
 
             leave();
             let after = pty.settings();
-            assert_eq!(after.c_lflag, before.c_lflag);
+            // BSD/macOS sets `PENDIN` in `c_lflag` when `ICANON` changes.
+            assert_eq!(
+                after.c_lflag & !libc::PENDIN,
+                before.c_lflag & !libc::PENDIN
+            );
             assert_eq!(after.c_iflag, before.c_iflag);
             leave();
 
