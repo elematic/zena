@@ -88,6 +88,27 @@ suite('releases page and release metadata parser', () => {
       '### Added\n\n- Standalone prebuilt CLI archive.',
     );
     assert.equal(
+      extractChangelogBody(
+        [
+          '# Zena 0.0.1-preview.1',
+          '',
+          '2026-11-18',
+          '',
+          '## Toolchain',
+          '',
+          '### cli',
+          '',
+          '#### Added',
+          '',
+          '- Standalone CLI.',
+          '',
+          '<!-- zena-release-downloads -->',
+          '### Downloads',
+        ].join('\n'),
+      ),
+      '## Toolchain\n\n### cli\n\n#### Added\n\n- Standalone CLI.',
+    );
+    assert.equal(
       extractBodyChecksums(body).get(
         'zena-v0.0.2-preview.1-aarch64-apple-darwin.tar.gz',
       ),

@@ -40,6 +40,7 @@ jobs:
         target/release/build/zena-*
         target/release/deps/*workspace_hack*
         target/release/deps/*zena_*
+        target/release/deps/zena-*
 
     steps:
       - name: Require main branch for non-dry-run releases
@@ -368,6 +369,7 @@ jobs:
         target/release/build/zena-*
         target/release/deps/*workspace_hack*
         target/release/deps/*zena_*
+        target/release/deps/zena-*
 
     steps:
       - name: Checkout repository
@@ -473,6 +475,7 @@ jobs:
         target/release/build/zena-*
         target/release/deps/*workspace_hack*
         target/release/deps/*zena_*
+        target/release/deps/zena-*
 
     steps:
       - name: Checkout repository
@@ -772,6 +775,7 @@ jobs:
       - name: Check registry credentials
         id: creds
         env:
+          NPM_COUNT: ${{ needs.build-npm.outputs.npm_count }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TRUSTED_PUBLISHING: ${{ vars.NPM_TRUSTED_PUBLISHING }}
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
@@ -781,7 +785,9 @@ jobs:
           HAS_NPM="false"
           HAS_VSCE="false"
           HAS_OVSX="false"
-          if [ -n "${NPM_TOKEN:-}" ] || [ "${NPM_TRUSTED_PUBLISHING:-}" = "true" ]; then
+          if [ "${NPM_COUNT:-0}" -le 0 ]; then
+            echo "::notice::No npm tarballs in manifest; skipping npm publish."
+          elif [ -n "${NPM_TOKEN:-}" ] || [ "${NPM_TRUSTED_PUBLISHING:-}" = "true" ]; then
             HAS_NPM="true"
           else
             echo "::notice::Neither NPM_TOKEN secret nor NPM_TRUSTED_PUBLISHING=true variable is configured; skipping npm publish."
