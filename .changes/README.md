@@ -19,7 +19,7 @@ have entries: Added, Changed, Deprecated, Removed, Fixed, Security.
 - **Breaking:** `{x: y}` field renaming in destructuring patterns; use
   `{x as y}` instead.
 
-## zena-cli
+## cli
 
 ### Added
 

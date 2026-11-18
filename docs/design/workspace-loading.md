@@ -26,7 +26,7 @@ reaches, but it reads all of them, so:
 - A manifest that cannot be read (malformed JSON, two packages with one
   name, a path dependency with no manifest) fails every compile in the
   workspace, including compiles that never reach that package.
-- The compile cache (`compileCached` in `zena-cli/zena/compile.zena`)
+- The compile cache (`compileCached` in `cli/zena/compile.zena`)
   records every manifest in a module's `.deps`, so an edit to any
   manifest invalidates every cached module. `zena pkg add` and `zena pkg update`
   edit a manifest and the lockfile each time they run.
@@ -75,9 +75,9 @@ name:
 
 | directory                                                        | imports                                                                                         |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `packages/zena-cli/zena` (the CLI module)                        | compiler, zebra, zenadoc, zena-formatter, zena-lint, atproto, package-manager, language-service |
-| `packages/zena-cli/dev/bundle.zena`                              | workflow                                                                                        |
-| `packages/zena-cli/tests/fixtures`                               | atproto, package-manager, pds                                                                   |
+| `packages/cli/zena` (the CLI module)                             | compiler, zebra, zenadoc, zena-formatter, zena-lint, atproto, package-manager, language-service |
+| `packages/cli/dev/bundle.zena`                                   | workflow                                                                                        |
+| `packages/cli/tests/fixtures`                                    | atproto, package-manager, pds                                                                   |
 | `packages/language-service/zena` (`lsp.zena`, tests)             | compiler, zena-formatter                                                                        |
 | `packages/compiler/src/test`                                     | wit-parser                                                                                      |
 | `packages/zenadoc/zena/cli`, `zena/test`                         | compiler                                                                                        |
@@ -94,7 +94,7 @@ Three ways to handle them:
    reads every manifest, which covers the CLI module, `lsp.wasm` and the
    compiler's tests.
 2. **Give those directories manifests.** A manifest with no `name` and
-   path dependencies makes `packages/zena-cli/zena` a package keyed by its
+   path dependencies makes `packages/cli/zena` a package keyed by its
    directory, which sees only what it lists. No change to the rules; it
    is the repository adopting them where it has not.
 3. **Files in no package see only the root manifest's dependencies.**

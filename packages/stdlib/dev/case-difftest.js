@@ -10,7 +10,7 @@
 // below models. The run reports how many strings that rule lowercases
 // differently from JavaScript.
 //
-//   npm run build -w @zena-lang/zena-cli
+//   npm run build -w @zena-lang/cli
 //   node packages/stdlib/dev/case-difftest.js [sigmaCaseCount]
 //
 // Requires a Node whose ICU implements the Unicode version the tables in

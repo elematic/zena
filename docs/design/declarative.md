@@ -272,7 +272,7 @@ Workspace {
   members: [
     "packages/compiler",
     "packages/stdlib",
-    "packages/zena-cli",
+    "packages/cli",
     "packages/runtime",
   ]
 }

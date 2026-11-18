@@ -50,7 +50,7 @@ It does not make a build faster. See "Measurements".
 
 ## Measurements
 
-`zena build --time packages/zena-cli/zena/main.zena` at `-O1`, measured
+`zena build --time packages/cli/zena/main.zena` at `-O1`, measured
 on 2026-11-04 with a `zena-cli` built from the branch that became #898.
 Two runs agreed to within 4%; the machine's load average was 4 on 16
 cores.

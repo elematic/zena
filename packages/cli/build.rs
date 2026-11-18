@@ -41,7 +41,7 @@ fn main() {
     if !bundle_file.is_file() {
         panic!(
             "--features bundled needs {}, which bundle.zena generates. \
-             Build it with `npm run build:standalone -w @zena-lang/zena-cli`, or drop the \
+             Build it with `npm run build:standalone -w @zena-lang/cli`, or drop the \
              feature for a binary that reads the standard library from the \
              repository.",
             bundle_file.display()

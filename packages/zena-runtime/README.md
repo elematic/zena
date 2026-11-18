@@ -164,7 +164,7 @@ same result record and nothing to capture.
 
 Two binaries in this repository embed the crate: [`zena-run`](../zena-run)
 runs one compiled component or core module and nothing else;
-[`zena-cli`](../zena-cli) adds the compiler and the test and benchmark
+[`zena-cli`](../cli) adds the compiler and the test and benchmark
 runners.
 
 `examples/components_spike.rs` is a harness for the mechanism behind

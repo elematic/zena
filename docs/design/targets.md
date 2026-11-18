@@ -215,7 +215,7 @@ Measured at `-O2` across minimal workloads:
 - **`zena-component`**:
   - `packages/compiler/src/test/portable_execution.zena` compiles and runs
     all `tests/language/execution/` tests with `zena-component`.
-  - `packages/stdlib/tests/` and `packages/zena-cli/tests/` exercise WASI 0.3
+  - `packages/stdlib/tests/` and `packages/cli/tests/` exercise WASI 0.3
     and `zena:host@1.0.0` interfaces.
   - `npm run test:fixpoint -w @zena-lang/compiler-zena` verifies Stage B ≡
     Stage C self-hosted compiler parity.

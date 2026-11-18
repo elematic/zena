@@ -33,7 +33,7 @@
   `terminal/colors`, `terminal/layout` and `terminal/animation` in the
   package `zena-lang:terminal`.
 
-## zena-cli
+## cli
 
 ### Added
 

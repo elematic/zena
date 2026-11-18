@@ -93,6 +93,6 @@ some of these surfaces and the remaining host extensions stabilize, `zena-runtim
 and its WIT packages can be published as a general-purpose Wasmtime host for
 self-hosted CLIs, build systems, and plugin-driven servers.
 
-→ Source: [`packages/zena-cli`](https://github.com/elematic/zena/tree/main/packages/zena-cli) ·
+→ Source: [`packages/cli`](https://github.com/elematic/zena/tree/main/packages/cli) ·
 [`packages/stdlib/zena/host-wit/host.wit`](https://github.com/elematic/zena/blob/main/packages/stdlib/zena/host-wit/host.wit) ·
 Design: [`docs/design/runtime-components.md`](https://github.com/elematic/zena/blob/main/docs/design/runtime-components.md)

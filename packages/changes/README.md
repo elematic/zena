@@ -6,7 +6,7 @@ each package in this repository. The design is
 [.changes/README.md](../../.changes/README.md) says how to write a change
 file.
 
-Run it from the repository root, after `npm run build -w @zena-lang/zena-cli`:
+Run it from the repository root, after `npm run build -w @zena-lang/cli`:
 
 ```sh
 npm run changes -- status   # the entries waiting, and the versions they would give
@@ -17,7 +17,7 @@ npm run changes -- check    # what is wrong with .changes/, exit 1 when anything
 
 ```
 toolchain 0.0.2 -> 0.0.3
-  zena-cli
+  cli
     Added
       - Raw mode.
   no changes: compiler, zena-runtime
@@ -45,6 +45,6 @@ the manifests. `--date 2026-12-01` sets the date in the changelog
 headings, which is otherwise today's.
 
 It does not yet refresh `package-lock.json`, `Cargo.lock` or
-`packages/zena-cli/zena/versions.zena`, write release notes, or change
+`packages/cli/zena/versions.zena`, write release notes, or change
 dependents' ranges. The command that writes a change file (`add`) is not
 built yet.
