@@ -63,6 +63,14 @@ features:
           </div>
           {%- endfor %}
         </div>
+        <div class="hero-shell" aria-label="Example of adding a package">
+          <pre><code><span class="shell-prompt" aria-hidden="true">$ </span><span class="shell-cmd">zena pkg add acme:router</span>
+<span class="shell-rail">┌</span>  zena pkg add acme:router
+<span class="shell-ok">◇</span>  Found acme:router 1.4.2 <span class="shell-muted">did:plc:router…</span>
+<span class="shell-ok">◇</span>  Updated zena-lock.json
+<span class="shell-ok">◇</span>  1 package: <span class="shell-muted">1 fetched, 0 already in the cache, 0 failed</span>
+<span class="shell-rail">└</span>  Added acme:router 1.4.2 to zena-package.json</code></pre>
+        </div>
       </div>
     </div>
   </div>
