@@ -4,18 +4,18 @@ Status: **Proposed**, and partly built: the AT Protocol libraries
 (`packages/atproto`), the package records, source archives and fetching
 (`packages/package-manager`), the compiler's reading of pinned packages,
 `zena pkg add`, `zena pkg update` and `zena pkg fetch`, `zena pkg login` with app
-passwords, `zena pkg publish`, `zena pkg create` and `zena pkg scope`, and an
+passwords (signing in with OAuth is designed in
+[Signing in from the command line](#signing-in-from-the-command-line), not
+built), `zena pkg publish`, `zena pkg create` and `zena pkg scope`, and an
 App View with the methods for publishing and for changing members,
 teams and maintainers, each held until its threshold has attested it. The
 App View (`packages/registry`) is a service of its own, which keeps its
 accounts on the PDS written in Zena (`packages/pds`), and could keep them
 on other PDSes ([Hosting, keys and maintainers](#hosting-keys-and-maintainers)).
 The checksum log is not built yet, so for now the App View's check of the
-attestations is the only one. Scopes and organizations are designed here as
-separate things, an organization being a scope with members and teams added
-([Scopes](#scopes)). The App View still builds an earlier model, in which
-every scope is an organization account with members, teams and a policy,
-until #988 changes it.
+attestations is the only one. Scopes and organizations are separate things,
+an organization being a scope with members and teams added
+([Scopes](#scopes)).
 
 This document designs Zena's package manager. Packages are published on the
 AT Protocol (atproto), the protocol behind Bluesky. A package is an atproto
@@ -1187,18 +1187,18 @@ as they do for every package.
 
 ### Keys
 
-| Key or credential                                            | Created by                                               | Held by                                                                                                             | Controls                                                            |
-| ------------------------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| A maintainer's account keys                                  | the maintainer's PDS                                     | the maintainer's PDS                                                                                                | the maintainer's repository, where their attestations are           |
-| A maintainer's OAuth session: a refresh token and a DPoP key | `zena pkg login`                                         | the `zena` command, in `$XDG_CONFIG_HOME/zena/session.json`, mode 0600, or the management interface, in the browser | acting as the maintainer toward their PDS                           |
-| The package's signing key                                    | the package's PDS, when the App View creates the account | the PDS; padstone keeps it encrypted at rest by a key in its key management service                                 | commits to the package's repository                                 |
-| The App View's online rotation key                           | the App View, once                                       | the App View, in a key management service apart from its database                                                   | PLC operations for every account it creates, ranked last            |
-| The App View's own signing key, which its DID document lists | the App View, once                                       | the App View, in its key management service                                                                         | its service-auth tokens to the PDSes of its managed accounts        |
-| An account's password, on a PDS without managed accounts     | the App View                                             | the App View, encrypted, with the account's email address on a domain the App View controls                         | writing to that account                                             |
-| The App View's offline rotation keys                         | the operator, once                                       | the operator, offline: two, kept apart                                                                              | PLC operations, ranked above the online key, to undo what it signed |
-| Recovery keys, if the owners add them                        | a maintainer                                             | up to two maintainers, in a hardware key, the OS keychain, or `$XDG_CONFIG_HOME/zena/recovery-key`, mode 0600       | PLC operations, ranked above the App View's keys                    |
-| Approval keys, if a maintainer adds them                     | the maintainer, as passkeys or security keys             | the maintainer's devices                                                                                            | nothing alone: they countersign that maintainer's attestations      |
-| CI credentials: an automation account's token                | the App View, when a maintainer asks                     | the CI system, as a secret                                                                                          | publishing as a bot maintainer                                      |
+| Key or credential                                            | Created by                                               | Held by                                                                                                                               | Controls                                                            |
+| ------------------------------------------------------------ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| A maintainer's account keys                                  | the maintainer's PDS                                     | the maintainer's PDS                                                                                                                  | the maintainer's repository, where their attestations are           |
+| A maintainer's OAuth session: a refresh token and a DPoP key | `zena pkg login`                                         | the `zena` command, one per registry, in `$XDG_CONFIG_HOME/zena/session.json`, mode 0600, or the management interface, in the browser | acting as the maintainer toward their PDS                           |
+| The package's signing key                                    | the package's PDS, when the App View creates the account | the PDS; padstone keeps it encrypted at rest by a key in its key management service                                                   | commits to the package's repository                                 |
+| The App View's online rotation key                           | the App View, once                                       | the App View, in a key management service apart from its database                                                                     | PLC operations for every account it creates, ranked last            |
+| The App View's own signing key, which its DID document lists | the App View, once                                       | the App View, in its key management service                                                                                           | its service-auth tokens to the PDSes of its managed accounts        |
+| An account's password, on a PDS without managed accounts     | the App View                                             | the App View, encrypted, with the account's email address on a domain the App View controls                                           | writing to that account                                             |
+| The App View's offline rotation keys                         | the operator, once                                       | the operator, offline: two, kept apart                                                                                                | PLC operations, ranked above the online key, to undo what it signed |
+| Recovery keys, if the owners add them                        | a maintainer                                             | up to two maintainers, in a hardware key, the OS keychain, or `$XDG_CONFIG_HOME/zena/recovery-key`, mode 0600                         | PLC operations, ranked above the App View's keys                    |
+| Approval keys, if a maintainer adds them                     | the maintainer, as passkeys or security keys             | the maintainer's devices                                                                                                              | nothing alone: they countersign that maintainer's attestations      |
+| CI credentials: an automation account's token                | the App View, when a maintainer asks                     | the CI system, as a secret                                                                                                            | publishing as a bot maintainer                                      |
 
 Keys are secp256k1, the curve the reference PDS uses. A maintainer uses
 the same recovery key for every package they hold one for.
@@ -1395,15 +1395,12 @@ document must name the origin as its `#zena_registry`. Otherwise a
 server at any origin could answer with the real App View's DID, and replay
 the tokens it was given to the real App View.
 
-1. **Sign in.** Once per machine, `zena pkg login` signs the maintainer in to
-   their own PDS with atproto OAuth, through the browser and a redirect to
-   a port on localhost. It asks for one permission set,
-   `dev.zena-lang.authPublish`, which allows writing attestation records
-   and calling the App View's methods. The App View's methods are `rpc`
-   permissions, which cover `com.atproto.server.getServiceAuth`. Until
-   the command implements OAuth, `zena pkg login` signs in with an app
-   password instead, which allows the same calls and can be revoked on
-   its own.
+1. **Sign in.** Once per machine and registry, `zena pkg login` signs the
+   maintainer in to their own PDS with atproto OAuth, in the browser
+   ([Signing in from the command line](#signing-in-from-the-command-line)).
+   The session allows writing attestation records and asking for
+   service-auth tokens for the App View's methods, and nothing else. An
+   app password works too, for a machine with no browser.
 2. **Recovery keys, if any.** When the maintainer keeps a recovery key,
    `zena` passes its public key. It does not make one: without it, the
    App View's keys are the package's only rotation keys (see [Keys](#keys)).
@@ -1989,6 +1986,103 @@ recovery key.
 
 Threshold signatures, where several holders together act as one key, are
 not planned.
+
+### Signing in from the command line
+
+`zena pkg login` signs a maintainer in to their own PDS with atproto
+OAuth, in the browser, so `zena` never sees their password. The command is
+a public client: it runs on the maintainer's machine and has no secret of
+its own. What it keeps is an OAuth session for one registry: a refresh
+token, and the DPoP key the session's tokens are bound to.
+
+**The client.** Each App View serves the command's client metadata at
+`https://<App View>/oauth/cli-client-metadata.json`, which is its
+`client_id`, beside the site's own:
+
+- `application_type` is `native`, `token_endpoint_auth_method` is `none`,
+  `dpop_bound_access_tokens` is true, and the grants are
+  `authorization_code` and `refresh_token`.
+- The one redirect URI is `https://<App View>/oauth/cli-callback`, a page of
+  the App View's. A native client may redirect to its own origin over
+  HTTPS, but only the spec's localhost client may redirect to
+  `http://127.0.0.1`.
+- The scope is
+  `atproto repo:dev.zena-lang.package.attestation rpc:*?aud=<the App View's DID>%23zena_registry`.
+  It allows writing attestation records, the only records `zena` writes to
+  a maintainer's repository, and asking for service-auth tokens for any of
+  that App View's methods. It allows no other record and no other service.
+  A scope cannot name a prefix of methods such as
+  `rpc:dev.zena-lang.registry.*`, so it names the audience instead. The
+  permission set `dev.zena-lang.authPublish` replaces it once its lexicon
+  is published where PDSes resolve it.
+
+The scope names one App View, so a session is for one registry. `zena`
+keeps one per registry DID in `session.json`, and `zena pkg login` signs
+in for the registry `ZENA_REGISTRY` names.
+
+**Signing in.**
+
+1. `zena` resolves the maintainer's handle or DID to their PDS, and the PDS
+   to its authorization server (`/.well-known/oauth-protected-resource`,
+   then `/.well-known/oauth-authorization-server`).
+2. It makes a DPoP key for the session (ES256), a PKCE verifier (S256) and
+   a `state`. It starts an HTTP server on a free port of `127.0.0.1`, and
+   puts the port in `state`.
+3. It pushes the authorization request (PAR), with the maintainer's handle
+   or DID as `login_hint`. It opens the browser at the authorization
+   endpoint with the `request_uri` it got back, and prints the URL too, for
+   a machine where opening a browser fails.
+4. The maintainer approves at their PDS, which redirects to the callback
+   page with `code`, `state` and `iss`.
+5. The page's script reads the port from `state` and sends the browser on
+   to `http://127.0.0.1:<port>/callback` with the same three. When that
+   cannot work, as when the browser is on another machine than `zena`, or
+   a browser will not leave the page for `127.0.0.1`, the page shows the
+   three as one line to paste into the terminal. `zena` waits for either.
+6. `zena` checks `state` and `iss` and exchanges the code for tokens, with
+   the verifier and a DPoP proof. It checks that the tokens' `sub` is the
+   DID it resolved, and that the DID's PDS names this authorization
+   server. It writes the session, readable only by its owner.
+
+The page keeps nothing, and the code alone is worth nothing: exchanging it
+takes the PKCE verifier and the DPoP key, which never leave `zena`.
+
+**Using the session.** Each request to the PDS carries the access token as
+`Authorization: DPoP <token>` and a DPoP proof made for that request, with
+the nonce the server last sent (`DPoP-Nonce`). A request refused for a
+stale nonce is sent again with the new one. `zena` asks for service-auth
+tokens with `com.atproto.server.getServiceAuth`, and writes attestations
+with `com.atproto.repo.putRecord`, as it does with an app password. An
+access token lasts minutes, and `zena` refreshes it with the refresh token.
+A refresh token can be used once, so a refresh locks the session file, and
+two commands running at once do not both spend it.
+
+**How long a session lasts.** The atproto OAuth profile limits a public
+client's session to two weeks. When it ends, `zena` says to run
+`zena pkg login` again. `zena pkg logout` revokes the session at the
+authorization server and deletes it.
+
+**App passwords.** `zena pkg login --password-stdin`, or
+`ZENA_APP_PASSWORD`, signs in with an app password, for a machine with no
+browser and for tests. An app password allows more than the OAuth scope
+does, so OAuth is the default.
+
+**Tests.** A stand-in authorization server beside `package-manager/testing`'s
+fake PDS implements PAR, the token endpoint with DPoP and nonces, and
+refresh. Tests answer the callback with an HTTP request in place of the
+browser.
+
+**Alternatives considered.**
+
+- The spec's localhost client, whose `client_id` is `http://localhost?…`.
+  It needs no metadata document, and may redirect straight to any port of
+  `127.0.0.1`. But each PDS decides whether to accept it, and the sign-in
+  screen calls it by a name the PDS chooses.
+- One client for every registry, asking for `aud=*` with each method
+  listed. One session would serve every registry, but each new method
+  would mean signing in again, and a session would allow tokens for any
+  service that answers to the methods' names.
+- A device-code flow, which the atproto OAuth profile does not have.
 
 ### The management interface
 
