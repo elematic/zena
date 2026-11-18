@@ -20,7 +20,7 @@ toolchain 0.0.2 -> 0.0.3
   cli
     Added
       - Raw mode.
-  no changes: compiler, zena-runtime
+  no changes: compiler, runtime-wasmtime
 
 terminal 0.3.1 -> 0.3.2
   Added

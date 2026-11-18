@@ -83,13 +83,13 @@
 
 - Public API documentation extractor emitting structured JSON for Zena packages.
 
-## zena-formatter
+## formatter
 
 ### Added
 
 - Code formatter for Zena source files.
 
-## zena-lint
+## lint
 
 ### Added
 
