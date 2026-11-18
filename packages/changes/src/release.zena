@@ -6,7 +6,7 @@
  */
 
 import {StringBuilder, parseI32} from 'zena:core';
-import {HashSet} from 'zena:collections';
+import {HashMap, HashSet} from 'zena:collections';
 import {join} from 'zena:string';
 import {Version} from 'zena-lang:semver';
 import {
@@ -15,7 +15,37 @@ import {
   SECTIONS,
   sectionName,
 } from './change-file.zena';
+import {Config, unitTagPrefix} from './config.zena';
 import {PlanError, ReleasePlan} from './plan.zena';
+
+/**
+ * The version each of `releases` is made at, by the release's name, for
+ * those that have a version and are released: `named` exactly when one
+ * is given, the next preview with `preview` (`previewVersion`, which
+ * reads the repository's `tags`), and otherwise the version the entries
+ * give.
+ */
+export function releaseVersions(config: Config, releases: Array<ReleasePlan>, preview: boolean, named: Version?, tags: Array<String>): HashMap<String, Version> {
+  let chosen = new HashMap<String, Version>();
+  for (let release in releases) {
+    let next = release.next;
+    if (!release.versioned || next == null) {
+      continue;
+    }
+    if (named != null) {
+      chosen[release.name] = named;
+    } else if (preview) {
+      var prefix = unitTagPrefix(release.name);
+      if (release.isGroup) {
+        prefix = config.groups[release.name].tagPrefix;
+      }
+      chosen[release.name] = previewVersion(next, prefix, tags);
+    } else {
+      chosen[release.name] = next;
+    }
+  }
+  return chosen;
+}
 
 /**
  * The releases among `releases` that `names` ask for: all of them when
@@ -48,16 +78,29 @@ export function selectReleases(releases: Array<ReleasePlan>, names: Array<String
 }
 
 /**
- * The version of a preview release of `next`, given the version now:
- * `0.0.3-preview.1`, or the preview after `current` when `current` is
- * already a preview of `next`.
+ * The version of the next preview release of `next`: the preview after
+ * the last one released, or `<next>-preview.1` when none has been.
+ *
+ * A preview is released when its Git tag exists: `tags` are the
+ * repository's, and `prefix` what comes before the version in this
+ * release's tags, so `v0.0.3-preview.2` is the second preview of `0.0.3`
+ * for the prefix `v`. The version the manifests state does not count,
+ * since a preview written to them may never have been released: making a
+ * preview again before it is released gives its number again.
  */
-export function previewVersion(current: Version, next: Version): Version {
+export function previewVersion(next: Version, prefix: String, tags: Array<String>): Version {
+  let core = `${next.major}.${next.minor}.${next.patch}`;
+  let start = `${prefix}${core}-preview.`;
   var number = 1;
-  let pre = current.prerelease;
-  if (current.hasSameCore(next) && pre.length == 2 && pre[0] == 'preview') {
-    if (let (true, n) = parseI32(pre[1])) {
-      number = n + 1;
+  for (let tag in tags) {
+    if (tag.startsWith(start)) {
+      if (let (true, n) = parseI32(
+        tag.sliceBytes(start.utf8.length, tag.utf8.length)
+      )) {
+        if (n >= number) {
+          number = n + 1;
+        }
+      }
     }
   }
   return Version.parse(

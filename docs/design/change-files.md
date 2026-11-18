@@ -311,11 +311,23 @@ Ranges are carets: `^0.2.1` matches every later `0.2.x`. A unit reaches
 
 A release can be tried before it is final. `version --preview` works out
 the next version, `0.0.3` say, and writes `0.0.3-preview.1` to the
-manifests, or the next `preview.N` when the manifests already have one.
-It writes the release notes file, so the release workflow has notes to
-publish. It leaves the change files and the changelogs alone. The final
-`version` then releases `0.0.3` with every entry, and the changelogs have
-no sections for the previews.
+manifests. It writes the release notes file, so the release workflow has
+notes to publish. It leaves the change files and the changelogs alone.
+The final `version` then releases `0.0.3` with every entry, and the
+changelogs have no sections for the previews.
+
+The number of a preview follows the last preview of that version that
+was released, and a preview is released when its Git tag exists:
+`v0.0.3-preview.1` for the toolchain, whose configuration gives the
+tag's prefix (`"tag": "v"`), and `semver@0.0.3-preview.1` for an
+independent unit. The version in the manifests does not count, since a
+preview written to them may never have been released. So running
+`version --preview` again before the release gives `0.0.3-preview.1`
+again, with the notes written afresh, and after the release it gives
+`0.0.3-preview.2`.
+
+Nothing makes the tags of independent units yet, since nothing publishes
+them, so each of their previews is `preview.1` until something does.
 
 The VS Code marketplace does not accept versions with a pre-release tag,
 so `vscode-zena` has no preview releases.
@@ -466,22 +478,20 @@ A program can now ask a question and read the answer key by key. ...
 
 `{x: y}` in a pattern no longer renames a field. ...
 
-## Toolchain
+## Packages
 
-### compiler
+### compiler 0.0.3
 
 #### Removed
 
 - **Breaking:** `{x: y}` field renaming in destructuring patterns; use
   `{x as y}` instead. (#1201)
 
-### cli
+### cli 0.0.3
 
 ...
 
-## Packages
-
-### terminal 0.0.2
+### zena-lang:terminal 0.0.2
 
 #### Added
 
@@ -505,9 +515,15 @@ itself a pull request, and its author edits the file there: orders the
 items, joins two that tell one story, and adds what no one wrote at the
 time. To help, `status` lists the breaking entries that no prose mentions.
 
-**Toolchain** has the entries of each unit in the group that has any.
-**Packages** has each independent unit released since the last toolchain
-release, with its version.
+**Packages** lists every package released with entries: the group's
+units, then the independent units released since the last toolchain
+release. Each is listed by the name people install it by and the version
+it is released at. The name is the `name` of its `zena-package.json`
+(`zena-lang:terminal`), or else of its public `package.json`
+(`@zena-lang/runtime`), or else of its `Cargo.toml`. A unit of the group
+has the group's version. A reader looking for one package finds it by
+the name they know, whether or not it is released with the toolchain,
+which is why the list is not split by group.
 
 Each entry in the notes ends with a link to its pull request. The tool
 finds the commit that added the entry's change file and reads the number
@@ -517,10 +533,9 @@ An independent unit released between toolchain releases gets its
 changelog and no notes of its own. Its entries appear under Packages in
 the next toolchain release's notes.
 
-The `notes` command writes the notes file a release would have and
-changes nothing else: `npm run changes -- notes toolchain --as
-0.0.1-preview.1` for a release at the version the manifests already
-state.
+The `notes` command writes the notes file `version` would write with the
+same arguments, and changes nothing else: `notes --preview` writes the
+next preview's notes, and `notes` the next release's.
 
 ## Commands
 

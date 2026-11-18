@@ -17,6 +17,7 @@ import {exit, getArguments} from 'zena:cli';
 import {HashMap, HashSet} from 'zena:collections';
 import {exists, listDir, mkdir, readFile, unlink, writeFile} from 'zena:fs';
 import {join2} from 'zena:path';
+import {run} from 'zena:process';
 import {formatTimestamp} from 'zena:time';
 import {now} from 'wasi:clocks/system-clock';
 import {Version} from 'zena-lang:semver';
@@ -46,11 +47,11 @@ import {
   setDependencyRange,
 } from '../src/dependencies.zena';
 import {rangeUpdates} from '../src/ranges.zena';
-import {readUnitVersion} from '../src/manifests.zena';
+import {readUnitName, readUnitVersion} from '../src/manifests.zena';
 import {notableChanges, notesPath, releaseNotes} from '../src/notes.zena';
 import {ReleasePlan, formatStatus, planReleases} from '../src/plan.zena';
 import {
-  previewVersion,
+  releaseVersions,
   selectReleases,
   setCargoManifestVersion,
   setJsonManifestVersion,
@@ -284,97 +285,60 @@ async function refuseUnreleasedEntries(releases: Array<ReleasePlan>, config: Con
   }
 }
 
-/**
- * Writes the notes of `release` as `version`, when it is the release of
- * a group that has release notes, and says where. `packages` are the
- * releases made with it, and `versions` their versions by name.
- */
-async function writeNotes(config: Config, files: GrowableArray<ChangeFile>, release: ReleasePlan, version: String, date: String, packages: GrowableArray<ReleasePlan>, versions: HashMap<String, String>): Future<boolean> {
-  if (!release.isGroup) {
-    return false;
-  }
-  let group = config.groups[release.name];
-  let dir = group.notesDir;
-  if (dir == null) {
-    return false;
-  }
-  let others = new GrowableArray<ReleasePlan>();
-  for (let other in packages) {
-    if (other.name != release.name) {
-      others.push(other);
+/** The repository's Git tags, or none when `git` cannot list them. */
+async function readTags(): Future<FixedArray<String>> {
+  try {
+    let result = await run(['git', 'tag', '--list']);
+    if (result.succeeded()) {
+      return result.stdout.split('\n');
+    };
+    console.error(
+      `warning: 'git tag --list' failed, so no preview counts as released: ${result.stderr.trim()}`
+    );
+  } catch (e) {
+    console.error(`warning: ${e.message}, so no preview counts as released`);
+  };
+  return new FixedArray<String>(0, '');
+}
+
+/** The name people install each unit's package by, for the units that have one. */
+async function readNames(config: Config): Future<HashMap<String, String>> {
+  let names = new HashMap<String, String>();
+  for (let {value as unit} in config.units) {
+    let name = await readUnitName(unit.dir);
+    if (name != null) {
+      names[unit.name] = name;
     }
   }
-  if (!await exists(dir)) {
-    await mkdir(dir);
-  }
-  let path = notesPath(dir, version);
-  await writeFile(
-    path,
-    releaseNotes(
-      group.notesTitle,
-      version,
-      date,
-      notableChanges(files),
-      release,
-      others,
-      versions
-    )
-  );
-  console.log(`release notes: ${path}`);
-  return true;
+  return names;
+}
+
+/** What `version` and `notes` both read before choosing versions. */
+class Plan {
+  config: Config;
+  files: GrowableArray<ChangeFile>;
+  current: HashMap<String, Version>;
+  links: GrowableArray<DependencyLink>;
+  releases: GrowableArray<ReleasePlan>;
+  /** The version of each release that has one, by the release's name. */
+  chosen: HashMap<String, Version>;
+  preview: boolean;
+  date: String;
+
+  new(this.config, this.files, this.current, this.links, this.releases, this.chosen, this.preview, this.date) {}
 }
 
 /**
- * `notes [<group or unit>...]`: writes the release notes the named
- * releases would have, and nothing else.
+ * The releases the arguments ask for and the version of each, or null
+ * when a change file has a problem, which is reported.
  */
-async function notes(args: ParsedArgs): Future<i32> {
+async function readPlan(args: ParsedArgs): Future<Plan?> {
   let config = await readConfig();
   let problems = new GrowableArray<Problem>();
   let files = await readChangeFiles(config, problems);
   if (problems.length > 0) {
     report(problems);
-    return 1;
-  }
-  let releases = selectReleases(await readReleases(config, files), args.rest);
-  let date = args.getOption('date') ?? today();
-  let versions = new HashMap<String, String>();
-  for (let release in releases) {
-    let next = release.next;
-    if (next != null) {
-      versions[release.name] = next.toString();
-    }
-  }
-  var wrote = false;
-  for (let release in releases) {
-    if (let (true, version) = versions.get(release.name)) {
-      let named = args.getOption('as') ?? version;
-      if (await writeNotes(
-        config,
-        files,
-        release,
-        named,
-        date,
-        releases,
-        versions
-      )) {
-        wrote = true;
-      }
-    }
-  }
-  if (!wrote) {
-    console.log('No group that has release notes has entries to release.');
-  }
-  return 0;
-}
-
-async function version(args: ParsedArgs): Future<i32> {
-  let config = await readConfig();
-  let problems = new GrowableArray<Problem>();
-  let files = await readChangeFiles(config, problems);
-  if (problems.length > 0) {
-    report(problems);
-    return 1;
+    return null;
   }
   let current = await readVersions(config);
   let links = await readLinks(config);
@@ -383,7 +347,6 @@ async function version(args: ParsedArgs): Future<i32> {
     args.rest
   );
   let preview = args.getFlag('preview');
-  let date = args.getOption('date') ?? today();
   var named: Version? = null;
   if (let (true, text) = args.getOption('as')) {
     if (releases.length != 1 || !releases[0].versioned) {
@@ -393,33 +356,119 @@ async function version(args: ParsedArgs): Future<i32> {
     }
     named = Version.parse(text);
   }
+  let tags = if (preview
+    && named == null) await readTags() else new FixedArray<String>(0, '');
+  let chosen = releaseVersions(config, releases, preview, named, tags);
+  return new Plan(
+    config,
+    files,
+    current,
+    links,
+    releases,
+    chosen,
+    preview,
+    args.getOption('date') ?? today()
+  );
+}
+
+/**
+ * Writes the notes of each of `releases` that is a group's with release
+ * notes, and says where. Each lists every release in `releases`.
+ */
+async function writeNotes(plan: Plan, releases: GrowableArray<ReleasePlan>): Future<boolean> {
+  let versions = new HashMap<String, String>();
+  for (let {key, value} in plan.chosen) {
+    versions[key] = value.toString();
+  }
+  let names = await readNames(plan.config);
+  var wrote = false;
+  for (let release in releases) {
+    if (!release.isGroup) {
+      continue;
+    }
+    let group = plan.config.groups[release.name];
+    let dir = group.notesDir;
+    if (dir == null) {
+      continue;
+    }
+    if (let (true, version) = versions.get(release.name)) {
+      if (!await exists(dir)) {
+        await mkdir(dir);
+      }
+      let path = notesPath(dir, version);
+      await writeFile(
+        path,
+        releaseNotes(
+          group.notesTitle,
+          version,
+          plan.date,
+          notableChanges(plan.files),
+          releases,
+          versions,
+          names
+        )
+      );
+      console.log(`release notes: ${path}`);
+      wrote = true;
+    }
+  }
+  return wrote;
+}
+
+/**
+ * `notes [<group or unit>...]`: writes the release notes `version` would
+ * write with the same arguments, and nothing else.
+ */
+async function notes(args: ParsedArgs): Future<i32> {
+  let plan = await readPlan(args);
+  if (plan == null) {
+    return 1;
+  }
+  let made = new GrowableArray<ReleasePlan>();
+  for (let release in plan.releases) {
+    if (plan.chosen.has(release.name) || !release.versioned && !plan.preview) {
+      made.push(release);
+    }
+  }
+  if (!await writeNotes(plan, made)) {
+    console.log('No group that has release notes has entries to release.');
+  }
+  return 0;
+}
+
+async function version(args: ParsedArgs): Future<i32> {
+  let plan = await readPlan(args);
+  if (plan == null) {
+    return 1;
+  }
+  let config = plan.config;
+  let files = plan.files;
+  let preview = plan.preview;
+  let date = plan.date;
   if (!preview) {
-    await refuseUnreleasedEntries(releases, config);
+    await refuseUnreleasedEntries(plan.releases, config);
   }
 
   let none = new GrowableArray<Entry>();
   let released = new HashSet<String>();
   let made = new GrowableArray<ReleasePlan>();
-  let versions = new HashMap<String, String>();
   /** The new version of each unit a release writes a version to. */
   let written = new HashMap<String, Version>();
-  for (let release in releases) {
-    let before = release.current;
-    let next = named ?? release.next;
+  for (let release in plan.releases) {
     var heading = dateHeading(date);
     var target: String? = null;
     var version: Version? = null;
     if (release.versioned) {
-      if (before == null || next == null) {
+      if (let (true, chosen) = plan.chosen.get(release.name)) {
+        version = chosen;
+        target = chosen.toString();
+        heading = versionHeading(chosen.toString(), date);
+      } else {
         console.log(
           `${release.name}: not released, since only held units have entries`
         );
         continue;
       }
-      let chosen = if (preview) previewVersion(before, next) else next;
-      version = chosen;
-      target = chosen.toString();
-      heading = versionHeading(chosen.toString(), date);
     } else if (preview) {
       continue;
     }
@@ -451,9 +500,6 @@ async function version(args: ParsedArgs): Future<i32> {
     }
     console.log(`${release.name} ${target ?? date}`);
     made.push(release);
-    if (target != null) {
-      versions[release.name] = target;
-    }
   }
   if (made.length == 0) {
     console.log('Nothing to release.');
@@ -463,10 +509,10 @@ async function version(args: ParsedArgs): Future<i32> {
   // units that depend on them.
   for (let update in rangeUpdates(
     config,
-    links,
+    plan.links,
     made,
     written,
-    current,
+    plan.current,
     preview
   )) {
     let path = `${config.units[update.unit].dir}/zena-package.json`;
@@ -489,22 +535,7 @@ async function version(args: ParsedArgs): Future<i32> {
     }
   }
   // A release with notes takes the change files' prose with it.
-  var wroteNotes = false;
-  for (let release in made) {
-    if (let (true, target) = versions.get(release.name)) {
-      if (await writeNotes(
-        config,
-        files,
-        release,
-        target,
-        date,
-        made,
-        versions
-      )) {
-        wroteNotes = true;
-      }
-    }
-  }
+  let wroteNotes = await writeNotes(plan, made);
   if (!preview) {
     for (let file in files) {
       if (let (true, text) = withoutUnits(file, released, !wroteNotes)) {
@@ -541,7 +572,7 @@ export async function main(): Future<void> {
               help: 'Write <next version>-preview.N to the manifests and leave the entries where they are'
             },
             'as' => {
-              help: 'The version to release, in place of the one the entries give'
+              help: 'The exact version to release, in place of the one the entries give'
             },
             'date' => {
               help: 'The release\'s date, as 2026-12-01 (default: today, UTC)'
@@ -549,10 +580,14 @@ export async function main(): Future<void> {
           }
         },
         'notes' => {
-          help: 'Write the release notes the named releases would have, and nothing else',
+          help: 'Write the release notes that version would write with the same arguments, and nothing else',
           options: {
+            'preview' => {
+              type: OptionType.Flag,
+              help: 'The notes of the next preview release'
+            },
             'as' => {
-              help: 'The version the notes are for, in place of the one the entries give'
+              help: 'The exact version the notes are for, in place of the one the entries give'
             },
             'date' => {
               help: 'The release\'s date, as 2026-12-01 (default: today, UTC)'
@@ -562,9 +597,9 @@ export async function main(): Future<void> {
       }
     }
   );
-  let parsed = parser.parse(getArguments(), 1);
   var code = 2;
   try {
+    let parsed = parser.parse(getArguments(), 1);
     let command = parsed.commandName;
     let args = parsed.commandArgs;
     if (command == 'status') {

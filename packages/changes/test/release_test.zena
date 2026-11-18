@@ -19,6 +19,7 @@ import {Config} from 'zena-lang:changes/config';
 import {PlanError, planReleases} from 'zena-lang:changes/plan';
 import {
   previewVersion,
+  releaseVersions,
   selectReleases,
   setCargoManifestVersion,
   setJsonManifestVersion,
@@ -32,8 +33,8 @@ function read(text: String) {
   return file;
 }
 
-function preview(current: String, next: String) {
-  return previewVersion(Version.parse(current), Version.parse(next)).toString();
+function preview(next: String, tags: Array<String>) {
+  return previewVersion(Version.parse(next), 'v', tags).toString();
 }
 
 function set(names: Array<String>) {
@@ -204,13 +205,93 @@ export let tests = suite(
     );
 
     test(
-      'numbers preview releases',
+      'numbers a preview after the last one that has a tag',
       () => {
-        equal(preview('0.0.2', '0.0.3'), '0.0.3-preview.1');
-        equal(preview('0.0.3-preview.1', '0.0.3'), '0.0.3-preview.2');
-        equal(preview('0.0.3-preview.9', '0.0.3'), '0.0.3-preview.10');
-        equal(preview('0.0.3-preview.2', '0.1.0'), '0.1.0-preview.1');
-        equal(preview('0.0.3-rc.2', '0.0.3'), '0.0.3-preview.1');
+        // No preview of the version has been released.
+        equal(preview('0.0.3', []), '0.0.3-preview.1');
+        equal(
+          preview(
+            '0.0.3',
+            ['v0.0.2', 'v0.0.2-preview.4', 'pre-rebase-158', '']
+          ),
+          '0.0.3-preview.1'
+        );
+        equal(preview('0.0.3', ['v0.0.3-preview.1']), '0.0.3-preview.2');
+        equal(
+          preview('0.0.3', ['v0.0.3-preview.9', 'v0.0.3-preview.2']),
+          '0.0.3-preview.10'
+        );
+        // Another release's tags, and tags that are not previews, do not count.
+        equal(
+          preview(
+            '0.0.3',
+            ['semver@0.0.3-preview.5', 'v0.0.3-preview.x', 'v0.0.3-rc.2']
+          ),
+          '0.0.3-preview.1'
+        );
+        equal(
+          previewVersion(
+            Version.parse('0.0.3'),
+            'semver@',
+            ['semver@0.0.3-preview.5', 'v0.0.3-preview.7']
+          ).toString(),
+          '0.0.3-preview.6'
+        );
+      }
+    );
+
+    test(
+      'chooses each release\'s version: the entries\', the next preview, or the one named',
+      () => {
+        let config = Config.parse(
+          '{"groups": {"toolchain": {"units": ["compiler", "cli"], "tag": "v"}}, "units": {"semver": {}, "pds": {"versioned": false}}}'
+        );
+        let versions = new HashMap<String, Version>();
+        // The manifests state a preview that has no tag: it was never released.
+        for (let name in ['compiler', 'cli', 'semver']) {
+          versions[name] = Version.parse('0.0.1-preview.1');
+        }
+        let releases = planReleases(
+          config,
+          [
+            read(
+              '## cli\n\n### Fixed\n\n- a\n\n## semver\n\n### Fixed\n\n- b\n\n## pds\n\n### Fixed\n\n- c\n'
+            )
+          ],
+          versions
+        );
+        equal(releases.length, 3);
+
+        let final = releaseVersions(config, releases, false, null, []);
+        equal(final.size, 2);
+        equal(final['toolchain'].toString(), '0.0.1');
+        equal(final['semver'].toString(), '0.0.1');
+
+        // Making the preview again gives its number again.
+        let first = releaseVersions(config, releases, true, null, []);
+        equal(first['toolchain'].toString(), '0.0.1-preview.1');
+        equal(first['semver'].toString(), '0.0.1-preview.1');
+
+        // Once its tag exists, the next preview follows it.
+        let second = releaseVersions(
+          config,
+          releases,
+          true,
+          null,
+          ['v0.0.1-preview.1']
+        );
+        equal(second['toolchain'].toString(), '0.0.1-preview.2');
+        equal(second['semver'].toString(), '0.0.1-preview.1');
+
+        let named = releaseVersions(
+          config,
+          selectReleases(releases, ['semver']),
+          true,
+          Version.parse('0.1.0-preview.3'),
+          []
+        );
+        equal(named.size, 1);
+        equal(named['semver'].toString(), '0.1.0-preview.3');
       }
     );
 
