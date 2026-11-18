@@ -1,12 +1,15 @@
 /**
  * Signing in and out (`../session.zena`): the page a person's PDS sends
  * them back to, where the page's script finishes signing in, and the form
- * post that signs out.
+ * post that signs out. Beside them, the page a PDS sends the browser back
+ * to after `zena pkg login`, which hands the answer to `zena`.
  */
 
 import {Router, html} from 'zena:http';
+import {CLI_CALLBACK_PATH, portOfState} from 'package-manager/cli-client';
 import {AppView} from '../../app-view.zena';
 import {page} from '../layout.zena';
+import {when} from '../partials/common.zena';
 import {People} from '../people.zena';
 import {clearSessionCookie, contextOf} from '../session.zena';
 
@@ -22,6 +25,35 @@ export function signInPages(router: Router, appView: AppView, people: People): v
     res.body = page('Signing in · Zena packages', (await contextOf(req, appView, people)), html`
       <h1>Signing in</h1>
       <p class="muted" data-sign-in-status>Finishing your sign-in with your PDS…</p>
+    `);
+  });
+
+  // `zena pkg login` comes back here. The answer goes to the zena that
+  // asked, on this machine, at the port its `state` names, which the page's
+  // script sends the browser on to; without one, or when that fails, it is
+  // pasted into the terminal. The page keeps nothing, and the answer is of
+  // no use without that zena's PKCE verifier and DPoP key
+  // (package-manager.md, "Signing in from the command line").
+  router.get(CLI_CALLBACK_PATH, async (req, res, next, params) => {
+    let query = req.url.search;
+    let answer = if (query.startsWith('?')) query.sliceBytes(1, query.length) else query;
+    let found = req.url.searchParams();
+    let refused = found.get('error');
+    let port = portOfState(found.get('state') ?? '');
+    res.type = 'text/html; charset=utf-8';
+    res.setHeader('cache-control', 'no-store');
+    res.setHeader('referrer-policy', 'no-referrer');
+    res.body = page('Signing in to zena · Zena packages', (await contextOf(req, appView, people)), html`
+      <h1>Signing in to zena</h1>
+      ${when(refused != null, () => html`
+        <p class="error">Your PDS did not sign you in: ${found.get('error_description') ?? refused}</p>
+      `)}
+      <p data-cli-callback="${if (port == 0) '' else `${port}`}">${if (port == 0)
+          'Paste this line into the terminal where zena is waiting:'
+        else
+          'Handing this to zena on this computer. If zena does not go on, paste this line into the terminal where it is waiting:'}</p>
+      <pre><code>${answer}</code></pre>
+      <p class="muted">The line works only for the zena that asked for it.</p>
     `);
   });
 

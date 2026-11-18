@@ -28,6 +28,11 @@ served at `/docs/` by `registry/service`. Read this package's README first.
   `node_modules/@atproto/oauth-client*` declarations. A real sign-in needs
   a real atproto account, so no test covers the OAuth half: try it in the
   demo (README, "Signing in").
+- `zena pkg login` signs in as a client of its own, and its answer comes
+  back to `/oauth/cli-callback` (`registry/web/pages/sign-in`), which
+  shows the line to paste. `handToZena` in `src/main.ts` sends the browser
+  on to `http://127.0.0.1:<port>/callback` when the page names a port. It
+  does nothing else: the page keeps nothing, and loads no OAuth library.
 - What a page shows of private members goes through
   `AppView.getEntries` as the person signed in (`visibleEntries` in
   `registry/web/partials/members`), never around it, so the App View's rules decide. The

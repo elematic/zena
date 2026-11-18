@@ -1,0 +1,51 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {JsonArray} from 'zena:json';
+import {
+  CLI_CALLBACK_PATH, CLI_CLIENT_METADATA_PATH, callbackState, cliClient, cliClientMetadata, cliScope, portOfState
+} from 'package-manager/cli-client';
+import {ATTESTATION_TYPE} from 'package-manager/records';
+import {CREATE_PACKAGE, CREATE_WEB_SESSION, REGISTRY_METHODS} from 'package-manager/registry-methods';
+
+export let tests = suite('zena\'s OAuth client', () => {
+  test('the scope: attestations, and tokens for every registry method but the site\'s', (ctx) => {
+    let parts = cliScope().split(' ');
+    equal(parts[0], 'atproto');
+    equal(parts[1], `repo:${ATTESTATION_TYPE}`);
+    var methods = 0;
+    var create = false;
+    var webSession = false;
+    for (let part in parts) {
+      if (part.startsWith('rpc:')) {
+        methods += 1;
+        isTrue(part.endsWith('?aud=*'), part);
+        create = create || part == `rpc:${CREATE_PACKAGE}?aud=*`;
+        webSession = webSession || part.contains(CREATE_WEB_SESSION);
+      }
+    }
+    equal(methods, REGISTRY_METHODS.length - 1);
+    isTrue(create && !webSession, 'createPackage, and not createWebSession');
+  });
+
+  test('the client and its metadata, below the site', (ctx) => {
+    let client = cliClient('https://pkg.test');
+    equal(client.clientId, `https://pkg.test${CLI_CLIENT_METADATA_PATH}`);
+    equal(client.redirectUri, `https://pkg.test${CLI_CALLBACK_PATH}`);
+    let metadata = cliClientMetadata('https://pkg.test');
+    equal(metadata['client_id'] as String, client.clientId);
+    equal((metadata['redirect_uris'] as JsonArray)[0] as String, client.redirectUri);
+    equal(metadata['application_type'] as String, 'native');
+    equal(metadata['token_endpoint_auth_method'] as String, 'none');
+    isTrue((metadata['dpop_bound_access_tokens'] as Box<boolean>).value, 'DPoP');
+    equal(metadata['scope'] as String, cliScope());
+  });
+
+  test('the state names the port the page hands the answer to, or none', (ctx) => {
+    equal(portOfState(callbackState(54321, 'abc')), 54321);
+    equal(portOfState(callbackState(0, 'abc')), 0);
+    equal(portOfState('1024.x'), 1024);
+    for (let state in ['', 'abc', '80.x', '70000.x', '4321', '43a1.x', '.x', '1234567.x']) {
+      equal(portOfState(state), 0, state);
+    }
+  });
+});

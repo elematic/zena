@@ -2292,6 +2292,13 @@ export let tests = suite('registry/app-view', () => {
     // Tokens for signing in to the pages, and nothing else.
     equal(metadata['scope'] as String, 'atproto rpc:dev.zena-lang.registry.createWebSession?aud=*');
     equal(metadata['token_endpoint_auth_method'] as String, 'none');
+    // zena's own client, beside it: a native one, whose answer comes back to
+    // a page of the site's.
+    let cli = ok(await fixture.get('/oauth/cli-client-metadata.json'));
+    equal(cli['client_id'] as String, 'https://pkg.test/oauth/cli-client-metadata.json');
+    equal(((cli['redirect_uris'] as JsonArray)[0]) as String, 'https://pkg.test/oauth/cli-callback');
+    equal(cli['application_type'] as String, 'native');
+    isTrue((cli['scope'] as String).contains('rpc:dev.zena-lang.registry.publish?aud=*'), cli['scope'] as String);
   });
 
   test('reads only the accounts that mention a caller, for their memberships and their page', async (ctx) => {
@@ -2512,6 +2519,16 @@ export let tests = suite('registry/app-view', () => {
 
     // The callback page is a page, for the script to finish on.
     isTrue(pageOf(await fixture.get('/oauth/callback')).contains('data-sign-in-status'), 'the callback page');
+
+    // zena's callback page names the port its state gives, for the script
+    // to send the browser on to, and shows the answer to paste either way.
+    let handed = pageOf(await fixture.get('/oauth/cli-callback?code=c1&state=54321.abc&iss=https%3A%2F%2Fpds.test'));
+    isTrue(handed.contains('data-cli-callback="54321"'), handed);
+    isTrue(handed.contains('code=c1&amp;state=54321.abc&amp;iss=https%3A%2F%2Fpds.test'), handed);
+    let pasted = pageOf(await fixture.get('/oauth/cli-callback?code=c1&state=0.abc&iss=https%3A%2F%2Fpds.test'));
+    isTrue(pasted.contains('data-cli-callback=""') && pasted.contains('Paste this line'), pasted);
+    let denied = pageOf(await fixture.get('/oauth/cli-callback?error=access_denied&error_description=Not+now&state=0.abc'));
+    isTrue(denied.contains('did not sign you in: Not now'), denied);
 
     let out = await fixture.post('/signout', cookie);
     equal(out.statusCode, 303, 'sign out');

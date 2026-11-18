@@ -3,13 +3,16 @@
  * client metadata, which its `client_id` names, so the person's PDS can
  * find its redirect and scope; and `createWebSession`, which trades a
  * service-auth token from the person's own PDS for a cookie that keeps
- * them signed in to the pages (`registry/web/session`).
+ * them signed in to the pages (`registry/web/session`). Beside it, the
+ * metadata of `zena`'s own client, which `zena pkg login` signs in as
+ * (`package-manager/cli-client`).
  */
 
 import {Future} from 'zena:async';
 import {Router} from 'zena:http';
 import {JsonArray, JsonObject} from 'zena:json';
 import {div} from 'zena:math';
+import {CLI_CLIENT_METADATA_PATH, cliClientMetadata} from 'package-manager/cli-client';
 import {CREATE_WEB_SESSION} from 'package-manager/registry-methods';
 import {AppViewError, AppView} from '../app-view.zena';
 import {CALLBACK_PATH} from '../web/pages/sign-in.zena';
@@ -58,6 +61,10 @@ export function webSessionRoutes(router: Router, appView: AppView): void {
     metadata['application_type'] = 'web';
     metadata['dpop_bound_access_tokens'] = new Box<boolean>(true);
     json(res, metadata);
+  });
+
+  router.get(CLI_CLIENT_METADATA_PATH, async (req, res, next, params) => {
+    json(res, cliClientMetadata(appView.config.siteOrigin));
   });
 
   registryProcedure(router, appView, CREATE_WEB_SESSION, async (req, res, caller): Future<JsonObject | null> => {
