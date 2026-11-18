@@ -11,6 +11,5 @@ export default [
   {text: 'Projects', link: '/projects/', match: '/projects/'},
   {text: 'Development', link: '/development/', match: '/development/'},
   {text: 'Playground', link: '/playground/', match: '/playground/'},
-  {text: 'Releases', link: '/releases/', match: '/releases/'},
   {text: 'Blog', link: '/blog/', match: '/blog/'},
 ];

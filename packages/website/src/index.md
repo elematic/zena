@@ -36,6 +36,30 @@ title: Home
             <a class="button medium alt" href="https://github.com/elematic/zena" target="_blank" rel="noreferrer">View on GitHub</a>
           </div>
         </div>
+        <div class="hero-install">
+          <p class="hero-install-label">Install the CLI <a href="/guide/install/">(more ways)</a></p>
+<zena-code-group class="code-group">
+
+<figure>
+<figcaption>macOS &amp; Linux</figcaption>
+
+```sh
+curl -fsSL https://zena-lang.dev/install.sh | sh
+```
+
+</figure>
+
+<figure>
+<figcaption>Windows</figcaption>
+
+```powershell
+irm https://zena-lang.dev/install.ps1 | iex
+```
+
+</figure>
+
+</zena-code-group>
+        </div>
       </div>
       <div class="hero-code">
         <zena-code-carousel>

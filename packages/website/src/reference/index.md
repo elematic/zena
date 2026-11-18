@@ -25,7 +25,7 @@ Pages are grouped by what they describe:
 - **Control flow** — conditionals, loops, pattern matching, destructuring, exceptions, and cancellation
 - **Classes** — the nominal type system, interfaces, mixins, and sealed hierarchies
 - **Standard library** — one page per `zena:` library
-- **Toolchain** — the CLI, targets, flags, formatter, and language server
+- **Toolchain** — the CLI, its releases, targets, flags, formatter, and language server
 
 ## Conventions
 
@@ -67,3 +67,4 @@ still open to change — nothing in Zena is frozen yet.
 - [Classes](/reference/classes/) — nominal classes and object orientation
 - [Standard library](/api/) — what ships with Zena
 - [CLI](/reference/cli/) — every command and flag
+- [Releases](/reference/releases/) — every release, with its downloads and release notes

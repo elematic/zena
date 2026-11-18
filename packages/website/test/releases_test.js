@@ -22,7 +22,7 @@ import {
   formatByteSize,
   parseGitHubReleases,
 } from '../../website-client/src/release-data.ts';
-import {sidebarFor} from '../lib/sidebar.js';
+import {flattenSidebar, sidebarFor} from '../lib/sidebar.js';
 import nav from '../src/_data/nav.js';
 import sidebar from '../src/_data/sidebar.js';
 
@@ -34,25 +34,52 @@ const INSTALL_PS1 = join(SRC_DIR, 'public', 'install.ps1');
 const sha256Hex = (buf) => createHash('sha256').update(buf).digest('hex');
 
 suite('releases page and release metadata parser', () => {
-  test('exposes /releases/ in top navigation without a doc sidebar', async () => {
-    const entry = nav.find((item) => item.link === '/releases/');
-    assert.ok(entry, 'Expected /releases/ in nav.js');
-    assert.equal(entry.text, 'Releases');
-    assert.equal(entry.match, '/releases/');
-    assert.equal(sidebarFor(sidebar, '/releases/'), null);
+  test('installs from the guide, and lists releases in the reference', async () => {
+    // Neither is a section of its own in the top navigation.
+    assert.equal(
+      nav.find(
+        (item) =>
+          item.link.includes('releases') || item.link.includes('install'),
+      ),
+      undefined,
+    );
+    const links = (url) =>
+      flattenSidebar(sidebarFor(sidebar, url)).map((item) => item.link);
+    assert.ok(links('/guide/install/').includes('/guide/install/'));
+    assert.ok(links('/reference/releases/').includes('/reference/releases/'));
 
-    const mdSource = await readFile(
-      join(SRC_DIR, 'releases', 'index.md'),
+    const install = await readFile(
+      join(SRC_DIR, 'guide', 'install.md'),
       'utf8',
     );
-    assert.match(mdSource, /^layout:\s*page\.njk$/m);
-    assert.match(mdSource, /https:\/\/zena-lang\.dev\/install\.sh/);
-    assert.match(mdSource, /https:\/\/zena-lang\.dev\/install\.ps1/);
-    assert.match(mdSource, /SHA256SUMS/);
+    assert.match(install, /https:\/\/zena-lang\.dev\/install\.sh/);
+    assert.match(install, /https:\/\/zena-lang\.dev\/install\.ps1/);
+    assert.match(install, /SHA256SUMS/);
+    assert.match(install, /\/reference\/releases\//);
+
+    const releases = await readFile(
+      join(SRC_DIR, 'reference', 'releases.md'),
+      'utf8',
+    );
     assert.match(
-      mdSource,
+      releases,
       /<zena-releases repo="elematic\/zena"><\/zena-releases>/,
     );
+
+    // The home page and Getting Started show the install command.
+    for (const page of ['index.md', join('guide', 'getting-started.md')]) {
+      const source = await readFile(join(SRC_DIR, page), 'utf8');
+      assert.match(
+        source,
+        /curl -fsSL https:\/\/zena-lang\.dev\/install\.sh \| sh/,
+        page,
+      );
+      assert.match(
+        source,
+        /irm https:\/\/zena-lang\.dev\/install\.ps1 \| iex/,
+        page,
+      );
+    }
 
     const ps1Source = await readFile(INSTALL_PS1, 'utf8');
     assert.match(ps1Source, /SHA256SUMS/);

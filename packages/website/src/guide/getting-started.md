@@ -3,45 +3,51 @@ title: 'Getting Started'
 description: 'Install the Zena toolchain, compile your first module, and run it under a WebAssembly GC runtime.'
 ---
 
-::: warning Early development
-Zena has not been published to a package registry yet. For now, getting the
-toolchain means building it from the repository. This page will get much shorter
-once releases exist.
-:::
+## Install Zena
 
-## What you need
+Install the `zena` command, which has the compiler, the standard library,
+the test runner and the rest of the tools in it:
 
-Zena compiles to WebAssembly GC, so you need a runtime that supports it:
+<zena-code-group class="code-group">
 
-- **Node.js 25 or newer** — for the `js` target, via
+<figure>
+<figcaption>macOS &amp; Linux</figcaption>
+
+```sh
+curl -fsSL https://zena-lang.dev/install.sh | sh
+```
+
+</figure>
+
+<figure>
+<figcaption>Windows (PowerShell)</figcaption>
+
+```powershell
+irm https://zena-lang.dev/install.ps1 | iex
+```
+
+</figure>
+
+</zena-code-group>
+
+Then open a new terminal and check it:
+
+```sh
+zena --version
+```
+
+[Install](/guide/install/) has the script's options, the VS Code extension,
+manual downloads and building from source.
+
+`zena run` runs a program on its own, with the WebAssembly runtime it
+bundles. To run Zena's output elsewhere you need a runtime with WebAssembly
+GC:
+
+- **Node.js 25 or newer**, for the `zena-js` target, with
   `@zena-lang/runtime`
-- **[wasmtime](https://wasmtime.dev/) 48 or newer** — for the `component`
-  target, and what `zena run` uses
-- Any browser released since 2023, if you're shipping to the web
-
-## Install the toolchain
-
-Clone the repository and build:
-
-```bash
-git clone https://github.com/elematic/zena.git
-cd zena
-npm install
-npm run build
-```
-
-That produces the CLI at `target/release/zena`. Add a shell alias so the
-rest of these docs read the way they eventually will:
-
-```bash
-alias zena="$(pwd)/target/release/zena"
-```
-
-::: tip Nix users
-The repository ships a flake with the full toolchain — Node, wasmtime, and
-`wasm-tools`. Run `nix develop` (or let `direnv` do it) and everything is on
-your `PATH`.
-:::
+- **[wasmtime](https://wasmtime.dev/) 48 or newer**, for the `component`
+  target
+- Any browser released since 2023, for the web
 
 ## Create a project
 
@@ -110,11 +116,10 @@ zena check main.zena
 
 ## Editor setup
 
-The repository includes a VS Code extension with syntax highlighting and
-language-server integration:
+The VS Code extension has syntax highlighting and the language server:
 
 ```bash
-code --install-extension packages/vscode-zena
+code --install-extension zena-lang.vscode-zena
 ```
 
 See [Editor support](/guide/editor-support/) for other editors and for running

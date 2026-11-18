@@ -23,7 +23,7 @@ code --install-extension zena-lang.vscode-zena
 
 ### From a Release VSIX
 
-Download `vscode-zena.vsix` from [zena-lang.dev/releases](https://zena-lang.dev/releases/) or the latest [GitHub Release](https://github.com/elematic/zena/releases) and install it:
+Download `vscode-zena.vsix` from [zena-lang.dev/reference/releases](https://zena-lang.dev/reference/releases/) or the latest [GitHub Release](https://github.com/elematic/zena/releases) and install it:
 
 ```sh
 code --install-extension vscode-zena.vsix
