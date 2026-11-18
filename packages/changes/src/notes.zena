@@ -1,0 +1,113 @@
+/**
+ * Release notes: one document for each release of a group, with prose
+ * about the notable changes above the entries of every unit
+ * (docs/design/change-files.md, "Release notes").
+ *
+ * ```md
+ * # Zena 0.0.3
+ *
+ * 2026-12-01
+ *
+ * ## Notable changes
+ *
+ * ### Prompts in the terminal
+ *
+ * A program can now ask a question and read the answer key by key.
+ *
+ * ## Toolchain
+ *
+ * ### zena-cli
+ *
+ * #### Added
+ *
+ * - Raw mode.
+ *
+ * ## Packages
+ *
+ * ### terminal 0.0.2
+ *
+ * #### Added
+ *
+ * - Prompts.
+ * ```
+ *
+ * The prose is each change file's `## Release notes`, in the order of the
+ * files. A person edits the document in the release's pull request.
+ */
+
+import {StringBuilder} from 'zena:core';
+import {HashMap} from 'zena:collections';
+import {join} from 'zena:string';
+import {ChangeFile, Entry, SECTIONS, sectionName} from './change-file.zena';
+import {ReleasePlan} from './plan.zena';
+
+/** The path of a release's notes: `docs/releases/0.0.3.md`. */
+export function notesPath(dir: String, version: String): String {
+  return `${dir}/${version}.md`;
+}
+
+/** The release notes' prose: every change file's, in the order given. */
+export function notableChanges(files: Array<ChangeFile>): String {
+  let parts = new GrowableArray<String>();
+  for (let file in files) {
+    if (!file.releaseNotes.isEmpty) {
+      parts.push(file.releaseNotes);
+    }
+  }
+  return join(parts, '\n\n');
+}
+
+/** A unit's entries under `####` headings, in a changelog's order. */
+function appendEntries(out: StringBuilder, entries: Array<Entry>) {
+  for (let section in SECTIONS) {
+    let texts = new GrowableArray<String>();
+    for (let entry in entries) {
+      if (entry.section == section) {
+        texts.push(entry.text);
+      }
+    }
+    if (texts.length > 0) {
+      out.append(`\n#### ${sectionName(section)}\n\n${join(texts, '\n')}\n`);
+    }
+  }
+}
+
+/**
+ * The notes of `release`, a group's release, as `version` on `date`.
+ *
+ * `title` is what the document calls the release (`Zena`), `notable`
+ * the prose (`notableChanges`), and `packages` the other releases made
+ * with it, each listed with `versions`' version for its name, or with no
+ * version when it has none there. Units of the group with no entries of
+ * their own are left out, and so are parts with nothing in them.
+ */
+export function releaseNotes(title: String, version: String, date: String, notable: String, release: ReleasePlan, packages: Array<ReleasePlan>, versions: HashMap<String, String>): String {
+  let out = new StringBuilder();
+  out.append(`# ${title} ${version}\n\n${date}\n`);
+  if (!notable.isEmpty) {
+    out.append(`\n## Notable changes\n\n${notable}\n`);
+  }
+  if (release.units.length > 0) {
+    out.append('\n## Toolchain\n');
+    for (let unit in release.units) {
+      out.append(`\n### ${unit.unit.name}\n`);
+      appendEntries(out, unit.entries);
+    }
+  }
+  var first = true;
+  for (let other in packages) {
+    for (let unit in other.units) {
+      if (first) {
+        out.append('\n## Packages\n');
+        first = false;
+      }
+      if (let (true, released) = versions.get(other.name)) {
+        out.append(`\n### ${unit.unit.name} ${released}\n`);
+      } else {
+        out.append(`\n### ${unit.unit.name}\n`);
+      }
+      appendEntries(out, unit.entries);
+    }
+  }
+  return out.toString();
+}

@@ -40,11 +40,27 @@ npm run changes -- version terminal --as 0.1.0   # a version the entries would n
 It writes the version to each manifest in the released directories
 (`zena-package.json`, `package.json`, `Cargo.toml`), adds a section to
 each `CHANGELOG.md`, and takes the released entries out of the change
-files, deleting a file with nothing left. A preview release writes only
-the manifests. `--date 2026-12-01` sets the date in the changelog
-headings, which is otherwise today's.
+files, deleting a file with nothing left. `--date 2026-12-01` sets the
+date in the changelog headings and the notes, which is otherwise today's.
 
-It does not yet refresh `package-lock.json`, `Cargo.lock` or
-`packages/zena-cli/zena/versions.zena`, write release notes, or change
-dependents' ranges. The command that writes a change file (`add`) is not
-built yet.
+A release of the toolchain also writes its release notes,
+`docs/releases/<version>.md`: the prose under `## Release notes` in the
+change files, then the entries of the toolchain's packages, then those of
+the other packages released with it. Edit that file in the release's
+pull request. The release workflow publishes it as the GitHub Release's
+text.
+
+A preview release writes the manifests and the release notes, and leaves
+the changelogs and the change files alone.
+
+`notes` writes the release notes alone, for a release at a version the
+manifests already state:
+
+```sh
+npm run changes -- notes toolchain --as 0.0.1-preview.1
+```
+
+`version` does not yet refresh `package-lock.json`, `Cargo.lock` or
+`packages/zena-cli/zena/versions.zena`, or change dependents' ranges, and
+the notes have no links to pull requests. The command that writes a
+change file (`add`) is not built yet.

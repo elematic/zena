@@ -6,12 +6,16 @@ Partly built, in `packages/changes`:
 
 - Built: the configuration and the change files' format, `check` for
   what is wrong in them, `status`, and `version` for manifests,
-  changelogs and change files, with `--preview` and `--as`.
-- Not built: `add`; release notes, so `version` leaves a change file's
-  `## Release notes` in place; dependents' ranges and `Requires:`, which
-  is read and not acted on; the lockfiles and `versions.zena`, which
-  `version` asks the person to refresh; the check that a pull request
-  adds a change file.
+  changelogs, change files and release notes, with `--preview` and
+  `--as`. `notes` writes the release notes alone. The release check
+  (`packages/zena-cli/dev/check-release-version.zena`) takes a release's
+  notes from the notes file.
+- Not built: `add`; in the release notes, the links to pull requests and
+  the packages released between two toolchain releases; `status` listing
+  breaking entries with no prose; dependents' ranges and `Requires:`,
+  which is read and not acted on; the lockfiles and `versions.zena`,
+  which `version` asks the person to refresh; the check that a pull
+  request adds a change file.
 
 Changes are recorded in change files. The changelogs have no
 `## [Unreleased]` heading, and `version` refuses to release a unit whose
@@ -331,8 +335,10 @@ packages it depends on until they are released. `wasm-web-ui` depends on
 the npm `runtime`, so its first release under this design follows
 `0.0.2`.
 
-The existing `## [0.0.1-preview.1]` sections in the changelogs become
-part of `## [0.0.1]`.
+The changelogs had `## [0.0.1-preview.1]` sections, written by hand
+before any release. Their entries are in a change file,
+`.changes/0-initial.md`, so they are in the notes of the previews and
+become part of `## [0.0.1]`.
 
 ## Dependents
 
@@ -487,6 +493,11 @@ from its title.
 An independent unit released between toolchain releases gets its
 changelog and no notes of its own. Its entries appear under Packages in
 the next toolchain release's notes.
+
+The `notes` command writes the notes file a release would have and
+changes nothing else: `npm run changes -- notes toolchain --as
+0.0.1-preview.1` for a release at the version the manifests already
+state.
 
 ## Commands
 

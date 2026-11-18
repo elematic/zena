@@ -15,7 +15,7 @@ import {ArgParser, OptionType, ParsedArgs} from 'zena:args';
 import {Future} from 'zena:async';
 import {exit, getArguments} from 'zena:cli';
 import {HashMap, HashSet} from 'zena:collections';
-import {exists, listDir, readFile, unlink, writeFile} from 'zena:fs';
+import {exists, listDir, mkdir, readFile, unlink, writeFile} from 'zena:fs';
 import {formatTimestamp} from 'zena:time';
 import {now} from 'wasi:clocks/system-clock';
 import {Version} from 'zena-lang:semver';
@@ -37,6 +37,7 @@ import {
 } from '../src/changelog.zena';
 import {Config} from '../src/config.zena';
 import {readUnitVersion} from '../src/manifests.zena';
+import {notableChanges, notesPath, releaseNotes} from '../src/notes.zena';
 import {ReleasePlan, formatStatus, planReleases} from '../src/plan.zena';
 import {
   previewVersion,
@@ -213,6 +214,90 @@ async function refuseUnreleasedEntries(releases: Array<ReleasePlan>, config: Con
   }
 }
 
+/**
+ * Writes the notes of `release` as `version`, when it is the release of
+ * a group that has release notes, and says where. `packages` are the
+ * releases made with it, and `versions` their versions by name.
+ */
+async function writeNotes(config: Config, files: GrowableArray<ChangeFile>, release: ReleasePlan, version: String, date: String, packages: GrowableArray<ReleasePlan>, versions: HashMap<String, String>): Future<boolean> {
+  if (!release.isGroup) {
+    return false;
+  }
+  let group = config.groups[release.name];
+  let dir = group.notesDir;
+  if (dir == null) {
+    return false;
+  }
+  let others = new GrowableArray<ReleasePlan>();
+  for (let other in packages) {
+    if (other.name != release.name) {
+      others.push(other);
+    }
+  }
+  if (!await exists(dir)) {
+    await mkdir(dir);
+  }
+  let path = notesPath(dir, version);
+  await writeFile(
+    path,
+    releaseNotes(
+      group.notesTitle,
+      version,
+      date,
+      notableChanges(files),
+      release,
+      others,
+      versions
+    )
+  );
+  console.log(`release notes: ${path}`);
+  return true;
+}
+
+/**
+ * `notes [<group or unit>...]`: writes the release notes the named
+ * releases would have, and nothing else.
+ */
+async function notes(args: ParsedArgs): Future<i32> {
+  let config = await readConfig();
+  let problems = new GrowableArray<Problem>();
+  let files = await readChangeFiles(config, problems);
+  if (problems.length > 0) {
+    report(problems);
+    return 1;
+  }
+  let releases = selectReleases(await readReleases(config, files), args.rest);
+  let date = args.getOption('date') ?? today();
+  let versions = new HashMap<String, String>();
+  for (let release in releases) {
+    let next = release.next;
+    if (next != null) {
+      versions[release.name] = next.toString();
+    }
+  }
+  var wrote = false;
+  for (let release in releases) {
+    if (let (true, version) = versions.get(release.name)) {
+      let named = args.getOption('as') ?? version;
+      if (await writeNotes(
+        config,
+        files,
+        release,
+        named,
+        date,
+        releases,
+        versions
+      )) {
+        wrote = true;
+      }
+    }
+  }
+  if (!wrote) {
+    console.log('No group that has release notes has entries to release.');
+  }
+  return 0;
+}
+
 async function version(args: ParsedArgs): Future<i32> {
   let config = await readConfig();
   let problems = new GrowableArray<Problem>();
@@ -239,7 +324,8 @@ async function version(args: ParsedArgs): Future<i32> {
 
   let none = new GrowableArray<Entry>();
   let released = new HashSet<String>();
-  var count = 0;
+  let made = new GrowableArray<ReleasePlan>();
+  let versions = new HashMap<String, String>();
   for (let release in releases) {
     let current = release.current;
     let next = named ?? release.next;
@@ -277,15 +363,35 @@ async function version(args: ParsedArgs): Future<i32> {
       }
     }
     console.log(`${release.name} ${target ?? date}`);
-    count += 1;
+    made.push(release);
+    if (target != null) {
+      versions[release.name] = target;
+    }
   }
-  if (count == 0) {
+  if (made.length == 0) {
     console.log('Nothing to release.');
     return 0;
   }
+  // A release with notes takes the change files' prose with it.
+  var wroteNotes = false;
+  for (let release in made) {
+    if (let (true, target) = versions.get(release.name)) {
+      if (await writeNotes(
+        config,
+        files,
+        release,
+        target,
+        date,
+        made,
+        versions
+      )) {
+        wroteNotes = true;
+      }
+    }
+  }
   if (!preview) {
     for (let file in files) {
-      if (let (true, text) = withoutUnits(file, released)) {
+      if (let (true, text) = withoutUnits(file, released, !wroteNotes)) {
         await writeFile(file.path, text);
       } else {
         await unlink(file.path);
@@ -325,6 +431,17 @@ export async function main(): Future<void> {
               help: 'The release\'s date, as 2026-12-01 (default: today, UTC)'
             }
           }
+        },
+        'notes' => {
+          help: 'Write the release notes the named releases would have, and nothing else',
+          options: {
+            'as' => {
+              help: 'The version the notes are for, in place of the one the entries give'
+            },
+            'date' => {
+              help: 'The release\'s date, as 2026-12-01 (default: today, UTC)'
+            }
+          }
         }
       }
     }
@@ -340,6 +457,8 @@ export async function main(): Future<void> {
       code = await check();
     } else if (command == 'version' && args != null) {
       code = await version(args);
+    } else if (command == 'notes' && args != null) {
+      code = await notes(args);
     } else {
       console.error(parser.formatHelp());
     };

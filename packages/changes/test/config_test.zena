@@ -82,6 +82,27 @@ export let tests = suite(
     );
 
     test(
+      'a group can have release notes',
+      () => {
+        let config = Config.parse(
+          '{"groups": {"a": {"units": ["x"], "notes": {"dir": "docs/releases", "title": "Zena"}},'
+            + ' "b": {"units": ["y"], "notes": {"dir": "notes"}}, "c": {"units": ["z"]}}}'
+        );
+        equal(config.groups['a'].notesDir, 'docs/releases');
+        equal(config.groups['a'].notesTitle, 'Zena');
+        equal(config.groups['b'].notesDir, 'notes');
+        equal(config.groups['b'].notesTitle, 'b');
+        isNull(config.groups['c'].notesDir);
+        equal(
+          refusal(
+            '{"groups": {"a": {"units": ["x"], "notes": {"title": "Zena"}}}}'
+          ),
+          `group 'a': "notes" has no "dir"`
+        );
+      }
+    );
+
+    test(
       'refuses a configuration that contradicts itself',
       () => {
         isTrue(refusal('{').startsWith('not JSON: '));

@@ -6,8 +6,9 @@
  *    (`M.m.p` or `M.m.p-preview.<int>`).
  * 2. `packages/zena-cli/zena/versions.zena` matches the manifests
  *    (`npm run versions`).
- * 3. `packages/zena-cli/CHANGELOG.md` has a non-empty `## [<version>]`
- *    section.
+ * 3. The version has release notes: `docs/releases/<version>.md`, or else
+ *    a non-empty `## [<version>]` section in
+ *    `packages/zena-cli/CHANGELOG.md`.
  * 4. The version has not already been released and follows the increment
  *    rules relative to existing `v*` tags (`--tags-file`).
  */
@@ -21,6 +22,7 @@ import {
   checkReleaseTags,
   extractChangelogNotes,
   parseReleaseVersion,
+  releaseNotesPath,
 } from './release-version.zena';
 import {VERSIONS_FILE, versionsSource} from './version-file.zena';
 
@@ -69,14 +71,22 @@ export async function main(): Future<void> {
     exit(1);
   }
 
-  if (!(await exists(CHANGELOG_PATH))) {
-    console.error(`Error: ${CHANGELOG_PATH} is missing`);
-    exit(1);
+  // The release's notes: the file `npm run changes -- version` or `notes`
+  // wrote for this version (docs/design/change-files.md, "Release notes"),
+  // or else the version's section of the changelog.
+  let notesPath = releaseNotesPath(versionText);
+  var notes: String? = null;
+  if (await exists(notesPath)) {
+    let text = await readFile(notesPath);
+    if (!text.trim().isEmpty) {
+      notes = text;
+    }
+  } else if (await exists(CHANGELOG_PATH)) {
+    notes = extractChangelogNotes(await readFile(CHANGELOG_PATH), versionText);
   }
-  let notes = extractChangelogNotes(await readFile(CHANGELOG_PATH), versionText);
   if (notes == null) {
     console.error(
-      `Error: ${CHANGELOG_PATH} has no non-empty '## [${versionText}]' section`,
+      `Error: ${versionText} has no release notes: neither ${notesPath} nor a non-empty '## [${versionText}]' section in ${CHANGELOG_PATH}`,
     );
     exit(1);
   }

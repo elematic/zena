@@ -215,7 +215,7 @@ export let tests = suite(
       () => {
         let file = read(CHANGES);
         equal(
-          withoutUnits(file, set(['semver'])) ?? '',
+          withoutUnits(file, set(['semver']), true) ?? '',
           '## Release notes\n'
             + '\n'
             + '### Prompts\n'
@@ -237,19 +237,30 @@ export let tests = suite(
             + '- A crash.\n'
         );
         // What is written can be read again.
-        let again = read(withoutUnits(file, set([])) ?? '');
+        let again = read(withoutUnits(file, set([]), true) ?? '');
         equal(again.units.length, 2);
         equal(again.units[0].entries.length, 3);
         equal(again.units[0].requires[0], 'semver');
         equal(again.releaseNotes, file.releaseNotes);
 
         equal(
-          withoutUnits(file, set(['semver', 'terminal'])) ?? '',
+          withoutUnits(file, set(['semver', 'terminal']), true) ?? '',
           '## Release notes\n\n### Prompts\n\nA program can ask a question.\n'
         );
         let entriesOnly = read('## semver\n\n### Fixed\n\n- a\n');
         equal(
-          withoutUnits(entriesOnly, set(['semver'])) ?? 'deleted',
+          withoutUnits(entriesOnly, set(['semver']), true) ?? 'deleted',
+          'deleted'
+        );
+
+        // A release with notes takes the prose too.
+        equal(
+          withoutUnits(file, set(['semver']), false) ?? '',
+          '## terminal\n\nRequires: semver\n\n### Added\n\n- Prompts, which\n  read keys.\n- Colors.\n'
+            + '\n### Fixed\n\n- A crash.\n'
+        );
+        equal(
+          withoutUnits(file, set(['semver', 'terminal']), false) ?? 'deleted',
           'deleted'
         );
       }
