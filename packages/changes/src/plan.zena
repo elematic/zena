@@ -5,7 +5,7 @@
  */
 
 import {StringBuilder} from 'zena:core';
-import {HashMap, OrderedHashMap} from 'zena:collections';
+import {HashMap, HashSet, OrderedHashMap} from 'zena:collections';
 import {join} from 'zena:string';
 import {Version} from 'zena-lang:semver';
 import {
@@ -17,6 +17,7 @@ import {
   sectionName,
 } from './change-file.zena';
 import {Config, Group, Unit, VersionPolicy} from './config.zena';
+import {DependencyLink, UPDATED_DEPENDENCIES} from './dependencies.zena';
 import {nextVersion} from './versions.zena';
 
 /** A release that cannot be planned. */
@@ -161,11 +162,36 @@ function planGroup(group: Group, config: Config, plans: OrderedHashMap<String, U
  * The releases the change files call for: each group, then each
  * independent unit, in the configuration's order, leaving out those with
  * no entries. `versions` has each unit's version now, by its name.
+ *
+ * `links` are the units' dependencies on each other that state a range.
+ * A unit with a breaking entry also releases the units outside its group
+ * that depend on it, with no entries of their own, so that the latest
+ * version of each works with it (docs/design/change-files.md,
+ * "Dependents").
+ *
  * Throws `PlanError` for a unit to release that has no version, and for
  * a change file that names something that is not a unit.
  */
-export function planReleases(config: Config, files: Array<ChangeFile>, versions: HashMap<String, Version>): GrowableArray<ReleasePlan> {
+export function planReleases(config: Config, files: Array<ChangeFile>, versions: HashMap<String, Version>, links: Array<DependencyLink> = []): GrowableArray<ReleasePlan> {
   let plans = unitPlans(config, files);
+  let breaking = new HashSet<String>();
+  for (let {key, value as plan} in plans) {
+    if (plan.size == Size.Breaking && !plan.unit.held) {
+      breaking.add(key);
+    }
+  }
+  for (let link in links) {
+    if (!breaking.has(link.target) || plans.has(link.unit)) {
+      continue;
+    }
+    if (let (true, unit) = config.units.get(link.unit)) {
+      let group = unit.group;
+      if (!unit.held
+        && (group == null || group != config.units[link.target].group)) {
+        plans[unit.name] = new UnitPlan(unit);
+      }
+    }
+  }
   let releases = new GrowableArray<ReleasePlan>();
   for (let {value as group} in config.groups) {
     let plan = planGroup(group, config, plans, versions);
@@ -197,6 +223,9 @@ export function planReleases(config: Config, files: Array<ChangeFile>, versions:
 }
 
 function appendEntries(out: StringBuilder, plan: UnitPlan, indent: String) {
+  if (plan.entries.length == 0) {
+    out.append(`${indent}${UPDATED_DEPENDENCIES}\n`);
+  }
   for (let section in SECTIONS) {
     var first = true;
     for (let entry in plan.entries) {

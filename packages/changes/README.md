@@ -60,7 +60,19 @@ manifests already state:
 npm run changes -- notes toolchain --as 0.0.1-preview.1
 ```
 
+`version` also keeps the ranges right that packages here publish their
+dependencies on each other with (`"version"` beside `"path"` in
+`zena-package.json`), and prints each one it changes:
+
+- Between two packages of the toolchain, the range is the new version
+  exactly.
+- A release with a `**Breaking:**` entry starts its dependents' ranges
+  again at the new version, and releases those dependents too, with
+  `Updated dependencies.` in their changelogs.
+- `Requires: <package>` in a change file starts the range at the version
+  that package is released at.
+- Any other release leaves its dependents alone.
+
 `version` does not yet refresh `package-lock.json`, `Cargo.lock` or
-`packages/cli/zena/versions.zena`, or change dependents' ranges, and
-the notes have no links to pull requests. The command that writes a
-change file (`add`) is not built yet.
+`packages/cli/zena/versions.zena`, and the notes have no links to pull
+requests. The command that writes a change file (`add`) is not built yet.

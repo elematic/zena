@@ -30,6 +30,7 @@ import {
 } from '../src/change-file.zena';
 import {
   CHANGELOG_HEADER,
+  NO_CHANGES,
   addRelease,
   dateHeading,
   hasUnreleasedEntries,
@@ -37,7 +38,14 @@ import {
   versionHeading,
 } from '../src/changelog.zena';
 import {Config} from '../src/config.zena';
-import {pathDependencies, rangeProblem} from '../src/dependencies.zena';
+import {
+  DependencyLink,
+  UPDATED_DEPENDENCIES,
+  pathDependencies,
+  rangeProblem,
+  setDependencyRange,
+} from '../src/dependencies.zena';
+import {rangeUpdates} from '../src/ranges.zena';
 import {readUnitVersion} from '../src/manifests.zena';
 import {notableChanges, notesPath, releaseNotes} from '../src/notes.zena';
 import {ReleasePlan, formatStatus, planReleases} from '../src/plan.zena';
@@ -92,8 +100,8 @@ function report(problems: GrowableArray<Problem>) {
   }
 }
 
-/** The releases the change files call for. Throws when a change file has a problem. */
-async function readReleases(config: Config, files: GrowableArray<ChangeFile>): Future<GrowableArray<ReleasePlan>> {
+/** Each unit's version now, by its name, for the units that state one. */
+async function readVersions(config: Config): Future<HashMap<String, Version>> {
   let versions = new HashMap<String, Version>();
   for (let {value as unit} in config.units) {
     let version = await readUnitVersion(unit.dir);
@@ -101,7 +109,44 @@ async function readReleases(config: Config, files: GrowableArray<ChangeFile>): F
       versions[unit.name] = version;
     }
   }
-  return planReleases(config, files, versions);
+  return versions;
+}
+
+/** The units' dependencies on each other that state a range. */
+async function readLinks(config: Config): Future<GrowableArray<DependencyLink>> {
+  let byDir = new HashMap<String, String>();
+  for (let {value as unit} in config.units) {
+    byDir[unit.dir] = unit.name;
+  }
+  let links = new GrowableArray<DependencyLink>();
+  for (let {value as unit} in config.units) {
+    let manifest = `${unit.dir}/zena-package.json`;
+    if (await exists(manifest)) {
+      for (let dependency in pathDependencies(await readFile(manifest))) {
+        if (let (true, target) = byDir.get(join2(unit.dir, dependency.path))) {
+          links.push(
+            new DependencyLink(
+              unit.name,
+              dependency.name,
+              target,
+              dependency.range
+            )
+          );
+        }
+      }
+    }
+  }
+  return links;
+}
+
+/** The releases the change files call for. Throws when a change file has a problem. */
+async function readReleases(config: Config, files: GrowableArray<ChangeFile>): Future<GrowableArray<ReleasePlan>> {
+  return planReleases(
+    config,
+    files,
+    await readVersions(config),
+    await readLinks(config)
+  );
 }
 
 async function status(): Future<i32> {
@@ -203,11 +248,11 @@ async function readChangelog(dir: String): Future<String> {
 }
 
 /** Adds a release's section to the changelog in `dir`. */
-async function writeChangelog(dir: String, heading: String, entries: Array<Entry>): Future<void> {
+async function writeChangelog(dir: String, heading: String, entries: Array<Entry>, empty: String): Future<void> {
   let changelog = await readChangelog(dir);
   await writeFile(
     `${dir}/CHANGELOG.md`,
-    addRelease(changelog, releaseSection(heading, entries))
+    addRelease(changelog, releaseSection(heading, entries, empty))
   );
 }
 
@@ -331,7 +376,12 @@ async function version(args: ParsedArgs): Future<i32> {
     report(problems);
     return 1;
   }
-  let releases = selectReleases(await readReleases(config, files), args.rest);
+  let current = await readVersions(config);
+  let links = await readLinks(config);
+  let releases = selectReleases(
+    planReleases(config, files, current, links),
+    args.rest
+  );
   let preview = args.getFlag('preview');
   let date = args.getOption('date') ?? today();
   var named: Version? = null;
@@ -351,40 +401,52 @@ async function version(args: ParsedArgs): Future<i32> {
   let released = new HashSet<String>();
   let made = new GrowableArray<ReleasePlan>();
   let versions = new HashMap<String, String>();
+  /** The new version of each unit a release writes a version to. */
+  let written = new HashMap<String, Version>();
   for (let release in releases) {
-    let current = release.current;
+    let before = release.current;
     let next = named ?? release.next;
     var heading = dateHeading(date);
     var target: String? = null;
+    var version: Version? = null;
     if (release.versioned) {
-      if (current == null || next == null) {
+      if (before == null || next == null) {
         console.log(
           `${release.name}: not released, since only held units have entries`
         );
         continue;
       }
-      let version = if (preview) previewVersion(current, next) else next;
-      target = version.toString();
-      heading = versionHeading(version.toString(), date);
+      let chosen = if (preview) previewVersion(before, next) else next;
+      version = chosen;
+      target = chosen.toString();
+      heading = versionHeading(chosen.toString(), date);
     } else if (preview) {
       continue;
     }
     for (let plan in release.units) {
-      if (target != null) {
+      if (target != null && version != null) {
         await writeManifests(plan.unit.dir, target);
+        written[plan.unit.name] = version;
       }
       if (!preview) {
-        await writeChangelog(plan.unit.dir, heading, plan.entries);
+        // A unit with no entries is released for its dependencies.
+        await writeChangelog(
+          plan.unit.dir,
+          heading,
+          plan.entries,
+          UPDATED_DEPENDENCIES
+        );
         released.add(plan.unit.name);
       }
     }
     for (let name in release.unchanged) {
       let dir = config.units[name].dir;
-      if (target != null) {
+      if (target != null && version != null) {
         await writeManifests(dir, target);
+        written[name] = version;
       }
       if (!preview) {
-        await writeChangelog(dir, heading, none);
+        await writeChangelog(dir, heading, none, NO_CHANGES);
       }
     }
     console.log(`${release.name} ${target ?? date}`);
@@ -396,6 +458,35 @@ async function version(args: ParsedArgs): Future<i32> {
   if (made.length == 0) {
     console.log('Nothing to release.');
     return 0;
+  }
+  // The ranges the releases change, in the released units and in the
+  // units that depend on them.
+  for (let update in rangeUpdates(
+    config,
+    links,
+    made,
+    written,
+    current,
+    preview
+  )) {
+    let path = `${config.units[update.unit].dir}/zena-package.json`;
+    if (let (true, text) = setDependencyRange(
+      await readFile(path),
+      update.name,
+      update.range
+    )) {
+      await writeFile(path, text);
+    } else {
+      throw new Error(
+        `${path}: could not set the range of '${update.name}' to ${update.range}; write its entry over several lines`
+      );
+    }
+    console.log(`${update.unit}: ${update.name} ${update.range}`);
+    if (!written.has(update.unit) && !preview) {
+      console.log(
+        `  ${update.unit} is not released here: release it for the range to be published`
+      );
+    }
   }
   // A release with notes takes the change files' prose with it.
   var wroteNotes = false;

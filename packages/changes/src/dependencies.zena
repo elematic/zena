@@ -14,6 +14,7 @@
  */
 
 import {JsonObject, JsonValue, parseJson} from 'zena:json';
+import {join} from 'zena:string';
 import {Range, Version} from 'zena-lang:semver';
 import {ManifestError} from './manifests.zena';
 
@@ -23,6 +24,59 @@ import {ManifestError} from './manifests.zena';
  * the range's text.
  */
 export class PathDependency(name: String, path: String, range: String)
+
+/**
+ * One unit's dependency on another that states a range: `unit` depends
+ * on the unit `target`, which its manifest calls `name`, and publishes
+ * the dependency as `range`.
+ */
+export class DependencyLink(unit: String, name: String, target: String, range: String)
+
+/** What a release says of a unit it releases only for its dependencies. */
+export let UPDATED_DEPENDENCIES = 'Updated dependencies.';
+
+/**
+ * The range a dependent states when it starts at `version`: `~0.0.3` at
+ * `0.0.x`, where a caret would admit that version alone, and `^0.2.1`
+ * from `0.1.0` (docs/design/change-files.md, "Versions").
+ */
+export function rangeFrom(version: Version): String {
+  if (version.major == 0 && version.minor == 0) {
+    return `~${version.toString()}`;
+  }
+  return `^${version.toString()}`;
+}
+
+/**
+ * The text of a `zena-package.json` with the range of its path
+ * dependency `name` set, and the rest as it was. Nothing when the
+ * dependency's entry is not written over several lines with a `version`
+ * of its own, which is how this repository's manifests are formatted.
+ */
+export function setDependencyRange(text: String, name: String, range: String): inline (true, String) | (false, _) {
+  let lines = text.split('\n');
+  var inEntry = false;
+  for (let i in 0..lines.length) {
+    let line = lines[i].trim();
+    if (line == `"${name}": {`) {
+      inEntry = true;
+    } else if (inEntry && line.startsWith('}')) {
+      inEntry = false;
+    } else if (inEntry && line.startsWith('"version": "')) {
+      let parts = lines[i].split('"');
+      // `      "version": "~0.0.3",` splits at its four quotes.
+      let out = new GrowableArray<String>();
+      for (let j in 0..lines.length) {
+        out.push(
+          if (j
+            == i) `${parts[0]}"version": "${range}"${parts[4]}` else lines[j]
+        );
+      }
+      return (true, join(out, '\n'));
+    }
+  }
+  return (false, _);
+}
 
 /**
  * The path dependencies of a `zena-package.json` that state a range, in

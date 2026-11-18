@@ -1,0 +1,126 @@
+/**
+ * The ranges a release changes: those the released units, and the units
+ * that depend on them, publish their dependencies with
+ * (docs/design/change-files.md, "Dependents").
+ *
+ * A range changes in four cases. Take `terminal`, which depends on
+ * `semver` as `~0.0.3`:
+ *
+ * - `semver` and `terminal` are in one group. The range is the group's
+ *   new version exactly, at every release.
+ * - `semver` is released with a breaking entry. The range starts again at
+ *   the new version.
+ * - A change file says `Requires: semver` under `terminal`. The range
+ *   starts at the version `semver` is released at, or is at now.
+ * - `semver`'s new version is outside the range for another reason, such
+ *   as a version named with `--as`. The range starts at the new version.
+ *
+ * Otherwise the range stays, so `terminal` keeps the lowest minimum it
+ * works with.
+ *
+ * A preview release of `semver`, `0.0.5-preview.1`, is in no range that
+ * does not name it, so it joins the range as an alternative:
+ * `~0.0.3 || 0.0.5-preview.1`. The release of `0.0.5` takes the
+ * alternative away again.
+ */
+
+import {HashMap, HashSet} from 'zena:collections';
+import {join} from 'zena:string';
+import {Range, Version} from 'zena-lang:semver';
+import {Size} from './change-file.zena';
+import {Config} from './config.zena';
+import {DependencyLink, rangeFrom} from './dependencies.zena';
+import {ReleasePlan} from './plan.zena';
+
+/** A new range for one of a unit's dependencies. */
+export class RangeUpdate(unit: String, name: String, target: String, range: String)
+
+/**
+ * The ranges that change when `releases` are made.
+ *
+ * `released` has the new version of each unit the releases write a
+ * version to, and `current` each unit's version now. A preview release
+ * leaves its entries pending, so with `preview` an entry's being
+ * breaking, and `Requires:`, change nothing yet.
+ */
+export function rangeUpdates(config: Config, links: Array<DependencyLink>, releases: Array<ReleasePlan>, released: HashMap<String, Version>, current: HashMap<String, Version>, preview: boolean): GrowableArray<RangeUpdate> {
+  let breaking = new HashSet<String>();
+  let requires = new HashSet<String>();
+  if (!preview) {
+    for (let release in releases) {
+      for (let plan in release.units) {
+        if (plan.size == Size.Breaking) {
+          breaking.add(plan.unit.name);
+        }
+        for (let name in plan.requires) {
+          requires.add(`${plan.unit.name} ${name}`);
+        }
+      }
+    }
+  }
+  let updates = new GrowableArray<RangeUpdate>();
+  for (let link in links) {
+    var range = link.range;
+    let required = requires.has(`${link.unit} ${link.target}`);
+    if (let (true, version) = released.get(link.target)) {
+      let group = groupOf(config, link.unit);
+      let lasting = withoutPreviews(link.range);
+      if (group != null && group == groupOf(config, link.target)) {
+        if (released.has(link.unit)) {
+          range = version.toString();
+        }
+      } else if (preview) {
+        // The dependent works with the preview and with what it worked
+        // with before, so the preview joins the range.
+        if (!admits(link.range, version)) {
+          range = if (lasting.isEmpty) version.toString() else `${lasting} || ${version.toString()}`;
+        }
+      } else if (breaking.has(link.target)
+        || required
+        || lasting.isEmpty
+        || !admits(lasting, version)) {
+        range = rangeFrom(version);
+      } else {
+        range = lasting;
+      }
+    } else if (required) {
+      if (let (true, version) = current.get(link.target)) {
+        range = rangeFrom(version);
+      }
+    }
+    if (range != link.range) {
+      updates.push(new RangeUpdate(link.unit, link.name, link.target, range));
+    }
+  }
+  return updates;
+}
+
+/**
+ * A range without the alternatives that name a preview, which a preview
+ * release added: `~0.0.2` for `~0.0.2 || 0.0.5-preview.1`. Empty when
+ * every alternative names one.
+ */
+function withoutPreviews(range: String): String {
+  let kept = new GrowableArray<String>();
+  for (let part in range.split('||')) {
+    if (!part.contains('-preview.')) {
+      kept.push(part.trim());
+    }
+  }
+  return join(kept, ' || ');
+}
+
+function groupOf(config: Config, unit: String): String? {
+  if (let (true, found) = config.units.get(unit)) {
+    return found.group;
+  }
+  return null;
+}
+
+function admits(range: String, version: Version): boolean {
+  try {
+    return Range.parse(range).includes(version);
+  } catch (e) {
+    return false;
+  };
+}

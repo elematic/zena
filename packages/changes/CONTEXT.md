@@ -39,7 +39,11 @@ run from the repository root as `npm run changes -- <command>`.
   beside its path dependencies, and whether each admits the version at
   its path. It reads the JSON itself and does not depend on
   `package-manager`, whose `publishedRange` applies the same rule when
-  `zena pkg publish` runs.
+  `zena pkg publish` runs. Also the line of a manifest that states a
+  dependency's range (`setDependencyRange`).
+- `src/ranges.zena`: `rangeUpdates`, the ranges a release changes, from
+  the `DependencyLink`s between units. `planReleases` takes the links
+  too, to release the dependents of a breaking release.
 - `bin/changes.zena`: the command. It does the reading of files; the
   libraries take text.
 
