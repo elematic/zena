@@ -15,7 +15,7 @@ the `zena` command. The design is in
      `zena:bench`'s `runSuite` with a function that compiles its `zena`
      variants, `lsp.zena`, which connects the language server
      (`language-service/server`) to stdin and stdout, `lint.zena`,
-     which runs zena-lint's rules (`zena-lint`) over files and
+     which runs lint's rules (`lint`) over files and
      prints the findings or, with `--fix`, applies them.
    - `zena/pkg/` holds the `zena pkg` commands. `command.zena` describes
      their options (`describePkg`, which `main.zena`'s description

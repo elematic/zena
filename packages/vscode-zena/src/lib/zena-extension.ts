@@ -261,7 +261,7 @@ export class ZenaExtension {
               actions.push(action);
             }
             const all = new vscode.CodeAction(
-              'Fix all zena-lint findings',
+              'Fix all lint findings',
               vscode.CodeActionKind.SourceFixAll.append('zena'),
             );
             all.edit = this.#fixAllEdit(document, findings);

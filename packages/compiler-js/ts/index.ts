@@ -115,7 +115,7 @@ export interface DocumentSymbolInfo {
 
 /**
  * A lint finding: a range of the document and the text that fixes it.
- * `rule` is the zena-lint rule's name, `message` its one-line description.
+ * `rule` is the lint rule's name, `message` its one-line description.
  */
 export interface LintFinding {
   start: number;

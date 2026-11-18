@@ -645,9 +645,9 @@ Everything before (parsing, checking) is untouched.
 ### 8. Formatter and LSP as Early Deliverables
 
 > **Status (2026-08): done, not planned.** Both shipped and are self-hosted.
-> `packages/zena-formatter/zena/` is the formatter; and
+> `packages/formatter/zena/` is the formatter; and
 > `packages/language-service/zena/lsp.zena` is the language server, written in
-> Zena against `compiler`, `zena-formatter` and the stdlib — see
+> Zena against `compiler`, `formatter` and the stdlib — see
 > [lsp.md](lsp.md). The TypeScript in `packages/language-service` is a JS shim
 > exposing a JS API to the VS Code extension; it depends on
 > `@zena-lang/runtime`, not on the bootstrap compiler. The section below is
@@ -1110,7 +1110,7 @@ self-hosted (Zena) parsers.
 
 ### Milestone 1: Formatter ← In Progress
 
-**Status:** Implemented (`packages/zena-formatter`: Wadler-style doc/
+**Status:** Implemented (`packages/formatter`: Wadler-style doc/
 doc-printer/printer over the shared parser) but not yet battle-tested —
 it has not been run across the compiler's own source, and test coverage
 is thin. Hardening it and self-formatting the codebase are the open
@@ -1339,7 +1339,7 @@ details.
 - Diagnostics (parse errors, type errors, unresolved names)
 - Go to definition (within-file, cross-module, class fields/methods,
   case class params, inherited members, `this.member` access)
-- Document formatting via zena-formatter
+- Document formatting via formatter
 - Integration test suite
 - Persistent `Compiler` + `LibraryLoader` in language service (no longer
   recreated per call)
@@ -1973,7 +1973,7 @@ Test hosts (like the current `InMemoryHost`) work as-is. Provide a
 
 ## Next Steps
 
-1. Harden the formatter (Milestone 1) — `packages/zena-formatter`
+1. Harden the formatter (Milestone 1) — `packages/formatter`
    exists but is lightly tested; run it over the compiler's own source
    and expand its test coverage.
 2. LSP maturation (Milestone 4) — `packages/language-service` runs the

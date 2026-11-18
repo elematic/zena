@@ -5,7 +5,7 @@ Language support for the [Zena](https://zena-lang.dev) programming language in V
 ## Features
 
 - **Diagnostics**: Type checking and syntax diagnostics powered by Zena's self-hosted WebAssembly compiler (`compiler.wasm`).
-- **Linting & Quick Fixes**: Inline `zena-lint` warnings with per-finding quick fixes, Fix All, and the `Zena: Fix lint findings in file` command.
+- **Linting & Quick Fixes**: Inline `lint` warnings with per-finding quick fixes, Fix All, and the `Zena: Fix lint findings in file` command.
 - **Navigation**: Go to Definition across workspace modules and read-only bundled `zena:*` standard library modules, plus document symbol outlines.
 - **Hover & Completions**: Hover type signatures and doc comments, plus member, local, built-in, and keyword completions.
 - **Formatting**: Whole-document formatting via `Format Document`.

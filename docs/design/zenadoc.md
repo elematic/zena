@@ -105,7 +105,7 @@ even if it compiles.
 
 `packages/zenadoc` is a Zena package of the repository's workspace,
 named `zenadoc`, importing the compiler the same way
-`zena-formatter` and `language-service` do. Its inputs are things the
+`formatter` and `language-service` do. Its inputs are things the
 compiler already produces:
 
 - **The AST** (`Module` and the declaration nodes) for syntax that has

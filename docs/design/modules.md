@@ -69,7 +69,7 @@ a workspace's root manifest lists its packages. See
 
 ```json
 {
-  "name": "zena-formatter",
+  "name": "formatter",
   "dependencies": {"compiler": {"path": "../../../compiler/src/lib"}}
 }
 ```
@@ -82,7 +82,7 @@ package name that maps to the standard library.
 ```zena
 import { String } from 'zena:string';              // stdlib (reserved)
 import { parse } from 'compiler/parser';       // user package
-import { format } from 'zena-formatter/format';     // user package
+import { format } from 'formatter/format';     // user package
 ```
 
 **Rules:**
