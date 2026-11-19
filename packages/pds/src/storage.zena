@@ -245,6 +245,11 @@ export interface Storage {
   /** The account whose handle is `handle`, or null. */
   accountByHandle(handle: String): Future<Account | null>;
   putAccount(account: Account): Future<void>;
+  /**
+   * Up to `limit` accounts in the order of their DIDs' bytes, after the
+   * DID `after` when it is given: a page of them, for listing them all.
+   */
+  listAccounts(after: String | null, limit: i32): Future<Array<Account>>;
   /** The store of the account `did`. */
   store(did: String): AccountStore;
   /** Holds `reserved` under its public key, `didKey`, as a `did:key`. */
@@ -382,6 +387,23 @@ export final class MemoryStorage implements Storage {
 
   async putAccount(account: Account): Future<void> {
     this.#accounts[account.did] = account;
+  }
+
+  async listAccounts(after: String | null, limit: i32): Future<Array<Account>> {
+    let dids = new GrowableArray<String>();
+    for (let {key} in this.#accounts) {
+      if (after == null || key.compareTo(after) > 0) {
+        dids.push(key);
+      }
+    }
+    dids.sort((a, b) => a.compareTo(b));
+    let page = new GrowableArray<Account>();
+    for (let did in dids) {
+      if (page.length < limit) {
+        page.push(this.#accounts[did]);
+      }
+    }
+    return page;
   }
 
   store(did: String): AccountStore {

@@ -126,6 +126,37 @@ export let tests = suite('pds/server', () => {
         'the authorization header is allowed');
   });
 
+  test('sync.listRepos lists every repository, a page at a time, in the order of their DIDs', async (ctx) => {
+    let pds = new Pds(new MemoryStorage());
+    let carol = 'did:plc:carolcarolcarolcarolcaro';
+    let bob = 'did:plc:bobbobbobbobbobbobbobbob';
+    for (let did in [carol, DID, bob]) {
+      await pds.createAccount(did, null, KEY, NOW);
+    }
+    let app = createApp(pds);
+    let first = jsonOf(await getFrom(app, '/xrpc/com.atproto.sync.listRepos?limit=2'));
+    let repos = first['repos'] as JsonArray;
+    equal(repos.length, 2);
+    let alice = repos[0] as JsonObject;
+    equal(alice['did'] as String, DID);
+    equal((repos[1] as JsonObject)['did'] as String, bob);
+    let head = await pds.storage.store(DID).getHead();
+    isTrue(head != null, 'an account has a commit from the start');
+    if (head != null) {
+      equal(alice['head'] as String, head.cid.toString());
+      equal(alice['rev'] as String, head.rev);
+    }
+    isTrue((alice['active'] as Box<boolean>).value, 'active');
+
+    let rest = jsonOf(await getFrom(app, `/xrpc/com.atproto.sync.listRepos?limit=2&cursor=${first['cursor'] as String}`));
+    equal((rest['repos'] as JsonArray).length, 1);
+    equal(((rest['repos'] as JsonArray)[0] as JsonObject)['did'] as String, carol);
+    isTrue(!rest.has('cursor'), 'no cursor after the last page');
+
+    // A cursor is a DID.
+    equal(errorOf(await getFrom(app, '/xrpc/com.atproto.sync.listRepos?cursor=a/b')), 'InvalidRequest');
+  });
+
   test('sync.getRecord answers with a proof a client verifies', async (ctx) => {
     let app = await aliceApp();
     let res = await getFrom(app, `/xrpc/com.atproto.sync.getRecord?did=${DID}&collection=${POST}&rkey=post3`);
