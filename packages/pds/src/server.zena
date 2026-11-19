@@ -14,8 +14,9 @@
  */
 
 import {Future} from 'zena:async';
-import {App, Router} from 'zena:http';
+import {App, Middleware, Router, cors} from 'zena:http';
 import {JsonBuilder} from 'zena:json';
+import {milliseconds} from 'zena:time';
 import {Pds} from './pds.zena';
 import {Sessions} from './sessions.zena';
 import {REQUEST_BODY_LIMIT} from './xrpc/common.zena';
@@ -32,6 +33,7 @@ let banner = 'An AT Protocol PDS written in Zena\n';
 /** Returns the application of a PDS alone, for the accounts in `pds`. */
 export function createApp(pds: Pds, sessions: Sessions | null = null): App {
   let app = limitedApp();
+  app.use(apiCors());
   let router = new Router();
   router.get('/', async (req, res, next, params) => {
     res.type = 'text/plain; charset=utf-8';
@@ -40,6 +42,23 @@ export function createApp(pds: Pds, sessions: Sessions | null = null): App {
   pdsRoutes(router, pds, sessions);
   app.use(router.routes());
   return app;
+}
+
+/**
+ * Lets pages on any origin call the server's methods and read its
+ * `/.well-known/` documents, as the reference PDS does, since atproto
+ * explorers and other clients run in the browser. A request carries its
+ * token in a header, never in a cookie, so the answers give a page
+ * nothing a program elsewhere could not fetch, and credentials are not
+ * allowed. Other paths, such as an App View's pages, get no CORS headers.
+ */
+export function apiCors(): Middleware {
+  return cors({
+    origin: (req) => if (req.path.startsWith('/xrpc/') || req.path.startsWith('/.well-known/')) '*' else null,
+    // DPoP clients read the nonce a server sends, and why it refused a token.
+    exposeHeaders: 'dpop-nonce,www-authenticate',
+    maxAge: milliseconds(86400000 as i64),
+  });
 }
 
 /** An application that limits every request's body to `REQUEST_BODY_LIMIT`, before any route reads one. */

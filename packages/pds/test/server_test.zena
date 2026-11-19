@@ -100,6 +100,32 @@ export let tests = suite('pds/server', () => {
         'did:web:padstone.test');
   });
 
+  test('lets a page on any origin call its methods, without credentials', async (ctx) => {
+    let app = createApp(new Pds(new MemoryStorage()));
+    let headers: Map<String, String> = {'Origin' => 'https://explorer.example'};
+    let res = new Response();
+    await app.handleRequest(new Request.fromUrl('http://localhost/xrpc/com.atproto.server.describeServer', 'GET',
+        headers), res);
+    equal(res.statusCode, 200);
+    equal(res.getHeader('access-control-allow-origin') ?? '(none)', '*');
+    isTrue(res.getHeader('access-control-allow-credentials') == null, 'no credentials');
+
+    // A browser asks before it sends a write, with its token in a header.
+    let preflight: Map<String, String> = {
+      'Origin' => 'https://explorer.example',
+      'Access-Control-Request-Method' => 'POST',
+      'Access-Control-Request-Headers' => 'authorization,content-type',
+    };
+    let answer = new Response();
+    await app.handleRequest(new Request.fromUrl('http://localhost/xrpc/com.atproto.repo.createRecord', 'OPTIONS',
+        preflight), answer);
+    equal(answer.statusCode, 204);
+    equal(answer.getHeader('access-control-allow-origin') ?? '(none)', '*');
+    isTrue((answer.getHeader('access-control-allow-methods') ?? '').contains('POST'), 'POST is allowed');
+    isTrue((answer.getHeader('access-control-allow-headers') ?? '').contains('authorization'),
+        'the authorization header is allowed');
+  });
+
   test('sync.getRecord answers with a proof a client verifies', async (ctx) => {
     let app = await aliceApp();
     let res = await getFrom(app, `/xrpc/com.atproto.sync.getRecord?did=${DID}&collection=${POST}&rkey=post3`);
