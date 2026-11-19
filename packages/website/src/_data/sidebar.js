@@ -90,10 +90,21 @@ const guide = [
         ],
       },
       {
+        text: 'Install',
+        link: '/guide/install/',
+        outline: [
+          'Install the CLI',
+          'Install the VS Code extension',
+          'JavaScript and WebAssembly packages',
+          'Download a release by hand',
+          'Build from source',
+        ],
+      },
+      {
         text: 'Getting Started',
         link: '/guide/getting-started/',
         outline: [
-          'Install the toolchain',
+          'Install Zena',
           'Create a project',
           'Build and run',
           'Editor setup',
@@ -1026,6 +1037,11 @@ const reference = [
           'zena lsp',
           'Global options',
         ],
+      },
+      {
+        text: 'Releases',
+        link: '/reference/releases/',
+        outline: ['Downloads, checksums and release notes of each release'],
       },
       {
         text: 'Compile Targets',

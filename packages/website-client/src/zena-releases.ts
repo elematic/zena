@@ -404,7 +404,7 @@ export class ZenaReleases extends LightElement {
             <a href=${releasesPageUrl} target="_blank" rel="noopener"
               >GitHub Releases</a
             >. Until then, follow
-            <a href="/guide/getting-started/">Getting Started</a> to build the
+            <a href="/guide/install/#build-from-source">Install</a> to build the
             toolchain from source.
           </p>
         </div>
