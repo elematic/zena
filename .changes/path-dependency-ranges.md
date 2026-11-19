@@ -6,6 +6,6 @@
 
 ## cli
 
-### Changed
+### Added
 
-- `zena pkg publish` publishes a path dependency with the range its entry gives in `version`, and refuses a range that leaves out the version at the path. Without one it publishes `^` that version, as before.
+- `zena pkg publish` publishes a path dependency with the range its entry gives in `version`, and refuses a range that leaves out the version at the path. Without one it publishes `^` that version.

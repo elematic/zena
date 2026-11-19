@@ -3,8 +3,8 @@
 #
 # Usage:
 #   curl -fsSL https://zena-lang.dev/install.sh | sh
-#   curl -fsSL https://zena-lang.dev/install.sh | ZENA_VERSION=v0.0.1-preview.1 sh
-#   curl -fsSL https://zena-lang.dev/install.sh | sh -s -- --version v0.0.1-preview.1
+#   curl -fsSL https://zena-lang.dev/install.sh | ZENA_VERSION=v0.0.2-preview.1 sh
+#   curl -fsSL https://zena-lang.dev/install.sh | sh -s -- --version v0.0.2-preview.1
 
 set -eu
 
@@ -25,7 +25,7 @@ Usage:
   install.sh [options]
 
 Options:
-  -v, --version <tag>       Install a specific version (for example: v0.0.1-preview.1)
+  -v, --version <tag>       Install a specific version (for example: v0.0.2-preview.1)
       --preview             Install the newest release, including preview releases
       --install-dir <dir>   Installation prefix (default: ~/.zena)
       --no-modify-path      Do not edit shell profile files
