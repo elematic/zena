@@ -2,9 +2,9 @@
 
 ### Added
 
-- `atproto/oauth`: signing in with atproto OAuth as a public client. `startAuthorization` pushes the authorization request with PKCE and a DPoP key made for the session, `finishAuthorization` trades the code for tokens, and `OAuthSession` signs every request to the PDS, follows the servers' nonces, refreshes its token when the PDS says it is no longer valid, revokes it, and is kept as JSON.
+- `atproto/oauth`: signing in with atproto OAuth as a public client. `startAuthorization` pushes the authorization request with PKCE and a DPoP key made for the session, `finishAuthorization` trades the code for tokens, and `OAuthSession` signs every request to the PDS, follows the servers' nonces, refreshes its token before a request once its lifetime is over and whenever the PDS says it is no longer valid, revokes it, and is kept as JSON.
 - `atproto/dpop`: DPoP (RFC 9449) keys, ES256 proofs and their verification, and JWK thumbprints.
-- `XrpcClient.signer`, a `RequestSigner` that authorizes each request on its own and can have it sent again.
+- `XrpcClient.signer`, a `RequestSigner` that gets ready before each request (`ready`), authorizes it, and can have it sent again, up to three times in all.
 - `AccountSession`, which `Session` and `OAuthSession` implement, and which `getServiceAuth` takes.
 
 ## package-manager

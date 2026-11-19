@@ -30,6 +30,9 @@ export class XrpcError extends Error {
  * the one request, and an answer can call for the request to be sent again.
  */
 export interface RequestSigner {
+  /** Makes it ready to sign a request, as by refreshing an access token whose lifetime is over. */
+  ready(): Future<void>;
+
   /** The headers that authorize a request of `method` to `url`, such as `authorization` and `dpop`. */
   headers(method: String, url: String): Array<(String, String)>;
 
@@ -40,6 +43,13 @@ export interface RequestSigner {
    */
   answered(status: i32, dpopNonce: String | null, wwwAuthenticate: String | null): Future<boolean>;
 }
+
+/**
+ * How many times a signed request is sent at most: once, once more for a
+ * nonce the server asks for, and once more after a refused access token
+ * is refreshed.
+ */
+let MAX_SIGNED_SENDS = 3;
 
 /** A client for the XRPC methods of one service, such as a PDS. */
 export final class XrpcClient {
@@ -106,19 +116,29 @@ export final class XrpcClient {
    */
   async #send(method: String, url: String, contentType: String | null,
       body: String | FixedArray<u8> | null, extra: Array<(String, String)> | null): Future<Own<Response>> {
-    let response = await fetch(url, {method, headers: this.#headers(method, url, contentType, extra), body});
     let signer = this.signer;
     if (signer == null) {
-      return response;
+      return await fetch(url, {method, headers: this.#headers(method, url, contentType, extra), body});
     }
+    await signer.ready();
+    return await this.#sendSigned(signer, method, url, contentType, body, extra, 1);
+  }
+
+  /**
+   * Sends a request `signer` signs, and sends it again while `signer` asks
+   * to, up to `MAX_SIGNED_SENDS` times in all: a session read back from a
+   * file has no nonce for the server yet, and its access token may have
+   * expired too, so its first request can be refused for each in turn.
+   */
+  async #sendSigned(signer: RequestSigner, method: String, url: String, contentType: String | null,
+      body: String | FixedArray<u8> | null, extra: Array<(String, String)> | null, sends: i32): Future<Own<Response>> {
+    let response = await fetch(url, {method, headers: this.#headers(method, url, contentType, extra), body});
     let again = await signer.answered(response.status, response.header('dpop-nonce'),
         response.header('www-authenticate'));
-    if (!again) {
+    if (!again || sends >= MAX_SIGNED_SENDS) {
       return response;
     }
-    let second = await fetch(url, {method, headers: this.#headers(method, url, contentType, extra), body});
-    await signer.answered(second.status, second.header('dpop-nonce'), second.header('www-authenticate'));
-    return second;
+    return await this.#sendSigned(signer, method, url, contentType, body, extra, sends + 1);
   }
 
   /**
