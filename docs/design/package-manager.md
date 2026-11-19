@@ -2065,7 +2065,10 @@ the nonce the server last sent (`DPoP-Nonce`). A request refused for a
 stale nonce is sent again with the new one. `zena` asks for service-auth
 tokens with `com.atproto.server.getServiceAuth`, and writes attestations
 with `com.atproto.repo.putRecord`, as it does with an app password. An
-access token lasts minutes, and `zena` refreshes it with the refresh token.
+access token lasts minutes, and `zena` refreshes it with the refresh token
+before a request once its lifetime is over, and when the PDS refuses it.
+A new `zena` knows no nonce yet, so its first request can be refused for
+the nonce and then for the token: a request is sent up to three times.
 A refresh token can be used once, so a refresh locks the session file, and
 two commands running at once do not both spend it.
 

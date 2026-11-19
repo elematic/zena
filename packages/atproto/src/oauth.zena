@@ -187,6 +187,9 @@ function nowSeconds() {
   return now().seconds;
 }
 
+/** How long before its stated expiry an access token is refreshed, for the clocks' skew and the request's travel. */
+let EXPIRY_MARGIN_SECONDS = 30 as i64;
+
 /** A random string for a proof's `jti`, a PKCE verifier or a `state`. */
 export function randomToken(bytes: i32 = 16): String {
   return base64Url.encode(randomBytes(bytes), false);
@@ -476,6 +479,17 @@ export final class OAuthSession implements AccountSession, RequestSigner {
     let client = new XrpcClient(this.pds);
     client.signer = this;
     return client;
+  }
+
+  /**
+   * Refreshes the access token first when its lifetime is over, or will
+   * be within `EXPIRY_MARGIN_SECONDS`, so that the PDS is not asked with a
+   * token it will refuse.
+   */
+  async ready(): Future<void> {
+    if (nowSeconds() + EXPIRY_MARGIN_SECONDS >= this.expiresAt) {
+      await this.refresh();
+    }
   }
 
   headers(method: String, url: String): Array<(String, String)> {

@@ -163,6 +163,36 @@ export let tests = suite('OAuth with the fake PDS', () => {
     }
   });
 
+  test('a stored session whose access token has expired refreshes it on its first request', async (ctx) => {
+    let pds = startPds();
+    try {
+      let session = await signIn(pds);
+      pds.oauth.expireAccessTokens();
+      // As a new `zena` reads it: with no nonce, so the first request is
+      // refused for that, and then for the token.
+      let read = OAuthSession.fromJson(parseJson(stringify(session.toJson())));
+      isTrue((await getServiceAuth(read, REGISTRY, CREATE)).length > 0, 'after the nonce and a refresh');
+      isTrue(read.refreshed, 'refreshed');
+      equal(pds.oauth.refreshes, 1);
+    } finally {
+      pds.close();
+    }
+  });
+
+  test('refreshes before a request when the token\'s lifetime is over', async (ctx) => {
+    let pds = startPds();
+    try {
+      let session = await signIn(pds);
+      session.expiresAt = 0 as i64;
+      let refused = pds.oauth.nonceRefusals;
+      isTrue((await getServiceAuth(session, REGISTRY, CREATE)).length > 0, 'after a refresh');
+      equal(pds.oauth.refreshes, 1);
+      equal(pds.oauth.nonceRefusals, refused, 'no request was refused');
+    } finally {
+      pds.close();
+    }
+  });
+
   test('a stored session works where it is read back, until it is revoked', async (ctx) => {
     let pds = startPds();
     try {
