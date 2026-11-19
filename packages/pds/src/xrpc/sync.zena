@@ -4,15 +4,18 @@
  * `packages/core/src/handlers/xrpc-sync.js` and `handlers/xrpc-blob.js`,
  * at the revision docs/design/pds.md pins. pds.js serves one account and
  * answers `RepoNotFound` for any other; this finds the account each
- * request names.
+ * request names, and lists them all (`listRepos`), which pds.js does not.
  */
 
 import {Future} from 'zena:async';
+import {parseI32} from 'zena:core';
 import {Router} from 'zena:http';
-import {JsonObject} from 'zena:json';
+import {JsonArray, JsonObject} from 'zena:json';
 import {StreamWriter} from 'zena:stream';
 import {Cid} from 'atproto/cid';
-import {SYNC_GET_BLOB, SYNC_GET_LATEST_COMMIT, SYNC_GET_RECORD, SYNC_GET_REPO, xrpcPath} from 'atproto/methods';
+import {
+  SYNC_GET_BLOB, SYNC_GET_LATEST_COMMIT, SYNC_GET_RECORD, SYNC_GET_REPO, SYNC_LIST_REPOS, xrpcPath
+} from 'atproto/methods';
 import {Pds} from '../pds.zena';
 import {AccountStore} from '../storage.zena';
 import {accountFor, fail, json, parseCid, required, validRecordPath} from './common.zena';
@@ -23,8 +26,47 @@ let BLOB_CHUNK = (1024 * 1024) as i64;
 /** The longest range a `Range` without a last byte asks for. */
 let TO_THE_END: i64 = 0x7fffffffffffffff;
 
+/** How many repositories `sync.listRepos` lists when not asked, and at most, as the lexicon says. */
+let LIST_REPOS_DEFAULT = 500;
+let LIST_REPOS_MAX = 1000;
+
 /** Adds the `com.atproto.sync` routes for the accounts in `pds`. */
 export function syncRoutes(router: Router, pds: Pds): void {
+  // Every repository, in the order of the accounts' DIDs, a page at a
+  // time: what relays crawl a PDS with, and explorers list its accounts
+  // by. Every account here is active: none is taken down or deactivated.
+  router.get(xrpcPath(SYNC_LIST_REPOS), async (req, res, next, params) => {
+    let query = req.url.searchParams();
+    var limit = LIST_REPOS_DEFAULT;
+    if (let (true, asked) = parseI32(query.get('limit') ?? '')) {
+      limit = if (asked < 1) 1 else if (asked > LIST_REPOS_MAX) LIST_REPOS_MAX else asked;
+    }
+    let cursor = query.get('cursor');
+    if (cursor != null && (!cursor.startsWith('did:') || cursor.contains('/'))) {
+      fail(res, 400, 'InvalidRequest', 'the cursor is the last DID of a page');
+      return;
+    }
+    let accounts = await pds.storage.listAccounts(cursor, limit);
+    let repos = new JsonArray();
+    for (let account in accounts) {
+      let head = await pds.storage.store(account.did).getHead();
+      if (head != null) {
+        let repo = new JsonObject();
+        repo['did'] = account.did;
+        repo['head'] = head.cid.toString();
+        repo['rev'] = head.rev;
+        repo['active'] = new Box<boolean>(true);
+        repos.push(repo);
+      }
+    }
+    let body = new JsonObject();
+    body['repos'] = repos;
+    if (accounts.length == limit) {
+      body['cursor'] = accounts[accounts.length - 1].did;
+    }
+    json(res, body);
+  });
+
   router.get(xrpcPath(SYNC_GET_LATEST_COMMIT), async (req, res, next, params) => {
     let given = required(req, res, ['did']);
     if (given == null) {

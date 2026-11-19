@@ -141,6 +141,23 @@ export function storageConformance(make: () => Storage): void {
     isNull(((await storage.getAccount(BOB)) as Account).manager);
   });
 
+  test('lists accounts a page at a time, in the order of their DIDs', async (ctx) => {
+    let storage = make();
+    equal((await storage.listAccounts(null, 10)).length, 0);
+    let carol = 'did:plc:carolcarolcarolcarolcaro';
+    for (let did in [carol, ALICE, BOB]) {
+      await storage.putAccount(new Account(did, null, key()));
+    }
+    let first = await storage.listAccounts(null, 2);
+    equal(first.length, 2);
+    equal(first[0].did, ALICE);
+    equal(first[1].did, BOB);
+    let rest = await storage.listAccounts(BOB, 2);
+    equal(rest.length, 1);
+    equal(rest[0].did, carol);
+    equal((await storage.listAccounts(carol, 2)).length, 0);
+  });
+
   test('keeps a reserved signing key until it is taken, once, or expires', async (ctx) => {
     let storage = make();
     let reserved = key(KeyType.Secp256k1);

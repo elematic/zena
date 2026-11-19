@@ -50,7 +50,9 @@ otherwise built again, and the App View takes a scope or package name in one
 call that fails when it is taken. The server answers `/`,
 `/xrpc/_health`, the `com.atproto.sync` reads `getRecord`, `getRepo`,
 `getLatestCommit` and `getBlob` (with HTTP `Range`, for one span of a
-blob, which the App View reads one file of an archive with), and the
+blob, which the App View reads one file of an archive with), and
+`listRepos`, which relays and explorers list the accounts with and pds.js
+does not have, and the
 `com.atproto.repo` reads
 `getRecord`, `listRecords` and `describeRepo`, and
 `com.atproto.server.describeServer`. Of milestone 5's sessions,
