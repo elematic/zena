@@ -297,6 +297,15 @@ final class Fixture {
     return await this.#send('GET', path, cookie);
   }
 
+  /** GETs `path` as a script on a page at `origin` would. */
+  async getFromOrigin(path: String, origin: String): Future<Response> {
+    let headers: HashMap<String, String> = {'Origin' => origin};
+    let res = new Response();
+    let app = this.app;
+    await app.handleRequest(new Request.fromUrl(`http://localhost${path}`, 'GET', headers), res);
+    return res;
+  }
+
   /** A form post to `path`, with no body. */
   async post(path: String, cookie: String | null = null): Future<Response> {
     return await this.#send('POST', path, cookie);
@@ -2585,6 +2594,16 @@ export let tests = suite('registry/app-view', () => {
     isTrue(router.contains(carol) && router.contains('(private)'), router);
     // Signed out, /admin asks to sign in.
     isTrue(pageOf(await fixture.get('/admin')).contains('Sign in as one of'), 'admin, signed out');
+  });
+
+  test('lets pages on other origins call its methods, but not read its pages', async (ctx) => {
+    let fixture = new Fixture();
+    let api = await fixture.getFromOrigin('/xrpc/dev.zena-lang.registry.describeRegistry', 'https://explorer.example');
+    equal(api.statusCode, 200);
+    equal(api.getHeader('access-control-allow-origin') ?? '(none)', '*');
+    let page = await fixture.getFromOrigin('/', 'https://explorer.example');
+    equal(page.statusCode, 200);
+    isTrue(page.getHeader('access-control-allow-origin') == null, 'the home page has CORS headers');
   });
 
   test('lets only the accounts its admins list create scopes, when it lists them', async (ctx) => {

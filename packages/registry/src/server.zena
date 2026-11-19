@@ -12,7 +12,7 @@
 import {Future} from 'zena:async';
 import {App, Router} from 'zena:http';
 import {Pds} from 'pds/pds';
-import {healthRoute, limitedApp, pdsRoutes} from 'pds/server';
+import {apiCors, healthRoute, limitedApp, pdsRoutes} from 'pds/server';
 import {Sessions} from 'pds/sessions';
 import {AppView} from './app-view.zena';
 import {notFound} from './web/pages/not-found.zena';
@@ -41,6 +41,9 @@ export enum AppPart {
 export function createApp(pds: Pds | null, appView: AppView, sessions: Sessions | null = null,
     part: AppPart = AppPart.Both): App {
   let app = limitedApp();
+  // The methods and the DID document, for clients in the browser; the
+  // pages, which a cookie signs in to, get no CORS headers.
+  app.use(apiCors());
   let router = new Router();
   if (part != AppPart.Site) {
     // The site's home page is `/` wherever the site is served.
