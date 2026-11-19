@@ -2,7 +2,7 @@
 #
 # Usage:
 #   irm https://zena-lang.dev/install.ps1 | iex
-#   $env:ZENA_VERSION = 'v0.0.1-preview.1'; irm https://zena-lang.dev/install.ps1 | iex
+#   $env:ZENA_VERSION = 'v0.0.2-preview.1'; irm https://zena-lang.dev/install.ps1 | iex
 
 param(
   [string]$Version = $env:ZENA_VERSION,

@@ -59,7 +59,7 @@ there is no stable release yet. To choose another:
 <figcaption>macOS &amp; Linux</figcaption>
 
 ```sh
-curl -fsSL https://zena-lang.dev/install.sh | sh -s -- --version v0.0.1-preview.1
+curl -fsSL https://zena-lang.dev/install.sh | sh -s -- --version v0.0.2-preview.1
 ```
 
 </figure>
@@ -68,7 +68,7 @@ curl -fsSL https://zena-lang.dev/install.sh | sh -s -- --version v0.0.1-preview.
 <figcaption>Windows (PowerShell)</figcaption>
 
 ```powershell
-$env:ZENA_VERSION = 'v0.0.1-preview.1'; irm https://zena-lang.dev/install.ps1 | iex
+$env:ZENA_VERSION = 'v0.0.2-preview.1'; irm https://zena-lang.dev/install.ps1 | iex
 ```
 
 </figure>
@@ -160,7 +160,7 @@ shasum -a 256 --ignore-missing -c SHA256SUMS
 <figcaption>Windows (PowerShell)</figcaption>
 
 ```powershell
-Get-FileHash .\zena-v0.0.1-preview.1-x86_64-pc-windows-msvc.zip -Algorithm SHA256
+Get-FileHash .\zena-v0.0.2-preview.1-x86_64-pc-windows-msvc.zip -Algorithm SHA256
 ```
 
 </figure>
