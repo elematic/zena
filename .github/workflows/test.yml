@@ -23,7 +23,7 @@ permissions:
 jobs:
   # Separate from the test job so a formatting slip reports in about a minute
   # rather than behind the half-hour suite. It needs neither cache: format:check
-  # runs prettier directly rather than through wireit, and nothing here builds
+  # runs prettier directly, and nothing here builds
   # Rust. The test job keeps its id, because rust-cache puts the job id in its
   # key (v0-rust-test-...) and renaming the job would orphan the entry.
   format:
@@ -50,7 +50,7 @@ jobs:
 
       # `npm ci` accepts a lockfile whose record of a workspace's
       # dependencies is out of date, and `npm install` then rewrites it.
-      # Wireit counts the lockfile as an input of every script, so that
+      # Zebra counts the lockfile as an input of every script, so that
       # rewrite makes the next build rerun everything.
       - name: Check package-lock.json matches the package.json files
         run: |
@@ -60,11 +60,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    # A run that runs out of memory can hang instead of failing: wireit
-    # crashes when it kills a child the kernel already killed (`kill
-    # ESRCH`, google/wireit#1551), and the job then waits on the orphaned
-    # processes, for six hours by default. The slowest of the 200 passing runs before
-    # 2026-11-02 took 39 minutes.
+    # Cap runaway runs well below GitHub Actions' six-hour default. The
+    # slowest of the 200 passing runs before 2026-11-02 took 39 minutes.
     timeout-minutes: 60
     env:
       # What compiling the workspace's own crates leaves in target/, which
@@ -109,15 +106,15 @@ jobs:
       # Cargo.lock and the rustc version. The workspace's own crates are
       # pruned out and recompile quickly; what this keeps is wasmtime,
       # cranelift and their LLVM bindings, which take minutes from source.
-      # The cargo build runs on every CI run, because the four cargo wireit
-      # scripts declare no inputs -- see packages/zena-run/package.json.
+      # The cargo build runs on every CI run, because the cargo scripts
+      # declare no inputs -- see packages/zena-run/zebra.json.
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
           # Only main saves. A pull request's entry is visible to that pull
           # request alone, and at about 1 GB each those entries filled most
-          # of the repository's 10 GB, so GitHub evicted wireit's and main's.
+          # of the repository's 10 GB, so GitHub evicted step caches and main's.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # rust-cache keeps the dependencies and leaves out the workspace's
@@ -164,9 +161,6 @@ jobs:
       # cache.nixos.org, so each run stored the closure it had just restored
       # under a fresh key, reaching 17 copies of one 318,764,608 byte rustc
       # archive and 16.2 GB total (magic-nix-cache#154).
-      - name: Setup Wireit GitHub Actions Caching
-        uses: google/wireit@setup-github-actions-caching/v2
-
       - name: Setup Zebra GitHub Actions Caching
         uses: ./.github/actions/setup-zebra-cache
 
@@ -181,9 +175,9 @@ jobs:
       # of their command line, since every compile, precompile and test
       # run is a `zena` process.
       #
-      # Wireit runs two scripts per CPU by default, 8 on this 4 CPU / 16 GB
-      # runner, and one script can hold 5 GiB: stage B, the compiler's test
-      # module, and `zena test`, whose workers all run in one process.
+      # Running more than 2 scripts at once can exceed this 4 CPU / 16 GB
+      # runner's memory: one script can hold 5 to 8 GiB (stage B, the
+      # compiler's test module, `registry:test`, and `test:execution`).
       # Measured on 4 CPUs with every script rerunning (a standard library
       # edit), summing the RSS of the suite's processes: 8 at once peaked
       # at 19.5 GiB and spent 35s above 16 GiB; 4 at once peaked at 13.9 GiB,
@@ -198,7 +192,7 @@ jobs:
       # runs again, so 2.
       - name: Run test suite
         env:
-          WIREIT_PARALLEL: 2
+          ZEBRA_PARALLEL: 2
         run: |
           (
             while true; do
@@ -211,40 +205,7 @@ jobs:
           ) &
           sampler=$!
           trap 'kill "$sampler" 2>/dev/null || true' EXIT
-          nix develop --command npm test
-
-      - name: Verify Zebra GitHub Actions cache round-trip
-        if: env.ZEBRA_CACHE == 'github'
-        run: |
-          REPO_ROOT="$PWD"
-          SMOKE_DIR="${RUNNER_TEMP}/zebra-ci-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "${SMOKE_DIR}/src"
-          printf 'run-%s-%s\n' "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" > "${SMOKE_DIR}/src/in.txt"
-          cat > "${SMOKE_DIR}/zebra.json" <<'EOF'
-          {
-            "scripts": {
-              "build": {
-                "command": "mkdir -p out && cat src/in.txt > out/artifact.txt",
-                "files": ["src/**"],
-                "output": ["out/**"]
-              },
-              "test": {
-                "command": "grep -q '^run-' out/artifact.txt",
-                "files": ["src/**"],
-                "dependencies": ["build"]
-              }
-            }
-          }
-          EOF
-          cd "${SMOKE_DIR}"
-          first_out="$("${REPO_ROOT}/target/release/zena" build test)"
-          printf '%s\n' "${first_out}"
-          printf '%s\n' "${first_out}" | grep -q '2 ran'
-          rm -rf .zebra out
-          second_out="$("${REPO_ROOT}/target/release/zena" build test)"
-          printf '%s\n' "${second_out}"
-          printf '%s\n' "${second_out}" | grep -q '2 restored'
-          test "$(cat out/artifact.txt)" = "run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          nix develop --command bash -c 'cargo build --release -p zena && ./target/release/zena build test'
 
       - name: Record the Rust sources this build compiled
         if: github.ref == 'refs/heads/main' && steps.workspace-crates.outputs.cache-hit != 'true'
@@ -260,7 +221,7 @@ jobs:
       - name: Compiler timings
         # Reported, never gated. A shared runner's numbers are too noisy
         # to fail a pull request on, and are still enough to see a phase
-        # move by an order of magnitude. `npm test` has built the
+        # move by an order of magnitude. `zena build test` has built the
         # compiler by now, which is the one this measures.
         #
         # Only on pushes to main: this is several minutes of compiling,

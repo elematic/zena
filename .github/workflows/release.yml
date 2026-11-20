@@ -81,16 +81,16 @@ jobs:
       - name: Restore the Rust sources' times from the cached build
         run: python3 scripts/ci-cargo-freshness.py restore
 
-      - name: Setup Wireit GitHub Actions Caching
-        uses: google/wireit@setup-github-actions-caching/v2
+      - name: Setup Zebra GitHub Actions Caching
+        uses: ./.github/actions/setup-zebra-cache
 
       - name: Install npm dependencies
         run: nix develop --command npm ci
 
       - name: Build CLI binary and module
         env:
-          WIREIT_PARALLEL: 3
-        run: nix develop --command npm run build -w @zena-lang/cli
+          ZEBRA_PARALLEL: 2
+        run: nix develop --command bash -c 'cargo build --release -p zena && ./target/release/zena build ./packages/cli:build'
 
       - name: Verify release version, changelog, and tag progression
         id: verify-version
@@ -111,11 +111,11 @@ jobs:
 
       - name: Build bundle assets and verify compiler fixpoint
         env:
-          WIREIT_PARALLEL: 3
+          ZEBRA_PARALLEL: 2
         run: |
           nix develop --command bash -c '
-            npm run build:bundle-assets -w @zena-lang/cli
-            npm run test:fixpoint -w @zena-lang/compiler-zena
+            ./target/release/zena build ./packages/cli:build:bundle-assets
+            ./target/release/zena build ./packages/compiler:test:fixpoint
           '
 
       - name: Upload CLI bundle assets
@@ -399,16 +399,16 @@ jobs:
       - name: Restore the Rust sources' times from the cached build
         run: python3 scripts/ci-cargo-freshness.py restore
 
-      - name: Setup Wireit GitHub Actions Caching
-        uses: google/wireit@setup-github-actions-caching/v2
+      - name: Setup Zebra GitHub Actions Caching
+        uses: ./.github/actions/setup-zebra-cache
 
       - name: Install npm dependencies
         run: nix develop --command npm ci
 
       - name: Build and test vscode-zena
         env:
-          WIREIT_PARALLEL: 2
-        run: nix develop --command npm test -w vscode-zena
+          ZEBRA_PARALLEL: 2
+        run: nix develop --command bash -c 'cargo build --release -p zena && ./target/release/zena build ./packages/vscode-zena:test'
 
       - name: Package release VSIX and SHA-256 checksum
         id: package-vsix
@@ -505,21 +505,22 @@ jobs:
       - name: Restore the Rust sources' times from the cached build
         run: python3 scripts/ci-cargo-freshness.py restore
 
-      - name: Setup Wireit GitHub Actions Caching
-        uses: google/wireit@setup-github-actions-caching/v2
+      - name: Setup Zebra GitHub Actions Caching
+        uses: ./.github/actions/setup-zebra-cache
 
       - name: Install npm dependencies
         run: nix develop --command npm ci
 
       - name: Build and test public npm packages
         env:
-          WIREIT_PARALLEL: 2
+          ZEBRA_PARALLEL: 2
         run: |
           nix develop --command bash -c '
-            npm test -w @zena-lang/runtime
-            npm test -w @zena-lang/compiler
-            npm test -w @zena-lang/playground
-            npm test -w @zena-lang/wasm-web-ui
+            cargo build --release -p zena
+            ./target/release/zena build ./packages/runtime-js:test
+            ./target/release/zena build ./packages/compiler-js:test
+            ./target/release/zena build ./packages/playground:test
+            ./target/release/zena build ./packages/wasm-web-ui:test
           '
 
       - name: Pack npm tarballs in dependency order
