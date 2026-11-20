@@ -25,8 +25,8 @@ const load = () => {
     throw new Error(
       `Cannot read ${generated}: ${e.message}\n` +
         'The standard library reference is generated from it. Run ' +
-        '`npm run api -w @zena-lang/website` to produce it, or ' +
-        '`npm run build -w @zena-lang/website`, which does that first.',
+        '`./target/release/zena run ./packages/website:api` to produce it, or ' +
+        '`./target/release/zena build ./packages/website:build`, which does that first.',
     );
   }
   const docs = JSON.parse(source);

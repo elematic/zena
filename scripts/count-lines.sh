@@ -28,7 +28,7 @@ echo "==========================================="
 echo ""
 
 # Common exclusions
-EXCLUDE_DIRS="node_modules,.wireit,.git,_site"
+EXCLUDE_DIRS="node_modules,.zebra,.git,_site"
 EXCLUDE_LIST_FILE=$(mktemp)
 
 # Exclude packages/*/lib/ directories (build outputs)
@@ -54,7 +54,7 @@ TEST_FILES=$(mktemp)
 # Files matching test patterns
 find . -type f \( -name "*.ts" -o -name "*.js" -o -name "*.zena" \) \
   ! -path "*/node_modules/*" \
-  ! -path "*/.wireit/*" \
+  ! -path "*/.zebra/*" \
   ! -path "*/.git/*" \
   ! -path "*/_site/*" \
   | grep -v -E '^./packages/[^/]+/lib/' \

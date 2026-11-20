@@ -59,7 +59,7 @@ if [ "$MODE" = "preview" ]; then
   gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
     --format='value(status.traffic.filter("tag:next").extract("url").flatten())'
   echo
-  echo "Promote it with: npm run deploy:promote -w @zena-lang/website"
+  echo "Promote it with: ./target/release/zena run ./packages/website:deploy:promote"
 else
   echo "Live at:"
   gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \

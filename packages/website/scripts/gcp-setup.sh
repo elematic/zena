@@ -80,4 +80,4 @@ if [ "$granted" -eq 0 ]; then
 fi
 
 echo
-echo "Setup complete. Next: npm run deploy -w @zena-lang/website"
+echo "Setup complete. Next: ./target/release/zena run ./packages/website:deploy"

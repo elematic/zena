@@ -37,7 +37,7 @@ console.log('==================================================\n');
 
 if (!existsSync(zenaCli)) {
   console.error(
-    `Error: zena executable not found at ${zenaCli}. Run "npm run build -w @zena-lang/cli" first.`,
+    `Error: zena executable not found at ${zenaCli}. Run "./target/release/zena build ./packages/cli:build" first.`,
   );
   process.exit(1);
 }

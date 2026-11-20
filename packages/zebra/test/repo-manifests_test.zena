@@ -1,0 +1,214 @@
+/**
+ * Verifies repository Zebra manifest invariants:
+ * - No Wireit configuration or `wireit` dependency remains in any `package.json`.
+ * - Pure Zena packages (those without TypeScript) have no `package.json`, and
+ *   every remaining `package.json` carries npm dependencies.
+ * - Every workspace package defining a `test` script is wired into root `:test`.
+ * - Entry targets collect cleanly and every `"type": "zena:test"` step
+ *   discovers at least one `*_test.zena` file.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {HashSet} from 'zena:collections';
+import {FileType, GlobOptions, exists, glob, isDirectory, isFile, listDir, readFile} from 'zena:fs';
+import {hasMagic} from 'zena:glob';
+import {JsonObject} from 'zena:json';
+import {extname} from 'zena:path';
+import {compareStrings, sortBy} from 'workflow/canonical';
+import {joinWorkspace, readFileOrNull, withRoot} from 'zebra/fs-util';
+import {
+  ScriptRef,
+  ZENA_TEST_RULE_TYPE,
+  parseJsonObject,
+  refKey,
+} from 'zebra/wireit-config';
+import {ZebraWorkspace} from 'zebra/zebra-config';
+
+function hasNonEmptyObject(obj: JsonObject, key: String) {
+  let value = obj[key];
+  return value is JsonObject && value.size > 0;
+}
+
+function hasDependency(obj: JsonObject, section: String, name: String) {
+  let value = obj[section];
+  return value is JsonObject && value[name] != null;
+}
+
+/** Expands test patterns relative to `baseDir` under `root` into sorted repo-relative `.zena` paths. */
+async function expandTestFiles(
+  root: String,
+  baseDir: String,
+  patterns: Array<String>,
+): Future<Array<String>> {
+  let seen = new HashSet<String>();
+  let files = new GrowableArray<String>();
+  for (let raw in patterns) {
+    let joined = joinWorkspace(baseDir, raw);
+    var globPattern = joined;
+    if (!hasMagic(raw)) {
+      let full = withRoot(root, joined);
+      isTrue(await exists(full), `missing test path "${joined}"`);
+      if (await isDirectory(full)) {
+        globPattern = if (joined == '') '**/*_test.zena' else `${joined}/**/*_test.zena`;
+      }
+    }
+    let opts = new GlobOptions();
+    opts.cwd = root;
+    for (let m in await glob(globPattern, opts)) {
+      if (extname(m) == '.zena' && seen.add(m)) {
+        files.push(m);
+      }
+    }
+  }
+  sortBy(files, compareStrings);
+  return files;
+}
+
+export let tests = suite('repository Zebra manifests', () => {
+  // Under `zena test`, the repository root is preopened at `.`.
+  let root = '.';
+
+  test('no Wireit config remains and pure Zena packages omit package.json', async () => {
+    let rootPkgPath = withRoot(root, 'package.json');
+    let rootPkg = parseJsonObject('package.json', await readFile(rootPkgPath));
+    isTrue(rootPkg['wireit'] == null, 'root package.json must not define a "wireit" block');
+    isFalse(
+      hasDependency(rootPkg, 'dependencies', 'wireit') ||
+        hasDependency(rootPkg, 'devDependencies', 'wireit'),
+      'root package.json must not depend on wireit',
+    );
+
+    let entries = await listDir(withRoot(root, 'packages'));
+    for (let entry in entries) {
+      if (entry.fileType != FileType.Directory) {
+        continue;
+      }
+      let pkgDir = `packages/${entry.name}`;
+      let pkgJsonPath = withRoot(root, `${pkgDir}/package.json`);
+      let hasPkgJson = await isFile(pkgJsonPath);
+      let hasZenaManifest = await isFile(withRoot(root, `${pkgDir}/zena-package.json`));
+      let hasTsConfig = await isFile(withRoot(root, `${pkgDir}/tsconfig.json`));
+
+      if (hasZenaManifest && !hasTsConfig) {
+        isFalse(
+          hasPkgJson,
+          `pure Zena package ${pkgDir} must not have a package.json`,
+        );
+      }
+
+      if (!hasPkgJson) {
+        continue;
+      }
+
+      let pkgObj = parseJsonObject(`${pkgDir}/package.json`, await readFile(pkgJsonPath));
+      isTrue(pkgObj['wireit'] == null, `${pkgDir}/package.json must not define a "wireit" block`);
+      isTrue(
+        pkgObj['scripts'] == null,
+        `${pkgDir}/package.json must not define "scripts" (declare scripts in zena-package.json or zebra.json)`,
+      );
+      isFalse(
+        hasDependency(pkgObj, 'dependencies', 'wireit') ||
+          hasDependency(pkgObj, 'devDependencies', 'wireit'),
+        `${pkgDir}/package.json must not depend on wireit`,
+      );
+      isTrue(
+        hasNonEmptyObject(pkgObj, 'dependencies') ||
+          hasNonEmptyObject(pkgObj, 'devDependencies'),
+        `${pkgDir}/package.json has no npm dependencies and should be removed`,
+      );
+    }
+  });
+
+  test('every workspace package with a Zebra test script is wired into root :test', async () => {
+    let readRepoFile = (rel: String) => readFileOrNull(withRoot(root, rel));
+    let zebraWs = new ZebraWorkspace(readRepoFile);
+    let rootClosure = await zebraWs.collect([new ScriptRef('', 'test')]);
+    let inRootTest = new HashSet<String>();
+    for (let cfg in rootClosure) {
+      inRootTest.add(refKey(cfg.ref));
+    }
+
+    let entries = await listDir(withRoot(root, 'packages'));
+    for (let entry in entries) {
+      if (entry.fileType != FileType.Directory) {
+        continue;
+      }
+      let pkgDir = `packages/${entry.name}`;
+      let zenaManifest = `${pkgDir}/zena-package.json`;
+      let zebraManifest = `${pkgDir}/zebra.json`;
+      let manifestPath = if (await isFile(withRoot(root, zenaManifest)))
+        zenaManifest
+      else if (await isFile(withRoot(root, zebraManifest)))
+        zebraManifest
+      else
+        null;
+      if (manifestPath == null) {
+        continue;
+      }
+      let manifest = parseJsonObject(manifestPath, await readFile(withRoot(root, manifestPath)));
+      let scriptsVal = manifest['scripts'];
+      if (scriptsVal is JsonObject && scriptsVal['test'] != null) {
+        let key = `${pkgDir}:test`;
+        let cfg = await zebraWs.scriptConfig(new ScriptRef(pkgDir, 'test'));
+        equal(refKey(cfg.ref), key);
+        isTrue(
+          inRootTest.has(key),
+          `${key} is defined in ${manifestPath} but missing from root :test closure`,
+        );
+      }
+    }
+  });
+
+  test('entry targets collect cleanly and every zena:test step discovers tests', async () => {
+    let readRepoFile = (rel: String) => readFileOrNull(withRoot(root, rel));
+    let zebraWs = new ZebraWorkspace(readRepoFile);
+
+    let entryTargets: Array<ScriptRef> = [
+      new ScriptRef('', 'test'),
+      new ScriptRef('', 'test:smoke'),
+      new ScriptRef('', 'build'),
+      new ScriptRef('packages/google-cloud', 'test:emulator'),
+      new ScriptRef('packages/pds', 'test:emulator'),
+      new ScriptRef('packages/registry', 'test:emulator'),
+      new ScriptRef('packages/cli', 'test:pds-js'),
+      new ScriptRef('packages/zenafx', 'test:gui'),
+    ];
+
+    let configs = await zebraWs.collect(entryTargets);
+    var nativeTestsCount = 0;
+
+    for (let cfg in configs) {
+      if (cfg.isFileset) {
+        continue;
+      }
+      let key = refKey(cfg.ref);
+      let tests = cfg.tests;
+      if (tests == null) {
+        equal(
+          cfg.ruleType ?? '<none>',
+          '<none>',
+          `${key}: non-test script should have no ruleType`,
+        );
+        isTrue(
+          cfg.command != null || cfg.dependencies.length > 0,
+          `${key}: script has neither a command nor dependencies`,
+        );
+      } else {
+        nativeTestsCount += 1;
+        equal(
+          cfg.ruleType ?? '<none>',
+          ZENA_TEST_RULE_TYPE,
+          `${key}: Zebra "tests" script must declare "type": "${ZENA_TEST_RULE_TYPE}"`,
+        );
+        let files = await expandTestFiles(root, cfg.ref.packageDir, tests);
+        isTrue(files.length > 0, `${key}: Zebra "tests" matched 0 files`);
+      }
+    }
+
+    isTrue(
+      nativeTestsCount >= 20,
+      `Expected at least 20 native "tests" steps across the workspace, saw ${i32ToString(nativeTestsCount)}`,
+    );
+  });
+});

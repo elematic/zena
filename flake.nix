@@ -110,7 +110,7 @@
           # by substituting a cached output.
           npmRebuildFlags = [ "--ignore-scripts" ];
 
-          # `npm run build` compiles the Rust crates (packages/cli,
+          # `zena build` compiles the Rust crates (packages/cli,
           # packages/zena-run, packages/zenafx, and the packages/runtime-wasmtime
           # library they share, `cargo build --release`). Vendor their crates
           # from Cargo.lock so cargo runs offline in the sandbox;
@@ -137,7 +137,8 @@
 
           buildPhase = ''
             runHook preBuild
-            npm run build
+            cargo build --release -p zena
+            ./target/release/zena build
             runHook postBuild
           '';
 
@@ -180,7 +181,7 @@
         };
 
         # Hermetic test suite: reuse the compiler's vendored npm deps and build,
-        # then run the full `npm test` (all package suites via wireit) with
+        # then run the full `zena test` (all package suites via zebra) with
         # wasmtime + wasm-tools on PATH so the WASI/self-hosted suites actually
         # execute rather than being skipped (run-wasmtime.js only *warns* when
         # `which wasmtime` fails). `nix flake check` builds this, so CI gets a
@@ -198,10 +199,10 @@
           # shell uses. Without this the check fails closed, by design.
           ZENA_WASI_WIT = "${witCorpus}";
 
-          # Run the suite after the existing build phase. wireit rebuilds into a
-          # fresh .wireit cache inside the sandbox, so this is self-contained.
+          # Run the suite after the existing build phase. zebra builds into a
+          # fresh .zebra cache inside the sandbox, so this is self-contained.
           postBuild = ''
-            npm test
+            ./target/release/zena test
           '';
 
           # The install phase is inherited rather than stubbed out, so this
@@ -351,9 +352,10 @@
             echo "wasm-tools version: $(wasm-tools --version)"
             echo "rustc version: $(rustc --version)"
             echo ""
-            echo "Run 'npm install' to install dependencies"
-            echo "Run 'npm run build' to build the compiler"
-            echo "Run 'npm test' to run tests"
+            echo "Run 'npm ci' to install JS dependencies"
+            echo "Run 'cargo build --release -p zena' to bootstrap the zena CLI"
+            echo "Run './target/release/zena build' to build the workspace"
+            echo "Run './target/release/zena test' to run tests"
             echo "WASI WIT corpus: $ZENA_WASI_WIT"
           '';
         };
@@ -368,7 +370,7 @@
           buildInputs = [ nodejs ];
         };
 
-        # The Firebase emulators, for `npm run emulators:start` (a wireit
+        # The Firebase emulators, for `./target/release/zena run emulators:start` (a zebra
         # service that enters this shell itself) and the suites that depend
         # on it. firebase-tools' closure is 1.4 GiB and the JDK's 618 MiB,
         # so they stay out of the default shell, which CI downloads.

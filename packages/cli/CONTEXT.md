@@ -130,7 +130,7 @@ the `zena` command. The design is in
    - `run`, `test` and `bench` compile through a cache (`compileCached`): a
      module plus a `.deps` file listing every file the compile read, with
      modification time and size. `build` always compiles.
-   - `build:module` deletes `out/zena.wasm` before it runs (wireit's
+   - `build:module` deletes `out/zena.wasm` before it runs (Zebra's
      default `clean`); while `out/zena.wasm` is absent, `cli_module`
      falls back to `bootstrap/zena.wasm`.
    - `ZENA_CLI_MODULE=<path>` makes the binary run another CLI module
@@ -164,7 +164,7 @@ the `zena` command. The design is in
      files hold such text in fixtures (`codegen-wat_test.zena`,
      `zir-backend_test.zena` and a dozen more), so `zena test` and
      `test:quick` fail on them for want of a `main` export; they run under
-     `npm run test:unit -w @zena-lang/compiler-zena`.
+     `./target/release/zena run ./packages/compiler:test:unit`.
    - When more files are stale in the compile cache than copies run at
      once, they are compiled first, in that many copies
      (`zena test --compile <files...>`), each compiling its share in file
@@ -234,7 +234,7 @@ the `zena` command. The design is in
 ## Agent Guidelines & Warnings
 
 - **A change to the CLI module needs a rebuild of the module**, not just of
-  the binary: `npm run build -w @zena-lang/cli` does both.
+  the binary: `./target/release/zena build ./packages/cli:build` does both.
 - **Debugging**: `-g` names functions in compiled modules and turns off
   wasmtime's inlining for the runs the command starts. The CLI module is
   built with its name section, so a trap inside it prints a readable

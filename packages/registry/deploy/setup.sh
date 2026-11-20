@@ -276,4 +276,4 @@ if [ -n "$DELEGATE_BY_HAND" ]; then
 else
   echo "Done."
 fi
-echo "Next: npm run deploy -w @zena-lang/registry, with the same PDS_ENV."
+echo "Next: ./target/release/zena run ./packages/registry:deploy, with the same PDS_ENV."

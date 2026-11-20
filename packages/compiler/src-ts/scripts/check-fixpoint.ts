@@ -59,7 +59,7 @@ try {
 } catch {
   console.error(`✗ stage B is missing: ${stageB}`);
   console.error(
-    '  run `npm run build:self-hosted -w @zena-lang/compiler-zena`',
+    '  run `./target/release/zena build ./packages/compiler:build:self-hosted`',
   );
   process.exit(1);
 }

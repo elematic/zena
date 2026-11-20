@@ -14,20 +14,21 @@ testing and wasm debugging.
 
 ```bash
 npm ci
-npm run build
-npm test
+cargo build --release -p zena
+./target/release/zena build
+./target/release/zena test
 ```
 
 `npm ci` installs what `package-lock.json` pins and never rewrites it.
-Wireit counts the lockfile as an input of every script, so an
-`npm install` that changes it reruns the whole build. To add or change a
-dependency, use `npm i <package>` and commit the lockfile it writes.
+Zebra counts the lockfile as an input of scripts, so an `npm install` that
+changes it reruns the whole build. To add or change a dependency, use
+`npm i <package>` and commit the lockfile it writes.
 
-Always drive builds and tests through `npm run` / `npm test` — they go
-through [Wireit](https://github.com/google/wireit), which builds
-dependencies in the right order and caches by input content. Never run
-`node`/`npx`/`tsx` against sources directly, and trust "already fresh"
-cache hits.
+Always drive builds and tests through Zebra (`./target/release/zena build`,
+`./target/release/zena test`, or `./target/release/zena run <target>`),
+which builds dependencies in the right order and caches by input content.
+Never run `node`/`npx`/`tsx` against sources directly, and trust fresh/cached
+hits.
 
 ## How the build bootstraps
 
@@ -46,17 +47,17 @@ Before `packages/cli/out/zena.wasm` is built, `zena` falls back
 to `bootstrap/zena.wasm`, so `zena build`, `zena fmt` and `zena lint`
 work immediately after `cargo build --release -p zena`.
 
-The invariant, enforced by `npm test` and CI on every change: **the
-bootstrap must build a HEAD that passes the test suite**, including
-`test:fixpoint` — the compiler compiled by itself must byte-match the
-compiler compiled by _that_ compiler, so a compiler that miscompiles
+The invariant, enforced by `./target/release/zena test` and CI on every
+change: **the bootstrap must build a HEAD that passes the test suite**,
+including `test:fixpoint` — the compiler compiled by itself must byte-match
+the compiler compiled by _that_ compiler, so a compiler that miscompiles
 itself cannot land.
 
 Re-baselining the bootstrap (rare, on demand):
 
 ```bash
-npm run reseed   # gated on the full suite + fixpoint + byte-for-byte self-audit
-npm test         # rebuild + retest from the new bootstrap
+./target/release/zena run reseed   # gated on the full suite + fixpoint + byte-for-byte self-audit
+./target/release/zena test         # rebuild + retest from the new bootstrap
 ```
 
 Full design: [docs/design/bootstrapping.md](./docs/design/bootstrapping.md).
@@ -82,16 +83,17 @@ has more, including how to check that the binaries share their build.
 
 ## CI
 
-The GitHub workflow (`.github/workflows/test.yml`) runs `npm test` in the
-dev shell. It restores three caches, so a run rebuilds only what its change
-reaches: the Rust dependencies (rust-cache), the workspace crates' own
-build, which `scripts/ci-cargo-freshness.py` lets cargo reuse, and wireit's
-script results.
+The GitHub workflow (`.github/workflows/test.yml`) runs
+`./target/release/zena build test` in the dev shell. It restores three
+caches, so a run rebuilds only what its change reaches: the Rust
+dependencies (rust-cache), the workspace crates' own build, which
+`scripts/ci-cargo-freshness.py` lets cargo reuse, and Zebra's remote cache
+(`ZEBRA_CACHE=github`).
 
 `nix flake check` builds the whole monorepo hermetically in the Nix
 sandbox — cargo compiles `zena`, the bootstrap compiles the
-compiler, and the entire `npm test` suite runs offline — so it shows
-that a clean checkout bootstraps, which a cached run does not.
+compiler, and the entire `./target/release/zena test` suite runs offline —
+so it shows that a clean checkout bootstraps, which a cached run does not.
 
 ### Known CI flakes
 
@@ -108,7 +110,7 @@ matches one of these:
   requests under load (#449).
 - **A script's output missing after a cache restore.** A script fails
   because a file another script declares as its output is not there,
-  although that script's result was restored from wireit's cache: for
+  although that script's result was restored from Zebra's cache: for
   example `zenafx:test` reporting `out/widgets.wasm is missing`. Rerun
   when the change touches none of the missing file's inputs.
 

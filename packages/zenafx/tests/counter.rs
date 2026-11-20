@@ -50,7 +50,7 @@ fn counter() -> GuestScene {
     let wasm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out/counter.wasm");
     assert!(
         wasm.exists(),
-        "{} is missing; build it with `npm run build:counter -w @zena-lang/zenafx`",
+        "{} is missing; build it with `./target/release/zena build ./packages/zenafx:build:counter`",
         wasm.display()
     );
     let engine = engine(false).expect("could not create an engine");

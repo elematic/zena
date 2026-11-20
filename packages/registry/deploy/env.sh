@@ -199,7 +199,7 @@ export_service_environment() {
   done
   GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token --impersonate-service-account "$SERVICE_ACCOUNT_EMAIL" \
     2> /dev/null)" || {
-    echo "gcloud could not act as $SERVICE_ACCOUNT_EMAIL: run npm run deploy:setup -w @zena-lang/registry," >&2
+    echo "gcloud could not act as $SERVICE_ACCOUNT_EMAIL: run ./target/release/zena run ./packages/registry:deploy:setup," >&2
     echo "which lets the account it runs as do so (roles/iam.serviceAccountTokenCreator)" >&2
     return 2
   }
