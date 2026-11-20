@@ -189,10 +189,18 @@ jobs:
       # bootstrap to the full CLI module on 2026-11-13, stage B reached 6.5
       # to 8.1 GiB, `registry:test` 6.6 to 7.4 GiB, and `test:execution` 6.5
       # GiB; 3 at once reached 15.1 to 15.2 GiB (`available=748Mi`) and killed
-      # runs again, so 2.
+      # runs again, so `ZEBRA_PARALLEL` stays at 2.
+      #
+      # `CliTestStepRunner` falls back to `ZEBRA_PARALLEL` when
+      # `ZENA_TEST_PARALLELISM` is unset, which left 2 of the runner's 4 CPUs
+      # idle during in-process `zena:test` suites. After #1287 trimmed glibc
+      # arenas (`8.7` to `13.6 GiB` free during `zena:test`), set
+      # `ZENA_TEST_PARALLELISM: 4` so the shared test pool uses all 4 CPUs
+      # while keeping heavy build steps capped at 2.
       - name: Run test suite
         env:
           ZEBRA_PARALLEL: 2
+          ZENA_TEST_PARALLELISM: 4
         run: |
           (
             while true; do
