@@ -93,6 +93,8 @@ pub fn write_cwasm(
             let _ = std::fs::remove_file(&temp_path);
             return Err(e.into());
         }
+        drop(wasm_bytes);
+        crate::trim_allocator();
     }
     // The lock is released when lock_file drops.
     Ok(())
@@ -128,9 +130,12 @@ pub fn precompile_component(engine: &Engine, wasm_path: &Path, debug: bool) -> R
 pub fn compile_component_uncached(engine: &Engine, wasm_path: &Path) -> Result<Component> {
     let bytes = std::fs::read(wasm_path)
         .with_context(|| format!("failed to read {}", wasm_path.display()))?;
-    Component::new(engine, &bytes)
+    let result = Component::new(engine, &bytes)
         .map_err(anyhow::Error::from)
-        .with_context(|| format!("failed to compile {}", wasm_path.display()))
+        .with_context(|| format!("failed to compile {}", wasm_path.display()));
+    drop(bytes);
+    crate::trim_allocator();
+    result
 }
 
 /// Loads `cwasm_path`, first (re)writing it from `wasm_path` when it is
@@ -180,9 +185,12 @@ pub fn precompile_module(engine: &Engine, wasm_path: &Path, debug: bool) -> Resu
 pub fn compile_module_uncached(engine: &Engine, wasm_path: &Path) -> Result<Module> {
     let bytes = std::fs::read(wasm_path)
         .with_context(|| format!("failed to read {}", wasm_path.display()))?;
-    Module::new(engine, &bytes)
+    let result = Module::new(engine, &bytes)
         .map_err(anyhow::Error::from)
-        .with_context(|| format!("failed to compile {}", wasm_path.display()))
+        .with_context(|| format!("failed to compile {}", wasm_path.display()));
+    drop(bytes);
+    crate::trim_allocator();
+    result
 }
 
 /// [`load_or_compile_component`], for a core module.

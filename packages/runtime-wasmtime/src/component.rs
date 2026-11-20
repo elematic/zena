@@ -1307,6 +1307,9 @@ fn run(engine: &Engine, config: &RunConfig) -> RunFinished {
         }
     };
     drop(store);
+    drop(linker);
+    drop(component);
+    crate::trim_allocator();
     let (stdout, stderr) = match captured {
         Some((out, err)) => (out.contents().to_vec(), err.contents().to_vec()),
         None => (Vec::new(), Vec::new()),

@@ -118,6 +118,20 @@ pub fn inherited_env_with(overrides: &[(String, String)]) -> Vec<(String, String
     env
 }
 
+/// Returns freed heap pages to the operating system on glibc Linux.
+///
+/// Cranelift compiles of large components (such as the CLI module) allocate
+/// several gigabytes of temporary buffers across glibc's per-thread arenas,
+/// and glibc retains those freed arenas until process exit unless trimmed.
+pub fn trim_allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim(0)` is thread-safe in glibc and releases free
+    // pages across arenas without affecting live allocations.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 /// Guest-to-host directory mappings, mirroring the invocation's WASI
 /// preopens. The guest names paths by its preopen layout ('.', '/tmp'),
 /// but children spawn on the host, where those directories may live
@@ -207,5 +221,46 @@ mod tests {
                 guest: "/work".into()
             }
         );
+    }
+
+    #[test]
+    fn trim_allocator_releases_freed_heap_pages() {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            fn current_rss_kib() -> Option<u64> {
+                let status = std::fs::read_to_string("/proc/self/status").ok()?;
+                for line in status.lines() {
+                    if let Some(rest) = line.strip_prefix("VmRSS:") {
+                        return rest.split_whitespace().next()?.parse().ok();
+                    }
+                }
+                None
+            }
+
+            // Interleave 32 KiB blocks with small live allocations so freeing
+            // the large blocks leaves fragmented free chunks inside glibc's
+            // arena that are only returned to the OS by `malloc_trim(0)`.
+            let mut blocks: Vec<Vec<u8>> = Vec::with_capacity(2048);
+            let mut pins: Vec<Box<[u8; 64]>> = Vec::with_capacity(2048);
+            for _ in 0..2048 {
+                blocks.push(vec![1u8; 32 * 1024]);
+                pins.push(Box::new([2u8; 64]));
+            }
+            std::hint::black_box(&blocks);
+            std::hint::black_box(&pins);
+            blocks.clear();
+            drop(blocks);
+
+            let before_trim = current_rss_kib().expect("VmRSS in /proc/self/status");
+            trim_allocator();
+            let after_trim = current_rss_kib().expect("VmRSS in /proc/self/status");
+            std::hint::black_box(&pins);
+            assert!(
+                after_trim + 16 * 1024 < before_trim,
+                "expected trim_allocator() to release freed arena pages (before={before_trim} KiB, after={after_trim} KiB)",
+            );
+        }
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        trim_allocator();
     }
 }
