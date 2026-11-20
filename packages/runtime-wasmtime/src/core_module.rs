@@ -165,6 +165,9 @@ pub(crate) fn run(engine: &Engine, config: &RunConfig) -> RunFinished {
             }
         }
     };
+    drop(store);
+    drop(module);
+    crate::trim_allocator();
     RunFinished {
         outcome,
         exit_code,
