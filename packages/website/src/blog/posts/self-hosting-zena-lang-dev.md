@@ -28,7 +28,7 @@ design of `zena:http`, and the runtime and WIT changes behind those numbers.
 
 ## The Server Running `zena-lang.dev`
 
-The entire production server (`packages/website/zena/server.zena`) is 56 lines
+The entire production server (`packages/website/zena/server.zena`) is 20 lines
 of Zena:
 
 ```zena
@@ -37,64 +37,35 @@ of Zena:
  */
 
 import { getEnv } from 'zena:cli';
-import { App, send, serve } from 'zena:http';
+import { App, serve } from 'zena:http';
 
-function resolvePort(): u16 {
-  let envPort = getEnv('PORT');
-  if (envPort != null) {
-    if (let (true, p) = parseI32(envPort)) {
-      return p as u16;
-    }
-  }
-  return 8080 as u16;
-}
+export async function main() {
+  let siteDir = getEnv('SITE_DIR') ?? '.';
+  let port = (parseI32(getEnv('PORT') ?? '') ?? 8080) as u16;
 
-function resolveSiteDir() {
-  return getEnv('SITE_DIR') ?? '.';
-}
-
-export function main() {
   let app = new App();
-  let port = resolvePort();
-  let siteDir = resolveSiteDir();
 
-  app.use(serve(siteDir, {
-    setHeaders: (res, path, stat) => {
-      // Assets are not content-hashed, so revalidate via ETag/Last-Modified.
-      res.setHeader('cache-control', 'no-cache');
-      res.setHeader('x-content-type-options', 'nosniff');
-    },
-  }));
+  app.use(serve(siteDir, {notFound: '404.html'}));
 
-  app.use(async (req, res, next) => {
-    if (req.method != 'GET' && req.method != 'HEAD') {
-      res.statusCode = 405;
-      res.setHeader('allow', 'GET, HEAD');
-      res.body = 'Method Not Allowed';
-      return;
-    }
-    res.statusCode = 404;
-    await send(req, res, '404.html', {
-      root: siteDir,
-      setHeaders: (r, path, stat) => {
-        r.setHeader('cache-control', 'no-cache');
-        r.setHeader('x-content-type-options', 'nosniff');
-      },
-    });
-  });
-
-  app.listen(port, () => {
-    console.log(`🚀 Zena HTTP server running at http://localhost:${port}`);
-    console.log(`Serving static site from: ${siteDir}`);
-  });
+  let server = await app.listen(port);
+  console.log(`🚀 Zena HTTP server running at http://localhost:${server.port}`);
+  console.log(`Serving static site from: ${siteDir}`);
+  await server.done;
 }
 ```
 
-During the build, `zena-cli build` compiles `server.zena` to a WASI 0.3
-component (`server.wasm`), and inside the Docker image `zena-run --precompile`
-compiles that component ahead of time into a native Cranelift artifact
-(`server.cwasm`). The container ships only `zena-run`, `server.wasm`,
-`server.cwasm`, and the built `_site` directory (mounted at `.` via
+`serve(siteDir, {notFound: '404.html'})` handles static assets, default
+security and caching headers (`X-Content-Type-Options: nosniff`, `ETag`,
+`Last-Modified`, and `Cache-Control: max-age=0`), and serving `404.html` on
+unmatched `GET`/`HEAD` requests. Because `Server` is a resource class whose
+owner closes it when leaving scope, `await server.done` keeps the server
+running until shutdown.
+
+During the build, `zena build` compiles `server.zena` to a WASI 0.3 component
+(`server.wasm`), and inside the Docker image `zena-run --precompile` compiles
+that component ahead of time into a native Cranelift artifact (`server.cwasm`).
+The container ships only `zena-run`, `server.wasm`, `server.cwasm`, and the
+built `_site` directory (mounted at `.` via
 `zena-run --dir /app/_site::. /app/server.wasm`), starting in milliseconds
 without JIT compilation at cold start.
 
@@ -108,13 +79,15 @@ built on WASI 0.3 async tasks and streams.
 An `App` runs an ordered pipeline of middleware functions:
 
 ```zena
-type NextFunction = () => Future<void>;
-type Middleware = (req: Request, res: Response, next: NextFunction) => Future<void>;
+type NextFunction = (req: Own<Request>) => Future<void>;
+type Middleware = (req: Own<Request>, res: Response, next: NextFunction) => Future<void>;
 ```
 
-Calling `await next()` invokes the downstream middleware and resumes when it
-completes, making logging, timing, authentication, and error handling
-composable:
+`Request` is a resource class: each middleware owns it and hands it downstream
+with `await next(req)`, so calling `next` twice or reading `req` after moving
+it is a compile-time error, and whoever holds it last releases its body.
+Resuming after `await next(req)` makes logging, timing, authentication, and
+error handling composable:
 
 ```zena
 import { App } from 'zena:http';
@@ -124,7 +97,7 @@ let app = new App();
 
 app.use(async (req, res, next) => {
   let start = monotonic();
-  await next();
+  await next(req);
   let elapsed = monotonic() - start;
   res.setHeader('x-response-time', `${elapsed as i64}ns`);
 });
@@ -145,13 +118,13 @@ import { App, Router } from 'zena:http';
 let router = new Router();
 
 router.get('/users/:id', async (req, res, next, params) => {
-  let id = params['id'] ?? 'unknown';
+  let id = params.get('id') ?? 'unknown';
   res.type = 'application/json; charset=utf-8';
   res.body = `{"id":"${id}"}`;
 });
 
 router.get('/files/*', async (req, res, next, params) => {
-  let relativePath = params['*'] ?? '';
+  let relativePath = params.get('*') ?? '';
   res.body = `Requested: ${relativePath}`;
 });
 
@@ -166,17 +139,19 @@ app.use(router.routes());
 ```zena
 import { html } from 'zena:http';
 
-let renderPage = (title: String, items: Array<String>) => html`
-  <!doctype html>
-  <html>
-    <head><title>${title}</title></head>
-    <body>
-      <ul>
-        ${items.map((item) => html`<li>${item}</li>`)}
-      </ul>
-    </body>
-  </html>
-`;
+function renderPage(title: String, items: Array<String>) {
+  return html`
+    <!doctype html>
+    <html>
+      <head><title>${title}</title></head>
+      <body>
+        <ul>
+          ${items.map((item) => html`<li>${item}</li>`)}
+        </ul>
+      </body>
+    </html>
+  `;
+}
 ```
 
 `html` returns an `HTMLPartial` that can be assigned directly to `res.body`,
@@ -196,11 +171,14 @@ rendered markup without concatenating the full page into a single string first:
 
 - **Path confinement**: Rejects NUL bytes and `..` traversal above the root with
   `403 Forbidden`, and ignores hidden dotfile segments by default.
-- **Directory index & extension resolution**: Resolves directories to
-  `index.html` and supports fallback extensions (e.g., `extensions: ['html']`).
-- **Conditional requests**: Sets `Last-Modified` and weak `ETag`
-  (`W/"<size>-<mtime>"`) headers, returning `304 Not Modified` when
-  `If-None-Match` matches.
+- **Directory index, extensions & 404 fallback**: Resolves directories to
+  `index.html`, supports fallback extensions (e.g., `extensions: ['html']`),
+  and serves a custom `notFound` page (e.g., `notFound: '404.html'`) with
+  status `404` when no downstream middleware handles a `GET`/`HEAD` request.
+- **Conditional requests & default headers**: Sets `Last-Modified`, weak `ETag`
+  (`W/"<size>-<mtime>"`), `Cache-Control`, and
+  `X-Content-Type-Options: nosniff` headers by default, returning
+  `304 Not Modified` when `If-None-Match` matches.
 - **Pre-compressed sidecars**: Negotiates `Accept-Encoding` (including `q`
   weights) to serve `<file>.br` or `<file>.gz` when present on disk.
 - **Host-to-socket streaming**: Streams file descriptors directly to the HTTP
@@ -217,17 +195,17 @@ import { getEnv } from 'zena:cli';
 import { App } from 'zena:http';
 import { JsonBuilder } from 'zena:json';
 
-let resolvePort = (): u16 => {
+function resolvePort() {
   let envPort = getEnv('PORT');
   if (envPort != null) {
-    if (let (true, p) = parseI32(envPort as String)) {
+    if (let (true, p) = parseI32(envPort)) {
       return p as u16;
     }
   }
   return 3000 as u16;
-};
+}
 
-export function main(): void {
+export async function main(): Future<void> {
   let app = new App();
   let port = resolvePort();
 
@@ -238,7 +216,8 @@ export function main(): void {
     res.body = b.toString();
   });
 
-  app.listen(port, (): void => {});
+  let server = await app.listen(port);
+  await server.done;
 }
 ```
 
@@ -286,32 +265,33 @@ task and channel to pump the stream into Hyper.
 
 That machinery is great for streaming bodies, but pure overhead when `res.body`
 is already a complete `String` in memory. We added a single `complete-text`
-static method to `response-writer` in `zena-cli:host/http-server` that accepts
-the status code, content-type, headers, and body string in one host call,
-constructs an `http::Response<Full<Bytes>>` directly in Rust, and disposes both
-the `response-writer` and unconsumed `request` handles in place. For in-memory
-text and JSON responses, that reduced 9 host calls to **1**, jumping throughput
-nearly **10×** to **314,982 req/s**—over **4× faster than Fastify**. Streaming
-bodies (`HTMLPartial` and `Stream<u8>`) continue to use the standard
-`wasi:http/types` streaming path automatically.
+static method to `response-writer` in `zena:host/http-server` that accepts the
+status code, content-type, headers, and body string in one host call,
+constructs an `http::Response<Full<Bytes>>` directly in Rust, and disposes the
+`response-writer` handle in place. For in-memory text and JSON responses, that
+reduced 9 host calls to **1**, jumping throughput nearly **10×** to
+**314,982 req/s**—over **4× faster than Fastify**. Streaming bodies
+(`HTMLPartial` and `Stream<u8>`) continue to use the standard `wasi:http/types`
+streaming path automatically.
 
 ### 3. Host-to-Socket Static Files (`245 ms` → `17 ms` for 64 MB)
 
-For static files, `send()` opens a WASI `stream<u8>` directly from the file
-descriptor via `wasi:filesystem`'s `readViaStream` and attaches it to `res.body`:
+For static files, `send()` opens the file and attaches its WASI `stream<u8>`
+(backed by `wasi:filesystem`'s `read-via-stream`) directly to `res.body`:
 
 ```zena
-let (contents, done) = file.readViaStream(0 as u64);
-closeWhenRead(file, done);
-res.body = contents;
+let file = await openFile(base, path);
+res.body = file.readStream();
 ```
 
-Because both the file stream reader and the HTTP response writer live in
-Wasmtime's host resource table, Tokio streams file bytes straight from the OS
-file descriptor to the socket without copying them through WebAssembly memory.
-Bumping the host `read-via-stream` buffer in `zena-runtime` from `wasmtime-wasi`'s
-default 8 KiB to 256 KiB cut a 64 MB static file transfer from **245 ms** (8,192
-blocking-pool reads) to **17 ms** (~3.7 GB/s over loopback).
+`file.readStream()` consumes the owned file descriptor and releases it once the
+stream finishes. Because both the file stream reader and the HTTP response
+writer live in Wasmtime's host resource table, Tokio streams file bytes
+straight from the OS file descriptor to the socket without copying them through
+WebAssembly memory. Bumping the host `read-via-stream` buffer in `zena-runtime`
+from `wasmtime-wasi`'s default 8 KiB to 256 KiB cut a 64 MB static file
+transfer from **245 ms** (8,192 blocking-pool reads) to **17 ms** (~3.7 GB/s
+over loopback).
 
 ## Try It Out
 
