@@ -317,7 +317,7 @@ fn cli_module_from(env_override: Option<&str>, sources: Option<&Path>) -> Result
     }
     anyhow::bail!(
         "The zena command's module is not built or bundled. \
-         Build it with `npm run build -w @zena-lang/cli`."
+         Build it with `./target/release/zena build ./packages/cli:build`."
     );
 }
 

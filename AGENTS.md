@@ -212,13 +212,14 @@ then builds `packages/cli/out/zena.wasm` and everything else.
 Design doc: `docs/design/bootstrapping.md`. Rules:
 
 - **NEVER edit, delete, or regenerate `bootstrap/zena.wasm` by hand.**
-  Re-baselining goes through `npm run reseed`, which is gated on the
-  full suite plus the fixpoint check and a byte-for-byte self-audit,
-  followed by a second `npm test` that rebuilds everything from the new
-  bootstrap.
+  Re-baselining goes through `./target/release/zena run reseed`, which is
+  gated on the full suite plus the fixpoint check and a byte-for-byte
+  self-audit, followed by a second `./target/release/zena test` that
+  rebuilds everything from the new bootstrap.
 - **The invariant**: the bootstrap must build a HEAD that passes the
   test suite. `test:fixpoint` (stage-B ≡ stage-C byte parity) is part
-  of `npm test` — a compiler that miscompiles itself fails the gate.
+  of `./target/release/zena test` — a compiler that miscompiles itself
+  fails the gate.
 - A compiler-source change the current bootstrap cannot compile lands
   in two steps (feature first, self-use after a reseed) — see the
   design doc.
@@ -245,15 +246,16 @@ Skips are printed, with their reasons, in every run's summary. Run a single
 category (optionally filtered by path substring) with:
 
 ```bash
-npm run test:execution -w @zena-lang/compiler-zena -- variables
+./target/release/zena run ./packages/compiler:test:execution variables
 ```
 
 When fixing bugs or adding features, prefer adding portable tests here.
 
 ## Project Structure
 
-This project is an **npm monorepo** managed with **Wireit** (plus a Cargo
-workspace at the root for the Rust/wasmtime hosts).
+This project is a **Zena workspace** managed with **Zebra** (plus an npm
+workspace for the JavaScript/TypeScript packages and a Cargo workspace at the
+root for the Rust/wasmtime hosts).
 
 Directory-level orientation lives in `CONTEXT.md` files. Read the
 `CONTEXT.md` nearest your work before editing:
@@ -357,23 +359,27 @@ wasmtime, wasm-tools).
 - **Without direnv**: Prefix commands with `nix develop -c`.
 - **Without Nix**: You need **Node.js v25+** (for built-in WASM `exnref`
   support; check with `node -v`) and a **Rust toolchain (`cargo`)**. `zena`
-  and `zena-run` embed Wasmtime via Cargo, so `npm run build` and `npm test`
+  and `zena-run` embed Wasmtime via Cargo, so `zena build` and `zena test`
   work without standalone `wasmtime`; the standalone `wasmtime` and
   `wasm-tools` CLIs are only needed for direct WASM inspection and debugging.
+- **Fresh checkout**: run `npm ci` (for JS/TS packages and Prettier) and
+  `cargo build --release -p zena` once to build the host binary. Before
+  `packages/cli/out/zena.wasm` exists, `./target/release/zena` falls back
+  to `packages/cli/bootstrap/zena.wasm`, so `./target/release/zena build`
+  and `./target/release/zena test` work immediately.
 - **Installing npm dependencies**: `npm ci`, in a new checkout or worktree
   and after pulling. It installs what `package-lock.json` pins and never
-  writes it. Wireit counts the lockfile as an input of every script, so an
+  writes it. Zebra counts the lockfile as an input of scripts, so an
   `npm install` that rewrites it makes the next build rerun everything.
   Use `npm i <package>` only to add or change a dependency, and commit the
   lockfile with it.
 
 ### The `zena` command
 
-Once built (`npm run build -w @zena-lang/cli`), invoke the CLI either
-directly from the repository root as `./target/release/zena` (resolves
-paths relative to your current working directory) or through Wireit as
-`npm run zena -w @zena-lang/cli -- ...` (ensures dependencies are built
-first, with paths relative to `packages/cli`).
+Once built (`cargo build --release -p zena` in a fresh checkout, then
+`./target/release/zena build ./packages/cli:build`), invoke the CLI directly
+from the repository root as `./target/release/zena` (resolves paths relative
+to your current working directory).
 
 Subcommands (`./target/release/zena <subcommand>`):
 
@@ -553,34 +559,40 @@ readable. Stage A (`build:cli`, built by the bootstrap) has none; for a
 readable trap in it, rerun the `build:cli` command with `ZENA_DEBUG_NAMES=1`
 and another `-o`. See `docs/design/binary-size.md`.
 
-## ⚠️ CRITICAL: Build System (Wireit)
+## ⚠️ CRITICAL: Build System (Zebra)
 
-**Agents repeatedly make mistakes with Wireit. Read this carefully.**
+**Agents repeatedly make mistakes with the build cache. Read this carefully.**
 
-Wireit caches script results based on **input file contents**. When Wireit
-reports a script is "**already fresh**" or "**Skipping**", it means the script
-already succeeded for the current inputs. **The cached result is correct.**
+The repository builds and tests through **Zebra** (`./target/release/zena build`,
+`./target/release/zena test`, and `./target/release/zena run <target>`, with
+scripts declared in each package's `zena-package.json` or `zebra.json`).
+
+Zebra caches script results based on **input file contents**. When Zebra
+reports a script is "**fresh**" or "**cached**", it means the script already
+succeeded for the current inputs. **The cached result is correct.**
 
 ### Rules
 
-1. **ALWAYS use `npm run` or `npm test`** to run scripts. These go through
-   Wireit, which builds dependencies automatically. **NEVER** use `node`,
-   `npx`, `tsx`, or `ts-node` to run scripts directly — they skip the build
-   step and may use stale output.
+1. **ALWAYS use `./target/release/zena build`, `./target/release/zena test`,
+   or `./target/release/zena run <target>`** to run build and test scripts.
+   These go through Zebra, which builds dependencies automatically. **NEVER**
+   use `node`, `npx`, `tsx`, or `ts-node` to run package scripts directly —
+   they skip the build step and may use stale output.
 
 2. **NEVER try to force a rebuild.** Do not:
    - Touch or modify input files to trigger a rebuild
-   - Delete output files or `.wireit/` cache directories
-   - Add `--force` flags or clear caches
+   - Delete output files or `.zebra/` cache directories
+   - Pass `--force` or `--no-cache` flags to clear caches
 
-   If Wireit says tests are cached as passing, **they are passing**. Trust the
+   If Zebra says tests are cached as passing, **they are passing**. Trust the
    cache. Move on.
 
-3. **If you think the cache is wrong**, it's almost certainly a Wireit
-   configuration issue (missing input, output, or dependency in `package.json`).
-   Check the `wireit` config before assuming the cache is stale.
+3. **If you think the cache is wrong**, it's almost certainly a Zebra
+   configuration issue (missing input, output, or dependency in
+   `zena-package.json` or `zebra.json`). Check the manifest before assuming
+   the cache is stale.
 
-4. **Don't edit or add input files while a Wireit run is going** in the
+4. **Don't edit or add input files while a Zebra run is going** in the
    same checkout, comments and `tests/language/` files included. A script's
    fingerprint is taken when it starts, so the run can cache output built
    from a mix of old and new files; the compiler also names some functions
@@ -588,9 +600,10 @@ already succeeded for the current inputs. **The cached result is correct.**
    and start it again.
 
 5. **`./target/release/zena` runs `packages/cli/out/zena.wasm`**,
-   which only Wireit rebuilds. After switching branches or rebasing, run
-   `npm run build -w @zena-lang/cli` (a no-op when it is fresh) before
-   treating a failure of the direct command as a compiler bug.
+   which `./target/release/zena build ./packages/cli:build` rebuilds. After
+   switching branches or rebasing, run
+   `./target/release/zena build ./packages/cli:build` (a no-op when it is
+   fresh) before treating a failure of the direct command as a compiler bug.
 
 ### Declaring inputs
 
@@ -604,8 +617,9 @@ script and everything after it, so keep inputs to what the script reads:
   The root `check:workspace` script fails `npm test` when any manifest
   cannot be read.
 - **Sources.** List the directories a compile's imports reach, such as a
-  package's `lib/`. A package's tests are inputs only of the script that
-  runs them.
+  package's `lib/` (or reference a package's fileset like `../stdlib:lib` or
+  `../registry:source`). A package's tests are inputs only of the script
+  that runs them.
 - **A dependency's output.** When a script reads a file another script
   writes (`out/cli.wasm`), list the file and depend on that script
   with `"cascade": false`. It then reruns when the file's bytes change,
@@ -619,107 +633,91 @@ script and everything after it, so keep inputs to what the script reads:
   only the ones its sources import. A missing one passes locally, where
   the other package happens to be built, and fails in CI.
 
-### Zebra's scripts beside wireit's
-
-Every wireit script also exists as a zebra script: in the package's
-`zena-package.json` under `scripts`, or in `zebra.json` for a package
-without a Zena manifest. The two run side by side until zebra caches in
-CI. A change to a script's command, dependencies (`cascade` included),
-inputs or outputs in one goes into the other in the same commit. They
-differ only where zebra has its own means: a fileset (`../stdlib:lib`,
-`../registry:source`) in place of a list of files, or a
-`"type": "zena:test"` rule in place of a `zena test ...` command.
-`packages/zebra/test/repo-parity_test.zena` checks that the two stay in
-sync.
-
 ### `ERR_MODULE_NOT_FOUND` on a file whose source exists
 
 If something fails to import, say, `packages/runtime-js/lib/index.js` while
 `src/index.ts` is sitting right there, the package's output has gone partial.
 
-**Check for a second build first.** Two Wireit runs over one checkout — a
-second terminal, an editor task, `npm install` re-linking the workspaces — will
-race on the same output directories, and one will read `lib/` while the other
-is rewriting it. Wireit usually says so: "Input file … was deleted
-unexpectedly. Is another process writing to the same location?" Wait for the
-other run to finish; nothing is broken.
+**Check for a second build first.** Two Zebra runs over one checkout — a
+second terminal, an editor task, `npm install` re-linking the workspaces —
+will race on the same output directories, and one will read `lib/` while the
+other is rewriting it. Wait for the other run to finish; nothing is broken.
 
-Otherwise the output really is wrong, and Wireit has cached it as good.
-Before Wireit 0.15 this followed from a deleted output file: the `tsc`
-scripts use `clean: "if-file-deleted"`, which kept `tsconfig.tsbuildinfo`,
-so `tsc` re-emitted nothing and Wireit cached the incomplete `lib/`. Wireit
-0.15 cleans when an output was deleted, so a new build no longer does this,
-but a cache entry an earlier Wireit wrote can still hold such output.
-
-The fingerprint is computed from inputs, so deleting the output does not
-invalidate it — Wireit will just restore the same bad cache entry. Drop the
-entry instead:
+Otherwise the output really is wrong, and Zebra has cached it as good. Drop
+the stale incremental TypeScript build info and rerun that target once with
+`--force`:
 
 ```bash
-rm -rf packages/runtime-js/.wireit packages/runtime-js/tsconfig.tsbuildinfo
-npm run build -w @zena-lang/runtime
+rm -f packages/runtime-js/tsconfig.tsbuildinfo
+./target/release/zena build --force ./packages/runtime-js:build
 ```
 
-This is the one situation where the cache is genuinely stale. Everything under
+This is the one situation where `--force` is warranted. Everything under
 "Rules" above still applies otherwise.
 
 ### Running Tests
 
-**ALWAYS** use `npm` to run tests. Never use `npx`, `tsx`, or bash scripts.
-There is no `wireit` command. Use `npm test`.
+**ALWAYS** run tests through Zebra (`./target/release/zena test` /
+`./target/release/zena run <target>`). Never use `npx`, `tsx`, or bash scripts.
 
 ```bash
 # Run all tests
-npm test
+./target/release/zena test
 
 # Everything except the fixpoint check, for a faster local loop
-npm run test:smoke
+./target/release/zena run test:smoke
 
 # One area's Zena tests, with the compiler that is already built
-npm run test:quick -- packages/stdlib/tests/regex
+./target/release/zena test packages/stdlib/tests/regex
 
-# Run tests for a specific package
-npm test -w @zena-lang/compiler-zena
+# Run tests for any package (pure Zena, Rust, or JS/TS)
+./target/release/zena run ./packages/stdlib:test
+./target/release/zena run ./packages/compiler:test:execution variables
 
 # Run a specific TypeScript test file (note: path is relative, uses .js extension)
-npm test -w @zena-lang/runtime -- test/runtime_test.js
+./target/release/zena run ./packages/runtime-js:test test/runtime_test.js
 
 # Isolate a specific TypeScript test (use test.only() in the file)
-npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
+./target/release/zena run ./packages/runtime-js:test --test-only test/runtime_test.js
 ```
 
-- Packages are referred to by **package name** (`@zena-lang/compiler-zena`), not path.
-- **NEVER** use `npm test packages/compiler/...` or `npm test -- some/path`.
-- `npm run test:smoke` is `npm test` without `test:fixpoint`, which builds
-  stage B and stage C of the compiler to compare them and is the longest
-  chain in a cold run. It catches the compiler miscompiling itself, which no
-  other test can see, so CI (`nix flake check`) runs the full `npm test`. Use
-  the smoke target for the local loop; run `npm test` before finishing a task.
-  See `docs/design/bootstrapping.md`.
-- `npm run test:quick -- <path>` runs `zena test` on a path, directory or
-  glob with **the compiler that is already built**. It is not a wireit
-  script, so it rebuilds nothing. This is the inner loop for a standard
-  library change: editing `zena/regex.zena` and running
-  `npm run test:quick -- packages/stdlib/tests/regex` takes 1.5s, where
-  `npm test -w @zena-lang/stdlib` takes 97s, because the standard library is
-  an input to the compiler and a change to it rebuilds stage A, the CLI
-  module and the bundle.
+- Address any package target by path with Zebra:
+  `./target/release/zena build ./packages/<pkg>:<script>` or
+  `./target/release/zena run ./packages/<pkg>:<script> [args...]`.
+- `./target/release/zena run test:smoke` is `./target/release/zena test`
+  without `test:fixpoint`, which builds stage B and stage C of the compiler
+  to compare them and is the longest chain in a cold run. It catches the
+  compiler miscompiling itself, which no other test can see, so CI runs the
+  full `test` target. Use the smoke target for the local loop; run
+  `./target/release/zena test` before finishing a task. See
+  `docs/design/bootstrapping.md`.
+- `./target/release/zena test <path>` (with a path, directory, or glob; also
+  available as `npm run test:quick -- <path>`) runs `zena test` directly
+  with **the compiler that is already built**, rebuilding nothing. This is
+  the inner loop for a standard library change: editing `zena/regex.zena`
+  and running `./target/release/zena test packages/stdlib/tests/regex` takes
+  1.5s, where `./target/release/zena run ./packages/stdlib:test` takes
+  longer because the standard library is an input to the compiler and a
+  change to it rebuilds stage A, the CLI module and the bundle.
 
   What it gives up is exactly that rebuild. The compiler reads the standard
   library from disk when it compiles, so your test does compile against the
   sources you just edited — but the compiler running it still has the old
   ones linked in, and 66 of the standard library's 92 files are in its
   closure. So a change that affects the compiler can pass here and fail once
-  the compiler is rebuilt. Finish with `npm run test:smoke` or `npm test`.
+  the compiler is rebuilt. Finish with `./target/release/zena run test:smoke`
+  or `./target/release/zena test`.
 
-  It needs the `zena` command built: `npm run build -w @zena-lang/cli`.
+  It needs the `zena` command built:
+  `./target/release/zena build ./packages/cli:build`.
 
 - If test output is large and written to a file by the harness, use your
   file-reading tool with line-range parameters to inspect it. Don't pipe
-  `npm test` into `tail`: the pipeline's exit status is `tail`'s, so a
-  failure reads as a pass. Redirect to a file and check the exit status.
-- We use the Wireit quiet logger by default, which only logs test errors.
-  If you need to see full test output, use `WIREIT_LOGGER=simple`.
+  `./target/release/zena test` into `tail`: the pipeline's exit status is
+  `tail`'s, so a failure reads as a pass. Redirect to a file and check the
+  exit status.
+- Pass `-v` / `--verbose` to `./target/release/zena test` / `build` / `run`
+  to see full step output and skipped/fresh steps.
 
 ## ⚠️ CRITICAL: Temporary Files
 

@@ -250,7 +250,7 @@ worth more than the keying work itself.
 ## Debugging the compiler
 
 - Print from the compiler with `console.log`, rebuild the CLI module
-  (`npm run build -w @zena-lang/cli`), and compile a probe with
+  (`./target/release/zena build ./packages/cli:build`), and compile a probe with
   `./target/release/zena build <probe>.zena -o <probe>.wasm`, which
   always compiles and prints the compiler's output. `zena run` reuses a
   cached module unless given `--no-cache`.
@@ -259,7 +259,7 @@ worth more than the keying work itself.
   compiler module reads source from:
 
   ```bash
-  npm run build:cli -w @zena-lang/compiler-zena
+  ./target/release/zena build ./packages/compiler:build:cli
   ZENA_COMPILER_WASM=packages/compiler/out/cli.wasm \
     ./target/release/zena build <probe>.zena -o <probe>.wasm
   ```
@@ -277,14 +277,14 @@ worth more than the keying work itself.
   searches it, so a toggle read per function or per instruction repeats
   that host call thousands of times.
 
-## Build System (Wireit)
+## Build System (Zebra)
 
-- Test runners and execution pipelines rely on `npm` scripts wrapped around
-  **wireit**.
-- Treat wireit caches as truth. If an output binary (like `cli.wasm` or
+- Test runners and execution pipelines rely on Zebra scripts in
+  `zena-package.json`.
+- Treat Zebra caches as truth. If an output binary (like `cli.wasm` or
   test-specific `.wasm` payloads) is repeatedly "missing" or "deleted", check
-  the `.json` `output` glob intersections immediately—make sure `build:tests` is
-  safely excluding `cli.wasm`.
+  the manifest `output` glob intersections immediately—make sure `build:tests`
+  is safely excluding `cli.wasm`.
 
 ## Portable Tests
 
@@ -335,7 +335,7 @@ traps and hangs live.
 The runner also builds its own `BinaryGenerator` (`compileOne`), so an
 environment toggle that `compile-file.zena` reads does not reach it. A
 toggle the suite should honour is read in `compileOne` too and declared
-in the test script's wireit `env`, as `ZENA_PROPAGATE` is.
+in the test script's Zebra `env`, as `ZENA_PROPAGATE` is.
 
 **Sharing a compiler is worth a lot, and then worth nothing.** Compiling
 all 465 tests in one process, varying only how many entry points share

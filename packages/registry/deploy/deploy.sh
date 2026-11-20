@@ -107,4 +107,4 @@ echo "Deployed the App View at $APP_VIEW_RUN_URL. It answers:"
 curl --silent --show-error --fail "$APP_VIEW_RUN_URL/xrpc/dev.zena-lang.registry.describeRegistry"
 echo
 echo
-echo "Map ${DOMAIN} and ${PDS_DOMAIN} to them once, with npm run deploy:domain -w @zena-lang/registry."
+echo "Map ${DOMAIN} and ${PDS_DOMAIN} to them once, with ./target/release/zena run ./packages/registry:deploy:domain."
