@@ -1,7 +1,7 @@
 ---
-title: 'Self-Hosting zena-lang.dev on zena:http (and Reaching 315k req/s)'
-description: 'zena-lang.dev now runs on a Zena HTTP server compiled to a WebAssembly component. Here is how zena:http works, what it includes, and how we took it from 1,431 req/s to 314,982 req/s—over 4x faster than Fastify.'
-date: 2026-10-16T04:00:00Z
+title: 'Self-Hosting zena-lang.dev with Zena (Faster Than Node)'
+description: 'zena-lang.dev has been running on a Zena HTTP server for over a month. Here is what the server looks like, what is in zena:http, how it works with WASI, and how it beats Fastify and Express on benchmarks.'
+date: 2026-11-20T18:00:00Z
 author: justinfagnani
 tags:
   - announcements
@@ -12,24 +12,26 @@ hero:
   credit: 'Photo by Taylor Vick on Unsplash'
 ---
 
-As of today, [zena-lang.dev](https://zena-lang.dev) is served by a Zena program
-running on `zena:http` and `zena-run`.
+I'm a little late writing this post: [zena-lang.dev](https://zena-lang.dev) has
+actually been running on a Zena HTTP server for over a month now.
 
-Previously, the website container ran Node.js and served the static Eleventy
-output with [Zipadee](https://github.com/justinfagnani/zipadee). Replacing that
-server with Zena was a practical milestone for dogfooding `zena:http` in
-production, and it prompted a round of profiling across the HTTP library, memory
-allocator, and WASI host integration that took our JSON benchmark throughput
-from **1,431 req/s** to **314,982 req/s**—over **4× faster than Fastify** on the
-same machine.
+We've been steadily self-hosting everything in the Zena ecosystem. The compiler,
+package manager, build system (Zebra), formatter, linter, and language server
+are all written in Zena already. Moving the website itself onto Zena felt like
+a fun, practical way to prove you can build and run real services with the
+language, not just compiler tools.
 
-This post walks through the production server running `zena-lang.dev`, the
-design of `zena:http`, and the runtime and WIT changes behind those numbers.
+Before the switch, the site container ran Node.js with
+[Zipadee](https://github.com/justinfagnani/zipadee), my modern HTTP package for
+Node with an API like Koa and performance like Fastify. Since moving to
+`zena:http` on Cloud Run, the site has been humming along for over a month with
+zero downtime and an immediate ~50% drop in memory usage.
 
-## The Server Running `zena-lang.dev`
+## The server running `zena-lang.dev`
 
-The entire production server (`packages/website/zena/server.zena`) is 20 lines
-of Zena:
+Because `zena-lang.dev` is a static Eleventy site, the entire production server
+([`packages/website/zena/server.zena`](https://github.com/elematic/zena/blob/main/packages/website/zena/server.zena))
+only needs to serve one folder and a `404.html` page. It's 20 lines of Zena:
 
 ```zena
 /**
@@ -54,46 +56,28 @@ export async function main() {
 }
 ```
 
-`serve(siteDir, {notFound: '404.html'})` handles static assets, default
-security and caching headers (`X-Content-Type-Options: nosniff`, `ETag`,
-`Last-Modified`, and `Cache-Control: max-age=0`), and serving `404.html` on
-unmatched `GET`/`HEAD` requests. Because `Server` is a resource class whose
-owner closes it when leaving scope, `await server.done` keeps the server
-running until shutdown.
+`zena build` compiles `server.zena` to a WebAssembly component (`server.wasm`),
+and the Docker image precompiles it ahead of time with `zena-run --precompile`
+so cold starts don't wait on JIT compilation. `serve()` handles `ETag`,
+`Last-Modified`, `Cache-Control`, `X-Content-Type-Options: nosniff`,
+pre-compressed `.br`/`.gz` files, and `404.html` out of the box.
 
-During the build, `zena build` compiles `server.zena` to a WASI 0.3 component
-(`server.wasm`), and inside the Docker image `zena-run --precompile` compiles
-that component ahead of time into a native Cranelift artifact (`server.cwasm`).
-The container ships only `zena-run`, `server.wasm`, `server.cwasm`, and the
-built `_site` directory (mounted at `.` via
-`zena-run --dir /app/_site::. /app/server.wasm`), starting in milliseconds
-without JIT compilation at cold start.
+Our site only needs static file serving, of course, but `zena:http` can do a
+lot more.
 
-## What Is in `zena:http`
+## A familiar, safe HTTP library
 
-`zena:http` is an async middleware framework modeled after Zipadee and Koa,
-built on WASI 0.3 async tasks and streams.
-
-### Composable Async Middleware
-
-An `App` runs an ordered pipeline of middleware functions:
+`zena:http` borrows heavily from Express, Koa, and Zipadee. You build an app by
+stacking async middleware onto an `App`. You can also combine pipelines with
+`compose()`, mount sub-apps at a path prefix with `mount()`, add `cors()`, or
+dispatch routes with `Router`:
 
 ```zena
-type NextFunction = (req: Own<Request>) => Future<void>;
-type Middleware = (req: Own<Request>, res: Response, next: NextFunction) => Future<void>;
-```
-
-`Request` is a resource class: each middleware owns it and hands it downstream
-with `await next(req)`, so calling `next` twice or reading `req` after moving
-it is a compile-time error, and whoever holds it last releases its body.
-Resuming after `await next(req)` makes logging, timing, authentication, and
-error handling composable:
-
-```zena
-import { App } from 'zena:http';
+import { App, Router } from 'zena:http';
 import { monotonic } from 'zena:time';
 
 let app = new App();
+let router = new Router();
 
 app.use(async (req, res, next) => {
   let start = monotonic();
@@ -101,21 +85,6 @@ app.use(async (req, res, next) => {
   let elapsed = monotonic() - start;
   res.setHeader('x-response-time', `${elapsed as i64}ns`);
 });
-```
-
-Pipelines can also be combined with `compose([...])`, wrapped with `cors()`, or
-mounted at a path prefix with `mount('/api', apiHandler)`, which strips the
-prefix for the inner handler and restores `req.path` afterward.
-
-### Routing
-
-`Router` dispatches by HTTP method and path pattern, supporting named parameters
-(`:name`) and wildcard tails (`*`):
-
-```zena
-import { App, Router } from 'zena:http';
-
-let router = new Router();
 
 router.get('/users/:id', async (req, res, next, params) => {
   let id = params.get('id') ?? 'unknown';
@@ -123,18 +92,25 @@ router.get('/users/:id', async (req, res, next, params) => {
   res.body = `{"id":"${id}"}`;
 });
 
-router.get('/files/*', async (req, res, next, params) => {
-  let relativePath = params.get('*') ?? '';
-  res.body = `Requested: ${relativePath}`;
-});
-
-let app = new App();
 app.use(router.routes());
 ```
 
-### Safe Streaming HTML Templates (`html`)
+One nice Zena twist: `Request` is a resource class, so each middleware owns it
+and hands it downstream with `await next(req)`. Calling `next` twice or reading
+`req` after passing it along is a compile-time error, and whoever holds the
+request last cleans up its underlying body stream automatically.
 
-`zena:http` includes an `html` tagged template literal for server-rendered HTML:
+We also ported two of my favorite ideas from Zipadee:
+
+- **Safe responses by default**: Assigning a plain `String` to `res.body`
+  defaults to `Content-Type: text/plain; charset=utf-8`, so user input isn't
+  accidentally rendered as HTML. To send HTML, you use the `html` tagged
+  template literal, which sets `text/html; charset=utf-8` and automatically
+  HTML-escapes interpolated values to prevent XSS.
+- **Streaming `html` templates**: `html` returns an `HTMLPartial` that streams
+  directly into the response without concatenating the whole page into one
+  string in memory, and awaits any interpolated `Future`s or nested partials in
+  order as the stream is consumed:
 
 ```zena
 import { html } from 'zena:http';
@@ -154,151 +130,97 @@ function renderPage(title: String, items: Array<String>) {
 }
 ```
 
-`html` returns an `HTMLPartial` that can be assigned directly to `res.body`,
-automatically setting `Content-Type: text/html; charset=utf-8` and streaming the
-rendered markup without concatenating the full page into a single string first:
+## Built on WASI (and runnable like Node)
 
-- **Automatic escaping**: Interpolated strings are HTML-escaped (`&`, `<`, `>`,
-  `"`, `'`), while nested `HTMLPartial` values are emitted verbatim.
-- **Indentation normalization**: Common leading whitespace across template lines
-  is stripped at construction time.
-- **Async streaming**: Interpolated `Future` values and iterables of
-  `HTMLPartial`s are awaited in order as the response stream is consumed.
+Under the hood, `zena:http` is built on WASI 0.3 (`wasi:http@0.3.0`), and it
+supports both ways you might want to run a WebAssembly HTTP server:
 
-### Static File Serving (`serve` and `send`)
-
-`serve(root, options)` and `send(req, res, path, options)` handle static assets:
-
-- **Path confinement**: Rejects NUL bytes and `..` traversal above the root with
-  `403 Forbidden`, and ignores hidden dotfile segments by default.
-- **Directory index, extensions & 404 fallback**: Resolves directories to
-  `index.html`, supports fallback extensions (e.g., `extensions: ['html']`),
-  and serves a custom `notFound` page (e.g., `notFound: '404.html'`) with
-  status `404` when no downstream middleware handles a `GET`/`HEAD` request.
-- **Conditional requests & default headers**: Sets `Last-Modified`, weak `ETag`
-  (`W/"<size>-<mtime>"`), `Cache-Control`, and
-  `X-Content-Type-Options: nosniff` headers by default, returning
-  `304 Not Modified` when `If-None-Match` matches.
-- **Pre-compressed sidecars**: Negotiates `Accept-Encoding` (including `q`
-  weights) to serve `<file>.br` or `<file>.gz` when present on disk.
-- **Host-to-socket streaming**: Streams file descriptors directly to the HTTP
-  response via `wasi:filesystem`'s `read-via-stream` without copying file
-  contents through WebAssembly memory.
-
-## Benchmarking & Optimizing `zena:http`
-
-To measure framework and runtime overhead, we ported the standard
-Fastify/Zipadee JSON benchmark (`benchmarks/http/json-server.zena`):
+1. **As a standard `wasi:http/handler` component**: Any `App` can answer
+   incoming WASI requests via `app.handle(request)` (or
+   `handleWireRequest(app, request)`). Export a `handle` function, compile
+   against a `wasi:http/handler` world, and you can run the component directly
+   on standard WASI hosts like `wasmtime serve` (see
+   [`examples/wasi-http-server.zena`](https://github.com/elematic/zena/blob/main/examples/wasi-http-server.zena)):
 
 ```zena
-import { getEnv } from 'zena:cli';
-import { App } from 'zena:http';
-import { JsonBuilder } from 'zena:json';
-
-function resolvePort() {
-  let envPort = getEnv('PORT');
-  if (envPort != null) {
-    if (let (true, p) = parseI32(envPort)) {
-      return p as u16;
-    }
-  }
-  return 3000 as u16;
-}
-
-export async function main(): Future<void> {
-  let app = new App();
-  let port = resolvePort();
-
-  app.use(async (req, res, next) => {
-    res.type = 'application/json; charset=utf-8';
-    let b = new JsonBuilder();
-    b.beginObject().key('hello').string('world').endObject();
-    res.body = b.toString();
-  });
-
-  let server = await app.listen(port);
-  await server.done;
+export async function handle(
+  request: Own<WireRequest>
+): Future<Result<Own<WireResponse>, ErrorCode>> {
+  return await handleWireRequest(app, request);
 }
 ```
 
-We ran `autocannon -c 100 -d 10 -p 10` (100 concurrent connections, 10-deep HTTP
-pipelining, 10 seconds) on a 16-vCPU Linux VM against Zipadee and Fastify on
-Node.js v26.10.0:
+2. **As a standalone server, like Node**: Sometimes you just want a program that
+   reads `PORT` from the environment, binds a socket, and runs until you stop
+   it, without needing a separate host wrapper. Our runtime (`zena` and
+   `zena-run`) provides an extended `zena:host/http-server` interface that
+   powers `await app.listen(port)`. Because `Server` is also a resource class,
+   holding it with `await server.done` keeps it alive and dropping it closes
+   the socket cleanly.
 
-| Server / Stage                            | Avg req/s   | p50 Latency | µs/req      | Throughput    |
-| ----------------------------------------- | ----------- | ----------- | ----------- | ------------- |
-| `zena:http` initial baseline              | 1,431       | 658 ms      | 698.6 µs    | 0.23 MB/s     |
-| + Guest allocator & lazy `Request`        | 24,859      | 41 ms       | 40.2 µs     | 3.48 MB/s     |
-| + Stream, ABI copy & batching fixes       | 32,132      | 41 ms       | 31.1 µs     | 4.50 MB/s     |
-| **Zipadee** (Node.js v26.10.0)            | 71,607      | 15 ms       | 14.0 µs     | 13.9 MB/s     |
-| **Fastify** (Node.js v26.10.0)            | 75,820      | 14 ms       | 13.2 µs     | 14.3 MB/s     |
-| **`zena:http` + `complete-text` WIT API** | **314,982** | **3 ms**    | **3.17 µs** | **44.1 MB/s** |
+## How fast is it?
 
-Three areas accounted for the jump from 1,431 req/s to 314,982 req/s:
+To see how `zena:http` stacks up against Node, we ported the standard
+Fastify/Zipadee `{"hello":"world"}` JSON benchmark
+([`benchmarks/http/json-server.zena`](https://github.com/elematic/zena/blob/main/benchmarks/http/json-server.zena))
+and ran `autocannon -c 100 -d 10 -p 10` (100 connections, 10-deep pipelining,
+10 seconds) on an Apple M1 Pro (10 cores, Node.js v26.10.0, Wasmtime 48.0.5):
 
-### 1. Linear-Memory Coalescing & Guest Hot Paths (`1.4k` → `32k` req/s)
+| Server                   | Avg req/s   | p50 Latency | Throughput    |
+| ------------------------ | ----------- | ----------- | ------------- |
+| Express (Node.js v26.10) | 66,269      | 17 ms       | 16.7 MB/s     |
+| Zipadee (Node.js v26.10) | 134,193     | 7 ms        | 26.0 MB/s     |
+| Fastify (Node.js v26.10) | 150,758     | 6 ms        | 28.3 MB/s     |
+| **Zena (`zena:http`)**   | **207,386** | **4 ms**    | **29.0 MB/s** |
 
-Zena objects live on the WebAssembly GC heap, but the WASI Canonical ABI still
-uses linear memory as a staging buffer whenever strings, lists, or stream chunks
-cross between the component and the host. Our initial `FreeListAllocator` in
-`zena:memory` split 4 KB stream buffers to satisfy tiny header allocations
-without coalescing adjacent blocks on `free()`, leaving thousands of fragments to
-scan under load. Switching to an address-ordered coalescing free list—combined
-with parsing `req.url`, `req.path`, and `req.headers` lazily on first access—took
-throughput from **1,431** to **24,859 req/s** (17.4×).
+On my laptop that's **3.1× faster than Express**, **1.5× faster than Zipadee**,
+and **1.4× faster than Fastify**, all from a WebAssembly GC component. On
+multi-core Linux VMs the gap grows even wider (over 300k req/s in our earlier
+Linux runs), because the Rust host runs Hyper/Tokio socket I/O across worker
+threads while Node stays single-threaded.
 
-Replacing generator-based byte streams with direct `Stream<u8>` classes, copying
-ABI strings 4 bytes at a time via `i32.load`/`i32.store` (a 5× speedup for
-string transfers), and accepting up to 64 requests per `stream.read` batch
-brought throughput to **32,132 req/s**.
+It definitely didn't start that fast. Our very first benchmark run crawled in
+at ~1,400 req/s! Getting from there to 200k+ req/s came down to a few key fixes:
 
-### 2. Bypassing WASI Stream Ceremony for In-Memory Responses (`32k` → `315k` req/s)
+- **Fixing linear-memory fragmentation and lazy parsing**: Zena objects live on
+  the Wasm GC heap, but WASI still stages strings and buffers through linear
+  memory. Our first allocator didn't coalesce freed blocks, which turned into a
+  free-list scan under load. Coalescing freed blocks and parsing `req.url`,
+  `req.path`, and `req.headers` lazily gave us an immediate ~17× jump.
+- **Skipping stream setup for in-memory strings**: `wasi:http` models every
+  response body as an async stream, which is great for streaming HTML or files
+  but meant a tiny 17-byte JSON string needed a pile of host calls and a
+  background pump task. Adding a single-call `complete-text` fast path on
+  `zena:host/http-server` for in-memory strings cut that overhead dramatically,
+  while `HTMLPartial` and `Stream<u8>` bodies still take the standard
+  streaming path.
+- **Host-to-socket file streaming**: For static files, `serve()` passes the
+  file's WASI stream (`file.readStream()`) straight to the response writer so
+  Tokio copies bytes from disk to the socket without moving them through Wasm
+  memory. In [`benchmarks/http/file-serving.sh`](https://github.com/elematic/zena/blob/main/benchmarks/http/file-serving.sh),
+  a 64 MB transfer finishes in ~17 ms (~3.7 GB/s over loopback).
 
-At 32k req/s, Zena's own HTTP code was barely visible in CPU profiles; almost
-all ~31 µs per request went into crossing the WASI Component Model boundary.
-Because `wasi:http/types@0.3.0` models every response as an asynchronous stream
-of chunks, returning a 17-byte `{"hello":"world"}` string required **9 separate
-host calls** (`fields.new`, `fields.append`, `stream.new`, `response.new`,
-`response.set-status-code`, `response-writer.respond`, `stream.write`,
-`stream.drop-writable`, and four `resource.drop` calls) plus a background Tokio
-task and channel to pump the stream into Hyper.
+## Try it yourself
 
-That machinery is great for streaming bodies, but pure overhead when `res.body`
-is already a complete `String` in memory. We added a single `complete-text`
-static method to `response-writer` in `zena:host/http-server` that accepts the
-status code, content-type, headers, and body string in one host call,
-constructs an `http::Response<Full<Bytes>>` directly in Rust, and disposes the
-`response-writer` handle in place. For in-memory text and JSON responses, that
-reduced 9 host calls to **1**, jumping throughput nearly **10×** to
-**314,982 req/s**—over **4× faster than Fastify**. Streaming bodies
-(`HTMLPartial` and `Stream<u8>`) continue to use the standard `wasi:http/types`
-streaming path automatically.
+You can build and run the JSON benchmark locally from a checkout of the
+[Zena repo](https://github.com/elematic/zena):
 
-### 3. Host-to-Socket Static Files (`245 ms` → `17 ms` for 64 MB)
+```bash
+# Build and start the benchmark server on port 3000
+./target/release/zena build benchmarks/http/json-server.zena -o /tmp/json-server.wasm
+PORT=3000 ./target/release/zena-run /tmp/json-server.wasm
 
-For static files, `send()` opens the file and attaches its WASI `stream<u8>`
-(backed by `wasi:filesystem`'s `read-via-stream`) directly to `res.body`:
-
-```zena
-let file = await openFile(base, path);
-res.body = file.readStream();
+# In another terminal, benchmark it with autocannon
+npx autocannon -c 100 -d 10 -p 10 http://127.0.0.1:3000/
 ```
 
-`file.readStream()` consumes the owned file descriptor and releases it once the
-stream finishes. Because both the file stream reader and the HTTP response
-writer live in Wasmtime's host resource table, Tokio streams file bytes
-straight from the OS file descriptor to the socket without copying them through
-WebAssembly memory. Bumping the host `read-via-stream` buffer in `zena-runtime`
-from `wasmtime-wasi`'s default 8 KiB to 256 KiB cut a 64 MB static file
-transfer from **245 ms** (8,192 blocking-pool reads) to **17 ms** (~3.7 GB/s
-over loopback).
+You can also run the static file serving benchmark:
 
-## Try It Out
+```bash
+benchmarks/http/file-serving.sh
+```
 
-`zena:http` ships in the Zena standard library today, and the server running
-this site is in the repository at
-[`packages/website/zena/server.zena`](https://github.com/elematic/zena/blob/main/packages/website/zena/server.zena).
-You can build and run the site locally on `zena:http` with:
+Or build and serve this very website locally on `zena:http`:
 
 ```bash
 npm run serve -w @zena-lang/website
