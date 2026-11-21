@@ -13,7 +13,7 @@ import { SemanticModel, memberKeyOf, accessKeyOf } from '../../semantic-model.ze
 import {
   Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, HoleType, InlineRecordType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, I32Type, U64Type, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
   isBigIntLiteralRaw, isScopedType, scopedInner, soleNonNullMember, internFunctionType, forInLowersToIndexLoop,
-  isIterableRangeClass, holdsOwner, typeContainsScoped } from '../../types.zena';
+  isIterableRangeClass, holdsOwner, typeContainsScoped, erasedType } from '../../types.zena';
 import {
   Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, NumberLiteral, ThrowExpression, TryExpression, ContractClause, contractFailureMessage, ShieldedStatement, StringLiteral, SuperInitializer, TemplateLiteral, UnaryExpression,
 } from '../../ast.zena';
@@ -64,6 +64,13 @@ final class DeferredInterfaceDiscovery {
  * TypeLowerer translates Zena semantic types into their target WebAssembly representation,
  * generating struct and array definitions on-demand as they are discovered.
  */
+/** `TypeLowerer.discoverType` saw the type in a walk of unreachable code. */
+let seenUnreachable = 1;
+/** It saw the type in a walk of reachable code. */
+let seenReachable = 2;
+/** It recorded the type's parts as named by reachable code. */
+let seenWithEvidence = 4;
+
 export final class TypeLowerer implements TypeLowererInterface {
   pass: ReachabilityContext;
   /**
@@ -75,6 +82,11 @@ export final class TypeLowerer implements TypeLowererInterface {
   var #recordFieldDepth = 0;
   var #deferredClasses = new Array<DeferredClassDiscovery>();
   var #deferredInterfaces = new Array<DeferredInterfaceDiscovery>();
+  /**
+   * Per type object, by uid: which kinds of walk `discoverType` has
+   * already seen it in, as the `seen…` bits.
+   */
+  #seen = new Map<i32, i32>();
 
   new(this.pass);
 
@@ -164,6 +176,21 @@ export final class TypeLowerer implements TypeLowererInterface {
 
   discoverType(rawT: Type | null, model: SemanticModel): void {
     if (rawT == null) { return; }
+    // A second call with one type object, in a walk of the same kind,
+    // does nothing the first did not: it records the same evidence
+    // again and stops at the set of discovered keys below. A body walk
+    // calls this for every node that has a type, so most calls are
+    // such repeats, and answering them here skips the erasure, the key
+    // and the walk over the type's parts that records evidence.
+    let recordsEvidence = this.pass.inQueueWalk && this.pass.currentReachable &&
+        !this.pass.suppressNameEvidence;
+    let walk = (if (this.pass.currentReachable) seenReachable else seenUnreachable) |
+        (if (recordsEvidence) seenWithEvidence else 0);
+    let seen = this.#seen.getOr(rawT.uid, 0);
+    if ((seen & walk) == walk) {
+      return;
+    }
+    this.#seen[rawT.uid] = seen | walk;
     var t = eraseTypeParameters(this.pass.wasm, rawT);
     while (t is TypeAliasType) {
       t = t.target;
@@ -177,8 +204,7 @@ export final class TypeLowerer implements TypeLowererInterface {
     // early-returns on its later in-queue discovery, and recording
     // only inside the arms would then never see it — the wit-parser
     // and fs record structs failed with `index < 0` exactly this way.
-    if (this.pass.inQueueWalk && this.pass.currentReachable &&
-        !this.pass.suppressNameEvidence) {
+    if (recordsEvidence) {
       this.#recordTypeEvidence(t, model, 0);
     }
     if (this.pass.currentReachable) {
@@ -4333,7 +4359,7 @@ function noOpenTypeParameters(args: Array<Type>): boolean {
 
 function eraseType(t: Type): Type {
   return match (t) {
-    case TypeParameterType: new ErasedType()
+    case TypeParameterType: erasedType
     case FunctionType as ft: {
       let params = new Array<Type>();
       for (let p in ft.parameters) {
