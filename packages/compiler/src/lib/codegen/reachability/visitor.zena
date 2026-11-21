@@ -1,4 +1,4 @@
-import { HashSet, Set } from 'zena:collections';
+import { HashMap, HashSet, Set } from 'zena:collections';
 import { collectValueExports, findDeclaration } from '../lookup.zena';
 import {
   isExistentialRecord, isValueHashCodeCall, valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
@@ -657,6 +657,69 @@ function isInterfaceOperand(t: Type): boolean {
   return false;
 }
 
+/**
+ * The nodes of one body that `registerInstantiations` acts on, in the
+ * order a walk enters them, and the model they were found under.
+ */
+final class InstantiationSites {
+  model: SemanticModel;
+  nodes: GrowableArray<Node>;
+  new(this.model, this.nodes);
+}
+
+/**
+ * Whether `registerInstantiations` does anything at `n`: a node of a
+ * kind one of its arms tests for, or one the checker recorded an
+ * interface or record adaptation on. About two nodes in three of a body
+ * are neither.
+ *
+ * The answer depends on the node and the model alone, never on the
+ * specialization being walked, which is what lets a body's sites be
+ * found once and replayed. The walk visits only the nodes this accepts,
+ * the first time as well, so **an arm added to `registerInstantiations`
+ * for another kind of node needs that kind added here**, and does
+ * nothing until it is.
+ */
+function isInstantiationSite(n: Node, model: SemanticModel): boolean {
+  if (n is Identifier) {
+    // The most common node, and of no kind below.
+  } else if (n is MemberExpression || n is CallExpression || n is NumberLiteral ||
+      n is VariableDeclaration || n is AssignmentExpression || n is NewExpression ||
+      n is IndexExpression || n is AsExpression || n is IsExpression ||
+      n is TemplateLiteral || n is TaggedTemplateExpression ||
+      n is ArrayLiteral || n is TupleLiteral || n is RecordLiteral ||
+      n is MapLiteral || n is RangeExpression || n is MatchExpression ||
+      n is MatchCase || n is LetPatternCondition || n is ForInStatement ||
+      n is ArrayPattern || n is AwaitExpression || n is ContractClause ||
+      n is SuperInitializer) {
+    return true;
+  } else if (n is BinaryExpression) {
+    // Only an equality has operands to note (noteEqualityUse).
+    if (n.operator == "==" || n.operator == "!=") {
+      return true;
+    }
+  } else if (n is UnaryExpression) {
+    // A negated literal may be a BigInt (maybeRegisterBigIntNode).
+    if (n.operator == "-" && n.argument is NumberLiteral) {
+      return true;
+    }
+  } else if (n is FunctionExpression) {
+    // An async function's frame future (registerAsyncNode).
+    if (n.isAsync) {
+      return true;
+    }
+  } else if (n is MethodDefinition) {
+    if (n.isAsync) {
+      return true;
+    }
+  }
+  if (n is Expression && model.getInterfaceAdaptation(n) != null) {
+    return true;
+  }
+  return model.getRecordAdaptation(n) != null ||
+      model.getRecordUnionAdaptation(n) != null;
+}
+
 export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   pass: ReachabilityContext;
   #discoveringOnDemand = new Set<SymbolId>();
@@ -670,6 +733,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    */
   #eqRootedReachable = new HashSet<i32>();
   #eqRootedVisited = new HashSet<i32>();
+  /**
+   * The bodies `registerLiterals` has walked, by the id of their root
+   * node, and whether each holds a string literal. (By id because a
+   * node is a case class, and a map keyed by nodes would hash each by
+   * value.)
+   */
+  #bodiesWithLiterals = new HashMap<i32, boolean>();
+  /** The sites of the bodies `registerInstantiations` has walked. */
+  #instantiationSites = new HashMap<i32, InstantiationSites>();
 
   new(this.pass);
 
@@ -1215,14 +1287,30 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   }
 
   registerLiterals(root: Node): void {
+    // A body is walked once for each specialization that reaches it,
+    // and its literals are the same every time. The payloads are
+    // registered by value, so only the first walk has any to add; what
+    // a later walk still owes is the evidence that a String exists,
+    // which depends on the walk (whether it is of reached code).
+    let rootId = root.id as i32;
+    if (let (true, hasLiterals) = this.#bodiesWithLiterals.get(rootId)) {
+      if (hasLiterals) {
+        this.#noteStringValue();
+      }
+      return;
+    }
+    var hasLiterals = false;
     walkEnter(root, (n) => {
       if (n is StringLiteral) {
+        hasLiterals = true;
         this.noteStringLiteral(n.value);
       }
       if (n is TemplateElement) {
+        hasLiterals = true;
         this.noteStringLiteral(n.cooked);
       }
     });
+    this.#bodiesWithLiterals[rootId] = hasLiterals;
   }
 
   /**
@@ -1230,24 +1318,29 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * literal is the evidence that a String value exists in this program
    * — the class is no longer instantiated unconditionally at init, so
    * the evidence has to act here, where every literal passes through.
-   * `instantiateClassType` early-returns once it has happened.
    */
   noteStringLiteral(value: String): void {
     if (targetUsesJsStrings(this.pass.wasm.target)) {
       this.pass.wasm.getImportedStringGlobal(value, this.pass.program.units[0].model);
-      let sc = this.pass.wasm.stringClass;
-      if (sc != null) {
-        this.pass.specializer.instantiateClassType(
-            sc, this.pass.getClassModel(sc));
-        this.queueExplicitCtor(sc, "<constructor>.#fromHandle");
-      }
+    } else {
+      this.pass.wasm.registerStringLiteral(value);
+    }
+    this.#noteStringValue();
+  }
+
+  /**
+   * What any string literal is evidence of, whatever its payload: that
+   * a String value exists. `instantiateClassType` early-returns once it
+   * has happened.
+   */
+  #noteStringValue(): void {
+    let sc = this.pass.wasm.stringClass;
+    if (sc == null) {
       return;
     }
-    this.pass.wasm.registerStringLiteral(value);
-    let sc = this.pass.wasm.stringClass;
-    if (sc != null) {
-      this.pass.specializer.instantiateClassType(
-          sc, this.pass.getClassModel(sc));
+    this.pass.specializer.instantiateClassType(sc, this.pass.getClassModel(sc));
+    if (targetUsesJsStrings(this.pass.wasm.target)) {
+      this.queueExplicitCtor(sc, "<constructor>.#fromHandle");
     }
   }
 
@@ -1270,7 +1363,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     // The body's own mixin scope, if it was written in a mixin: it
     // decides which member a private name in this body refers to.
     let bodyScope = mixinScopeOfNode(model, root);
-    walkEnter(root, (n) => {
+    // What this walk does at one node. It is called for the body's
+    // instantiation sites only (isInstantiationSite): an arm for a kind
+    // of node that function does not accept never runs.
+    let visit = (n: Node) => {
       // Private-method calls are lexically bound and never virtual, so
       // the dependency records are their ONLY discovery edge when the
       // body walk is skipped — and the records miss them for
@@ -1600,7 +1696,28 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.queueExplicitCtor(rangeCt);
         }
       }
+    };
+    // A body is walked once for each specialization that reaches it.
+    // Which of its nodes are sites does not depend on the
+    // specialization, so the first walk finds them and the later ones
+    // visit that list, in the same order, without walking the tree.
+    let rootId = root.id as i32;
+    if (let (true, known) = this.#instantiationSites.get(rootId)) {
+      if (known.model === model) {
+        for (let n in known.nodes) {
+          visit(n);
+        }
+        return;
+      }
+    }
+    let nodes = new Array<Node>();
+    walkEnter(root, (n) => {
+      if (isInstantiationSite(n, model)) {
+        nodes.push(n);
+        visit(n);
+      }
     });
+    this.#instantiationSites[rootId] = new InstantiationSites(model, nodes);
   }
 
   /**
