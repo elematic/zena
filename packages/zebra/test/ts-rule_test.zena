@@ -1,0 +1,290 @@
+import {Future} from 'zena:async';
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue, rejects} from 'zena:assert';
+import {writeFile} from 'zena:fs';
+import {monotonic} from 'zena:time';
+import {ensureDir, ensureParentDir, withRoot} from 'zebra/fs-util';
+import {PlanLoadStats, loadOrCollectConfigs} from 'zebra/plan-cache';
+import {ScriptRef} from 'zebra/wireit-config';
+import {ZebraWorkspace} from 'zebra/zebra-config';
+
+function hasStr(items: Array<String>, target: String) {
+  for (let item in items) {
+    if (item == target) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function writeText(root: String, rel: String, content: String): Future<void> {
+  let full = withRoot(root, rel);
+  await ensureParentDir(full);
+  await writeFile(full, content);
+}
+
+export let tests = suite('ts:build declarative rule', () => {
+  test('derives files, output, clean, and tsc command from dedicated outDir and composite tsconfig', async () => {
+    let files = {
+      'packages/cm/zebra.json' => `{
+        "locks": ["package-lock.json"],
+        "scripts": {
+          "build": {"type": "ts:build"}
+        }
+      }`,
+      'packages/cm/tsconfig.json' => `{
+        // JSONC comments and trailing commas are supported
+        "compilerOptions": {
+          "composite": true,
+          "tsBuildInfoFile": "tsconfig.tsbuildinfo",
+          "outDir": "./lib",
+          "rootDir": "./src",
+          "declaration": true,
+          "sourceMap": true,
+        },
+        "include": ["src/**/*.ts", "src/**/*.json",],
+        "exclude": ["src/test/**/*",],
+      }`,
+    };
+    let ws = new ZebraWorkspace(async (path): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    let cfg = await ws.scriptConfig(new ScriptRef('packages/cm', 'build'));
+    equal(cfg.command, 'tsc');
+    equal(cfg.clean, 'if-file-deleted');
+    isTrue(cfg.fingerprintable);
+    equal(cfg.packageLocks.length, 1);
+    equal(cfg.packageLocks[0], 'package-lock.json');
+
+    isTrue(hasStr(cfg.files, 'tsconfig.json'));
+    isTrue(hasStr(cfg.files, 'src/**/*.ts'));
+    isTrue(hasStr(cfg.files, 'src/**/*.json'));
+    isTrue(hasStr(cfg.files, '!src/test/**/*'));
+    isTrue(hasStr(cfg.files, '!lib/**'));
+    isTrue(hasStr(cfg.files, '!tsconfig.tsbuildinfo'));
+
+    equal(cfg.output.length, 2);
+    equal(cfg.output[0], 'lib');
+    equal(cfg.output[1], 'tsconfig.tsbuildinfo');
+  });
+
+  test('handles noEmit with and without incremental and custom tsconfig/args', async () => {
+    let files = {
+      'packages/vsc/zebra.json' => `{
+        "scripts": {
+          "typecheck": {"type": "ts:build"},
+          "check:extra": {
+            "type": "ts:build",
+            "tsconfig": "tsconfig.check.json",
+            "args": ["--noEmit"]
+          }
+        }
+      }`,
+      'packages/vsc/tsconfig.json' => `{
+        "compilerOptions": {
+          "incremental": true,
+          "noEmit": true,
+          "tsBuildInfoFile": "tsconfig.tsbuildinfo",
+          "rootDir": "src"
+        },
+        "include": ["src/**/*"]
+      }`,
+      'packages/vsc/tsconfig.check.json' => `{
+        "compilerOptions": {
+          "outDir": "./dist"
+        },
+        "include": ["src"]
+      }`,
+    };
+    let ws = new ZebraWorkspace(async (path): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    let tc = await ws.scriptConfig(new ScriptRef('packages/vsc', 'typecheck'));
+    equal(tc.command, 'tsc');
+    equal(tc.clean, 'if-file-deleted');
+    equal(tc.output.length, 1);
+    equal(tc.output[0], 'tsconfig.tsbuildinfo');
+
+    let extra = await ws.scriptConfig(new ScriptRef('packages/vsc', 'check:extra'));
+    equal(extra.command, 'tsc -p tsconfig.check.json --noEmit');
+    equal(extra.clean, 'false');
+    equal(extra.output.length, 0);
+    isTrue(hasStr(extra.files, 'tsconfig.check.json'));
+    isTrue(hasStr(extra.files, 'src/**/*'));
+  });
+
+  test('handles outDir "." with explicit output and rejects omitted output', async () => {
+    let files = {
+      'packages/rt/zebra.json' => `{
+        "scripts": {
+          "build:ok": {
+            "type": "ts:build",
+            "output": ["lib", "index.{js,d.ts,js.map,d.ts.map}"]
+          },
+          "build:missing-out": {
+            "type": "ts:build"
+          }
+        }
+      }`,
+      'packages/rt/tsconfig.json' => `{
+        "compilerOptions": {
+          "composite": true,
+          "tsBuildInfoFile": "tsconfig.tsbuildinfo",
+          "outDir": "./",
+          "rootDir": "./src",
+          "declaration": true,
+          "sourceMap": true
+        },
+        "include": ["src/**/*.ts"]
+      }`,
+    };
+    let ws = new ZebraWorkspace(async (path): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    let ok = await ws.scriptConfig(new ScriptRef('packages/rt', 'build:ok'));
+    equal(ok.command, 'tsc');
+    equal(ok.clean, 'if-file-deleted');
+    isTrue(hasStr(ok.output, 'lib'));
+    isTrue(hasStr(ok.output, 'index.{js,d.ts,js.map,d.ts.map}'));
+    isTrue(hasStr(ok.output, 'tsconfig.tsbuildinfo'));
+
+    await rejects(async () => {
+      await ws.scriptConfig(new ScriptRef('packages/rt', 'build:missing-out'));
+    });
+  });
+
+  test('handles in-place rootDir emit and outFile emit', async () => {
+    let files = {
+      'packages/inplace/zebra.json' => `{"scripts": {"build": {"type": "ts:build"}}}`,
+      'packages/inplace/tsconfig.json' => `{
+        "compilerOptions": {
+          "rootDir": "src",
+          "declaration": true,
+          "declarationMap": true,
+          "sourceMap": true
+        },
+        "include": ["src/**/*.ts"]
+      }`,
+      'packages/bundle/zebra.json' => `{"scripts": {"build": {"type": "ts:build"}}}`,
+      'packages/bundle/tsconfig.json' => `{
+        "compilerOptions": {
+          "outFile": "dist/bundle.js",
+          "declaration": true,
+          "sourceMap": true
+        },
+        "files": ["src/index.ts"]
+      }`,
+    };
+    let ws = new ZebraWorkspace(async (path): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    let inplace = await ws.scriptConfig(new ScriptRef('packages/inplace', 'build'));
+    equal(inplace.clean, 'true');
+    equal(inplace.output.length, 1);
+    equal(inplace.output[0], 'src/**/*.{js,js.map,d.ts,d.ts.map}');
+
+    let bundle = await ws.scriptConfig(new ScriptRef('packages/bundle', 'build'));
+    isTrue(hasStr(bundle.files, 'src/index.ts'));
+    isTrue(hasStr(bundle.output, 'dist/bundle.js'));
+    isTrue(hasStr(bundle.output, 'dist/bundle.js.map'));
+    isTrue(hasStr(bundle.output, 'dist/bundle.d.ts'));
+  });
+
+  test('follows extends chains with ${configDir}, skips npm extends, and rejects cycles', async () => {
+    let files = {
+      'tsconfig.base.json' => `{
+        "compilerOptions": {
+          "composite": true,
+          "outDir": "\${configDir}/dist",
+          "declaration": true
+        }
+      }`,
+      'packages/app/zebra.json' => `{"scripts": {"build": {"type": "ts:build"}}}`,
+      'packages/app/tsconfig.json' => `{
+        "extends": ["@tsconfig/node20/tsconfig.json", "../../tsconfig.base"],
+        "include": ["src/**/*.ts"]
+      }`,
+      'packages/cycle/zebra.json' => `{"scripts": {"build": {"type": "ts:build"}}}`,
+      'packages/cycle/tsconfig.json' => `{"extends": "./tsconfig.b.json"}`,
+      'packages/cycle/tsconfig.b.json' => `{"extends": "./tsconfig.json"}`,
+    };
+    let ws = new ZebraWorkspace(async (path): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    let app = await ws.scriptConfig(new ScriptRef('packages/app', 'build'));
+    isTrue(hasStr(app.files, 'tsconfig.json'));
+    isTrue(hasStr(app.files, '../../tsconfig.base.json'));
+    isTrue(hasStr(app.files, 'src/**/*.ts'));
+    // Default tsBuildInfoFile lands inside outDir (`dist/tsconfig.tsbuildinfo`),
+    // which is already covered by `dist`.
+    equal(app.output.length, 1);
+    equal(app.output[0], 'dist');
+    equal(app.clean, 'if-file-deleted');
+
+    await rejects(async () => {
+      await ws.scriptConfig(new ScriptRef('packages/cycle', 'build'));
+    });
+  });
+
+  test('plan-cache tracks extended tsconfig files and invalidates when base tsconfig edits', async () => {
+    let root = `/tmp/zebra-ts-rule-plan-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    await writeText(
+      root,
+      'tsconfig.base.json',
+      `{"compilerOptions": {"outDir": "\${configDir}/lib", "composite": true}}\n`,
+    );
+    await writeText(
+      root,
+      'packages/app/zebra.json',
+      `{"scripts": {"build": {"type": "ts:build"}}}\n`,
+    );
+    await writeText(
+      root,
+      'packages/app/tsconfig.json',
+      `{"extends": "../../tsconfig.base.json", "include": ["src/**/*.ts"]}\n`,
+    );
+
+    let entry = new ScriptRef('packages/app', 'build');
+    let stats1 = new PlanLoadStats();
+    let c1 = await loadOrCollectConfigs(root, entry, null, stats1);
+    isFalse(stats1.fromSnapshot);
+    equal(c1[0].output[0], 'lib');
+
+    let stats2 = new PlanLoadStats();
+    let c2 = await loadOrCollectConfigs(root, entry, null, stats2);
+    isTrue(stats2.fromSnapshot);
+    equal(c2[0].output[0], 'lib');
+
+    // Editing the extended base tsconfig invalidates the cached plan snapshot!
+    await writeText(
+      root,
+      'tsconfig.base.json',
+      `{"compilerOptions": {"outDir": "\${configDir}/dist", "composite": true}}\n`,
+    );
+    let stats3 = new PlanLoadStats();
+    let c3 = await loadOrCollectConfigs(root, entry, null, stats3);
+    isFalse(stats3.fromSnapshot);
+    equal(c3[0].output[0], 'dist');
+  });
+});
