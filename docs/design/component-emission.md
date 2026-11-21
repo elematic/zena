@@ -769,9 +769,15 @@ things which are really one mechanism:
 
 - **Emission follows the WIT.** The component's type and import
   sections are encoded from the world's interfaces — the encoder's
-  original mode — so the component imports exactly what the world
-  imports, used by the program or not, plus the `use` dependencies WIT
-  implies. This is also what makes user-declared richer types on the
+  original mode. The component imports the interfaces of the world the
+  program reaches: the ones it calls into, the ones whose types its
+  canon built-ins name, and the ones the world's exported interfaces
+  `use` types from, plus the `use` dependencies WIT implies. An
+  interface the world imports and the program never reaches is left
+  out, so a host that reads a component's imports to decide what to
+  grant sees what the program uses. A component that imports less than
+  its world still conforms to it. Encoding from the WIT is also what
+  makes user-declared richer types on the
   boundary expressible at all: a Zena declaration is core-shaped and
   cannot spell `own` or `list<u8>`.
 - **Disagreements are errors.** Every `@external` must name a function

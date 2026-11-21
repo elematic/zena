@@ -600,12 +600,14 @@ final class DeclaredExport {
  * and every disagreement between the WIT and the Zena program is a
  * compile error.
  *
- * Concretely: the component imports exactly what the world imports,
- * with its `include`s expanded (expandedWorldItems), plus the interfaces
- * those imports and the world's exports `use` types from, which WIT
- * implies; every `@external` must name a function of one of those
- * interfaces, with a core signature matching the WIT's canonical
- * flattening; and the
+ * Concretely: the component imports the interfaces of the world the
+ * program reaches (`#reachedInterfaces`), plus the interfaces those and
+ * the world's exports `use` types from, which WIT implies. An interface
+ * the world imports and the program never calls is left out, so a host
+ * reading the component's imports sees what it uses. Every `@external`
+ * must name a function of an interface the world imports, with its
+ * `include`s expanded (expandedWorldItems), with a core signature
+ * matching the WIT's canonical flattening; and the
  * export surfaces must agree in both directions — a world export the
  * program does not provide, or a program export the world does not
  * declare, is an error, as is a type or asyncness mismatch on one they
@@ -827,7 +829,7 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
     this.#checkImports(shape);
     this.#checkExports(shape);
     let encoder = new ComponentTypeEncoder(this.#ast);
-    let world = encoder.encodeWorld(this.#worldName);
+    let world = encoder.encodeWorld(this.#worldName, this.#reachedInterfaces(shape));
     let canonTypes = resolveCanonTypes(encoder, shape);
     // An async export's lifted type is the WIT's, encoded here rather
     // than derived from a core signature: its parameters and result
@@ -896,6 +898,62 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
       out.nestedExports[name] = mirrored;
     }
     return out;
+  }
+
+  /**
+   * The interfaces the component must import, in an order that depends
+   * only on the program: the ones the program calls into, the ones a
+   * canon built-in names a type of, and the ones the world's exported
+   * interfaces `use` types from, directly or through another interface.
+   * The encoder adds the `use` dependencies of each import it encodes.
+   * An interface the world imports and the program never reaches is
+   * left out, so the component's imports say what it uses.
+   *
+   * An interface the world exports is never in the list: its types are
+   * the program's own, and importing it would make the encoder alias
+   * them from an instance where it should declare them.
+   */
+  #reachedInterfaces(shape: ComponentShape): GrowableArray<String> {
+    let reached = new Array<String>();
+    let add = (name: String) => {
+      if (!reached.contains(name) && !this.#exportedInterfaces.contains(name)) {
+        reached.push(name);
+      }
+    };
+    for (let imp in shape.imports) {
+      add(imp.interfaceName);
+    }
+    for (let b in shape.builtins) {
+      // `resource:`, `future:`, `stream:` and `return:` types are
+      // spelled `<kind>:<interface>#<type>`. The interface is empty for
+      // a world-level function's.
+      let canonType = b.canonType;
+      var colon = -1;
+      var hashAt = -1;
+      for (var i = 0; i < canonType.length; i += 1) {
+        let c = canonType.getByteAt(i);
+        if (c == 58 && colon < 0) { colon = i; } // ':'
+        if (c == 35) { hashAt = i; break; } // '#'
+      }
+      if (colon >= 0 && hashAt > colon + 1) {
+        add(canonType.sliceBytes(colon + 1, hashAt));
+      }
+    }
+    // What the exported interfaces use, and what those use.
+    let pending = new Array<String>();
+    for (let q in this.#exportedInterfaces) { pending.push(q); }
+    var next = 0;
+    while (next < pending.length) {
+      let qualified = pending[next];
+      next += 1;
+      for (let used in this.#usedInterfaces(qualified)) {
+        if (!pending.contains(used)) {
+          pending.push(used);
+          add(used);
+        }
+      }
+    }
+    return reached;
   }
 
   /**
