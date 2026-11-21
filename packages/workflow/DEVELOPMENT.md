@@ -11,6 +11,7 @@ packages/workflow/
 ├── src/                    # Published Zena library source files
 │   ├── cache.zena          # StepCache interface and NullCache
 │   ├── canonical.zena      # Canonical cache-key and manifest encodings
+│   ├── concurrency.zena    # Tree-structured ConcurrencyGroups and FairSemaphore
 │   ├── delta.zena          # InputDelta and per-output invalidation
 │   ├── engine.zena         # Engine, RunOptions, RunResult, ServicePool
 │   ├── errors.zena         # WorkflowError
@@ -18,18 +19,17 @@ packages/workflow/
 │   ├── graph.zena          # Validated DAG and topological sort
 │   ├── manifest.zena       # OutputManifest and OutputEntry
 │   ├── state.zena          # EngineState and StepRecord
-│   ├── step.zena           # Step, TaskStep, ServiceStep, InputRef
-│   └── internal/
-│       └── semaphore.zena  # Bounded concurrency semaphore (internal)
+│   └── step.zena           # Step, TaskStep, ServiceStep, InputRef
 └── test/                   # Zena test suites
     ├── canonical_test.zena
+    ├── concurrency_test.zena
     ├── delta_test.zena
     ├── engine_test.zena
     ├── graph_test.zena
     └── service_test.zena
 ```
 
-When publishing to the Zena package manager (`zena pkg publish`), `"files": ["src"]` in `zena-package.json` restricts the published archive to `src/`, `zena-package.json`, `README.md`, and `LICENSE`. `src/internal/semaphore.zena` is included in the source archive for `src/engine.zena` but omitted from `exports` so it remains private to the package.
+When publishing to the Zena package manager (`zena pkg publish`), `"files": ["src"]` in `zena-package.json` restricts the published archive to `src/`, `zena-package.json`, `README.md`, and `LICENSE`.
 
 ## Testing
 

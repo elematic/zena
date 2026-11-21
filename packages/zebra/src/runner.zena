@@ -8,6 +8,13 @@ import {checkSignal, listenSignals, waitSignalFor} from 'zena:process';
 import {monotonic} from 'zena:time';
 import {NullCache, StepCache} from 'workflow/cache';
 import {
+  CACHE_CONCURRENCY_GROUP,
+  ConcurrencyGroupConfig,
+  ConcurrencyGroups,
+  DEFAULT_CACHE_GROUP_LIMIT,
+  DEFAULT_CONCURRENCY_GROUP,
+} from 'workflow/concurrency';
+import {
   Engine,
   Failed,
   RunOptions,
@@ -24,7 +31,9 @@ import {EngineState, StepRecord} from 'workflow/state';
 import {StepKey} from 'workflow/step';
 import {Spinner} from 'terminal/animation';
 import {
+  COMPILE_CONCURRENCY_GROUP,
   StepExecution,
+  TEST_CONCURRENCY_GROUP,
   TestStepRequest,
   TestStepRunner,
   lockfileCandidates,
@@ -32,7 +41,7 @@ import {
 } from './builder.zena';
 import {Colors} from 'terminal/colors';
 import {DiskCache, TieredCache, stateDirOf} from './disk-cache.zena';
-import {ensureParentDir, withRoot} from './fs-util.zena';
+import {ensureParentDir, readFileOrNull, withRoot} from './fs-util.zena';
 import {FileHasher} from './fs-walk.zena';
 import {
   CacheMode,
@@ -46,7 +55,7 @@ import {sha256HexOfString} from 'zena:crypto';
 import {appendShellArgs} from './shell.zena';
 import {stateFromJson, stateToJson} from './state-json.zena';
 import {ConfigError, ScriptConfig, ScriptRef, refKey} from './wireit-config.zena';
-import {MigrationResult} from './zebra-config.zena';
+import {MigrationResult, readWorkspaceConcurrencyGroups} from './zebra-config.zena';
 
 export {TestStepRequest, TestStepRunner} from './builder.zena';
 
@@ -340,19 +349,111 @@ export function defaultParallelism(
   return 8;
 }
 
-/** Default max concurrent cache lookups/restores/uploads: ZEBRA_CACHE_PARALLEL, or 16. */
-export function defaultCacheParallelism(
-  lookupEnv: (name: String) => String? = getEnv,
-): i32 {
-  let raw = lookupEnv('ZEBRA_CACHE_PARALLEL');
-  if (raw != null) {
-    if (let (true, n) = parseI32(raw)) {
-      if (n >= 1) {
-        return n;
+function groupEnvVarName(groupName: String) {
+  let sb = new StringBuilder();
+  sb.append('ZEBRA_GROUP_');
+  for (var i = 0; i < groupName.length; i += 1) {
+    let b = groupName.getByteAt(i);
+    if (b >= 97 && b <= 122) {
+      sb.appendByte(b - 32);
+    } else if ((b >= 65 && b <= 90) || (b >= 48 && b <= 57)) {
+      sb.appendByte(b);
+    } else {
+      sb.appendByte(95);
+    }
+  }
+  return sb.toString();
+}
+
+function explicitParallelEnv(lookupEnv: (name: String) => String?) {
+  for (let varName in ['ZEBRA_PARALLEL', 'WIREIT_PARALLEL']) {
+    let raw = lookupEnv(varName);
+    if (raw != null) {
+      if (let (true, n) = parseI32(raw)) {
+        if (n >= 1) {
+          return n;
+        }
       }
     }
   }
-  return 16;
+  return 0;
+}
+
+/**
+ * Builds the workspace's `ConcurrencyGroups` tree from built-in defaults
+ * (`default`, `cache`, `compile -> default`, `test -> default`), root
+ * manifest `"concurrencyGroups"`, CLI `-j` / `ZEBRA_PARALLEL`, and per-group
+ * `ZEBRA_GROUP_<NAME>` environment overrides.
+ */
+async function resolveWorkspaceConcurrencyGroups(
+  root: String,
+  explicitParallelism: i32,
+  envLookup: (name: String) => String?,
+  configPathsOut: GrowableArray<String>?,
+): Future<ConcurrencyGroups> {
+  let rootConfigs = await readWorkspaceConcurrencyGroups(
+    (rel) => readFileOrNull(withRoot(root, rel)),
+    configPathsOut,
+  );
+  let merged = {
+    CACHE_CONCURRENCY_GROUP => new ConcurrencyGroupConfig(
+      DEFAULT_CACHE_GROUP_LIMIT,
+      null,
+    ),
+    COMPILE_CONCURRENCY_GROUP => ConcurrencyGroupConfig.childOf(
+      DEFAULT_CONCURRENCY_GROUP,
+    ),
+    TEST_CONCURRENCY_GROUP => ConcurrencyGroupConfig.childOf(
+      DEFAULT_CONCURRENCY_GROUP,
+    ),
+  };
+
+  var manifestDefaultLimit = 0;
+  rootConfigs.forEach((name, cfg) => {
+    if (name == DEFAULT_CONCURRENCY_GROUP && cfg.hasLimit && cfg.parent == null) {
+      manifestDefaultLimit = cfg.limit;
+    } else {
+      merged[name] = cfg;
+    }
+  });
+
+  let envPar = explicitParallelEnv(envLookup);
+  var defaultLimit = if (explicitParallelism > 0)
+    explicitParallelism
+  else if (envPar > 0)
+    envPar
+  else if (manifestDefaultLimit > 0)
+    manifestDefaultLimit
+  else
+    defaultParallelism(envLookup);
+
+  let defaultEnvOverride = envLookup(groupEnvVarName(DEFAULT_CONCURRENCY_GROUP));
+  if (defaultEnvOverride != null) {
+    if (let (true, n) = parseI32(defaultEnvOverride)) {
+      if (n >= 1) {
+        defaultLimit = n;
+      }
+    }
+  }
+
+  let groupNames = new GrowableArray<String>();
+  merged.forEach((name, _) => {
+    groupNames.push(name);
+  });
+  for (let name in groupNames) {
+    let raw = envLookup(groupEnvVarName(name));
+    if (raw != null) {
+      if (let (true, n) = parseI32(raw)) {
+        if (n >= 1) {
+          if (let (true, existing) = merged.get(name)) {
+            merged[name] = new ConcurrencyGroupConfig(n, existing.parent, true);
+          }
+        }
+      }
+    }
+  }
+
+  return new ConcurrencyGroups(defaultLimit, merged);
 }
 
 async function verifyManifestOutputs(
@@ -466,7 +567,13 @@ async function runTargetOnce(
   listenSignals();
   let startNs = monotonic() as i64;
   let envLookup = lookupEnv ?? getEnv;
-  let jobs = if (parallelism > 0) parallelism else defaultParallelism(envLookup);
+  let concurrencyGroups = await resolveWorkspaceConcurrencyGroups(
+    root,
+    parallelism,
+    envLookup,
+    configPathsOut,
+  );
+  let jobs = concurrencyGroups.effectiveLimit(DEFAULT_CONCURRENCY_GROUP);
   let entryKey = refKey(entry);
   let loadedConfigs = await loadOrCollectConfigs(
     root,
@@ -508,6 +615,7 @@ async function runTargetOnce(
             config.testDebug,
             if (baseTests != null) cliExtra else null,
             config.ruleType,
+            config.concurrencyGroup,
           ),
         );
       } else {
@@ -538,6 +646,7 @@ async function runTargetOnce(
     hasher,
     foregroundServiceKey,
     testRunner,
+    concurrencyGroups,
   );
   let stateDirs = new GrowableArray<String>();
   let seenDirs = new HashSet<String>();
@@ -645,7 +754,7 @@ async function runTargetOnce(
             spinner.stop();
           }
         },
-        defaultCacheParallelism(envLookup),
+        concurrencyGroups,
       ),
     );
   } finally {

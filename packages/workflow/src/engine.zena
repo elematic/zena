@@ -2,11 +2,11 @@ import {Completer} from 'zena:async';
 import {HashSet, OrderedHashMap} from 'zena:collections';
 import {StepCache} from './cache.zena';
 import {ResolvedInput, cacheKeyFor, manifestFingerprint} from './canonical.zena';
+import {CACHE_CONCURRENCY_GROUP, ConcurrencyGroups, ConcurrencyPermit} from './concurrency.zena';
 import {InputDelta, computeDelta, staleOutputNames} from './delta.zena';
 import {WorkflowError} from './errors.zena';
 import {Digest, Fingerprint} from './fingerprint.zena';
 import {Graph} from './graph.zena';
-import {Semaphore} from './internal/semaphore.zena';
 import {OutputManifest} from './manifest.zena';
 import {EngineState, StepRecord} from './state.zena';
 import {
@@ -153,11 +153,11 @@ export class RunOptions {
    */
   onStepFinish: ((step: StepKey, outcome: StepOutcome) => void)?;
   /**
-   * Maximum number of steps running cache lookups, restores, or uploads at
-   * once. Separate from `parallelism` so cache I/O neither stalls behind
-   * CPU-bound steps nor occupies execution slots while transferring archives.
+   * Optional tree of named concurrency groups governing step execution and
+   * cache I/O. When `null`, the engine builds a default tree with `'default'`
+   * set to `parallelism` and `'cache'` set to `16`.
    */
-  cacheParallelism: i32;
+  concurrencyGroups: ConcurrencyGroups?;
 
   new(
     parallelism: i32 = 8,
@@ -166,14 +166,14 @@ export class RunOptions {
     servicePool: ServicePool? = null,
     onStepStart: ((step: StepKey) => void)? = null,
     onStepFinish: ((step: StepKey, outcome: StepOutcome) => void)? = null,
-    cacheParallelism: i32 = 16,
+    concurrencyGroups: ConcurrencyGroups? = null,
   ) : parallelism = parallelism,
       force = force,
       verifyOutputs = verifyOutputs,
       servicePool = servicePool,
       onStepStart = onStepStart,
       onStepFinish = onStepFinish,
-      cacheParallelism = cacheParallelism;
+      concurrencyGroups = concurrencyGroups;
 }
 
 /** The result of an engine run. */
@@ -247,8 +247,7 @@ class RunState {
   next: EngineState;
   outcomes: HashMap<String, StepOutcome>;
   done: HashMap<String, Completer<void>>;
-  semaphore: Semaphore;
-  cacheSemaphore: Semaphore;
+  groups: ConcurrencyGroups;
   options: RunOptions;
   taskList = new GrowableArray<TaskStep>();
   serviceList = new GrowableArray<ServiceRuntime>();
@@ -262,8 +261,7 @@ class RunState {
     this.next,
     this.outcomes,
     this.done,
-    this.semaphore,
-    this.cacheSemaphore,
+    this.groups,
     this.options,
   );
 }
@@ -298,15 +296,14 @@ export class Engine {
     options: RunOptions? = null,
   ): Future<RunResult> {
     let opts = options ?? new RunOptions();
-    let cacheLimit = if (opts.cacheParallelism >= 1) opts.cacheParallelism else 1;
+    let groups = opts.concurrencyGroups ?? new ConcurrencyGroups(opts.parallelism);
     let rs = new RunState(
       leaves,
       previous,
       new EngineState(),
       new HashMap<String, StepOutcome>(),
       new HashMap<String, Completer<void>>(),
-      new Semaphore(opts.parallelism),
-      new Semaphore(cacheLimit),
+      groups,
       opts,
     );
     this.#classify(graph, rs);
@@ -601,11 +598,11 @@ export class Engine {
     }
 
     if (!rs.options.force) {
-      await rs.cacheSemaphore.acquire();
+      let cachePermit = await rs.groups.acquire(CACHE_CONCURRENCY_GROUP);
       let cached = try {
         await this.#cache.get(step.key, cacheKey)
       } finally {
-        rs.cacheSemaphore.release();
+        cachePermit.release();
       };
       if (cached != null) {
         rs.next.setRecord(
@@ -617,7 +614,7 @@ export class Engine {
     }
 
     var produced: OutputManifest | null = null;
-    await rs.semaphore.acquire();
+    let runPermit = await rs.groups.acquireOptional(step.concurrencyGroup);
     try {
       // Only now is the step certain to execute, so only now are its
       // services demanded.
@@ -630,7 +627,7 @@ export class Engine {
       if (onStart != null) {
         onStart(step.key);
       }
-      let ctx = this.#runContext(step, prior, resolved);
+      let ctx = this.#runContext(step, prior, resolved, rs.groups);
       let manifest = await step.run(ctx);
       // Fingerprinting validates duplicate output names loudly here, at
       // the producer, instead of at the first dependent; the carry-over
@@ -641,15 +638,17 @@ export class Engine {
       this.#verifyCarryOver(step, ctx, manifest);
       produced = manifest;
     } finally {
-      rs.semaphore.release();
+      if (runPermit != null) {
+        runPermit.release();
+      }
     }
 
     let manifest = produced as OutputManifest;
-    await rs.cacheSemaphore.acquire();
+    let putPermit = await rs.groups.acquire(CACHE_CONCURRENCY_GROUP);
     try {
       await this.#cache.put(step.key, cacheKey, manifest);
     } finally {
-      rs.cacheSemaphore.release();
+      putPermit.release();
     }
     rs.next.setRecord(
       step.key,
@@ -667,9 +666,10 @@ export class Engine {
     step: TaskStep,
     prior: StepRecord?,
     resolved: GrowableArray<ResolvedInput>,
+    groups: ConcurrencyGroups,
   ): RunContext {
     if (prior == null || prior.config.value != step.config.value) {
-      return new RunContext(null, null, null, resolved);
+      return new RunContext(null, null, null, resolved, groups);
     }
     let delta = computeDelta(prior.inputs, resolved);
     return new RunContext(
@@ -677,6 +677,7 @@ export class Engine {
       prior.manifest,
       staleOutputNames(prior.manifest, delta),
       resolved,
+      groups,
     );
   }
 

@@ -9,6 +9,7 @@ import {Box, StringBuilder, join} from 'zena:core';
 import {FileType, isDirectory, isFile, listDir, readFile, writeFile} from 'zena:fs';
 import {JsonArray, JsonObject, JsonValue, stringify} from 'zena:json';
 import {compareStrings, sortBy} from 'workflow/canonical';
+import {ConcurrencyGroupConfig} from 'workflow/concurrency';
 import {ensureParentDir, joinWorkspace, withRoot} from './fs-util.zena';
 import {
   ConfigError,
@@ -38,21 +39,133 @@ export let ZENA_PACKAGE_FILE = 'zena-package.json';
 
 function isZebraTopKey(key: String) {
   return key == 'scripts' || key == 'filesets' || key == 'locks' ||
-    key == 'workspace' || isCommentKey(key);
+    key == 'workspace' || key == 'concurrencyGroups' || isCommentKey(key);
 }
 
 function isRecognizedScriptKey(key: String) {
   return key == 'type' || key == 'command' || key == 'tests' || key == 'debug' ||
     key == 'files' || key == 'output' || key == 'dependencies' ||
     key == 'cache' || key == 'clean' || key == 'service' ||
-    key == 'env' || key == 'locks' || isCommentKey(key);
+    key == 'env' || key == 'locks' || key == 'concurrencyGroup' ||
+    isCommentKey(key);
 }
 
 function isRecognizedFilesetKey(key: String) {
   return key == 'files' || key == 'dependencies' || isCommentKey(key);
 }
 
+function parsePositiveInt(where: String, raw: JsonValue) {
+  if (!(raw is Box<f64>)) {
+    throw new ConfigError(`${where} must be a positive integer`);
+  }
+  let f = raw.value;
+  let n = f as i32;
+  if (n < 1 || (n as f64) != f) {
+    throw new ConfigError(`${where} must be a positive integer`);
+  }
+  return n;
+}
+
+/**
+ * Parses top-level `"concurrencyGroups"` from a workspace root `zebra.json`
+ * or `zena-package.json`. Each entry is either a positive integer shorthand
+ * (`"cache": 16`) or `{limit?, parent?}`.
+ */
+export function parseConcurrencyGroups(
+  path: String,
+  root: JsonObject,
+): HashMap<String, ConcurrencyGroupConfig> {
+  let groups = new HashMap<String, ConcurrencyGroupConfig>();
+  let raw = root['concurrencyGroups'];
+  if (raw == null) {
+    return groups;
+  }
+  if (!(raw is JsonObject)) {
+    throw new ConfigError(`${path}: "concurrencyGroups" must be an object`);
+  }
+  raw.forEach((name, value) => {
+    if (isCommentKey(name)) {
+      return;
+    }
+    if (name == '') {
+      throw new ConfigError(`${path}: concurrencyGroups key must not be empty`);
+    }
+    let where = `${path}: concurrencyGroups.${name}`;
+    if (value is Box<f64>) {
+      groups[name] = new ConcurrencyGroupConfig(parsePositiveInt(where, value), null);
+      return;
+    }
+    if (!(value is JsonObject)) {
+      throw new ConfigError(
+        `${where} must be a positive integer or {limit?, parent?} object`,
+      );
+    }
+    value.forEach((k, _) => {
+      if (k != 'limit' && k != 'parent' && !isCommentKey(k)) {
+        throw new ConfigError(`${where} has unsupported key "${k}"`);
+      }
+    });
+    let rawLimit = value['limit'];
+    var hasLimit = false;
+    var limit = 0;
+    if (rawLimit != null) {
+      limit = parsePositiveInt(`${where}.limit`, rawLimit);
+      hasLimit = true;
+    }
+    let rawParent = value['parent'];
+    var parent: String? = null;
+    if (rawParent != null) {
+      if (!(rawParent is String) || rawParent == '') {
+        throw new ConfigError(`${where}.parent must be a non-empty string`);
+      }
+      parent = rawParent;
+    }
+    if (!hasLimit && parent == null) {
+      throw new ConfigError(`${where} must specify "limit" or "parent"`);
+    }
+    groups[name] = new ConcurrencyGroupConfig(limit, parent, hasLimit);
+  });
+  return groups;
+}
+
+/**
+ * Reads `"concurrencyGroups"` from the workspace root's `zebra.json` (or
+ * `zena-package.json` when no root `zebra.json` exists).
+ */
+export async function readWorkspaceConcurrencyGroups(
+  readFileText: (relPath: String) => Future<String?>,
+  configPathOut: GrowableArray<String>? = null,
+): Future<HashMap<String, ConcurrencyGroupConfig>> {
+  let zebraText = await readFileText(ZEBRA_CONFIG_FILE);
+  if (zebraText != null) {
+    if (configPathOut != null) {
+      configPathOut.push(ZEBRA_CONFIG_FILE);
+    }
+    return parseConcurrencyGroups(
+      ZEBRA_CONFIG_FILE,
+      parseJsonObject(ZEBRA_CONFIG_FILE, zebraText),
+    );
+  }
+  let zenaText = await readFileText(ZENA_PACKAGE_FILE);
+  if (zenaText != null) {
+    if (configPathOut != null) {
+      configPathOut.push(ZENA_PACKAGE_FILE);
+    }
+    return parseConcurrencyGroups(
+      ZENA_PACKAGE_FILE,
+      parseJsonObject(ZENA_PACKAGE_FILE, zenaText),
+    );
+  }
+  return new HashMap<String, ConcurrencyGroupConfig>();
+}
+
 function validateBuildSections(path: String, root: JsonObject) {
+  if (root['concurrencyGroups'] != null && path != ZEBRA_CONFIG_FILE && path != ZENA_PACKAGE_FILE) {
+    throw new ConfigError(
+      `${path}: "concurrencyGroups" may only be declared in the workspace root manifest`,
+    );
+  }
+  parseConcurrencyGroups(path, root);
   let rawScripts = root['scripts'];
   if (rawScripts != null && !(rawScripts is JsonObject)) {
     throw new ConfigError(`${path}: "scripts" must be an object`);
@@ -426,6 +539,17 @@ export function parseZebraScript(
     validateLockFilenames(`script "${where}"`, 'locks', locks);
   }
 
+  var concurrencyGroup: String? = null;
+  let rawGroup = entry['concurrencyGroup'];
+  if (rawGroup != null) {
+    if (!(rawGroup is String) || rawGroup == '') {
+      throw new ConfigError(
+        `script "${where}": concurrencyGroup must be a non-empty string`,
+      );
+    }
+    concurrencyGroup = rawGroup;
+  }
+
   let filesDeclared = if (command == null && service == null && tests == null)
     hasExplicitFiles
   else
@@ -451,6 +575,7 @@ export function parseZebraScript(
     testDebug,
     null,
     ruleType,
+    concurrencyGroup,
   );
 }
 

@@ -1480,7 +1480,7 @@ export let tests = suite('zebra end to end', () => {
     // 2. Subsequent plain run: dependency is Fresh, while entry MUST run unfiltered
     // because the filtered run did not persist freshness or cache for the entry step.
     let r2 = await buildTarget(root, entry);
-    isTrue(r2.result.allSucceeded);
+    isTrue(r2.result.allSucceeded, formatBuildReport(r2, true));
     isTrue(sourceOf(r2.result, 'packages/lib:build') == StepSource.Fresh);
     isTrue(sourceOf(r2.result, 'packages/app:test') == StepSource.Ran);
     equal(await readFile(withRoot(root, 'packages/app/last-run.txt')), '0||\n');
@@ -1573,7 +1573,7 @@ export let tests = suite('zebra end to end', () => {
 
     // 2. Warm run stays fresh without invoking TestStepRunner again.
     let r2 = await buildTarget(root, entry, {testRunner: runner});
-    isTrue(r2.result.allSucceeded);
+    isTrue(r2.result.allSucceeded, formatBuildReport(r2, true));
     equal(calls.length, 1);
     isTrue(sourceOf(r2.result, 'packages/pkg:test') == StepSource.Fresh);
 
@@ -1658,5 +1658,97 @@ export let tests = suite('zebra end to end', () => {
     equal(calls.length, 6);
     isTrue(sourceOf(r9.result, 'packages/compiler:build') == StepSource.Ran);
     isTrue(sourceOf(r9.result, 'packages/pkg:test') == StepSource.Ran);
+  });
+
+  test('concurrencyGroups enforce tree caps, ZEBRA_GROUP_* overrides, and reject unknown groups', async () => {
+    let root = `/tmp/zebra-concurrency-groups-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    // Script helper: records concurrent active count inside `cargo` and total
+    // across all steps using atomic mkdir/rmdir locks is overkill; instead each
+    // step appends "+<group>" on entry, sleeps briefly, and appends "-<group>"
+    // on exit, letting us compute exact peak concurrency in `cargo` and `default`.
+    await write(
+      root,
+      'run.sh',
+      'group="$1"\n' +
+      'name="$2"\n' +
+      'mkdir -p traces\n' +
+      'printf "ENTER %s %s\\n" "$group" "$name" >> traces/log.txt\n' +
+      'sleep 0.15\n' +
+      'printf "EXIT %s %s\\n" "$group" "$name" >> traces/log.txt\n',
+    );
+    await write(root, 'zebra.json', `{
+      "concurrencyGroups": {
+        "cargo": { "limit": 1, "parent": "default" },
+        "compile": { "parent": "default" }
+      },
+      "scripts": {
+        "c1": { "command": "sh run.sh cargo c1", "concurrencyGroup": "cargo" },
+        "c2": { "command": "sh run.sh cargo c2", "concurrencyGroup": "cargo" },
+        "o1": { "command": "sh run.sh other o1" },
+        "o2": { "command": "sh run.sh other o2" },
+        "all": { "dependencies": ["c1", "c2", "o1", "o2"] },
+        "bothCargo": { "dependencies": ["c1", "c2"] },
+        "bad": { "command": "true", "concurrencyGroup": "nonexistent" }
+      }
+    }`);
+
+    // With default=2 and cargo(1) -> default(2), at most 1 cargo step runs at
+    // once and total concurrent steps across cargo + other stays <= 2.
+    let r1 = await buildTarget(root, new ScriptRef('', 'all'), {
+      parallelism: 2,
+      useCache: false,
+    });
+    isTrue(r1.result.allSucceeded, formatBuildReport(r1, true));
+    let trace = await readFile(withRoot(root, 'traces/log.txt'));
+    var curCargo = 0;
+    var maxCargo = 0;
+    var curTotal = 0;
+    var maxTotal = 0;
+    for (let line in trace.split('\n')) {
+      if (line.startsWith('ENTER cargo ')) {
+        curCargo += 1;
+        curTotal += 1;
+      } else if (line.startsWith('EXIT cargo ')) {
+        curCargo -= 1;
+        curTotal -= 1;
+      } else if (line.startsWith('ENTER other ')) {
+        curTotal += 1;
+      } else if (line.startsWith('EXIT other ')) {
+        curTotal -= 1;
+      }
+      if (curCargo > maxCargo) { maxCargo = curCargo; }
+      if (curTotal > maxTotal) { maxTotal = curTotal; }
+    }
+    equal(maxCargo, 1, `cargo cap violated:\n${trace}`);
+    isTrue(maxTotal <= 2, `default parent cap violated (maxTotal=${i32ToString(maxTotal)}):\n${trace}`);
+
+    // ZEBRA_GROUP_CARGO=2 overrides the manifest's limit of 1 so both cargo
+    // steps overlap concurrently.
+    await unlink(withRoot(root, 'traces/log.txt'));
+    let r2 = await buildTarget(root, new ScriptRef('', 'bothCargo'), {
+      parallelism: 2,
+      useCache: false,
+      lookupEnv: (name: String): String? =>
+        if (name == 'ZEBRA_GROUP_CARGO') '2' else localEnv(name),
+    });
+    isTrue(r2.result.allSucceeded, formatBuildReport(r2, true));
+    let trace2 = await readFile(withRoot(root, 'traces/log.txt'));
+    var curCargo2 = 0;
+    var maxCargo2 = 0;
+    for (let line in trace2.split('\n')) {
+      if (line.startsWith('ENTER cargo ')) {
+        curCargo2 += 1;
+      } else if (line.startsWith('EXIT cargo ')) {
+        curCargo2 -= 1;
+      }
+      if (curCargo2 > maxCargo2) { maxCargo2 = curCargo2; }
+    }
+    equal(maxCargo2, 2, `ZEBRA_GROUP_CARGO=2 should allow 2 concurrent cargo steps:\n${trace2}`);
+
+    // Unknown concurrencyGroup on a script is rejected at planning time.
+    await rejects(async () => {
+      await buildTarget(root, new ScriptRef('', 'bad'), {useCache: false});
+    });
   });
 });

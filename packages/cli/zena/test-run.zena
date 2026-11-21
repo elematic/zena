@@ -11,9 +11,10 @@
  * not compile in `--compile` falls back to `zena test --single <file>` so
  * its diagnostics are captured and reported.
  *
- * `CliTestStepRunner` shares one `ConcurrencyLimiter` and `CompileBatcher`
- * across all `"type": "zena:test"` steps in a build or watch run so
- * concurrent package test suites share one worker cap, coalesce small
+ * `CliTestStepRunner` shares one `CompileBatcher` across all
+ * `"type": "zena:test"` steps in a build or watch run and acquires permits
+ * from Zebra's shared `ConcurrencyGroups` tree (`compile` and `test` groups)
+ * so concurrent package test suites share one concurrency tree, coalesce small
  * packages into shared compile batches, and cap large packages per
  * `CompileSession`.
  */
@@ -29,7 +30,16 @@ import { AbsolutePath, RelativePath, extname, isAbsolute, join2, normalize } fro
 import { div } from 'zena:math';
 import { monotonic } from 'zena:time';
 import { RunOutcome, RunResult, runModule } from 'zena:wasm';
-import { StepExecution, TestStepRequest, TestStepRunner } from 'zebra/builder';
+import {
+  COMPILE_CONCURRENCY_GROUP,
+  ConcurrencyGroupConfig,
+  ConcurrencyGroups,
+  DEFAULT_CONCURRENCY_GROUP,
+  StepExecution,
+  TEST_CONCURRENCY_GROUP,
+  TestStepRequest,
+  TestStepRunner,
+} from 'zebra/builder';
 import { joinWorkspace } from 'zebra/fs-util';
 import { appendShellArgs } from 'zebra/shell';
 import {
@@ -56,100 +66,12 @@ let green = sgr('32');
 let red = sgr('31');
 let reset = sgr('0');
 
-class WaiterBucket {
-  waiters = new GrowableArray<Completer<void>>();
-  var head = 0;
-
-  isEmpty(): boolean {
-    return this.head >= this.waiters.length;
-  }
-
-  push(w: Completer<void>): void {
-    this.waiters.push(w);
-  }
-
-  pop(): Completer<void> {
-    let w = this.waiters[this.head];
-    this.head += 1;
-    if (this.head >= this.waiters.length) {
-      this.waiters.clear();
-      this.head = 0;
-    }
-    return w;
-  }
-}
-
-/**
- * Permit limiter shared across concurrent test steps, servicing waiting
- * package queues in round-robin order so a package with many fast files
- * never starves another package's long critical-path suite.
- */
-class ConcurrencyLimiter {
-  #limit: i32;
-  var #active = 0;
-  var #nextQueueId = 1;
-  #buckets = new HashMap<i32, WaiterBucket>();
-  #ring = new GrowableArray<i32>();
-  var #ringHead = 0;
-
-  new(limit: i32) : #limit = if (limit >= 1) limit else 1;
-
-  limit: i32 {
-    get { return this.#limit; }
-  }
-
-  allocateQueue(): i32 {
-    let id = this.#nextQueueId;
-    this.#nextQueueId += 1;
-    return id;
-  }
-
-  async acquire(queueId: i32 = 0): Future<void> {
-    if (this.#active < this.#limit) {
-      this.#active += 1;
-      return;
-    }
-    let waiter = new Completer<void>();
-    var bucket: WaiterBucket | null = null;
-    if (let (true, existing) = this.#buckets.get(queueId)) {
-      bucket = existing;
-    } else {
-      let created = new WaiterBucket();
-      this.#buckets[queueId] = created;
-      bucket = created;
-    }
-    let wasEmpty = bucket.isEmpty();
-    bucket.push(waiter);
-    if (wasEmpty) {
-      this.#ring.push(queueId);
-    }
-    await waiter.future;
-  }
-
-  release(): void {
-    while (this.#ringHead < this.#ring.length) {
-      let queueId = this.#ring[this.#ringHead];
-      this.#ringHead += 1;
-      if (this.#ringHead >= this.#ring.length) {
-        this.#ring.clear();
-        this.#ringHead = 0;
-      }
-      if (let (true, bucket) = this.#buckets.get(queueId)) {
-        if (!bucket.isEmpty()) {
-          let next = bucket.pop();
-          if (!bucket.isEmpty()) {
-            this.#ring.push(queueId);
-          } else {
-            this.#buckets.delete(queueId);
-          }
-          next.complete();
-          return;
-        }
-        this.#buckets.delete(queueId);
-      }
-    }
-    this.#active -= 1;
-  }
+function createStandaloneTestGroups(limit: i32) {
+  let cfg = {
+    COMPILE_CONCURRENCY_GROUP => ConcurrencyGroupConfig.childOf(DEFAULT_CONCURRENCY_GROUP),
+    TEST_CONCURRENCY_GROUP => ConcurrencyGroupConfig.childOf(DEFAULT_CONCURRENCY_GROUP),
+  };
+  return new ConcurrencyGroups(limit, cfg);
 }
 
 /**
@@ -497,6 +419,8 @@ class CompileBucket {
   noCache: boolean;
   cliGuestEnv: Map<String, String>;
   cliModuleOverride: AbsolutePath | null;
+  groups: ConcurrencyGroups;
+  compileGroup: String;
   queueId: i32;
   pending = new GrowableArray<PendingCompileItem>();
   var head = 0;
@@ -509,6 +433,8 @@ class CompileBucket {
     this.noCache,
     this.cliGuestEnv,
     this.cliModuleOverride,
+    this.groups,
+    this.compileGroup,
     this.queueId,
   );
 
@@ -532,6 +458,7 @@ class CompileBucket {
 
 function compileBucketKey(
   targetRoot: String,
+  compileGroup: String,
   options: Options,
   noCache: boolean,
   cliModuleOverride: AbsolutePath | null,
@@ -540,6 +467,8 @@ function compileBucketKey(
 ) {
   let sb = new StringBuilder();
   sb.append(targetRoot);
+  sb.append('\0');
+  sb.append(compileGroup);
   sb.append('\0');
   sb.append(if (options.debug) '1' else '0');
   sb.append('\0');
@@ -564,20 +493,18 @@ function compileBucketKey(
 /**
  * Cross-package compile batcher shared across concurrent `zena:test` steps.
  *
- * Workers acquire a `ConcurrencyLimiter` permit before popping up to
- * `batchSize` stale files from a compatible bucket. Under load, small
+ * Workers acquire a permit in the `compile` concurrency group before popping
+ * up to `batchSize` stale files from a compatible bucket. Under load, small
  * packages waiting for a permit coalesce into a single `CompileSession`,
  * while large packages split into bounded chunks so checker state never
  * bloats and tests begin executing as soon as their chunk finishes.
  */
 class CompileBatcher {
-  #limiter: ConcurrencyLimiter;
   #batchSize: i32;
   #buckets = new HashMap<String, CompileBucket>();
 
-  new(limiter: ConcurrencyLimiter, batchSize: i32 = compileBatchSize())
-      : #limiter = limiter,
-        #batchSize = if (batchSize >= 1) batchSize else 1;
+  new(batchSize: i32 = compileBatchSize())
+      : #batchSize = if (batchSize >= 1) batchSize else 1;
 
   enqueue(
     targetRoot: String,
@@ -588,9 +515,12 @@ class CompileBatcher {
     cliModuleOverride: AbsolutePath | null,
     envOverrides: Array<(String, String)>,
     envRemovals: Array<String>,
+    groups: ConcurrencyGroups,
+    compileGroup: String = COMPILE_CONCURRENCY_GROUP,
   ): GrowableArray<Future<void>> {
     let key = compileBucketKey(
       targetRoot,
+      compileGroup,
       options,
       noCache,
       cliModuleOverride,
@@ -608,7 +538,9 @@ class CompileBatcher {
         noCache,
         cliGuestEnv,
         cliModuleOverride,
-        this.#limiter.allocateQueue(),
+        groups,
+        compileGroup,
+        groups.allocateQueue(),
       );
       this.#buckets[key] = created;
       bucket = created;
@@ -630,7 +562,8 @@ class CompileBatcher {
       return;
     }
     let chunks = div(rem + this.#batchSize - 1, this.#batchSize);
-    let target = if (chunks < this.#limiter.limit) chunks else this.#limiter.limit;
+    let maxWorkers = bucket.groups.effectiveLimit(bucket.compileGroup);
+    let target = if (chunks < maxWorkers) chunks else maxWorkers;
     while (bucket.activeWorkers < target) {
       bucket.activeWorkers += 1;
       this.#runWorker(bucket);
@@ -640,7 +573,7 @@ class CompileBatcher {
   async #runWorker(bucket: CompileBucket): Future<void> {
     try {
       while (bucket.remaining() > 0) {
-        await this.#limiter.acquire(bucket.queueId);
+        let permit = await bucket.groups.acquire(bucket.compileGroup, bucket.queueId);
         let batch = bucket.popBatch(this.#batchSize);
         try {
           if (batch.length >= 2) {
@@ -667,7 +600,7 @@ class CompileBatcher {
           for (let item in batch) {
             item.done.complete();
           }
-          this.#limiter.release();
+          permit.release();
         }
       }
     } finally {
@@ -689,7 +622,8 @@ async function runAfterCompile(
   canCheckCacheHere: boolean,
   tmpDir: String,
   options: Options,
-  limiter: ConcurrencyLimiter,
+  groups: ConcurrencyGroups,
+  testGroup: String,
   queueId: i32,
   noCache: boolean,
   directGuestEnv: Map<String, String>,
@@ -714,7 +648,8 @@ async function runAfterCompile(
     cachedMod,
     tmpDir,
     options,
-    limiter,
+    groups,
+    testGroup,
     queueId,
     noCache,
     directGuestEnv,
@@ -725,8 +660,8 @@ async function runAfterCompile(
 }
 
 /**
- * Acquires one permit, runs `file`, immediately releases both the `Run`
- * resource and the `limiter` permit on completion, and returns the formatted
+ * Acquires one permit in `testGroup`, runs `file`, immediately releases both
+ * the `Run` resource and the permit on completion, and returns the formatted
  * result line(s).
  */
 async function runOneTestFile(
@@ -735,7 +670,8 @@ async function runOneTestFile(
   cachedModule: AbsolutePath | null,
   tmpDir: String,
   options: Options,
-  limiter: ConcurrencyLimiter,
+  groups: ConcurrencyGroups,
+  testGroup: String,
   queueId: i32,
   noCache: boolean,
   directGuestEnv: Map<String, String>,
@@ -743,7 +679,7 @@ async function runOneTestFile(
   useColor: boolean,
   cliModuleOverride: AbsolutePath | null,
 ): Future<TestFileOutcome> {
-  await limiter.acquire(queueId);
+  let permit = await groups.acquire(testGroup, queueId);
   let absFile = testPathInRoot(targetRoot, file);
   let direct = cachedModule != null;
   let result = try {
@@ -773,17 +709,19 @@ async function runOneTestFile(
       )
     }
   } finally {
-    limiter.release();
+    permit.release();
   };
   return formatTestResult(file, direct, result, useColor);
 }
 
-/** Runs `files` under `limiter`, streaming to console or capturing into `capturedOut`. */
+/** Runs `files` under `groups`, streaming to console or capturing into `capturedOut`. */
 async function executeTestFiles(
   targetRoot: String,
   files: Array<String>,
   options: Options,
-  limiter: ConcurrencyLimiter,
+  groups: ConcurrencyGroups,
+  compileGroup: String,
+  testGroup: String,
   batcher: CompileBatcher,
   noCache: boolean,
   envOverrides: Array<(String, String)>,
@@ -843,6 +781,8 @@ async function executeTestFiles(
       cliModuleOverride,
       envOverrides,
       envRemovals,
+      groups,
+      compileGroup,
     );
     for (var i = 0; i < staleFiles.length; i += 1) {
       readyByFile[staleFiles[i]] = readyFutures[i];
@@ -851,7 +791,7 @@ async function executeTestFiles(
 
   let tmpDir = (await hostDir('/tmp')).value;
   let useColor = getEnv('NO_COLOR') == null;
-  let queueId = limiter.allocateQueue();
+  let queueId = groups.allocateQueue();
 
   let tasks = new GrowableArray<Future<TestFileOutcome>>();
   for (let file in files) {
@@ -863,7 +803,8 @@ async function executeTestFiles(
           hit,
           tmpDir,
           options,
-          limiter,
+          groups,
+          testGroup,
           queueId,
           noCache,
           directGuestEnv,
@@ -882,7 +823,8 @@ async function executeTestFiles(
           canCheckCacheHere,
           tmpDir,
           options,
-          limiter,
+          groups,
+          testGroup,
           queueId,
           noCache,
           directGuestEnv,
@@ -962,15 +904,17 @@ export async function testCommand(
     return 2;
   }
   let limit = if (jobs > 0) jobs else parallelism();
-  let limiter = new ConcurrencyLimiter(limit);
-  let batcher = new CompileBatcher(limiter);
+  let groups = createStandaloneTestGroups(limit);
+  let batcher = new CompileBatcher();
   let emptyOverrides = new GrowableArray<(String, String)>();
   let emptyRemovals = new GrowableArray<String>();
   return await executeTestFiles(
     workspaceRoot().value,
     files,
     options,
-    limiter,
+    groups,
+    COMPILE_CONCURRENCY_GROUP,
+    TEST_CONCURRENCY_GROUP,
     batcher,
     noCache,
     emptyOverrides,
@@ -1016,35 +960,12 @@ function formatStepCommandLabel(
   return appendShellArgs(base, all);
 }
 
-function stepRunnerParallelism(jobs: i32): i32 {
-  if (jobs > 0) {
-    return jobs;
-  }
-  let explicitTest = envInt('ZENA_TEST_PARALLELISM');
-  if (explicitTest > 0) {
-    return explicitTest;
-  }
-  let zebraPar = envInt('ZEBRA_PARALLEL');
-  if (zebraPar > 0) {
-    return zebraPar;
-  }
-  let available = envInt('ZENA_AVAILABLE_PARALLELISM');
-  if (available <= 0) {
-    return parallelism();
-  }
-  if (available > 16) {
-    return 16;
-  }
-  return available;
-}
-
 /**
  * Shared in-process runner passed to Zebra's `buildTarget` and `watchTarget`
  * so `"type": "zena:test"` steps run without spawning shell or CLI processes.
  */
 export class CliTestStepRunner implements TestStepRunner {
   #options: Options;
-  #limiter: ConcurrencyLimiter;
   #batcher: CompileBatcher;
   #noCache: boolean;
   #builtCliPath: String;
@@ -1054,20 +975,17 @@ export class CliTestStepRunner implements TestStepRunner {
 
   new(
     options: Options,
-    limiter: ConcurrencyLimiter,
     noCache: boolean,
     builtCliPath: String,
     startedOnBootstrapFallback: boolean,
   ) : #options = options,
-      #limiter = limiter,
-      #batcher = new CompileBatcher(limiter),
+      #batcher = new CompileBatcher(),
       #noCache = noCache,
       #builtCliPath = builtCliPath,
       #startedOnBootstrapFallback = startedOnBootstrapFallback;
 
   static async create(
     options: Options,
-    jobs: i32,
     noCache: boolean,
   ): Future<CliTestStepRunner> {
     let root = workspaceRoot().value;
@@ -1075,8 +993,7 @@ export class CliTestStepRunner implements TestStepRunner {
     let bootstrapPath = `${root}/packages/cli/bootstrap/zena.wasm`;
     let startedOnBootstrap =
       cliModule().value == bootstrapPath && !(await isFile(builtPath));
-    let limiter = new ConcurrencyLimiter(stepRunnerParallelism(jobs));
-    return new CliTestStepRunner(options, limiter, noCache, builtPath, startedOnBootstrap);
+    return new CliTestStepRunner(options, noCache, builtPath, startedOnBootstrap);
   }
 
   async #activeCliModule(): Future<AbsolutePath> {
@@ -1162,6 +1079,8 @@ export class CliTestStepRunner implements TestStepRunner {
       this.#options.optLevel,
     );
     let activeCli = await this.#activeCliModule();
+    let groups = request.concurrency ?? createStandaloneTestGroups(parallelism());
+    let testGroup = request.testGroup ?? TEST_CONCURRENCY_GROUP;
     let capturedOut = new StringBuilder();
     if (this.#activeSteps == 0) {
       this.#identityMemo.clear();
@@ -1172,7 +1091,9 @@ export class CliTestStepRunner implements TestStepRunner {
         request.root,
         files,
         stepOptions,
-        this.#limiter,
+        groups,
+        COMPILE_CONCURRENCY_GROUP,
+        testGroup,
         this.#batcher,
         stepNoCache,
         request.env,

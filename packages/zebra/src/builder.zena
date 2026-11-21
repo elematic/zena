@@ -6,6 +6,11 @@ import {Process, checkSignal, runWith, spawnWith} from 'zena:process';
 import {Regex} from 'zena:regex';
 import {monotonic} from 'zena:time';
 import {StringBuilder, Unmanaged, adopt, disown} from 'zena:core';
+import {
+  ConcurrencyGroupConfig,
+  ConcurrencyGroups,
+  DEFAULT_CONCURRENCY_GROUP,
+} from 'workflow/concurrency';
 import {Fingerprint} from 'workflow/fingerprint';
 import {Graph} from 'workflow/graph';
 import {OutputEntry, OutputManifest} from 'workflow/manifest';
@@ -36,6 +41,12 @@ import {
   refKey,
 } from './wireit-config.zena';
 
+export {
+  ConcurrencyGroupConfig,
+  ConcurrencyGroups,
+  DEFAULT_CONCURRENCY_GROUP,
+} from 'workflow/concurrency';
+
 /** Captured command output and wall-clock duration for a step that executed. */
 export class StepExecution {
   command: String;
@@ -60,6 +71,12 @@ export class StepExecution {
   }
 }
 
+/** Built-in child concurrency group for in-process compiler batch workers. */
+export let COMPILE_CONCURRENCY_GROUP = 'compile';
+
+/** Built-in child concurrency group for in-process `zena:test` execution. */
+export let TEST_CONCURRENCY_GROUP = 'test';
+
 /** Parameters for running one package's native Zena `"tests"` step. */
 export class TestStepRequest {
   root: String;
@@ -69,6 +86,10 @@ export class TestStepRequest {
   env: Array<(String, String)>;
   envRemove: Array<String>;
   debug: boolean;
+  /** Engine concurrency group tree for this run, or `null` when run standalone. */
+  concurrency: ConcurrencyGroups?;
+  /** Explicit concurrency group for test execution (`null` uses `'test'`). */
+  testGroup: String?;
 
   new(
     this.root,
@@ -78,6 +99,8 @@ export class TestStepRequest {
     this.env,
     this.envRemove,
     this.debug,
+    this.concurrency = null,
+    this.testGroup = null,
   );
 }
 
@@ -364,6 +387,8 @@ export async function runScript(
           envOverrides,
           envRemovals,
           config.testDebug,
+          ctx.concurrency,
+          config.concurrencyGroup,
         ),
       );
     } else {
@@ -788,6 +813,7 @@ export function planScripts(
   hasher: FileHasher? = null,
   foregroundServiceKey: String? = null,
   testRunner: TestStepRunner? = null,
+  concurrencyGroups: ConcurrencyGroups? = null,
 ): Plan {
   let fileHasher = hasher ?? new FileHasher(root);
   let hasRunner = testRunner != null;
@@ -797,6 +823,16 @@ export function planScripts(
   let steps = new GrowableArray<Step>();
   for (let config in configs) {
     let key = refKey(config.ref);
+    let explicitGroup = config.concurrencyGroup;
+    if (
+      explicitGroup != null &&
+      concurrencyGroups != null &&
+      !concurrencyGroups.hasGroup(explicitGroup)
+    ) {
+      throw new ConfigError(
+        `script "${key}": unknown concurrencyGroup "${explicitGroup}"`,
+      );
+    }
     let inputs = buildStepInputs(config, fileHasher, runnerLeaf);
     if (config.service != null) {
       let readyRegex = compileReadyRegex(config);
@@ -806,6 +842,7 @@ export function planScripts(
           configFingerprint(config, salt, true, hasRunner),
           inputs,
           (ctx) => runForegroundService(root, config, readyRegex, salt, fileHasher),
+          explicitGroup ?? DEFAULT_CONCURRENCY_GROUP,
         ));
       } else {
         steps.push(new ServiceStep(
@@ -816,6 +853,16 @@ export function planScripts(
         ));
       }
     } else {
+      let isZenaTest = config.ruleType == ZENA_TEST_RULE_TYPE && config.tests != null;
+      let isAggregate =
+        config.command == null && !isZenaTest && config.output.length == 0;
+      // Aggregate/fileset steps do no I/O work, and in-process `zena:test`
+      // steps coordinate sub-tasks that acquire `'compile'` / `'test'` permits
+      // directly from `ctx.concurrency` — neither should occupy a parent slot.
+      let stepGroup = if (isAggregate || (isZenaTest && hasRunner))
+        null
+      else
+        explicitGroup ?? DEFAULT_CONCURRENCY_GROUP;
       steps.push(new TaskStep(
         new StepKey(key),
         configFingerprint(config, salt, false, hasRunner),
@@ -829,6 +876,7 @@ export function planScripts(
           executions,
           testRunner,
         ),
+        stepGroup,
       ));
     }
   }

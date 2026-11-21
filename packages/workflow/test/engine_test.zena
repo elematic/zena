@@ -4,6 +4,11 @@ import {Completer, drainMicrotasks} from 'zena:async';
 import {HashSet} from 'zena:collections';
 import {NullCache, StepCache} from 'workflow/cache';
 import {
+  CACHE_CONCURRENCY_GROUP,
+  ConcurrencyGroupConfig,
+  ConcurrencyGroups,
+} from 'workflow/concurrency';
+import {
   Engine,
   Failed,
   RunOptions,
@@ -553,7 +558,7 @@ export let tests = suite('engine', () => {
     equal(events[3], 'finish:compile:fresh');
   });
 
-  test('cache lookups use cacheParallelism independently of execution parallelism', async (ctx) => {
+  test('cache lookups use the cache concurrency group independently of default parallelism', async (ctx) => {
     var activeGets = 0;
     var maxActiveGets = 0;
     let getGate = new Completer<void>();
@@ -591,13 +596,17 @@ export let tests = suite('engine', () => {
     equal(runs.log.length, 4);
 
     // Second run with empty state forces cache.get for all 4 steps.
-    // With parallelism = 1 and cacheParallelism = 3, three lookups run at once
+    // With default = 1 and cache = 3, three lookups run at once
     // rather than serializing on execution parallelism.
     let secondGate = new Completer<void>();
     gatedCache.gate = secondGate;
     activeGets = 0;
     maxActiveGets = 0;
-    let opts = new RunOptions(1, false, null, null, null, null, 3);
+    let cacheCfg = {
+      CACHE_CONCURRENCY_GROUP => new ConcurrencyGroupConfig(3, null),
+    };
+    let cacheGroups = new ConcurrencyGroups(1, cacheCfg);
+    let opts = new RunOptions(1, false, null, null, null, null, cacheGroups);
     let running = engine.run(
       mkGraph(),
       new HashMap<String, Fingerprint>(),
@@ -649,11 +658,15 @@ export let tests = suite('engine', () => {
       mkLogged('dep', ['a']),
     ]);
     let engine = new Engine(digest, gatedPutCache);
+    let putCfg = {
+      CACHE_CONCURRENCY_GROUP => new ConcurrencyGroupConfig(4, null),
+    };
+    let putGroups = new ConcurrencyGroups(1, putCfg);
     let running = engine.run(
       graph,
       new HashMap<String, Fingerprint>(),
       EngineState.empty(),
-      new RunOptions(1, false, null, null, null, null, 4),
+      new RunOptions(1, false, null, null, null, null, putGroups),
     );
     drainMicrotasks();
 
