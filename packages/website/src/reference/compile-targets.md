@@ -105,7 +105,9 @@ Emits a portable WebAssembly Component. Enables `component` and `wasi`.
 - **WIT worlds**: Without `--wit`, synthesizes a world from the WASI 0.3
   interfaces the program reaches and exports `main` (if present). With `--wit`
   (and optional `--world`), validates exports and imports against the specified
-  WIT world.
+  WIT world. `--wit` takes a `.wit` file or a directory of them. A
+  directory's `deps/` directory holds the packages the world refers to, each
+  as a `.wit` file or a directory of `.wit` files.
 - **Host imports**: Standard WASI 0.3 interfaces (`wasi:cli@0.3.0`,
   `wasi:filesystem@0.3.0`, `wasi:clocks@0.3.0`, `wasi:random@0.3.0`,
   `wasi:http@0.3.0`) plus any imports from user WIT packages.
