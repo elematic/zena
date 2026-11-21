@@ -62,4 +62,62 @@ export let tests = suite('zena test: files compiled together', () => {
       await scratch.remove();
     }
   });
+
+  test('bounded compile batches split larger suites and track shared dependencies', async (ctx) => {
+    let scratch = await Scratch.create('test-batch-chunked');
+    try {
+      await write(scratch.at('ws/shared.zena'), 'export function value(): i32 { return 1; }\n');
+      for (let name in ['a', 'b', 'c', 'd', 'e']) {
+        await write(scratch.at(`ws/${name}_test.zena`), valueTest('shared'));
+      }
+      let zena = zenaIn(scratch, 'ws')
+        .set('ZENA_TEST_PARALLELISM', '2')
+        .set('ZENA_TEST_COMPILE_BATCH', '2');
+      let first = await zena.run(['test', '*_test.zena']);
+      isTrue(first.succeeded(), described(first));
+      isTrue(first.stdout.contains('Test Summary: 5 passed, 0 failed'), described(first));
+
+      await write(scratch.at('ws/shared.zena'), 'export function value(): i32 { return 20; }\n');
+      let second = await zena.run(['test', '*_test.zena']);
+      isTrue(!second.succeeded(), described(second));
+      isTrue(second.stdout.contains('Test Summary: 0 passed, 5 failed'), described(second));
+    } finally {
+      await scratch.remove();
+    }
+  });
+
+  test('concurrent zena:test packages pool stale files through the shared batcher', async (ctx) => {
+    let scratch = await Scratch.create('test-batch-pooled');
+    try {
+      await write(
+        scratch.at('ws/zena-package.json'),
+        '{\n' +
+        '  "workspace": { "packages": ["packages/a", "packages/b", "packages/c"] },\n' +
+        '  "scripts": {\n' +
+        '    "test": { "dependencies": ["./packages/a:test", "./packages/b:test", "./packages/c:test"] }\n' +
+        '  }\n' +
+        '}\n',
+      );
+      for (let pkg in ['a', 'b', 'c']) {
+        await write(
+          scratch.at(`ws/packages/${pkg}/zena-package.json`),
+          `{\n  "name": "pkg-${pkg}",\n  "scripts": { "test": { "type": "zena:test", "tests": "test/*_test.zena" } }\n}\n`,
+        );
+        await write(
+          scratch.at(`ws/packages/${pkg}/test/one_test.zena`),
+          "import { suite, test } from 'zena:test';\n" +
+          "import { equal } from 'zena:assert';\n" +
+          `export let tests = suite('${pkg}', () => { test('ok', () => { equal(1, 1); }); });\n`,
+        );
+      }
+      let zena = zenaIn(scratch, 'ws')
+        .set('ZEBRA_PARALLEL', '3')
+        .set('ZENA_TEST_PARALLELISM', '1')
+        .set('ZENA_TEST_COMPILE_BATCH', '4');
+      let result = await zena.run(['test']);
+      isTrue(result.succeeded(), described(result));
+    } finally {
+      await scratch.remove();
+    }
+  });
 });
