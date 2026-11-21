@@ -144,6 +144,52 @@ in docs/design/compiler-memory.md.
 
 ---
 
+## Linux, with perf
+
+`perf` needs no root and no change to `perf_event_paranoid` to sample
+your own process's user-space code, which is all a compile is. It reads
+wasmtime's perf map itself, so compiled Zena functions come back named,
+and it counts instructions, which do not move with machine load.
+
+```bash
+# A compiler with a name section, built by the bootstrap as build:cli is.
+ZENA_GC_RESERVE_MB=1536 ZENA_CLI_MODULE=packages/cli/bootstrap/zena.wasm \
+  ./target/release/zena -g -O2 build packages/compiler/src/cli/main.zena \
+  -o perf-out/compiler.wasm
+
+ZENA_PROFILE=1 ZENA_GC_RESERVE_MB=1536 \
+  perf record -e cycles:u -F 1999 --user-callchains -g -o perf-out/prof.data -- \
+  ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib \
+  perf-out/compiler.wasm packages/cli/zena/main.zena -o perf-out/out.wasm
+perf script -i perf-out/prof.data -F ip,sym,dso > perf-out/prof.txt
+python3 scripts/perf-report.py perf-out/prof.txt groups
+```
+
+- **`--user-callchains`** is what lets an unprivileged `perf record -g`
+  open its events; without it the recording fails with "Failure to
+  open any events".
+- **Run the compile once before recording.** `ZENA_PROFILE` changes the
+  engine's settings, so the first run with it compiles a new `.cwasm`
+  beside the module, and that would be most of the profile.
+- **Frames of the host have no callers** in a stock build: Rust omits
+  frame pointers, so a sample inside the collector or a libcall is a
+  leaf with nothing above it. To see which Zena function a libcall was
+  made from, build the host with them, into a directory of its own:
+  `RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release -p zena-run --target-dir perf-out/target-fp`.
+- **`perf stat -e instructions:u,cycles:u -- <command>`** gives a count
+  to compare two builds by when the machine is busy.
+
+`scripts/perf-report.py` reads the `perf script` dump: `groups` splits
+the samples between the compiler's own code, the collector, subtype
+checks and the rest of the host; `flat` and `incl` rank functions by
+self and inclusive samples; `children '<regex>'` splits a function's
+time by what it calls, and `callers '<regex>'` names what calls it.
+
+`nix build nixpkgs#perf --no-link --print-out-paths` gets `perf` where
+the dev shell does not have it.
+
+---
+
 ## Tuning Wasmtime Performance
 
 By default, Wasmtime compiles with `native_unwind_info` enabled to support external unwinders (like `samply`). However, registering and deregistering DWARF frames for thousands of functions dynamically introduces significant process startup/teardown overhead (~130ms or ~24% of compiler process runtime).
