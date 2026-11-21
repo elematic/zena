@@ -4891,15 +4891,21 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   new PendingStaticTarget(targetClassType, mName));
             }
             let {cha} = this;
-            let list = new Array<ClassType>();
-            if (targetClassType.isExtension) {
-              list.push(targetClassType);
+            // The hierarchy's own list, not a copy of it: nothing below
+            // instantiates a class, and the loop over it reads the
+            // elements it had when the loop began. A copy per record
+            // was a million lists in a compile of the compiler.
+            let list = if (targetClassType.isExtension) {
+              growable<ClassType>([targetClassType])
             } else {
-              let subclasses = cha.findInstantiatedSubclasses(targetClassType);
-              for (let subCt in subclasses) {
-                list.push(subCt);
-              }
-            }
+              cha.findInstantiatedSubclasses(targetClassType)
+            };
+            // The field behind an accessor slot's name, `get#x` or `set#x`.
+            let accessedField = if (mName.startsWith("get#") || mName.startsWith("set#")) {
+              mName.sliceBytes(4, mName.length)
+            } else {
+              null
+            };
             // The records are symbol-level, and findInstantiatedSubclasses
             // sees only specializations that exist NOW — a member dep
             // traversed before the receiver's specialization is
@@ -4951,9 +4957,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 if (this.currentReachable && mds.length == 0 && accs.length == 0) {
                   this.notePendingMemberReach(getClassMethodKey(getClassKey(subCt), mName));
                 }
-              } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
-                let fieldName = mName.sliceBytes(4, mName.length);
-                for (let fd in cha.findImplementingFields(subCt, fieldName)) {
+              } else if (accessedField != null) {
+                for (let fd in cha.findImplementingFields(subCt, accessedField)) {
                   this.queueMember((fd as Node).id as i32, this.getNodeModel(fd as Node, subModel), subCt, this.currentReachable);
                 }
               }
