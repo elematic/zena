@@ -51,7 +51,7 @@ through wasmtime's `Store::gc_heap_grow`), to twice
 reserves address space; a page becomes resident when an allocation
 first reaches it.
 
-The store that runs the compiler gets 128 MiB when the variable is not
+The store that runs the compiler gets 192 MiB when the variable is not
 set: the `zena` command's own store, and the copies of the CLI module
 that `zena test` starts to compile test files, which hand it on to the
 tests they run. A program that `zena run` or `zena-run` starts gets
@@ -62,38 +62,51 @@ compiles.
 Compile time and peak RSS by reserve, one run each on an idle machine
 (wasmtime 50, the compiler as of November 2026):
 
-| compile                   | 0             | 128           | 256           | 512           | 1024          | 1536          |
-| ------------------------- | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- |
-| a three-line program      | 0.77 s, 143 M | 0.25 s, 165 M | 0.25 s, 165 M | 0.25 s, 165 M | 0.25 s, 165 M | 0.25 s, 165 M |
-| `portable_semantics.zena` | 10.3 s, 433 M | 8.8 s, 562 M  | 3.9 s, 562 M  | 3.5 s, 1.0 G  | 3.5 s, 1.4 G  | 3.2 s, 1.2 G  |
-| the compiler, `-O1`       | 29.3 s, 1.5 G | 23.0 s, 1.0 G | 18.6 s, 1.0 G | 12.5 s, 1.0 G | 10.3 s, 2.0 G | 10.2 s, 3.0 G |
-| the CLI module            | 41.2 s, 1.5 G | 46.5 s, 2.0 G | 45.7 s, 2.0 G | 42.8 s, 2.0 G | 20.0 s, 2.0 G | 18.5 s, 3.0 G |
+| compile                   | 0             | 96            | 128           | 192           |
+| ------------------------- | ------------- | ------------- | ------------- | ------------- |
+| a three-line program      | 0.82 s, 137 M | 0.28 s, 185 M | 0.25 s, 160 M | 0.25 s, 160 M |
+| `portable_semantics.zena` | 10.8 s, 429 M | 9.3 s, 429 M  | 6.4 s, 557 M  | 7.0 s, 429 M  |
+| the compiler, `-O1`       | 28.3 s, 1.5 G | 28.2 s, 1.5 G | 20.9 s, 1.0 G | 26.8 s, 1.5 G |
+| the CLI module            | 38.6 s, 1.5 G | 37.7 s, 1.5 G | 59.7 s, 2.0 G | 39.8 s, 1.5 G |
 
-A compile whose live set comes close to the reserve gains nothing from
-it, as the CLI module below 1024 shows: wasmtime grows the heap only
-once what survives a collection fills a whole semi-space, so a live
-set at 90% of one is copied in full for every tenth of a semi-space
-allocated. A collector that grew the heap when the survivors passed
-half a semi-space would need no reserve: with that one comparison
-changed in a local copy of wasmtime, and no reserve, the three-line
-program compiles in 0.27 s, the compiler in 9.3 s where it takes 27.8 s,
-and the CLI module in 16.4 s where it takes 37.8 s. The reserve stands
-in for that change until wasmtime makes it.
+At the build scripts' 1536 the last two take 10.2 s and 18.5 s.
+
+A compile whose live set outgrows the reserve gains nothing from it:
+wasmtime grows the heap only once what survives a collection fills a
+whole semi-space, so a live set at 90% of one is copied in full for
+every tenth of a semi-space allocated. A collector that grew the heap
+when the survivors passed half a semi-space would need no reserve: with
+that one comparison changed in a local copy of wasmtime, and no
+reserve, the three-line program compiles in 0.27 s, the compiler in
+9.3 s where it takes 27.8 s, and the CLI module in 16.4 s where it
+takes 37.8 s. The reserve stands in for that change until wasmtime
+makes it.
+
+The size has to be one the heap would have reached by itself. The heap
+doubles, and from nothing it passes through 96, 192, 384, 768 and
+1536 MiB. A reserve of 96 or 192 starts it at 192 or 384, so a compile
+that outgrows the reserve is collected and grown at the same sizes as
+before and takes the time it took before: the last two rows of the 96
+and 192 columns. A reserve of 128 puts the heap on 256, 512, 1024 and
+2048 instead, which moves the sizes at which a nearly full semi-space
+is copied over and over. That happened to suit the compiler and to
+cost the CLI module half as much time again.
 
 `zena test` compiles in up to eight copies at once, so the default is
-a trade between their time and their memory. A package's tests,
+also a trade between their time and their memory. A package's tests,
 compiled and run with nothing cached (wall time, peak RSS of the
 process):
 
-| tests             | 0             | 64            | 128           | 256           |
+| tests             | 0             | 96            | 128           | 192           |
 | ----------------- | ------------- | ------------- | ------------- | ------------- |
-| `packages/stdlib` | 43.0 s, 1.8 G | 27.9 s, 2.3 G | 23.2 s, 2.9 G | 23.0 s, 4.8 G |
-| `package-manager` | 23.2 s, 2.3 G | 17.4 s, 2.3 G | 10.6 s, 3.5 G | 9.4 s, 4.9 G  |
-| `registry`        | 72.9 s, 5.6 G | 59.3 s, 5.6 G | 56.5 s, 5.6 G | 35.4 s, 9.8 G |
+| `packages/stdlib` | 41.8 s, 1.8 G | 24.8 s, 2.4 G | 23.2 s, 2.8 G | 23.1 s, 3.7 G |
+| `package-manager` | 23.5 s, 2.4 G | 16.6 s, 2.6 G | 10.4 s, 3.3 G | 9.3 s, 4.4 G  |
+| `atproto`         | 16.6 s, 2.3 G | 7.4 s, 2.7 G  | 7.1 s, 2.8 G  | 7.5 s, 4.0 G  |
+| `registry`        | 74.3 s, 5.7 G | 58.9 s, 6.8 G | 52.9 s, 5.6 G | 50.9 s, 6.4 G |
 
-256 MiB is faster still for the largest of them and costs gigabytes
-more, on runners that have run out of memory before, so the default
-is 128.
+192 gives these runs what 128 does, for a gigabyte or so more, and is
+never slower than no reserve. 96 costs the least memory and gives the
+mid-sized packages less.
 
 The reserve used to be made by allocating one array of that size from
 a small helper module and dropping it. That touched every page: 0.4 s

@@ -164,18 +164,26 @@ pub fn apply_gc_config(config: &mut Config) {
 ///
 /// Compiling a three-line program allocates about 120 MiB. With no
 /// reserve the heap starts small and is collected at every doubling,
-/// which was two thirds of that compile's 0.75 s; with this reserve
-/// nothing is collected and it takes 0.25 s. A larger compile gains
-/// less as its live set nears the reserve, and needs a larger one to
-/// gain more, which the repository's build scripts set themselves.
+/// which was two thirds of that compile's 0.8 s; with this reserve
+/// nothing is collected and it takes 0.25 s. A compile whose live set
+/// outgrows the reserve takes what it took without one, and needs a
+/// larger one to gain, which the repository's build scripts set
+/// themselves.
+///
+/// The value is one the heap reaches by itself. It doubles, and from
+/// nothing passes through 96, 192, 384 and 768 MiB, so starting it at
+/// twice 192 leaves a compile that outgrows the reserve collecting at
+/// the sizes it did before. 128 put the heap on 256, 512 and 1024
+/// instead, and the CLI module, compiled without the build script's
+/// reserve, took half as long again.
 ///
 /// `zena test` compiles in up to eight stores at once, each of which
-/// can hold twice the reserve, so the size is a trade between their
-/// time and their memory: the standard library's tests take 43 s and
-/// 1.8 GiB with no reserve, 23 s and 2.9 GiB at 128, and 23 s and
-/// 4.8 GiB at 256. The measurements are in
+/// can hold twice the reserve, so the size is also a trade between
+/// their time and their memory: the standard library's tests take 42 s
+/// and 1.8 GiB with no reserve, 25 s and 2.4 GiB at 96, and 23 s and
+/// 3.7 GiB at 192. The measurements are in
 /// docs/design/compiler-memory.md, "The heap reserve".
-pub const COMPILER_GC_RESERVE_MB: u64 = 128;
+pub const COMPILER_GC_RESERVE_MB: u64 = 192;
 
 /// [`reserve_gc_heap_or`] with no reserve unless ZENA_GC_RESERVE_MB
 /// names one: for a store that runs a program, which may be long-lived
