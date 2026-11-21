@@ -420,6 +420,11 @@ fn main() -> Result<()> {
         &engine,
         ComponentState::new(&engine, wasi.build(), Some(grant)),
     );
+    // The CLI module holds the compiler, and compiles in this store.
+    zena_runtime::engine::reserve_gc_heap_or(
+        &mut store,
+        zena_runtime::engine::COMPILER_GC_RESERVE_MB,
+    )?;
     match zena_runtime::component::run_main(&mut store, &linker, &component, "main") {
         Ok(results) => {
             std::process::exit(zena_runtime::component::exit_status(&results));

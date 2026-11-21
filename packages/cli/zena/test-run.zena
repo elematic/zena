@@ -299,6 +299,13 @@ async function findStepTests(
   return found;
 }
 
+/**
+ * The GC heap reserve of a store that compiles, in MiB, as
+ * `ZENA_GC_RESERVE_MB` takes it: the runtime's `COMPILER_GC_RESERVE_MB`
+ * (`packages/runtime-wasmtime/src/engine.rs`), which says what it buys.
+ */
+let compilerGcReserveMb = '128';
+
 /** Builds an explicit guest WASI environment map (preserving first-entry-wins). */
 function buildGuestEnv(
   targetRoot: String,
@@ -327,6 +334,12 @@ function buildGuestEnv(
       env['ZENA_CLI_MODULE'] = cliModuleOverride.value;
     }
     env['ZENA_CWD'] = targetRoot;
+    // A copy of this module compiles, so it gets the heap reserve the
+    // `zena` command gives its own store. The tests the copy runs get
+    // its environment, and so the same reserve.
+    if (!env.has('ZENA_GC_RESERVE_MB') && !removed.has('ZENA_GC_RESERVE_MB')) {
+      env['ZENA_GC_RESERVE_MB'] = compilerGcReserveMb;
+    }
   }
   for (let (name, value) in overrides) {
     env[name] = value;

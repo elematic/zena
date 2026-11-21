@@ -161,7 +161,7 @@ fn run_core_module(cli: &Cli, path: &Path) -> Result<()> {
         zena_runtime::cache::load_module_variant(&engine, path, cli.debug, false)?
     };
     let mut store = Store::new(&engine, ());
-    zena_runtime::engine::reserve_gc_heap(&engine, &mut store)?;
+    zena_runtime::engine::reserve_gc_heap(&mut store)?;
     match zena_runtime::core_module::call_export(&mut store, &module, &cli.invoke) {
         Ok(results) => {
             if let Some(res) = results.first() {

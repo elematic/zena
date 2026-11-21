@@ -40,6 +40,62 @@ after a full collection. Peak RSS at `ZENA_GC_RESERVE_MB=0` therefore
 tracks the live set, but in coarse steps: a compile whose live set
 crosses a doubling threshold shows twice the RSS of one just under it.
 
+## The heap reserve
+
+A heap that stays just above the live set is collected constantly:
+each collection copies everything live and frees little. A reserve
+grows the heap once, before the program runs
+(`reserve_gc_heap_or` in `packages/runtime-wasmtime/src/engine.rs`,
+through wasmtime's `Store::gc_heap_grow`), to twice
+`ZENA_GC_RESERVE_MB`, so each semi-space has that much room. Growing
+reserves address space; a page becomes resident when an allocation
+first reaches it.
+
+The store that runs the compiler gets 128 MiB when the variable is not
+set: the `zena` command's own store, and the copies of the CLI module
+that `zena test` starts to compile test files, which hand it on to the
+tests they run. A program that `zena run` or `zena-run` starts gets
+none, since a long-running program would hold up to twice the reserve
+in garbage. The repository's build scripts set 1536 for the large
+compiles.
+
+Compile time and peak RSS by reserve, one run each on an idle machine
+(wasmtime 50, the compiler as of November 2026):
+
+| compile                   | 0             | 128           | 256           | 512           | 1024          | 1536          |
+| ------------------------- | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- |
+| a three-line program      | 0.77 s, 143 M | 0.25 s, 165 M | 0.25 s, 165 M | 0.25 s, 165 M | 0.25 s, 165 M | 0.25 s, 165 M |
+| `portable_semantics.zena` | 10.3 s, 433 M | 8.8 s, 562 M  | 3.9 s, 562 M  | 3.5 s, 1.0 G  | 3.5 s, 1.4 G  | 3.2 s, 1.2 G  |
+| the compiler, `-O1`       | 29.3 s, 1.5 G | 23.0 s, 1.0 G | 18.6 s, 1.0 G | 12.5 s, 1.0 G | 10.3 s, 2.0 G | 10.2 s, 3.0 G |
+| the CLI module            | 41.2 s, 1.5 G | 46.5 s, 2.0 G | 45.7 s, 2.0 G | 42.8 s, 2.0 G | 20.0 s, 2.0 G | 18.5 s, 3.0 G |
+
+A compile whose live set comes close to the reserve gains nothing from
+it, as the CLI module below 1024 shows: wasmtime grows the heap only
+once what survives a collection fills a whole semi-space, so a live
+set at 90% of one is copied in full for every tenth of a semi-space
+allocated. A collector that grew the heap when the survivors passed
+half a semi-space would need no reserve.
+
+`zena test` compiles in up to eight copies at once, so the default is
+a trade between their time and their memory. A package's tests,
+compiled and run with nothing cached (wall time, peak RSS of the
+process):
+
+| tests             | 0             | 64            | 128           | 256           |
+| ----------------- | ------------- | ------------- | ------------- | ------------- |
+| `packages/stdlib` | 43.0 s, 1.8 G | 27.9 s, 2.3 G | 23.2 s, 2.9 G | 23.0 s, 4.8 G |
+| `package-manager` | 23.2 s, 2.3 G | 17.4 s, 2.3 G | 10.6 s, 3.5 G | 9.4 s, 4.9 G  |
+| `registry`        | 72.9 s, 5.6 G | 59.3 s, 5.6 G | 56.5 s, 5.6 G | 35.4 s, 9.8 G |
+
+256 MiB is faster still for the largest of them and costs gigabytes
+more, on runners that have run out of memory before, so the default
+is 128.
+
+The reserve used to be made by allocating one array of that size from
+a small helper module and dropping it. That touched every page: 0.4 s
+and 1.7 GiB resident for a three-line compile at a 1536 MiB reserve,
+where growing the heap costs neither.
+
 ## Measuring
 
 `ZENA_CENSUS=1` on any compile prints what the finished compile
@@ -485,8 +541,7 @@ pointer at the start of each collection sees every object allocated
 in between, including the ones compiled code allocated inline, and
 counts them by type. `scripts/alloc-hist.py` joins the counts with
 the type names of a `-g` build; `scripts/alloc-hist.sh` runs a
-compile with it. `ZENA_GC_RESERVE_MB` reserves the heap by allocating
-one giant i64 array, which the walk leaves out. Two things the census
+compile with it. Two things the census
 made plain about the language's cost model: a tuple returned from a
 method is a heap struct per call even when the caller destructures
 it, and passing a `GrowableArray<T>` where `Array<T>` is expected

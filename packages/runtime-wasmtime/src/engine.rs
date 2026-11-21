@@ -1,7 +1,7 @@
 //! Wasmtime engine configuration for compiled Zena components.
 
 use anyhow::Result;
-use wasmtime::{Collector, Config, Engine, Inlining, Linker, Module, Store};
+use wasmtime::{Collector, Config, Engine, Inlining, Store};
 
 /// The core-wasm part of the wasmtime `Config` every Zena host uses;
 /// [`component_config`] adds the Component Model on top, and `zenafx`
@@ -159,54 +159,85 @@ pub fn apply_gc_config(config: &mut Config) {
     }
 }
 
-/// How many MiB of GC heap headroom to reserve up front (see
-/// [`reserve_gc_heap`]). Overridable via the ZENA_GC_RESERVE_MB env var;
-/// 0 disables the reservation.
-const DEFAULT_GC_RESERVE_MB: u64 = 0;
+/// The reserve [`reserve_gc_heap_or`] gives the store that runs the
+/// compiler when ZENA_GC_RESERVE_MB does not name one, in MiB.
+///
+/// Compiling a three-line program allocates about 50 MiB. With no
+/// reserve the heap starts small and is collected at every doubling,
+/// which was two thirds of that compile's 0.75 s; with this reserve
+/// nothing is collected and it takes 0.25 s. A larger compile gains
+/// less as its live set nears the reserve, and needs a larger one to
+/// gain more, which the repository's build scripts set themselves.
+///
+/// `zena test` compiles in up to eight stores at once, each of which
+/// can hold twice the reserve, so the size is a trade between their
+/// time and their memory: the standard library's tests take 43 s and
+/// 1.8 GiB with no reserve, 23 s and 2.9 GiB at 128, and 23 s and
+/// 4.8 GiB at 256. The measurements are in
+/// docs/design/compiler-memory.md, "The heap reserve".
+pub const COMPILER_GC_RESERVE_MB: u64 = 128;
 
-/// Pre-grows the store's GC heap by allocating, and immediately
-/// dropping, one large dummy array.
+/// [`reserve_gc_heap_or`] with no reserve unless ZENA_GC_RESERVE_MB
+/// names one: for a store that runs a program, which may be long-lived
+/// and should not hold more garbage than it has to.
+pub fn reserve_gc_heap<T>(store: &mut Store<T>) -> Result<()> {
+    reserve_gc_heap_or(store, 0)
+}
+
+/// Grows the store's GC heap so that a collection has
+/// ZENA_GC_RESERVE_MB of room to allocate in before the next one, or
+/// `default_mb` when the variable is not set.
 ///
-/// Wasmtime's copying collector only grows the GC heap when an
-/// allocation still does not fit after a full collection, so the heap
-/// hovers just above the size of the live set and allocation-heavy
-/// programs (like the self-hosted compiler) spend most of their time
-/// collecting: roughly one full live-set copy per live-set's worth of
-/// allocation. The GC heap never shrinks, so one oversized allocation
-/// up front leaves every later collection with ample headroom. The
-/// balloon array is dead as soon as the helper returns; only the
-/// grown heap capacity remains.
+/// Wasmtime's copying collector grows the GC heap only when what
+/// survived a collection, plus the allocation that asked for it, fills
+/// half the heap. Until then it collects, so the heap stays just above
+/// the live set and an allocation-heavy program, such as the compiler,
+/// spends most of its time copying the same live objects. The heap
+/// never shrinks, so growing it once up front leaves every later
+/// collection that much headroom.
 ///
-/// The allocation is done by a tiny auxiliary wasm module using
-/// `array.new_default` because the host-side `ArrayRef::new`
-/// initializes elements one `Val` at a time (~2.4s/GiB, versus
-/// memset speed here).
-pub fn reserve_gc_heap<T>(engine: &Engine, store: &mut Store<T>) -> Result<()> {
-    let mb: u64 = match std::env::var("ZENA_GC_RESERVE_MB") {
-        Ok(v) => v
-            .trim()
-            .parse()
-            .map_err(|_| anyhow::anyhow!("ZENA_GC_RESERVE_MB must be an integer, got {v:?}"))?,
-        Err(_) => DEFAULT_GC_RESERVE_MB,
+/// The heap is two equal semi-spaces and only one is allocated into at
+/// a time, so the heap grows to twice the reserve. Growing reserves
+/// address space; a page becomes resident when an allocation first
+/// reaches it, so a program that allocates little pays nothing for a
+/// large reserve.
+pub fn reserve_gc_heap_or<T>(store: &mut Store<T>, default_mb: u64) -> Result<()> {
+    let mb = match std::env::var(GC_RESERVE_VARIABLE) {
+        Ok(value) => parse_reserve(&value)?,
+        Err(_) => default_mb,
     };
-    // The GC heap is an i32-indexed memory capped at 4 GiB and split
-    // into two equal semi-spaces, and the balloon must fit in one
-    // semi-space. Above this cap the growth request would exceed the
-    // 4 GiB maximum and wasmtime would skip growing entirely.
-    let mb = mb.min(1900);
-    if mb == 0 {
-        return Ok(());
+    grow_gc_heap_for_reserve(store, mb)
+}
+
+/// [`reserve_gc_heap`] for a run started through `zena:wasm`, whose
+/// environment is `env`: a ZENA_GC_RESERVE_MB the run was given decides,
+/// and this process's does otherwise. So a program can give a run it
+/// starts a reserve of its own, as `zena test` gives the copies of
+/// itself that compile the test files.
+pub fn reserve_gc_heap_for_run<T>(store: &mut Store<T>, env: &[(String, String)]) -> Result<()> {
+    match env.iter().find(|(name, _)| name == GC_RESERVE_VARIABLE) {
+        Some((_, value)) => grow_gc_heap_for_reserve(store, parse_reserve(value)?),
+        None => reserve_gc_heap(store),
     }
-    let wat = r#"(module
-      (type $balloon (array (mut i64)))
-      (func (export "balloon") (param $len i32)
-        (drop (array.new_default $balloon (local.get $len)))))"#;
-    let module = Module::new(engine, wat)?;
-    let instance = Linker::<T>::new(engine).instantiate(&mut *store, &module)?;
-    let balloon = instance.get_typed_func::<i32, ()>(&mut *store, "balloon")?;
-    let len = i32::try_from(mb * (1 << 20) / 8).unwrap();
-    // A failure here only means less headroom, not incorrectness.
-    let _ = balloon.call(&mut *store, len);
+}
+
+const GC_RESERVE_VARIABLE: &str = "ZENA_GC_RESERVE_MB";
+
+fn parse_reserve(value: &str) -> Result<u64> {
+    value
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{GC_RESERVE_VARIABLE} must be an integer, got {value:?}"))
+}
+
+fn grow_gc_heap_for_reserve<T>(store: &mut Store<T>, mb: u64) -> Result<()> {
+    // The GC heap is an i32-indexed memory, so both semi-spaces
+    // together stay under 4 GiB.
+    let wanted = 2 * mb.min(1900) * (1 << 20);
+    let capacity = store.gc_heap_capacity() as u64;
+    if wanted > capacity {
+        store.gc_heap_grow(wanted - capacity)?;
+    }
     Ok(())
 }
 
@@ -220,6 +251,31 @@ mod tests {
         Engine::new(&config(true))?;
         Engine::new(&component_config(false))?;
         Engine::new(&component_config(true))?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_reserve_grows_the_heap_to_twice_its_size() -> Result<()> {
+        let engine = Engine::new(&config(false))?;
+        let mut store = Store::new(&engine, ());
+        grow_gc_heap_for_reserve(&mut store, 4)?;
+        let grown = store.gc_heap_capacity();
+        assert!(grown >= 8 << 20, "capacity {grown}");
+        // A smaller reserve leaves the heap as it is.
+        grow_gc_heap_for_reserve(&mut store, 1)?;
+        assert_eq!(store.gc_heap_capacity(), grown);
+        Ok(())
+    }
+
+    #[test]
+    fn a_run_takes_the_reserve_its_environment_names() -> Result<()> {
+        let engine = Engine::new(&config(false))?;
+        let mut store = Store::new(&engine, ());
+        let env = vec![(GC_RESERVE_VARIABLE.to_string(), "4".to_string())];
+        reserve_gc_heap_for_run(&mut store, &env)?;
+        assert!(store.gc_heap_capacity() >= 8 << 20);
+        let bad = vec![(GC_RESERVE_VARIABLE.to_string(), "lots".to_string())];
+        assert!(reserve_gc_heap_for_run(&mut store, &bad).is_err());
         Ok(())
     }
 }
