@@ -74,7 +74,11 @@ it, as the CLI module below 1024 shows: wasmtime grows the heap only
 once what survives a collection fills a whole semi-space, so a live
 set at 90% of one is copied in full for every tenth of a semi-space
 allocated. A collector that grew the heap when the survivors passed
-half a semi-space would need no reserve.
+half a semi-space would need no reserve: with that one comparison
+changed in a local copy of wasmtime, and no reserve, the three-line
+program compiles in 0.27 s, the compiler in 9.3 s where it takes 27.8 s,
+and the CLI module in 16.4 s where it takes 37.8 s. The reserve stands
+in for that change until wasmtime makes it.
 
 `zena test` compiles in up to eight copies at once, so the default is
 a trade between their time and their memory. A package's tests,
