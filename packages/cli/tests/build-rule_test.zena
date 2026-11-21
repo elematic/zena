@@ -1,0 +1,140 @@
+/**
+ * Declarative `"type": "zena:build"` targets compile single and batched
+ * `.zena` entry points in-process through Zebra without shelling out (`PATH=""`),
+ * auto-tracking sources, WIT files, outputs, and compiler fingerprints.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {MAIN, Scratch, described, write, zenaIn} from './cli-support.zena';
+
+function printingProgram(message: String) {
+  return `${MAIN} {\n  console.log('${message}');\n  return 0;\n}\n`;
+}
+
+export let tests = suite('zena:build declarative rule', () => {
+  test('compiles single-entry and batched multi-entry targets in-process without PATH', async (ctx) => {
+    let scratch = await Scratch.create('build-rule-basic');
+    try {
+      await write(
+        scratch.at('ws/zena-package.json'),
+        '{\n' +
+        '  "name": "demo",\n' +
+        '  "scripts": {\n' +
+        '    "build": {\n' +
+        '      "type": "zena:build",\n' +
+        '      "entry": "src/one.zena",\n' +
+        '      "output": "out/one.wasm",\n' +
+        '      "opt": "1"\n' +
+        '    },\n' +
+        '    "build:batch": {\n' +
+        '      "type": "zena:build",\n' +
+        '      "entries": [\n' +
+        '        {"entry": "src/one.zena", "output": "out/batch-one.wasm"},\n' +
+        '        {"entry": "src/two.zena", "output": "out/batch-two.wasm"}\n' +
+        '      ]\n' +
+        '    }\n' +
+        '  }\n' +
+        '}\n',
+      );
+      await write(scratch.at('ws/src/msg.zena'), "export let label = 'v1';\n");
+      await write(
+        scratch.at('ws/src/one.zena'),
+        "import { label } from './msg.zena';\n" +
+        `${MAIN} {\n  console.log('one:' + label);\n  return 0;\n}\n`,
+      );
+      await write(scratch.at('ws/src/two.zena'), printingProgram('two:ok'));
+
+      let zena = zenaIn(scratch, 'ws').set('NO_COLOR', '1').set('PATH', '');
+
+      // 1. Single-entry build runs without PATH and produces a runnable module.
+      let first = await zena.run(['build']);
+      isTrue(first.succeeded(), described(first));
+      isTrue(first.stdout.contains(':build: ran'), first.stdout);
+
+      let runOne = await zena.run(['run', 'out/one.wasm']);
+      isTrue(runOne.succeeded(), described(runOne));
+      equal(runOne.stdout, 'one:v1\n0\n');
+
+      // 2. Warm run stays fresh.
+      let warm = await zena.run(['build', '-v']);
+      isTrue(warm.succeeded(), described(warm));
+      isTrue(warm.stdout.contains(':build: fresh'), warm.stdout);
+
+      // 3. Editing an imported library file invalidates via synthesized :source.
+      await write(scratch.at('ws/src/msg.zena'), "export let label = 'v2';\n");
+      let rebuilt = await zena.run(['build']);
+      isTrue(rebuilt.succeeded(), described(rebuilt));
+      isTrue(rebuilt.stdout.contains(':build: ran'), rebuilt.stdout);
+
+      let runOneV2 = await zena.run(['run', 'out/one.wasm']);
+      isTrue(runOneV2.succeeded(), described(runOneV2));
+      equal(runOneV2.stdout, 'one:v2\n0\n');
+
+      // 4. Multi-entry build compiles both entries on one shared CompileSession.
+      let batch = await zena.run(['build', 'build:batch']);
+      isTrue(batch.succeeded(), described(batch));
+      isTrue(batch.stdout.contains(':build:batch: ran'), batch.stdout);
+
+      let runB1 = await zena.run(['run', 'out/batch-one.wasm']);
+      isTrue(runB1.succeeded(), described(runB1));
+      equal(runB1.stdout, 'one:v2\n0\n');
+
+      let runB2 = await zena.run(['run', 'out/batch-two.wasm']);
+      isTrue(runB2.succeeded(), described(runB2));
+      equal(runB2.stdout, 'two:ok\n0\n');
+    } finally {
+      await scratch.remove();
+    }
+  });
+
+  test('compiles component target with WIT and world and invalidates on WIT edits', async (ctx) => {
+    let scratch = await Scratch.create('build-rule-component');
+    try {
+      await write(
+        scratch.at('ws/zebra.json'),
+        '{\n' +
+        '  "scripts": {\n' +
+        '    "build": {\n' +
+        '      "type": "zena:build",\n' +
+        '      "entry": "comp.zena",\n' +
+        '      "output": "out/comp.wasm",\n' +
+        '      "target": "component",\n' +
+        '      "wit": "comp.wit",\n' +
+        '      "world": "greeter"\n' +
+        '    }\n' +
+        '  }\n' +
+        '}\n',
+      );
+      await write(
+        scratch.at('ws/comp.wit'),
+        'package demo:greeter;\nworld greeter {\n  export answer: func() -> s32;\n}\n',
+      );
+      await write(
+        scratch.at('ws/comp.zena'),
+        'export function answer(): i32 { return 42; }\n',
+      );
+
+      let zena = zenaIn(scratch, 'ws').set('NO_COLOR', '1').set('PATH', '');
+
+      let first = await zena.run(['build']);
+      isTrue(first.succeeded(), described(first));
+      isTrue(first.stdout.contains(':build: ran'), first.stdout);
+
+      let warm = await zena.run(['build', '-v']);
+      isTrue(warm.succeeded(), described(warm));
+      isTrue(warm.stdout.contains(':build: fresh'), warm.stdout);
+
+      // Editing comp.wit invalidates the auto-derived WIT input.
+      await write(
+        scratch.at('ws/comp.wit'),
+        '// updated\npackage demo:greeter;\nworld greeter {\n  export answer: func() -> s32;\n}\n',
+      );
+      let afterWitEdit = await zena.run(['build']);
+      isTrue(afterWitEdit.succeeded(), described(afterWitEdit));
+      isTrue(afterWitEdit.stdout.contains(':build: ran'), afterWitEdit.stdout);
+    } finally {
+      await scratch.remove();
+    }
+  });
+});

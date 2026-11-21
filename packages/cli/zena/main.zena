@@ -24,7 +24,8 @@ import { BuildOutcome, buildTarget, reportBuild, reportMigration, watchTarget } 
 import { ScriptRef } from 'zebra/wireit-config';
 import { migrateWorkspaceToZebra } from 'zebra/zebra-config';
 import { benchCommand } from './bench-run.zena';
-import { CompileFailure, CompileRequest, compileTo } from './compile.zena';
+import { CliBuildStepRunner } from './build-run.zena';
+import { CompileFailure, CompileRequest, compileBatch, compileTo } from './compile.zena';
 import { Options, repoRelative, resolveUserPath, userCwd } from './env.zena';
 import { runCommand } from './run.zena';
 import { lspCommand } from './lsp.zena';
@@ -111,6 +112,10 @@ function describe() {
           },
           'time' => time,
           'no-cache' => noCache,
+          'batch' => {
+            type: OptionType.Flag,
+            help: 'Compile multiple (entry, output) pairs on one compiler session',
+          },
         },
       },
       'run' => {
@@ -407,6 +412,9 @@ async function build(
   options: Options,
   rawArgs: Array<String>,
 ): Future<i32> {
+  if (args.getFlag('batch')) {
+    return await buildBatch(args, options);
+  }
   let splitArgs = splitBuildExtraArgs(rawArgs, args.rest);
   let positional = splitArgs.positional;
   let extraArgs = splitArgs.extra;
@@ -613,6 +621,48 @@ async function test(
 }
 
 /**
+ * Compiles multiple `(entry, output)` pairs on one `CompileSession` using
+ * shared compiler flags (`zena build --batch <entry1> <out1> ...`).
+ */
+async function buildBatch(args: ParsedArgs, options: Options): Future<i32> {
+  let rest = args.rest;
+  if (rest.length < 2 || rest.length % 2 != 0) {
+    console.error('Error: build --batch takes pairs of <entry> <output>');
+    return 2;
+  }
+  let pairs = new GrowableArray<(AbsolutePath, AbsolutePath)>();
+  for (var i = 0; i < rest.length; i += 2) {
+    let entryArg = rest[i];
+    let entryPath = resolveUserPath(entryArg);
+    if (!(await isFile(entryPath.value))) {
+      console.error(`Error: no such file: ${entryArg}`);
+      return 2;
+    }
+    pairs.push((entryPath, resolveUserPath(rest[i + 1])));
+  }
+  let template = new CompileRequest(pairs[0][0]);
+  template.time = args.getFlag('time');
+  if (let (true, target) = args.getOption('target')) {
+    template.target = target;
+  }
+  if (let (true, wit) = args.getOption('wit')) {
+    template.wit = resolveUserPath(wit);
+  }
+  if (let (true, world) = args.getOption('world')) {
+    template.world = world;
+  }
+  for (let path in args.getMultiOption('extension-wit')) {
+    template.extensionWits.push(resolveUserPath(path));
+  }
+  if (let (true, value) = args.getOption('imported-string-constants')) {
+    template.importedStringConstants = value;
+  }
+  template.compactImports = args.getFlag('compact-imports');
+  await compileBatch(pairs, template, options);
+  return 0;
+}
+
+/**
  * Compiles one file, always: invoking `build` on a file is the request
  * to compile it, and the scripts that do so track their own inputs.
  */
@@ -708,6 +758,7 @@ async function buildScript(
   let packageRef = if (relative == null) '' else relative.value;
   let entry = new ScriptRef(packageRef, script);
   let testRunner = await CliTestStepRunner.create(cliOptions, !useCache);
+  let buildRunner = await CliBuildStepRunner.create(cliOptions);
   var outcome: BuildOutcome | null = null;
   try {
     outcome = if (watch)
@@ -718,6 +769,7 @@ async function buildScript(
         verbose,
         extraArgs,
         testRunner,
+        buildRunner,
       })
     else
       await buildTarget(root.value, entry, {
@@ -726,6 +778,7 @@ async function buildScript(
         useCache,
         extraArgs,
         testRunner,
+        buildRunner,
       });
   } catch (e) {
     console.error(`Error: ${e.message}`);

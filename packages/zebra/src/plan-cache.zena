@@ -37,14 +37,18 @@ import {
   EnvBinding,
   EnvExternal,
   EnvLiteral,
+  RuleConfig,
   ScriptConfig,
   ScriptRef,
   ServiceConfig,
+  ZenaBuildEntry,
+  ZenaBuildRule,
+  ZenaTestRule,
   refKey,
 } from './wireit-config.zena';
 import {ZebraWorkspace} from './zebra-config.zena';
 
-let PLAN_SNAPSHOT_HEADER = 'zebra-plan-v4\n';
+let PLAN_SNAPSHOT_HEADER = 'zebra-plan-v5\n';
 
 /**
  * Config files modified within 20ms of the plan snapshot's own mtime are
@@ -178,15 +182,35 @@ export function planSnapshotToText(
       }
     }
     writeStrList(sb, config.packageLocks);
-    writeOptStr(sb, config.ruleType);
     writeOptStr(sb, config.concurrencyGroup);
-    let tests = config.tests;
-    if (tests == null) {
-      writeBool(sb, false);
+    let rule = config.rule;
+    if (rule == null) {
+      writeStr(sb, 'none');
     } else {
-      writeBool(sb, true);
-      writeStrList(sb, tests);
-      writeBool(sb, config.testDebug);
+      match (rule) {
+        case ZenaTestRule as tr: {
+          writeStr(sb, 'zena:test');
+          writeStrList(sb, tr.patterns);
+          writeBool(sb, tr.debug);
+        }
+        case ZenaBuildRule as br: {
+          writeStr(sb, 'zena:build');
+          writeOptStr(sb, br.compiler);
+          writeI32(sb, br.entries.length);
+          for (let item in br.entries) {
+            writeStr(sb, item.entry);
+            writeStr(sb, item.output);
+            writeOptStr(sb, item.target);
+            writeOptStr(sb, item.opt);
+            writeBool(sb, item.debug);
+            writeOptStr(sb, item.wit);
+            writeOptStr(sb, item.world);
+            writeStrList(sb, item.extensionWit);
+            writeOptStr(sb, item.importedStringConstants);
+            writeBool(sb, item.compactImports);
+          }
+        }
+      }
     }
   }
   return sb.toString();
@@ -409,15 +433,49 @@ export function planSnapshotFromText(text: String): PlanSnapshot {
       }
     }
     let locks = reader.readStrList();
-    let ruleType = reader.readOptStr();
     let concurrencyGroup = reader.readOptStr();
-    let hasTests = reader.readBool();
-    var tests: Array<String>? = null;
-    var testDebug = false;
-    if (hasTests) {
-      tests = reader.readStrList();
-      testDebug = reader.readBool();
-    }
+    let ruleTag = reader.readStr();
+    let rule: RuleConfig? = if (ruleTag == 'none') {
+      null
+    } else if (ruleTag == 'zena:test') {
+      let patterns = reader.readStrList();
+      let debug = reader.readBool();
+      new ZenaTestRule(patterns, debug)
+    } else if (ruleTag == 'zena:build') {
+      let compiler = reader.readOptStr();
+      let entryCount = reader.readI32();
+      if (entryCount < 0) {
+        throw new PlanDecodeError('negative build entry count');
+      }
+      let entries = new GrowableArray<ZenaBuildEntry>();
+      for (var bi = 0; bi < entryCount; bi += 1) {
+        let bEntry = reader.readStr();
+        let bOutput = reader.readStr();
+        let bTarget = reader.readOptStr();
+        let bOpt = reader.readOptStr();
+        let bDebug = reader.readBool();
+        let bWit = reader.readOptStr();
+        let bWorld = reader.readOptStr();
+        let bExtWit = reader.readStrList();
+        let bStrings = reader.readOptStr();
+        let bCompact = reader.readBool();
+        entries.push(new ZenaBuildEntry(
+          bEntry,
+          bOutput,
+          bTarget,
+          bOpt,
+          bDebug,
+          bWit,
+          bWorld,
+          bExtWit,
+          bStrings,
+          bCompact,
+        ));
+      }
+      new ZenaBuildRule(entries, compiler)
+    } else {
+      throw new PlanDecodeError(`unknown rule kind "${ruleTag}"`);
+    };
     configs.push(new ScriptConfig(
       new ScriptRef(pkgDir, script),
       isWireit,
@@ -433,10 +491,7 @@ export function planSnapshotFromText(text: String): PlanSnapshot {
       locks,
       cacheEnabled,
       isFileset,
-      tests,
-      testDebug,
-      null,
-      ruleType,
+      rule,
       concurrencyGroup,
     ));
   }
@@ -448,7 +503,7 @@ export function planSnapshotFromText(text: String): PlanSnapshot {
 
 /** Path of `entry`'s plan snapshot under `<root>/.zebra/plans/`. */
 export function planSnapshotPath(root: String, entry: ScriptRef): String {
-  let keyHash = sha256HexOfString(`zebra-plan-v4:${refKey(entry)}`);
+  let keyHash = sha256HexOfString(`zebra-plan-v5:${refKey(entry)}`);
   return withRoot(root, `.zebra/plans/${keyHash}.plan`);
 }
 

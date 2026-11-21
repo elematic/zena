@@ -1,0 +1,714 @@
+/**
+ * Declarative Zebra build and test rule resolution (`"type": "<rule>"`).
+ *
+ * Each rule implements `RuleResolver` and resolves a script entry in
+ * `zebra.json` or `zena-package.json` into a `ScriptConfig`. Reading language
+ * configuration files (such as `zena-package.json`, `tsconfig.json`, or
+ * `Cargo.toml`) through `RuleResolveContext.readFile` automatically registers
+ * those files in Zebra's plan snapshot probes so edits invalidate cached plans.
+ *
+ * Rules that invoke external toolchains (such as future `ts:build` and
+ * `rust:build` rules) can resolve directly to a `ScriptConfig` with derived
+ * `command`, `files`, `output`, `dependencies`, and `concurrencyGroup`. Rules
+ * with in-process runners (`zena:test`, `zena:build`) attach a typed
+ * `RuleConfig` payload executed by `builder.zena`.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap, HashSet} from 'zena:collections';
+import {Box, join} from 'zena:core';
+import {JsonArray, JsonObject, JsonValue} from 'zena:json';
+import {
+  ConfigError,
+  DependencySpec,
+  EnvBinding,
+  RuleConfig,
+  ScriptConfig,
+  ScriptRef,
+  ZENA_BUILD_RULE_TYPE,
+  ZENA_TEST_RULE_TYPE,
+  ZenaBuildEntry,
+  ZenaBuildRule,
+  ZenaTestRule,
+  isCommentKey,
+  parseClean,
+  parseDependency,
+  parseEnv,
+  refKey,
+  stringList,
+  validateLockFilenames,
+} from './wireit-config.zena';
+
+export {
+  RuleConfig,
+  ZENA_BUILD_RULE_TYPE,
+  ZENA_TEST_RULE_TYPE,
+  ZenaBuildEntry,
+  ZenaBuildRule,
+  ZenaTestRule,
+} from './wireit-config.zena';
+
+/**
+ * Context passed to `RuleResolver.resolve` while resolving a `"type"` script.
+ * Any file read through `readFile` is tracked by `plan-cache.zena` as a config
+ * probe for warm-startup invalidation and watch mode.
+ */
+export class RuleResolveContext {
+  ref: ScriptRef;
+  manifestPath: String;
+  where: String;
+  defaultLocks: Array<String>;
+  hasFilesetDep: boolean;
+  hasZenaManifest: boolean;
+  zenaJson: JsonObject?;
+  readFile: (workspaceRelPath: String) => Future<String?>;
+
+  new(
+    this.ref,
+    this.manifestPath,
+    this.where,
+    this.defaultLocks,
+    this.hasFilesetDep,
+    this.hasZenaManifest,
+    this.zenaJson,
+    this.readFile,
+  );
+}
+
+/** Pluggable resolver for declarative `"type": "<name>"` scripts. */
+export interface RuleResolver {
+  ruleType: String { get; }
+  resolve(entry: JsonObject, ctx: RuleResolveContext): Future<ScriptConfig>;
+}
+
+/** Registry mapping rule `"type"` names to their `RuleResolver`. */
+export class RuleRegistry {
+  #resolvers = new HashMap<String, RuleResolver>();
+  #order = new GrowableArray<String>();
+
+  register(resolver: RuleResolver): void {
+    let name = resolver.ruleType;
+    if (!this.#resolvers.has(name)) {
+      this.#order.push(name);
+    }
+    this.#resolvers[name] = resolver;
+  }
+
+  get(ruleType: String): RuleResolver? {
+    if (let (true, resolver) = this.#resolvers.get(ruleType)) {
+      return resolver;
+    }
+    return null;
+  }
+
+  knownTypes(): Array<String> {
+    return this.#order;
+  }
+}
+
+/** Common script fields shared by declarative rules. */
+export class CommonRuleFields {
+  dependencies: GrowableArray<DependencySpec>;
+  files: GrowableArray<String>;
+  seenFiles: HashSet<String>;
+  clean: String;
+  env: Array<(String, EnvBinding)>;
+  locks: Array<String>;
+  cacheEnabled: boolean;
+  concurrencyGroup: String?;
+
+  new(
+    this.dependencies,
+    this.files,
+    this.seenFiles,
+    this.clean,
+    this.env,
+    this.locks,
+    this.cacheEnabled,
+    this.concurrencyGroup,
+  );
+}
+
+function isCommonRuleKey(key: String) {
+  return key == 'type' || key == 'dependencies' || key == 'files' ||
+    key == 'clean' || key == 'env' || key == 'locks' ||
+    key == 'cache' || key == 'concurrencyGroup' || isCommentKey(key);
+}
+
+/**
+ * Validates script keys and parses common fields (`dependencies`, `files`,
+ * `clean`, `env`, `locks`, `cache`, `concurrencyGroup`) shared across rules.
+ */
+export function parseCommonRuleFields(
+  entry: JsonObject,
+  ctx: RuleResolveContext,
+  extraAllowedKeys: Array<String>,
+  ruleType: String,
+): CommonRuleFields {
+  let allowed = new HashSet<String>();
+  for (let k in extraAllowedKeys) {
+    allowed.add(k);
+  }
+  entry.forEach((key, _) => {
+    if (isCommonRuleKey(key) || allowed.has(key)) {
+      return;
+    }
+    if (key == 'command') {
+      throw new ConfigError(
+        `script "${ctx.where}": "type": "${ruleType}" cannot be combined with "command"`,
+      );
+    }
+    if (key == 'service') {
+      throw new ConfigError(
+        `script "${ctx.where}": "type": "${ruleType}" cannot be combined with "service"`,
+      );
+    }
+    throw new ConfigError(
+      `script "${ctx.where}" in ${ctx.manifestPath} has unsupported key "${key}" for "type": "${ruleType}"`,
+    );
+  });
+
+  let deps = new GrowableArray<DependencySpec>();
+  let rawDeps = entry['dependencies'];
+  if (rawDeps != null) {
+    if (!(rawDeps is JsonArray)) {
+      throw new ConfigError(`script "${ctx.where}": dependencies must be an array`);
+    }
+    for (var i = 0; i < rawDeps.length; i += 1) {
+      deps.push(parseDependency(ctx.ref.packageDir, ctx.where, rawDeps[i]));
+    }
+  }
+
+  let explicitFiles = stringList(entry['files'], `script "${ctx.where}": files`);
+  let files = new GrowableArray<String>();
+  let seenFiles = new HashSet<String>();
+  for (let glob in explicitFiles) {
+    if (seenFiles.add(glob)) {
+      files.push(glob);
+    }
+  }
+
+  let clean = parseClean(ctx.where, entry['clean']);
+  let env = parseEnv(ctx.where, entry['env']);
+
+  var locks = ctx.defaultLocks;
+  let rawLocks = entry['locks'];
+  if (rawLocks != null) {
+    locks = stringList(rawLocks, `script "${ctx.where}": locks`);
+    validateLockFilenames(`script "${ctx.where}"`, 'locks', locks);
+  }
+
+  var cacheEnabled = true;
+  let rawCache = entry['cache'];
+  if (rawCache != null) {
+    if (!(rawCache is Box<boolean>)) {
+      throw new ConfigError(`script "${ctx.where}": cache must be a boolean`);
+    }
+    cacheEnabled = rawCache.value;
+  }
+
+  var concurrencyGroup: String? = null;
+  let rawGroup = entry['concurrencyGroup'];
+  if (rawGroup != null) {
+    if (!(rawGroup is String) || rawGroup == '') {
+      throw new ConfigError(
+        `script "${ctx.where}": concurrencyGroup must be a non-empty string`,
+      );
+    }
+    concurrencyGroup = rawGroup;
+  }
+
+  return new CommonRuleFields(
+    deps,
+    files,
+    seenFiles,
+    clean,
+    env,
+    locks,
+    cacheEnabled,
+    concurrencyGroup,
+  );
+}
+
+/** Adds `<packageDir>:source` to `deps` if not already listed. */
+export function addSourceDepIfAbsent(
+  packageDir: String,
+  deps: GrowableArray<DependencySpec>,
+): void {
+  let sourceKey = refKey(new ScriptRef(packageDir, 'source'));
+  for (let dep in deps) {
+    if (refKey(dep.ref) == sourceKey) {
+      return;
+    }
+  }
+  deps.push(new DependencySpec(new ScriptRef(packageDir, 'source'), true));
+}
+
+function addFileUnique(
+  files: GrowableArray<String>,
+  seen: HashSet<String>,
+  glob: String,
+) {
+  if (seen.add(glob)) {
+    files.push(glob);
+  }
+}
+
+function stripTrailingSlashes(raw: String) {
+  var out = raw;
+  while (out.length > 1 && out.endsWith('/')) {
+    out = out.sliceBytes(0, out.length - 1);
+  }
+  return out;
+}
+
+function witInputGlob(witPath: String) {
+  let cleaned = stripTrailingSlashes(witPath);
+  if (cleaned.endsWith('.wit')) {
+    return cleaned;
+  }
+  if (cleaned == '' || cleaned == '.') {
+    return '**/*.wit';
+  }
+  return `${cleaned}/**/*.wit`;
+}
+
+/** Resolver for `"type": "zena:test"` declarative Zena test suites. */
+export class ZenaTestRuleResolver implements RuleResolver {
+  ruleType: String {
+    get { return ZENA_TEST_RULE_TYPE; }
+  }
+
+  async resolve(entry: JsonObject, ctx: RuleResolveContext): Future<ScriptConfig> {
+    if (entry['output'] != null) {
+      throw new ConfigError(
+        `script "${ctx.where}": "type": "${ZENA_TEST_RULE_TYPE}" cannot declare "output"`,
+      );
+    }
+    let common = parseCommonRuleFields(
+      entry,
+      ctx,
+      ['tests', 'debug'],
+      ZENA_TEST_RULE_TYPE,
+    );
+
+    let rawTests = entry['tests'];
+    var tests: Array<String> = ['test/**/*_test.zena', 'tests/**/*_test.zena'];
+    var defaultTestFiles = false;
+    if (rawTests == null) {
+      defaultTestFiles = true;
+    } else if (rawTests is Box<boolean>) {
+      if (!rawTests.value) {
+        throw new ConfigError(
+          `script "${ctx.where}": tests must be true, a pattern string, or an array of patterns`,
+        );
+      }
+      defaultTestFiles = true;
+    } else if (rawTests is String) {
+      if (rawTests == '') {
+        throw new ConfigError(`script "${ctx.where}": tests pattern must not be empty`);
+      }
+      tests = [rawTests];
+    } else if (rawTests is JsonArray) {
+      let parsedTests = stringList(rawTests, `script "${ctx.where}": tests`);
+      if (parsedTests.length == 0) {
+        throw new ConfigError(`script "${ctx.where}": tests must name at least one pattern`);
+      }
+      for (let pat in parsedTests) {
+        if (pat == '') {
+          throw new ConfigError(`script "${ctx.where}": tests pattern must not be empty`);
+        }
+      }
+      tests = parsedTests;
+    } else {
+      throw new ConfigError(
+        `script "${ctx.where}": tests must be true, a pattern string, or an array of patterns`,
+      );
+    }
+
+    var testDebug = false;
+    let rawDebug = entry['debug'];
+    if (rawDebug != null) {
+      if (!(rawDebug is Box<boolean>)) {
+        throw new ConfigError(`script "${ctx.where}": debug must be a boolean`);
+      }
+      testDebug = rawDebug.value;
+    }
+
+    if (ctx.hasZenaManifest && ctx.ref.script != 'source') {
+      addSourceDepIfAbsent(ctx.ref.packageDir, common.dependencies);
+    }
+
+    if (defaultTestFiles) {
+      addFileUnique(common.files, common.seenFiles, 'test/**/*.zena');
+      addFileUnique(common.files, common.seenFiles, 'tests/**/*.zena');
+    } else {
+      for (let glob in tests) {
+        addFileUnique(common.files, common.seenFiles, glob);
+      }
+    }
+
+    return new ScriptConfig(
+      ctx.ref,
+      true,
+      null,
+      common.files,
+      new GrowableArray<String>(),
+      true,
+      true,
+      common.dependencies,
+      common.clean,
+      null,
+      common.env,
+      common.locks,
+      common.cacheEnabled,
+      false,
+      new ZenaTestRule(tests, testDebug),
+      common.concurrencyGroup,
+    );
+  }
+}
+
+class BuildOptionDefaults {
+  target: String?;
+  opt: String?;
+  debug: boolean;
+  wit: String?;
+  world: String?;
+  extensionWit: Array<String>;
+  importedStringConstants: String?;
+  compactImports: boolean;
+
+  new(
+    this.target,
+    this.opt,
+    this.debug,
+    this.wit,
+    this.world,
+    this.extensionWit,
+    this.importedStringConstants,
+    this.compactImports,
+  );
+}
+
+function parseNonEmptyString(where: String, key: String, raw: JsonValue) {
+  if (!(raw is String) || raw == '') {
+    throw new ConfigError(`${where}: "${key}" must be a non-empty string`);
+  }
+  return raw;
+}
+
+function parseOptLevelValue(where: String, raw: JsonValue) {
+  if (raw is String) {
+    if (raw == '0' || raw == '1' || raw == '2' || raw == 's') {
+      return raw;
+    }
+    throw new ConfigError(
+      `${where}: "opt" must be "0", "1", "2", or "s" (got "${raw}")`,
+    );
+  }
+  if (raw is Box<f64>) {
+    let f = raw.value;
+    if (f == 0.0) {
+      return '0';
+    }
+    if (f == 1.0) {
+      return '1';
+    }
+    if (f == 2.0) {
+      return '2';
+    }
+  }
+  throw new ConfigError(`${where}: "opt" must be "0", "1", "2", or "s"`);
+}
+
+function parseExtensionWit(where: String, raw: JsonValue): Array<String> {
+  if (raw is String) {
+    if (raw == '') {
+      throw new ConfigError(`${where}: "extensionWit" must not be empty`);
+    }
+    return [raw];
+  }
+  if (raw is JsonArray) {
+    let list = stringList(raw, `${where}: extensionWit`);
+    for (let item in list) {
+      if (item == '') {
+        throw new ConfigError(`${where}: "extensionWit" entries must not be empty`);
+      }
+    }
+    return list;
+  }
+  throw new ConfigError(
+    `${where}: "extensionWit" must be a string or an array of strings`,
+  );
+}
+
+function parseBuildOptions(
+  where: String,
+  obj: JsonObject,
+  base: BuildOptionDefaults,
+) {
+  let rawTarget = obj['target'];
+  let target = if (rawTarget != null)
+    parseNonEmptyString(where, 'target', rawTarget)
+  else
+    base.target;
+
+  let rawOpt = obj['opt'];
+  let opt = if (rawOpt != null) parseOptLevelValue(where, rawOpt) else base.opt;
+
+  let rawDebug = obj['debug'];
+  var debug = base.debug;
+  if (rawDebug != null) {
+    if (!(rawDebug is Box<boolean>)) {
+      throw new ConfigError(`${where}: "debug" must be a boolean`);
+    }
+    debug = rawDebug.value;
+  }
+
+  let rawWit = obj['wit'];
+  let wit = if (rawWit != null)
+    parseNonEmptyString(where, 'wit', rawWit)
+  else
+    base.wit;
+
+  let rawWorld = obj['world'];
+  let world = if (rawWorld != null)
+    parseNonEmptyString(where, 'world', rawWorld)
+  else
+    base.world;
+
+  let rawExtWit = obj['extensionWit'];
+  let extensionWit = if (rawExtWit != null)
+    parseExtensionWit(where, rawExtWit)
+  else
+    base.extensionWit;
+
+  let rawStrings = obj['importedStringConstants'];
+  let importedStringConstants = if (rawStrings != null)
+    parseNonEmptyString(where, 'importedStringConstants', rawStrings)
+  else
+    base.importedStringConstants;
+
+  let rawCompact = obj['compactImports'];
+  var compactImports = base.compactImports;
+  if (rawCompact != null) {
+    if (!(rawCompact is Box<boolean>)) {
+      throw new ConfigError(`${where}: "compactImports" must be a boolean`);
+    }
+    compactImports = rawCompact.value;
+  }
+
+  return new BuildOptionDefaults(
+    target,
+    opt,
+    debug,
+    wit,
+    world,
+    extensionWit,
+    importedStringConstants,
+    compactImports,
+  );
+}
+
+function isBuildEntryKey(key: String) {
+  return key == 'entry' || key == 'output' || key == 'target' ||
+    key == 'opt' || key == 'debug' || key == 'wit' || key == 'world' ||
+    key == 'extensionWit' || key == 'importedStringConstants' ||
+    key == 'compactImports' || isCommentKey(key);
+}
+
+/**
+ * Resolver for `"type": "zena:build"` declarative Zena compilation steps.
+ *
+ * Automatically derives `files` (entry points, WIT documents, extension WITs,
+ * optional `compiler` module), `output` (all entry output paths), and a
+ * `source` dependency for `zena-package.json` packages so manifests never
+ * repeat compiler flags as manual globs or shell commands.
+ */
+export class ZenaBuildRuleResolver implements RuleResolver {
+  ruleType: String {
+    get { return ZENA_BUILD_RULE_TYPE; }
+  }
+
+  async resolve(entry: JsonObject, ctx: RuleResolveContext): Future<ScriptConfig> {
+    let common = parseCommonRuleFields(
+      entry,
+      ctx,
+      [
+        'entry',
+        'entries',
+        'output',
+        'target',
+        'opt',
+        'debug',
+        'wit',
+        'world',
+        'extensionWit',
+        'importedStringConstants',
+        'compactImports',
+        'compiler',
+      ],
+      ZENA_BUILD_RULE_TYPE,
+    );
+
+    let where = `script "${ctx.where}"`;
+    let emptyDefaults = new BuildOptionDefaults(
+      null,
+      null,
+      false,
+      null,
+      null,
+      new GrowableArray<String>(),
+      null,
+      false,
+    );
+    let stepDefaults = parseBuildOptions(where, entry, emptyDefaults);
+
+    let rawCompiler = entry['compiler'];
+    let compiler = if (rawCompiler != null)
+      parseNonEmptyString(where, 'compiler', rawCompiler)
+    else
+      null;
+
+    let rawEntry = entry['entry'];
+    let rawEntries = entry['entries'];
+    let rawOutput = entry['output'];
+
+    if (rawEntry != null && rawEntries != null) {
+      throw new ConfigError(`${where}: cannot specify both "entry" and "entries"`);
+    }
+    if (rawEntry == null && rawEntries == null) {
+      throw new ConfigError(
+        `${where}: "type": "${ZENA_BUILD_RULE_TYPE}" requires "entry" or "entries"`,
+      );
+    }
+
+    let entries = new GrowableArray<ZenaBuildEntry>();
+    if (rawEntry != null) {
+      let entryPath = parseNonEmptyString(where, 'entry', rawEntry);
+      if (rawOutput == null) {
+        throw new ConfigError(`${where}: "entry" requires a string "output"`);
+      }
+      let outPath = parseNonEmptyString(where, 'output', rawOutput);
+      entries.push(new ZenaBuildEntry(
+        entryPath,
+        outPath,
+        stepDefaults.target,
+        stepDefaults.opt,
+        stepDefaults.debug,
+        stepDefaults.wit,
+        stepDefaults.world,
+        stepDefaults.extensionWit,
+        stepDefaults.importedStringConstants,
+        stepDefaults.compactImports,
+      ));
+    } else {
+      if (rawOutput != null) {
+        throw new ConfigError(
+          `${where}: top-level "output" cannot be used with "entries" (declare "output" on each entry)`,
+        );
+      }
+      if (!(rawEntries is JsonArray) || rawEntries.length == 0) {
+        throw new ConfigError(`${where}: "entries" must be a non-empty array`);
+      }
+      for (var i = 0; i < rawEntries.length; i += 1) {
+        let itemWhere = `${where}: entries[${i32ToString(i)}]`;
+        let item = rawEntries[i];
+        if (!(item is JsonObject)) {
+          throw new ConfigError(`${itemWhere} must be an object`);
+        }
+        item.forEach((k, _) => {
+          if (!isBuildEntryKey(k)) {
+            throw new ConfigError(`${itemWhere} has unsupported key "${k}"`);
+          }
+        });
+        let rawItemEntry = item['entry'];
+        if (rawItemEntry == null) {
+          throw new ConfigError(`${itemWhere} requires "entry"`);
+        }
+        let rawItemOut = item['output'];
+        if (rawItemOut == null) {
+          throw new ConfigError(`${itemWhere} requires "output"`);
+        }
+        let entryPath = parseNonEmptyString(itemWhere, 'entry', rawItemEntry);
+        let outPath = parseNonEmptyString(itemWhere, 'output', rawItemOut);
+        let opts = parseBuildOptions(itemWhere, item, stepDefaults);
+        entries.push(new ZenaBuildEntry(
+          entryPath,
+          outPath,
+          opts.target,
+          opts.opt,
+          opts.debug,
+          opts.wit,
+          opts.world,
+          opts.extensionWit,
+          opts.importedStringConstants,
+          opts.compactImports,
+        ));
+      }
+    }
+
+    let outputs = new GrowableArray<String>();
+    let seenOutputs = new HashSet<String>();
+    for (let item in entries) {
+      if (!seenOutputs.add(item.output)) {
+        throw new ConfigError(
+          `${where}: duplicate output path "${item.output}" across build entries`,
+        );
+      }
+      outputs.push(item.output);
+      addFileUnique(common.files, common.seenFiles, item.entry);
+      let wit = item.wit;
+      if (wit != null) {
+        addFileUnique(common.files, common.seenFiles, witInputGlob(wit));
+      }
+      for (let extWit in item.extensionWit) {
+        addFileUnique(common.files, common.seenFiles, witInputGlob(extWit));
+      }
+    }
+    if (compiler != null) {
+      addFileUnique(common.files, common.seenFiles, compiler);
+    }
+
+    if (ctx.hasZenaManifest && ctx.ref.script != 'source') {
+      addSourceDepIfAbsent(ctx.ref.packageDir, common.dependencies);
+    }
+
+    return new ScriptConfig(
+      ctx.ref,
+      true,
+      null,
+      common.files,
+      outputs,
+      true,
+      true,
+      common.dependencies,
+      common.clean,
+      null,
+      common.env,
+      common.locks,
+      common.cacheEnabled,
+      false,
+      new ZenaBuildRule(entries, compiler),
+      common.concurrencyGroup,
+    );
+  }
+}
+
+/** Creates a `RuleRegistry` populated with Zebra's built-in rules. */
+export function defaultRuleRegistry(): RuleRegistry {
+  let registry = new RuleRegistry();
+  registry.register(new ZenaTestRuleResolver());
+  registry.register(new ZenaBuildRuleResolver());
+  return registry;
+}
+
+/** Formats the known rule type names for diagnostics (`"zena:test", "zena:build"`). */
+export function formatRuleTypes(registry: RuleRegistry): String {
+  let quoted = new GrowableArray<String>();
+  for (let name in registry.knownTypes()) {
+    quoted.push(`"${name}"`);
+  }
+  return join(quoted, ', ');
+}

@@ -104,6 +104,73 @@ export async function compileTo(
   await compileRecording(request, options, out, quiet, (path) => {});
 }
 
+/**
+ * Compiles multiple `(source, out)` pairs that share the same compile flags
+ * (`template`) on one `CompileSession`, loading and checking the standard
+ * library and shared packages once.
+ */
+export async function compileBatch(
+  pairs: Array<(AbsolutePath, AbsolutePath)>,
+  template: CompileRequest,
+  options: Options,
+  quiet: boolean = false,
+): Future<void> {
+  if (pairs.length == 0) {
+    return;
+  }
+  for (let (_, out) in pairs) {
+    await ensureDir(dirname(out.value));
+  }
+  let compiler = await externalCompiler();
+  if (compiler != null) {
+    for (let (source, out) in pairs) {
+      let req = new CompileRequest(source);
+      req.target = template.target;
+      req.wit = template.wit;
+      req.world = template.world;
+      req.extensionWits = template.extensionWits;
+      req.importedStringConstants = template.importedStringConstants;
+      req.compactImports = template.compactImports;
+      req.testMode = template.testMode;
+      req.time = template.time;
+      await compileWith(compiler, req, options, out, quiet);
+    }
+    return;
+  }
+  let (firstSource, firstOut) = pairs[0];
+  let firstReq = new CompileRequest(firstSource);
+  firstReq.target = template.target;
+  firstReq.wit = template.wit;
+  firstReq.world = template.world;
+  firstReq.extensionWits = template.extensionWits;
+  firstReq.importedStringConstants = template.importedStringConstants;
+  firstReq.compactImports = template.compactImports;
+  firstReq.testMode = template.testMode;
+  firstReq.time = template.time;
+  let session = await openCompileSession(
+    await compileFileOptions(firstReq, options, firstOut, (path) => {}),
+  );
+  if (session == null) {
+    throw new CompileFailure(`${firstSource.value} did not compile`);
+  }
+  for (let (source, out) in pairs) {
+    var status = 1;
+    try {
+      status = await session.compile(repoRelative(source), out.value);
+    } catch (e) {
+      if (e is CompileFailure) {
+        throw e;
+      }
+      throw new CompileFailure(
+        `the compiler failed on ${source.value}: ${e.message}`,
+      );
+    }
+    if (status != 0) {
+      throw new CompileFailure(`${source.value} did not compile`);
+    }
+  }
+}
+
 var runtimeMemoryModuleThisProcess: AbsolutePath | null = null;
 
 /**
@@ -328,6 +395,10 @@ async function compileWith(
   if (world != null) {
     args.push('--world');
     args.push(world);
+  }
+  for (let extWit in request.extensionWits) {
+    args.push('--extension-wit');
+    args.push(repoRelative(extWit));
   }
   let stringConstants = request.importedStringConstants;
   if (stringConstants != null) {
@@ -580,15 +651,19 @@ export async function cachedModuleIfFresh(
 
 /**
  * Content-addressed fingerprint of the compiler module, compile flags, and
- * standard library sources for Zebra `"tests"` step cache keys, memoized by
+ * standard library sources for Zebra declarative rule cache keys, memoized by
  * `(modified, size)` in `cacheDir()`.
  */
-export async function testRunnerFingerprint(
+export async function compilerFingerprint(
   options: Options,
   compilerOverride: AbsolutePath | null = null,
+  explicitExternalCompiler: AbsolutePath | null = null,
 ): Future<String> {
   let defaultCli = if (compilerOverride != null) compilerOverride.value else cliModule().value;
-  let compilerPath = resolveUserPath(getEnv('ZENA_COMPILER_WASM') ?? defaultCli).value;
+  let compilerPath = if (explicitExternalCompiler != null)
+    explicitExternalCompiler.value
+  else
+    resolveUserPath(getEnv('ZENA_COMPILER_WASM') ?? defaultCli).value;
   let stdlibRoot = stdlibDir().value;
   let flagsKey =
     `debug=${options.debug} opt=${optLevelText(options)} wide=${envSet('ZENA_WIDE_ARITHMETIC')}`;
@@ -670,6 +745,14 @@ export async function testRunnerFingerprint(
     }
   }
   return digest;
+}
+
+/** Convenience wrapper around `compilerFingerprint` for `CliTestStepRunner`. */
+export async function testRunnerFingerprint(
+  options: Options,
+  compilerOverride: AbsolutePath | null = null,
+): Future<String> {
+  return await compilerFingerprint(options, compilerOverride, null);
 }
 
 /**
