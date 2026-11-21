@@ -1,4 +1,5 @@
 import {ResolvedInput} from './canonical.zena';
+import {ConcurrencyGroups, DEFAULT_CONCURRENCY_GROUP} from './concurrency.zena';
 import {InputDelta} from './delta.zena';
 import {Fingerprint} from './fingerprint.zena';
 import {OutputManifest} from './manifest.zena';
@@ -79,15 +80,23 @@ export class RunContext {
    */
   inputs: Array<ResolvedInput>;
 
+  /**
+   * The engine's concurrency group tree for this run, allowing coordinator
+   * steps (such as in-process test runners) to acquire permits for sub-tasks.
+   */
+  concurrency: ConcurrencyGroups?;
+
   new(
     delta: InputDelta? = null,
     previous: OutputManifest? = null,
     staleOutputs: Array<String>? = null,
     inputs: Array<ResolvedInput>? = null,
+    concurrency: ConcurrencyGroups? = null,
   ) : delta = delta,
       previous = previous,
       staleOutputs = staleOutputs,
-      inputs = inputs ?? new GrowableArray<ResolvedInput>();
+      inputs = inputs ?? new GrowableArray<ResolvedInput>(),
+      concurrency = concurrency;
 }
 
 /** What a service step's start callback receives. */
@@ -132,9 +141,20 @@ export sealed class Step {
  */
 export final class TaskStep extends Step {
   run: (ctx: RunContext) => Future<OutputManifest>;
+  /**
+   * Concurrency group acquired while `run` executes, or `null` for
+   * coordinator/aggregate steps that either do no work or acquire permits
+   * for their own sub-tasks via `ctx.concurrency`.
+   */
+  concurrencyGroup: String?;
 
-  new(key: StepKey, config: Fingerprint, inputs: Array<InputRef>, this.run)
-      : super(key, config, inputs);
+  new(
+    key: StepKey,
+    config: Fingerprint,
+    inputs: Array<InputRef>,
+    this.run,
+    this.concurrencyGroup = DEFAULT_CONCURRENCY_GROUP,
+  ) : super(key, config, inputs);
 }
 
 /**

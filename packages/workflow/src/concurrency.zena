@@ -1,0 +1,324 @@
+import {Completer, Future} from 'zena:async';
+import {HashMap, HashSet} from 'zena:collections';
+import {WorkflowError} from './errors.zena';
+
+/** Built-in root group for normal task execution (`-j` / `parallelism`). */
+export let DEFAULT_CONCURRENCY_GROUP = 'default';
+
+/** Built-in root group for cache lookups, restores, and uploads. */
+export let CACHE_CONCURRENCY_GROUP = 'cache';
+
+/** Default permit count for the built-in `'cache'` group when not configured. */
+export let DEFAULT_CACHE_GROUP_LIMIT = 16;
+
+/** Configuration for one node in a `ConcurrencyGroups` tree. */
+export class ConcurrencyGroupConfig {
+  /** Whether this node enforces its own permit cap (`limit`). */
+  hasLimit: boolean;
+  /** Maximum concurrent permits at this node when `hasLimit` is true. */
+  limit: i32;
+  /**
+   * Parent group name whose cap applies across this group and all sibling
+   * children, or `null` for an independent root group.
+   */
+  parent: String?;
+
+  new(this.limit, this.parent = null, this.hasLimit = true);
+
+  /** Creates a child group with no cap of its own, deferring to `parent`. */
+  static childOf(parent: String): ConcurrencyGroupConfig {
+    return new ConcurrencyGroupConfig(0, parent, false);
+  }
+}
+
+class WaiterBucket {
+  waiters = new GrowableArray<Completer<void>>();
+  var head = 0;
+
+  isEmpty(): boolean {
+    return this.head >= this.waiters.length;
+  }
+
+  push(w: Completer<void>) {
+    this.waiters.push(w);
+  }
+
+  pop(): Completer<void> {
+    let w = this.waiters[this.head];
+    this.head += 1;
+    if (this.head >= this.waiters.length) {
+      this.waiters.clear();
+      this.head = 0;
+    }
+    return w;
+  }
+}
+
+/**
+ * Permit semaphore with optional round-robin fairness across caller-assigned
+ * `queueId` buckets (`0` uses FIFO within its single bucket).
+ */
+class FairSemaphore {
+  limit: i32;
+  var #active = 0;
+  #buckets = new HashMap<i32, WaiterBucket>();
+  #ring = new GrowableArray<i32>();
+  var #ringHead = 0;
+
+  new(limit: i32) : limit = limit {
+    if (limit < 1) {
+      throw new WorkflowError('concurrency group limit must be at least 1');
+    }
+  }
+
+  #enqueueWaiter(queueId: i32, waiter: Completer<void>): void {
+    var bucket: WaiterBucket | null = null;
+    if (let (true, existing) = this.#buckets.get(queueId)) {
+      bucket = existing;
+    } else {
+      let created = new WaiterBucket();
+      this.#buckets[queueId] = created;
+      bucket = created;
+    }
+    let wasEmpty = bucket.isEmpty();
+    bucket.push(waiter);
+    if (wasEmpty) {
+      this.#ring.push(queueId);
+    }
+  }
+
+  tryAcquire(): boolean {
+    if (this.#active < this.limit) {
+      this.#active += 1;
+      return true;
+    }
+    return false;
+  }
+
+  async acquire(queueId: i32 = 0): Future<void> {
+    if (this.tryAcquire()) {
+      return;
+    }
+    let waiter = new Completer<void>();
+    this.#enqueueWaiter(queueId, waiter);
+    await waiter.future;
+  }
+
+  release(): void {
+    while (this.#ringHead < this.#ring.length) {
+      let queueId = this.#ring[this.#ringHead];
+      this.#ringHead += 1;
+      if (this.#ringHead >= this.#ring.length) {
+        this.#ring.clear();
+        this.#ringHead = 0;
+      }
+      if (let (true, bucket) = this.#buckets.get(queueId)) {
+        if (!bucket.isEmpty()) {
+          let next = bucket.pop();
+          if (!bucket.isEmpty()) {
+            this.#ring.push(queueId);
+          } else {
+            this.#buckets.delete(queueId);
+          }
+          next.complete();
+          return;
+        }
+        this.#buckets.delete(queueId);
+      }
+    }
+    this.#active -= 1;
+  }
+}
+
+class GroupNode {
+  name: String;
+  semaphore: FairSemaphore?;
+  parentName: String?;
+  /** Bottom-up chain of bounded semaphores from this node up to its root. */
+  chain = new GrowableArray<FairSemaphore>();
+  var effectiveLimit = 1;
+
+  new(this.name, this.semaphore, this.parentName);
+}
+
+/** Held permit across one group's ancestor chain; call `release()` when done. */
+export class ConcurrencyPermit {
+  #semaphores: Array<FairSemaphore>;
+  var #released = false;
+
+  new(semaphores: Array<FairSemaphore>) : #semaphores = semaphores;
+
+  release(): void {
+    if (this.#released) {
+      return;
+    }
+    this.#released = true;
+    var i = this.#semaphores.length - 1;
+    while (i >= 0) {
+      this.#semaphores[i].release();
+      i -= 1;
+    }
+  }
+}
+
+/**
+ * Tree (forest) of named concurrency groups.
+ *
+ * Each group may declare a `limit` and/or a `parent`. A parent's cap applies
+ * to the combined concurrency of the parent itself and all of its descendants.
+ * Acquiring a group walks bottom-up from the leaf to its root (strictly
+ * decreasing depth), which prevents both deadlocks and head-of-line blocking
+ * of parent permits by saturated children.
+ */
+export class ConcurrencyGroups {
+  #nodes = new HashMap<String, GroupNode>();
+  var #nextQueueId = 1;
+
+  new(
+    defaultLimit: i32 = 8,
+    configs: HashMap<String, ConcurrencyGroupConfig>? = null,
+  ) {
+    if (defaultLimit < 1) {
+      throw new WorkflowError('parallelism must be at least 1');
+    }
+
+    let merged = {
+      DEFAULT_CONCURRENCY_GROUP => new ConcurrencyGroupConfig(defaultLimit, null),
+      CACHE_CONCURRENCY_GROUP => new ConcurrencyGroupConfig(DEFAULT_CACHE_GROUP_LIMIT, null),
+    };
+
+    if (configs != null) {
+      configs.forEach((name, cfg) => {
+        merged[name] = cfg;
+      });
+    }
+
+    // Create node entries and validate individual limits.
+    merged.forEach((name, cfg) => {
+      if (name == '') {
+        throw new WorkflowError('concurrency group name must not be empty');
+      }
+      let hasLimit = cfg.hasLimit;
+      let limit = cfg.limit;
+      let parent = cfg.parent;
+      if (!hasLimit && parent == null) {
+        throw new WorkflowError(
+          `concurrency group "${name}" must specify a limit or a parent`,
+        );
+      }
+      let sem = if (hasLimit) {
+        if (limit < 1) {
+          throw new WorkflowError(
+            `concurrency group "${name}" limit must be at least 1`,
+          );
+        }
+        new FairSemaphore(limit)
+      } else {
+        null
+      };
+      this.#nodes[name] = new GroupNode(name, sem, parent);
+    });
+
+    // Validate parent references, reject cycles, and precompute bottom-up chains.
+    this.#nodes.forEach((name, node) => {
+      let visited = new HashSet<String>();
+      var cur: GroupNode | null = node;
+      var minLimit = 0;
+      while (cur != null) {
+        let current = cur;
+        if (!visited.add(current.name)) {
+          throw new WorkflowError(
+            `concurrency group cycle detected involving "${current.name}"`,
+          );
+        }
+        let sem = current.semaphore;
+        if (sem != null) {
+          node.chain.push(sem);
+          if (minLimit == 0 || sem.limit < minLimit) {
+            minLimit = sem.limit;
+          }
+        }
+        let parentName = current.parentName;
+        if (parentName == null) {
+          cur = null;
+        } else if (let (true, parentNode) = this.#nodes.get(parentName)) {
+          cur = parentNode;
+        } else {
+          throw new WorkflowError(
+            `concurrency group "${current.name}" references unknown parent "${parentName}"`,
+          );
+        }
+      }
+      if (minLimit == 0) {
+        throw new WorkflowError(
+          `concurrency group "${name}" has no bounded ancestor`,
+        );
+      }
+      node.effectiveLimit = minLimit;
+    });
+  }
+
+  /** Whether a group named `name` is defined in this tree. */
+  hasGroup(name: String): boolean {
+    return this.#nodes.has(name);
+  }
+
+  /** Effective maximum concurrent permits for `name` (minimum limit along its ancestor chain). */
+  effectiveLimit(name: String): i32 {
+    if (let (true, node) = this.#nodes.get(name)) {
+      return node.effectiveLimit;
+    }
+    throw new WorkflowError(`unknown concurrency group "${name}"`);
+  }
+
+  /** Allocates a distinct queue identifier for round-robin fairness. */
+  allocateQueue(): i32 {
+    let id = this.#nextQueueId;
+    this.#nextQueueId += 1;
+    return id;
+  }
+
+  #requireNode(groupName: String): GroupNode {
+    if (let (true, node) = this.#nodes.get(groupName)) {
+      return node;
+    }
+    throw new WorkflowError(`unknown concurrency group "${groupName}"`);
+  }
+
+  /**
+   * Acquires one permit from `groupName` and every bounded ancestor up to its
+   * root (in bottom-up order). Call `release()` on the returned permit.
+   */
+  async acquire(groupName: String, queueId: i32 = 0): Future<ConcurrencyPermit> {
+    let node = this.#requireNode(groupName);
+    let chain = node.chain;
+    let acquired = new GrowableArray<FairSemaphore>();
+    try {
+      for (let sem in chain) {
+        if (!sem.tryAcquire()) {
+          await sem.acquire(queueId);
+        }
+        acquired.push(sem);
+      }
+    } catch (e) {
+      var j = acquired.length - 1;
+      while (j >= 0) {
+        acquired[j].release();
+        j -= 1;
+      }
+      throw e;
+    }
+    return new ConcurrencyPermit(acquired);
+  }
+
+  /** Acquires a permit when `groupName` is non-null, or returns `null` for coordinator steps. */
+  async acquireOptional(
+    groupName: String?,
+    queueId: i32 = 0,
+  ): Future<ConcurrencyPermit?> {
+    if (groupName == null) {
+      return null;
+    }
+    return await this.acquire(groupName, queueId);
+  }
+}

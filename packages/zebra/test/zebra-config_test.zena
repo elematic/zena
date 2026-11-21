@@ -20,6 +20,7 @@ import {
   ZebraWorkspace,
   convertPackageJsonToZebraJson,
   mergeWireitIntoZenaPackageJson,
+  readWorkspaceConcurrencyGroups,
 } from 'zebra/zebra-config';
 
 function hasStr(items: Array<String>, target: String): boolean {
@@ -590,6 +591,7 @@ export let tests = suite('zebra-config and plan-cache', () => {
         true,
         null,
         ZENA_TEST_RULE_TYPE,
+        'heavy-test',
       ),
     ];
 
@@ -611,6 +613,7 @@ export let tests = suite('zebra-config and plan-cache', () => {
     let c0 = decConfigs[0];
     equal(refKey(c0.ref), 'packages/app:build:all');
     isNull(c0.ruleType);
+    isNull(c0.concurrencyGroup);
     equal(c0.command, 'printf "line1\nline2:ok\n" > out.txt');
     isFalse(c0.cacheEnabled);
     isFalse(c0.isFileset);
@@ -640,6 +643,7 @@ export let tests = suite('zebra-config and plan-cache', () => {
     let c3 = decConfigs[3];
     isNull(c3.command);
     equal(c3.ruleType, ZENA_TEST_RULE_TYPE);
+    equal(c3.concurrencyGroup, 'heavy-test');
     isTrue(c3.testDebug);
     let c3Tests = c3.tests ?? new GrowableArray<String>();
     equal(c3Tests.length, 1);
@@ -650,6 +654,93 @@ export let tests = suite('zebra-config and plan-cache', () => {
     });
     throws(() => {
       planSnapshotFromText(`${encoded}extra`);
+    });
+  });
+
+  test('concurrencyGroups and script concurrencyGroup parse and validate', async () => {
+    let files = {
+      'zena-package.json' => `{
+        "workspace": {"packages": ["packages/*"]},
+        "concurrencyGroups": {
+          "#": "Comment ignored",
+          "cache": 12,
+          "cargo": {"limit": 1, "parent": "default"},
+          "compile": {"parent": "default"}
+        },
+        "scripts": {
+          "a": {"command": "true", "concurrencyGroup": "cargo"}
+        }
+      }`,
+      'packages/bad-root/zena-package.json' => `{
+        "name": "bad-root",
+        "concurrencyGroups": {"x": 2},
+        "scripts": {"a": {"command": "true"}}
+      }`,
+    };
+    let read = async (path: String): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    };
+
+    let groups = await readWorkspaceConcurrencyGroups(read);
+    equal(groups.size, 3);
+    if (let (true, cache) = groups.get('cache')) {
+      isTrue(cache.hasLimit);
+      equal(cache.limit, 12);
+      isNull(cache.parent);
+    } else {
+      throws(() => { throw new Error('missing cache group'); });
+    }
+    if (let (true, cargo) = groups.get('cargo')) {
+      isTrue(cargo.hasLimit);
+      equal(cargo.limit, 1);
+      equal(cargo.parent, 'default');
+    } else {
+      throws(() => { throw new Error('missing cargo group'); });
+    }
+    if (let (true, compile) = groups.get('compile')) {
+      isFalse(compile.hasLimit);
+      equal(compile.parent, 'default');
+    } else {
+      throws(() => { throw new Error('missing compile group'); });
+    }
+
+    let ws = new ZebraWorkspace(read);
+    let scriptA = await ws.scriptConfig(new ScriptRef('', 'a'));
+    equal(scriptA.concurrencyGroup, 'cargo');
+
+    // Non-root packages may not declare concurrencyGroups.
+    await rejects(async () => {
+      await ws.scriptConfig(new ScriptRef('packages/bad-root', 'a'));
+    });
+
+    // Invalid concurrencyGroups shapes fail with ConfigError.
+    let checkBadRoot = async (json: String) => {
+      await rejects(async () => {
+        await readWorkspaceConcurrencyGroups(async (path): Future<String?> =>
+          if (path == 'zebra.json') json else null,
+        );
+      });
+    };
+    await checkBadRoot(`{"concurrencyGroups": 4}`);
+    await checkBadRoot(`{"concurrencyGroups": {"x": 0}}`);
+    await checkBadRoot(`{"concurrencyGroups": {"x": 1.5}}`);
+    await checkBadRoot(`{"concurrencyGroups": {"x": {}}}`);
+    await checkBadRoot(`{"concurrencyGroups": {"x": {"limit": 0}}}`);
+    await checkBadRoot(`{"concurrencyGroups": {"x": {"parent": ""}}}`);
+    await checkBadRoot(`{"concurrencyGroups": {"x": {"unknown": 1, "limit": 1}}}`);
+
+    // Invalid script concurrencyGroup values fail with ConfigError.
+    let wsBadScript = new ZebraWorkspace(async (path): Future<String?> =>
+      if (path == 'zebra.json')
+        `{"scripts": {"a": {"command": "true", "concurrencyGroup": ""}}}`
+      else
+        null,
+    );
+    await rejects(async () => {
+      await wsBadScript.scriptConfig(new ScriptRef('', 'a'));
     });
   });
 });

@@ -1,0 +1,236 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue, throws} from 'zena:assert';
+import {Completer, drainMicrotasks} from 'zena:async';
+import {NullCache} from 'workflow/cache';
+import {
+  CACHE_CONCURRENCY_GROUP,
+  ConcurrencyGroupConfig,
+  ConcurrencyGroups,
+  DEFAULT_CONCURRENCY_GROUP,
+} from 'workflow/concurrency';
+import {Engine, RunOptions} from 'workflow/engine';
+import {Fingerprint} from 'workflow/fingerprint';
+import {Graph} from 'workflow/graph';
+import {OutputManifest} from 'workflow/manifest';
+import {EngineState} from 'workflow/state';
+import {InputRef, Step, StepKey, TaskStep} from 'workflow/step';
+
+function digest(data: String) {
+  return new Fingerprint('d#' + i32ToString(data.hashCode()));
+}
+
+let noInputs: Array<InputRef> = new GrowableArray<InputRef>();
+
+export let tests = suite('concurrency groups tree', () => {
+  test('parent cap applies to the combined total of all its children and descendants', async (ctx) => {
+    // Tree: default(3) -> compile(2) -> heavy(1)
+    //                 \-> other(3)
+    let cfg = {
+      'compile' => new ConcurrencyGroupConfig(2, DEFAULT_CONCURRENCY_GROUP),
+      'heavy' => new ConcurrencyGroupConfig(1, 'compile'),
+      'other' => new ConcurrencyGroupConfig(3, DEFAULT_CONCURRENCY_GROUP),
+    };
+    let groups = new ConcurrencyGroups(3, cfg);
+
+    equal(groups.effectiveLimit('default'), 3);
+    equal(groups.effectiveLimit('compile'), 2);
+    equal(groups.effectiveLimit('heavy'), 1);
+    equal(groups.effectiveLimit('other'), 3);
+    equal(groups.effectiveLimit(CACHE_CONCURRENCY_GROUP), 16);
+
+    var activeHeavy = 0;
+    var activeCompile = 0;
+    var activeOther = 0;
+    let gate = new Completer<void>();
+
+    let mkTask = (key: String, group: String, onEnter: () => void, onExit: () => void): Step =>
+      new TaskStep(
+        new StepKey(key),
+        new Fingerprint('cfg:' + key),
+        noInputs,
+        async (runCtx): Future<OutputManifest> => {
+          onEnter();
+          await gate.future;
+          onExit();
+          return OutputManifest.empty();
+        },
+        group,
+      );
+
+    let graph = new Graph([
+      mkTask('h1', 'heavy', () => { activeHeavy += 1; }, () => { activeHeavy -= 1; }),
+      mkTask('h2', 'heavy', () => { activeHeavy += 1; }, () => { activeHeavy -= 1; }),
+      mkTask('c1', 'compile', () => { activeCompile += 1; }, () => { activeCompile -= 1; }),
+      mkTask('c2', 'compile', () => { activeCompile += 1; }, () => { activeCompile -= 1; }),
+      mkTask('o1', 'other', () => { activeOther += 1; }, () => { activeOther -= 1; }),
+      mkTask('o2', 'other', () => { activeOther += 1; }, () => { activeOther -= 1; }),
+    ]);
+
+    let engine = new Engine(digest, new NullCache());
+    let running = engine.run(
+      graph,
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
+      new RunOptions(3, false, null, null, null, null, groups),
+    );
+    drainMicrotasks();
+
+    // heavy capped at 1, heavy + compile capped at 2, total under default capped at 3.
+    equal(activeHeavy, 1);
+    equal(activeHeavy + activeCompile, 2);
+    equal(activeHeavy + activeCompile + activeOther, 3);
+
+    gate.complete();
+    let result = await running;
+    isTrue(result.allSucceeded);
+  });
+
+  test('saturated child does not head-of-line block parent permits for siblings', async (ctx) => {
+    // cargo(1) -> default(2); sibling runs directly under default(2).
+    // Even if 3 cargo steps enter before sibling, only 1 cargo step takes a
+    // default permit, leaving default's second permit open for sibling.
+    let cfg = {
+      'cargo' => new ConcurrencyGroupConfig(1, DEFAULT_CONCURRENCY_GROUP),
+    };
+    let groups = new ConcurrencyGroups(2, cfg);
+
+    var cargoActive = 0;
+    var siblingActive = 0;
+    let cargoGate = new Completer<void>();
+    let siblingGate = new Completer<void>();
+
+    let mkCargo = (key: String): Step => new TaskStep(
+      new StepKey(key),
+      new Fingerprint('cfg:' + key),
+      noInputs,
+      async (runCtx): Future<OutputManifest> => {
+        cargoActive += 1;
+        await cargoGate.future;
+        cargoActive -= 1;
+        return OutputManifest.empty();
+      },
+      'cargo',
+    );
+    let sibling: Step = new TaskStep(
+      new StepKey('sibling'),
+      new Fingerprint('cfg:sibling'),
+      noInputs,
+      async (runCtx): Future<OutputManifest> => {
+        siblingActive += 1;
+        await siblingGate.future;
+        siblingActive -= 1;
+        return OutputManifest.empty();
+      },
+      DEFAULT_CONCURRENCY_GROUP,
+    );
+
+    let engine = new Engine(digest, new NullCache());
+    let running = engine.run(
+      new Graph([mkCargo('c1'), mkCargo('c2'), mkCargo('c3'), sibling]),
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
+      new RunOptions(2, false, null, null, null, null, groups),
+    );
+    drainMicrotasks();
+
+    equal(cargoActive, 1);
+    equal(siblingActive, 1);
+
+    siblingGate.complete();
+    cargoGate.complete();
+    let result = await running;
+    isTrue(result.allSucceeded);
+  });
+
+  test('coordinator steps with null concurrencyGroup acquire child permits without deadlocking', async (ctx) => {
+    let cfg = {
+      'compile' => ConcurrencyGroupConfig.childOf(DEFAULT_CONCURRENCY_GROUP),
+    };
+    let groups = new ConcurrencyGroups(2, cfg);
+    equal(groups.effectiveLimit('compile'), 2);
+
+    var activeWorkers = 0;
+    var maxWorkers = 0;
+    let gate = new Completer<void>();
+
+    let mkCoordinator = (key: String): Step => new TaskStep(
+      new StepKey(key),
+      new Fingerprint('cfg:' + key),
+      noInputs,
+      async (runCtx): Future<OutputManifest> => {
+        let g = runCtx.concurrency as ConcurrencyGroups;
+        let permit = await g.acquire('compile');
+        try {
+          activeWorkers += 1;
+          if (activeWorkers > maxWorkers) {
+            maxWorkers = activeWorkers;
+          }
+          await gate.future;
+          activeWorkers -= 1;
+        } finally {
+          permit.release();
+        }
+        return OutputManifest.empty();
+      },
+      null,
+    );
+
+    // 4 coordinators start concurrently even though default = 2, and their
+    // inner compile acquires cap at 2 without deadlocking.
+    let engine = new Engine(digest, new NullCache());
+    let running = engine.run(
+      new Graph([
+        mkCoordinator('p1'),
+        mkCoordinator('p2'),
+        mkCoordinator('p3'),
+        mkCoordinator('p4'),
+      ]),
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
+      new RunOptions(2, false, null, null, null, null, groups),
+    );
+    drainMicrotasks();
+
+    equal(activeWorkers, 2);
+    gate.complete();
+    let result = await running;
+    isTrue(result.allSucceeded);
+    equal(maxWorkers, 2);
+  });
+
+  test('rejects cycles, unknown parents, invalid limits, and empty definitions', () => {
+    throws(() => {
+      let cfg = {
+        'a' => new ConcurrencyGroupConfig(2, 'b'),
+        'b' => new ConcurrencyGroupConfig(2, 'a'),
+      };
+      new ConcurrencyGroups(4, cfg);
+    });
+
+    throws(() => {
+      let cfg = {
+        'a' => new ConcurrencyGroupConfig(2, 'missing'),
+      };
+      new ConcurrencyGroups(4, cfg);
+    });
+
+    throws(() => {
+      let cfg = {
+        'a' => new ConcurrencyGroupConfig(0, DEFAULT_CONCURRENCY_GROUP),
+      };
+      new ConcurrencyGroups(4, cfg);
+    });
+
+    throws(() => {
+      let cfg = {
+        'a' => new ConcurrencyGroupConfig(0, null, false),
+      };
+      new ConcurrencyGroups(4, cfg);
+    });
+
+    let groups = new ConcurrencyGroups(4);
+    isTrue(groups.hasGroup('default'));
+    isTrue(groups.hasGroup('cache'));
+    isFalse(groups.hasGroup('unknown'));
+  });
+});
