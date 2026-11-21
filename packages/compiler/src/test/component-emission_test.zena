@@ -11,7 +11,7 @@
  */
 
 import { suite, test, TestContext } from 'zena:test';
-import { isTrue, equal, throws, rejects } from 'zena:assert';
+import { isTrue, isFalse, equal, throws, rejects } from 'zena:assert';
 import { readFile, exists, mkdir } from 'zena:fs';
 import { newByteArray, growable, Result } from 'zena:core';
 import { CompilerHost } from '../lib/library-loader.zena';
@@ -1249,12 +1249,12 @@ export function reset(): boolean { return true; }
     }, "an interface name with no '/' derived a WIT document");
   });
 
-  test('a declared world is the import surface, used or not',
+  test('a declared world\'s import the program never reaches is left out',
       async (ctx) => {
-    // The world imports an interface the program never calls. With a
-    // declared world the component's imports are the world's, so the
-    // unused instance is imported anyway — a host must satisfy the
-    // world, not the subset a particular build happened to reach.
+    // The world imports an interface the program never calls. The
+    // component's imports say what it uses, so a host reading them
+    // does not see an interface the program has no use for (#1298). A
+    // component that imports less than its world still conforms to it.
     let wit = `package test:probe@1.0.0;
 
 interface extras {
@@ -1268,8 +1268,8 @@ world probe {
 `;
     let bytes = await compileForWorld(
         'packages/compiler/test-files/minimal.zena', wit, 'probe');
-    isTrue(containsName(sectionPayload(bytes, 10), 'test:probe/extras@1.0.0'),
-      'the unused world import is missing from the import section');
+    isFalse(containsName(bytes, 'test:probe/extras@1.0.0'),
+      'the unused world import is in the component');
   });
 
   test('disagreements between a declared world and the program are errors',
