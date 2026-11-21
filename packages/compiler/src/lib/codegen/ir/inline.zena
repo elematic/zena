@@ -378,10 +378,30 @@ function nopOut(body: IrBody, inst: i32) {
   body.b[inst] = -1;
 }
 
+/** Whether `caller` has a direct call to a function with a body other than its own. */
+function callsAnotherBody(caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
+    callerIdx: i32): boolean {
+  let n = caller.instCount();
+  for (var inst = 0; inst < n; inst += 1) {
+    if (caller.op(inst) == IrOp.call) {
+      let callee = calleeBodyFor(caller, inst, bodyIndex);
+      if (callee >= 0 && callee != callerIdx) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function inlineIntoBody(caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
     bodies: GrowableArray<IrBody>, callerIdx: i32,
     siteCounts: GrowableArray<i32>, escapes: EscapeSummaries,
     sizes: GrowableArray<i32>, scratch: IrScratch): i32 {
+  // Most bodies in most sweeps call nothing that has a body, and the
+  // tables below are sized to the caller.
+  if (!callsAnotherBody(caller, bodyIndex, callerIdx)) {
+    return 0;
+  }
   var count = 0;
   var generalSplices = 0;
   let perCallee = new Map<i32, i32>();
@@ -461,6 +481,10 @@ function inlineIntoBody(caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
     }
   };
   growRepl();
+  // Whether any instruction below `projectionsCountedTo` is an mv_get.
+  // A splice appends instructions, so the count resumes from there.
+  var hasProjections = false;
+  var projectionsCountedTo = 0;
   let canon = (v: i32) => {
     var c = v;
     while (c >= 0 && c < repl.length && repl[c] != c) {
@@ -556,7 +580,19 @@ function inlineIntoBody(caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
         if (callIsValue) {
           repl[inst] = results[0];
         }
+        // The projections are found by looking at every instruction, so
+        // look only when the caller has one: few bodies do, and a large
+        // caller takes many splices.
         let total = caller.instCount();
+        while (projectionsCountedTo < total) {
+          if (caller.op(projectionsCountedTo) == IrOp.mv_get) {
+            hasProjections = true;
+          }
+          projectionsCountedTo += 1;
+        }
+        if (!hasProjections) {
+          return;
+        }
         for (var i = 0; i < total; i += 1) {
           if (caller.op(i) == IrOp.mv_get && caller.a[i] == inst) {
             let k = caller.b[i];
