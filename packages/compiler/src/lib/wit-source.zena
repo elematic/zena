@@ -16,12 +16,18 @@ import { growable } from 'zena:core';
 
 /**
  * The WIT document at `path`: one file, or a directory's `.wit` files
- * joined by `joinWitDocument`.
+ * joined by `joinWitDocument`, followed by the packages in its `deps`
+ * directory.
  *
  * A directory's files are named by their path rather than by the bare
  * name the host listed, so a diagnostic against the document names a
  * file the reader can open. Every name under one directory shares its
  * prefix, so this does not change the order they are joined in.
+ *
+ * `deps` is where WIT tools keep the packages a directory's own package
+ * refers to: each entry is a `.wit` file or a directory of them. They
+ * come after the directory's own files, so the document's package, the
+ * one a world is looked up in, is the directory's.
  *
  * A single file is its own document, taken verbatim: `--wit` names it
  * directly, so it is read whatever it is called.
@@ -33,15 +39,61 @@ export async function readWitDocument(host: CompilerHost, path: String): Future<
     return new WitDocument(await host.readFile(path), starts);
   }
   let files = new GrowableArray<WitFile>();
+  var hasDeps = false;
   for (let name in names as GrowableArray<String>) {
     if (name.endsWith(".wit")) {
       files.push(new WitFile(`${path}/${name}`, await host.readFile(`${path}/${name}`)));
+    } else if (name == "deps") {
+      hasDeps = true;
     }
   }
   if (files.length == 0) {
     throw new Error("No .wit files in directory: " + path);
   }
-  return joinWitDocument(files);
+  let own = joinWitDocument(files);
+  if (!hasDeps) {
+    return own;
+  }
+  let deps = joinWitDocument(await readWitDeps(host, `${path}/deps`));
+  // The dependencies' files begin where the directory's own end.
+  let starts = new GrowableArray<WitFileStart>();
+  for (let start in own.files) {
+    starts.push(start);
+  }
+  for (let start in deps.files) {
+    starts.push(new WitFileStart(start.name, own.source.length + start.start));
+  }
+  return new WitDocument(`${own.source}${deps.source}`, starts);
+}
+
+/**
+ * The `.wit` files of a `deps` directory: the ones directly in it, and
+ * the ones in each directory it holds. Anything else there, such as a
+ * package encoded as `.wasm`, is passed over.
+ */
+async function readWitDeps(host: CompilerHost, deps: String): Future<GrowableArray<WitFile>> {
+  let files = new GrowableArray<WitFile>();
+  let entries = await host.listDir(deps);
+  if (entries == null) {
+    return files;
+  }
+  for (let entry in entries as GrowableArray<String>) {
+    if (entry.endsWith(".wit")) {
+      files.push(new WitFile(`${deps}/${entry}`, await host.readFile(`${deps}/${entry}`)));
+      continue;
+    }
+    let nested = await host.listDir(`${deps}/${entry}`);
+    if (nested == null) {
+      continue;
+    }
+    for (let name in nested as GrowableArray<String>) {
+      if (name.endsWith(".wit")) {
+        files.push(new WitFile(`${deps}/${entry}/${name}`,
+            await host.readFile(`${deps}/${entry}/${name}`)));
+      }
+    }
+  }
+  return files;
 }
 
 /**

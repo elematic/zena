@@ -752,7 +752,11 @@ Four points this settles:
 The remaining flags concern the world, not the target:
 
 - `--wit <path>` — a WIT file, or a directory whose `.wit` files are
-  concatenated in name order, defining the world.
+  concatenated in name order, defining the world. A directory's `deps`
+  directory holds the packages its own package refers to, as WIT tools
+  lay them out: each entry is a `.wit` file or a directory of them. They
+  are read after the directory's own files, so a world can `include` a
+  world of another package, or import its interfaces.
 - `--world <name>` — which world in it; optional when the document
   declares exactly one.
 

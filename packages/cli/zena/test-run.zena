@@ -11,9 +11,11 @@
  * not compile in `--compile` falls back to `zena test --single <file>` so
  * its diagnostics are captured and reported.
  *
- * `CliTestStepRunner` shares one `ConcurrencyLimiter` across all
- * `"type": "zena:test"` steps in a build or watch run so concurrent package
- * test suites share a single worker cap and run in-process.
+ * `CliTestStepRunner` shares one `ConcurrencyLimiter` and `CompileBatcher`
+ * across all `"type": "zena:test"` steps in a build or watch run so
+ * concurrent package test suites share one worker cap, coalesce small
+ * packages into shared compile batches, and cap large packages per
+ * `CompileSession`.
  */
 
 import { ArgParser, OptionType, ParsedArgs } from 'zena:args';
@@ -122,14 +124,6 @@ class ConcurrencyLimiter {
       this.#ring.push(queueId);
     }
     await waiter.future;
-  }
-
-  tryAcquire(): boolean {
-    if (this.#active < this.#limit) {
-      this.#active += 1;
-      return true;
-    }
-    return false;
   }
 
   release(): void {
@@ -474,138 +468,260 @@ async function runCopyInRoot(
   });
 }
 
-async function runCompileShareWithPermit(
-  targetRoot: String,
-  share: Array<String>,
-  options: Options,
-  noCache: boolean,
-  cliGuestEnv: Map<String, String>,
-  cliModuleOverride: AbsolutePath | null,
-  limiter: ConcurrencyLimiter,
-): Future<void> {
-  try {
-    await runCopyInRoot(
-      targetRoot,
-      '--compile',
-      share,
-      options,
-      noCache,
-      cliGuestEnv,
-      cliModuleOverride,
-    );
-  } finally {
-    limiter.release();
+/**
+ * Maximum stale test files handed to a single `zena test --compile` worker.
+ * Matches the measured CompileSession sweet spot in packages/compiler/CONTEXT.md
+ * (past ~16-24 entries, accumulated checker state slows compilation down).
+ */
+let DEFAULT_COMPILE_BATCH_SIZE = 10;
+
+function compileBatchSize() {
+  let override = envInt('ZENA_TEST_COMPILE_BATCH');
+  if (override > 0) {
+    return override;
+  }
+  return DEFAULT_COMPILE_BATCH_SIZE;
+}
+
+class PendingCompileItem {
+  absPath: String;
+  done = new Completer<void>();
+
+  new(this.absPath);
+}
+
+class CompileBucket {
+  key: String;
+  targetRoot: String;
+  options: Options;
+  noCache: boolean;
+  cliGuestEnv: Map<String, String>;
+  cliModuleOverride: AbsolutePath | null;
+  queueId: i32;
+  pending = new GrowableArray<PendingCompileItem>();
+  var head = 0;
+  var activeWorkers = 0;
+
+  new(
+    this.key,
+    this.targetRoot,
+    this.options,
+    this.noCache,
+    this.cliGuestEnv,
+    this.cliModuleOverride,
+    this.queueId,
+  );
+
+  remaining(): i32 {
+    return this.pending.length - this.head;
+  }
+
+  popBatch(maxSize: i32): GrowableArray<PendingCompileItem> {
+    let batch = new GrowableArray<PendingCompileItem>();
+    while (batch.length < maxSize && this.head < this.pending.length) {
+      batch.push(this.pending[this.head]);
+      this.head += 1;
+    }
+    if (this.head >= this.pending.length) {
+      this.pending.clear();
+      this.head = 0;
+    }
+    return batch;
   }
 }
 
-/**
- * Checks `.zena` cache freshness once per file, batch-compiles stale files
- * across available `limiter` workers (releasing each permit as soon as its
- * worker finishes), and returns the map of `file -> freshCachedWasmPath`.
- */
-async function prepareTestModules(
+function compileBucketKey(
   targetRoot: String,
-  files: Array<String>,
+  options: Options,
+  noCache: boolean,
+  cliModuleOverride: AbsolutePath | null,
+  envOverrides: Array<(String, String)>,
+  envRemovals: Array<String>,
+) {
+  let sb = new StringBuilder();
+  sb.append(targetRoot);
+  sb.append('\0');
+  sb.append(if (options.debug) '1' else '0');
+  sb.append('\0');
+  sb.append(options.optLevel ?? '');
+  sb.append('\0');
+  sb.append(if (noCache) '1' else '0');
+  sb.append('\0');
+  sb.append(if (cliModuleOverride != null) cliModuleOverride.value else '');
+  for (let (name, value) in envOverrides) {
+    sb.append('\0+');
+    sb.append(name);
+    sb.append('=');
+    sb.append(value);
+  }
+  for (let name in envRemovals) {
+    sb.append('\0-');
+    sb.append(name);
+  }
+  return sb.toString();
+}
+
+/**
+ * Cross-package compile batcher shared across concurrent `zena:test` steps.
+ *
+ * Workers acquire a `ConcurrencyLimiter` permit before popping up to
+ * `batchSize` stale files from a compatible bucket. Under load, small
+ * packages waiting for a permit coalesce into a single `CompileSession`,
+ * while large packages split into bounded chunks so checker state never
+ * bloats and tests begin executing as soon as their chunk finishes.
+ */
+class CompileBatcher {
+  #limiter: ConcurrencyLimiter;
+  #batchSize: i32;
+  #buckets = new HashMap<String, CompileBucket>();
+
+  new(limiter: ConcurrencyLimiter, batchSize: i32 = compileBatchSize())
+      : #limiter = limiter,
+        #batchSize = if (batchSize >= 1) batchSize else 1;
+
+  enqueue(
+    targetRoot: String,
+    staleAbs: Array<String>,
+    options: Options,
+    noCache: boolean,
+    cliGuestEnv: Map<String, String>,
+    cliModuleOverride: AbsolutePath | null,
+    envOverrides: Array<(String, String)>,
+    envRemovals: Array<String>,
+  ): GrowableArray<Future<void>> {
+    let key = compileBucketKey(
+      targetRoot,
+      options,
+      noCache,
+      cliModuleOverride,
+      envOverrides,
+      envRemovals,
+    );
+    var bucket: CompileBucket | null = null;
+    if (let (true, existing) = this.#buckets.get(key)) {
+      bucket = existing;
+    } else {
+      let created = new CompileBucket(
+        key,
+        targetRoot,
+        options,
+        noCache,
+        cliGuestEnv,
+        cliModuleOverride,
+        this.#limiter.allocateQueue(),
+      );
+      this.#buckets[key] = created;
+      bucket = created;
+    }
+    let activeBucket = bucket;
+    let readyFutures = new GrowableArray<Future<void>>();
+    for (let absPath in staleAbs) {
+      let item = new PendingCompileItem(absPath);
+      activeBucket.pending.push(item);
+      readyFutures.push(item.done.future);
+    }
+    this.#scheduleWorkers(activeBucket);
+    return readyFutures;
+  }
+
+  #scheduleWorkers(bucket: CompileBucket): void {
+    let rem = bucket.remaining();
+    if (rem <= 0) {
+      return;
+    }
+    let chunks = div(rem + this.#batchSize - 1, this.#batchSize);
+    let target = if (chunks < this.#limiter.limit) chunks else this.#limiter.limit;
+    while (bucket.activeWorkers < target) {
+      bucket.activeWorkers += 1;
+      this.#runWorker(bucket);
+    }
+  }
+
+  async #runWorker(bucket: CompileBucket): Future<void> {
+    try {
+      while (bucket.remaining() > 0) {
+        await this.#limiter.acquire(bucket.queueId);
+        let batch = bucket.popBatch(this.#batchSize);
+        try {
+          if (batch.length >= 2) {
+            let paths = new GrowableArray<String>();
+            for (let item in batch) {
+              paths.push(item.absPath);
+            }
+            try {
+              await runCopyInRoot(
+                bucket.targetRoot,
+                '--compile',
+                paths,
+                bucket.options,
+                bucket.noCache,
+                bucket.cliGuestEnv,
+                bucket.cliModuleOverride,
+              );
+            } catch (_) {
+              // Best-effort cache warm: any file that did not compile will
+              // fall back to `--single` and report its diagnostics there.
+            }
+          }
+        } finally {
+          for (let item in batch) {
+            item.done.complete();
+          }
+          this.#limiter.release();
+        }
+      }
+    } finally {
+      bucket.activeWorkers -= 1;
+      if (bucket.remaining() > 0) {
+        this.#scheduleWorkers(bucket);
+      } else if (bucket.activeWorkers == 0) {
+        this.#buckets.delete(bucket.key);
+      }
+    }
+  }
+}
+
+async function runAfterCompile(
+  targetRoot: String,
+  file: String,
+  absFile: String,
+  ready: Future<void>,
+  canCheckCacheHere: boolean,
+  tmpDir: String,
   options: Options,
   limiter: ConcurrencyLimiter,
+  queueId: i32,
   noCache: boolean,
+  directGuestEnv: Map<String, String>,
   cliGuestEnv: Map<String, String>,
-  cliModuleOverride: AbsolutePath | null = null,
-  identityMemo: HashMap<String, String> | null = null,
-): Future<HashMap<String, AbsolutePath>> {
-  let fresh = new HashMap<String, AbsolutePath>();
-  let canCheckCacheHere = !noCache && targetRoot == workspaceRoot().value;
-  let staleFiles = new GrowableArray<String>();
-  let staleAbs = new GrowableArray<String>();
-  for (let file in files) {
-    let absPath = testPathInRoot(targetRoot, file);
-    if (canCheckCacheHere) {
-      let cached = await cachedModuleIfFresh(
-        testRequestForAbs(absPath),
-        options,
-        cliModuleOverride,
-        identityMemo,
-      );
-      if (cached != null) {
-        fresh[file] = cached;
-        continue;
-      }
-    }
-    staleFiles.push(file);
-    staleAbs.push(absPath);
-  }
-
-  if (staleAbs.length <= 1) {
-    return fresh;
-  }
-  let maxCopies = if (staleAbs.length < limiter.limit) staleAbs.length else limiter.limit;
-  if (staleAbs.length <= maxCopies && targetRoot != workspaceRoot().value) {
-    return fresh;
-  }
-
-  // Acquire 1 permit, then take up to `maxCopies - 1` immediately available permits.
-  await limiter.acquire();
-  var copies = 1;
-  while (copies < maxCopies && limiter.tryAcquire()) {
-    copies += 1;
-  }
-  if (staleAbs.length <= copies) {
-    for (var r = 0; r < copies; r += 1) {
-      limiter.release();
-    }
-    return fresh;
-  }
-
-  let compileTasks = new GrowableArray<Future<void>>();
-  var unstarted = copies;
-  try {
-    var start = 0;
-    for (var i = 0; i < copies; i += 1) {
-      var size = div(staleAbs.length, copies);
-      if (i < staleAbs.length % copies) {
-        size += 1;
-      }
-      let share = new GrowableArray<String>();
-      for (var j = start; j < start + size; j += 1) {
-        share.push(staleAbs[j]);
-      }
-      start += size;
-      compileTasks.push(
-        runCompileShareWithPermit(
-          targetRoot,
-          share,
-          options,
-          noCache,
-          cliGuestEnv,
-          cliModuleOverride,
-          limiter,
-        ),
-      );
-      unstarted -= 1;
-    }
-  } finally {
-    for (var r = 0; r < unstarted; r += 1) {
-      limiter.release();
-    }
-  }
-  for (let task in compileTasks) {
-    await task;
-  }
-
-  if (canCheckCacheHere) {
-    for (var i = 0; i < staleFiles.length; i += 1) {
-      let cached = await cachedModuleIfFresh(
-        testRequestForAbs(staleAbs[i]),
-        options,
-        cliModuleOverride,
-        identityMemo,
-      );
-      if (cached != null) {
-        fresh[staleFiles[i]] = cached;
-      }
-    }
-  }
-  return fresh;
+  useColor: boolean,
+  cliModuleOverride: AbsolutePath | null,
+  identityMemo: HashMap<String, String> | null,
+): Future<TestFileOutcome> {
+  await ready;
+  let cachedMod = if (canCheckCacheHere)
+    await cachedModuleIfFresh(
+      testRequestForAbs(absFile),
+      options,
+      cliModuleOverride,
+      identityMemo,
+    )
+  else
+    null;
+  return await runOneTestFile(
+    targetRoot,
+    file,
+    cachedMod,
+    tmpDir,
+    options,
+    limiter,
+    queueId,
+    noCache,
+    directGuestEnv,
+    cliGuestEnv,
+    useColor,
+    cliModuleOverride,
+  );
 }
 
 /**
@@ -668,6 +784,7 @@ async function executeTestFiles(
   files: Array<String>,
   options: Options,
   limiter: ConcurrencyLimiter,
+  batcher: CompileBatcher,
   noCache: boolean,
   envOverrides: Array<(String, String)>,
   envRemovals: Array<String>,
@@ -693,16 +810,44 @@ async function executeTestFiles(
     cliModuleOverride,
   );
 
-  let freshModules = await prepareTestModules(
-    targetRoot,
-    files,
-    options,
-    limiter,
-    noCache,
-    cliGuestEnv,
-    cliModuleOverride,
-    identityMemo,
-  );
+  let canCheckCacheHere = !noCache && targetRoot == workspaceRoot().value;
+  let freshModules = new HashMap<String, AbsolutePath>();
+  let staleFiles = new GrowableArray<String>();
+  let staleAbs = new GrowableArray<String>();
+  for (let file in files) {
+    let absPath = testPathInRoot(targetRoot, file);
+    if (canCheckCacheHere) {
+      let cached = await cachedModuleIfFresh(
+        testRequestForAbs(absPath),
+        options,
+        cliModuleOverride,
+        identityMemo,
+      );
+      if (cached != null) {
+        freshModules[file] = cached;
+        continue;
+      }
+    }
+    staleFiles.push(file);
+    staleAbs.push(absPath);
+  }
+
+  let readyByFile = new HashMap<String, Future<void>>();
+  if (staleAbs.length > 0) {
+    let readyFutures = batcher.enqueue(
+      targetRoot,
+      staleAbs,
+      options,
+      noCache,
+      cliGuestEnv,
+      cliModuleOverride,
+      envOverrides,
+      envRemovals,
+    );
+    for (var i = 0; i < staleFiles.length; i += 1) {
+      readyByFile[staleFiles[i]] = readyFutures[i];
+    }
+  }
 
   let tmpDir = (await hostDir('/tmp')).value;
   let useColor = getEnv('NO_COLOR') == null;
@@ -710,26 +855,44 @@ async function executeTestFiles(
 
   let tasks = new GrowableArray<Future<TestFileOutcome>>();
   for (let file in files) {
-    var cachedMod: AbsolutePath | null = null;
     if (let (true, hit) = freshModules.get(file)) {
-      cachedMod = hit;
+      tasks.push(
+        runOneTestFile(
+          targetRoot,
+          file,
+          hit,
+          tmpDir,
+          options,
+          limiter,
+          queueId,
+          noCache,
+          directGuestEnv,
+          cliGuestEnv,
+          useColor,
+          cliModuleOverride,
+        ),
+      );
+    } else if (let (true, ready) = readyByFile.get(file)) {
+      tasks.push(
+        runAfterCompile(
+          targetRoot,
+          file,
+          testPathInRoot(targetRoot, file),
+          ready,
+          canCheckCacheHere,
+          tmpDir,
+          options,
+          limiter,
+          queueId,
+          noCache,
+          directGuestEnv,
+          cliGuestEnv,
+          useColor,
+          cliModuleOverride,
+          identityMemo,
+        ),
+      );
     }
-    tasks.push(
-      runOneTestFile(
-        targetRoot,
-        file,
-        cachedMod,
-        tmpDir,
-        options,
-        limiter,
-        queueId,
-        noCache,
-        directGuestEnv,
-        cliGuestEnv,
-        useColor,
-        cliModuleOverride,
-      ),
-    );
   }
 
   var passed = 0;
@@ -800,6 +963,7 @@ export async function testCommand(
   }
   let limit = if (jobs > 0) jobs else parallelism();
   let limiter = new ConcurrencyLimiter(limit);
+  let batcher = new CompileBatcher(limiter);
   let emptyOverrides = new GrowableArray<(String, String)>();
   let emptyRemovals = new GrowableArray<String>();
   return await executeTestFiles(
@@ -807,6 +971,7 @@ export async function testCommand(
     files,
     options,
     limiter,
+    batcher,
     noCache,
     emptyOverrides,
     emptyRemovals,
@@ -880,6 +1045,7 @@ function stepRunnerParallelism(jobs: i32): i32 {
 export class CliTestStepRunner implements TestStepRunner {
   #options: Options;
   #limiter: ConcurrencyLimiter;
+  #batcher: CompileBatcher;
   #noCache: boolean;
   #builtCliPath: String;
   #startedOnBootstrapFallback: boolean;
@@ -888,12 +1054,13 @@ export class CliTestStepRunner implements TestStepRunner {
 
   new(
     options: Options,
-    jobs: i32,
+    limiter: ConcurrencyLimiter,
     noCache: boolean,
     builtCliPath: String,
     startedOnBootstrapFallback: boolean,
   ) : #options = options,
-      #limiter = new ConcurrencyLimiter(stepRunnerParallelism(jobs)),
+      #limiter = limiter,
+      #batcher = new CompileBatcher(limiter),
       #noCache = noCache,
       #builtCliPath = builtCliPath,
       #startedOnBootstrapFallback = startedOnBootstrapFallback;
@@ -908,7 +1075,8 @@ export class CliTestStepRunner implements TestStepRunner {
     let bootstrapPath = `${root}/packages/cli/bootstrap/zena.wasm`;
     let startedOnBootstrap =
       cliModule().value == bootstrapPath && !(await isFile(builtPath));
-    return new CliTestStepRunner(options, jobs, noCache, builtPath, startedOnBootstrap);
+    let limiter = new ConcurrencyLimiter(stepRunnerParallelism(jobs));
+    return new CliTestStepRunner(options, limiter, noCache, builtPath, startedOnBootstrap);
   }
 
   async #activeCliModule(): Future<AbsolutePath> {
@@ -1005,6 +1173,7 @@ export class CliTestStepRunner implements TestStepRunner {
         files,
         stepOptions,
         this.#limiter,
+        this.#batcher,
         stepNoCache,
         request.env,
         request.envRemove,
