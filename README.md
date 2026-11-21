@@ -97,7 +97,7 @@ Zena is implemented primarily through generative AI paired with human architectu
 - [Language Reference](docs/language-reference.md) – Syntax and semantics specification
 - [Quick Reference](packages/website/src/reference/quick-reference.md) – Comprehensive feature reference
 - [Design Documents](docs/design/) – Architecture and feature design specifications
-- [Online Playground](https://zena-lang.org/playground/) – Interactive browser-based compiler and editor
+- [Online Playground](https://zena-lang.dev/playground/) – Interactive browser-based compiler and editor
 
 ## Getting Started
 
