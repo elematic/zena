@@ -1865,4 +1865,67 @@ export let tests = suite('zebra end to end', () => {
     isTrue(sourceOf(r5.result, 'packages/compiler:build') == StepSource.Ran);
     isTrue(sourceOf(r5.result, 'packages/app:build') == StepSource.Ran);
   });
+
+  test('ts:build derives inputs/outputs from tsconfig.json, caches outputs, and invalidates on base tsconfig edits', async () => {
+    let root = `/tmp/zebra-ts-rule-e2e-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    // Hermetic fake `tsc` in node_modules/.bin/tsc that reads tsconfig.json
+    // and writes lib/index.js + tsconfig.tsbuildinfo.
+    await write(
+      root,
+      'node_modules/.bin/tsc',
+      '#!/bin/sh\n' +
+      'set -e\n' +
+      'mkdir -p lib\n' +
+      'cat src/index.ts > lib/index.js\n' +
+      'printf "info\\n" > tsconfig.tsbuildinfo\n',
+    );
+    let chmodRes = await runWith(['chmod', '+x', 'node_modules/.bin/tsc'], {cwd: root});
+    isTrue(chmodRes.succeeded(), chmodRes.stderr);
+
+    await write(
+      root,
+      'tsconfig.base.json',
+      `{"compilerOptions": {"composite": true, "tsBuildInfoFile": "\${configDir}/tsconfig.tsbuildinfo", "outDir": "\${configDir}/lib"}}\n`,
+    );
+    await write(
+      root,
+      'packages/ui/zebra.json',
+      `{"locks": [], "scripts": {"build": {"type": "ts:build"}}}\n`,
+    );
+    await write(
+      root,
+      'packages/ui/tsconfig.json',
+      `{"extends": "../../tsconfig.base.json", "include": ["src/**/*.ts"]}\n`,
+    );
+    await write(root, 'packages/ui/src/index.ts', 'export const v = 1;\n');
+
+    let entry = new ScriptRef('packages/ui', 'build');
+    let r1 = await buildTarget(root, entry);
+    isTrue(r1.result.allSucceeded, formatBuildReport(r1, true));
+    isTrue(sourceOf(r1.result, 'packages/ui:build') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/ui/lib/index.js')), 'export const v = 1;\n');
+
+    // Warm run is fresh.
+    let r2 = await buildTarget(root, entry);
+    isTrue(r2.result.allSucceeded, formatBuildReport(r2, true));
+    isTrue(sourceOf(r2.result, 'packages/ui:build') == StepSource.Fresh);
+
+    // Deleting output restores from local Zebra disk cache without re-running tsc.
+    await unlink(withRoot(root, 'packages/ui/lib/index.js'));
+    let r3 = await buildTarget(root, entry);
+    isTrue(r3.result.allSucceeded, formatBuildReport(r3, true));
+    isTrue(sourceOf(r3.result, 'packages/ui:build') == StepSource.Cache);
+    equal(await readFile(withRoot(root, 'packages/ui/lib/index.js')), 'export const v = 1;\n');
+
+    // Editing extended tsconfig.base.json invalidates both plan cache and build.
+    await write(
+      root,
+      'tsconfig.base.json',
+      `{"compilerOptions": {"composite": true, "strict": true, "tsBuildInfoFile": "\${configDir}/tsconfig.tsbuildinfo", "outDir": "\${configDir}/lib"}}\n`,
+    );
+    let r4 = await buildTarget(root, entry);
+    isTrue(r4.result.allSucceeded, formatBuildReport(r4, true));
+    isTrue(sourceOf(r4.result, 'packages/ui:build') == StepSource.Ran);
+  });
 });

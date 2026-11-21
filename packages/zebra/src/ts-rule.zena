@@ -1,0 +1,737 @@
+/**
+ * Declarative `"type": "ts:build"` rule: reads `tsconfig.json` (following
+ * `"extends"` chains via `RuleResolveContext.readFile` so Zebra's plan cache
+ * and `--watch` mode track every config file automatically) and derives
+ * `command`, `files`, `output`, and `clean` without repeating them in
+ * `zebra.json`.
+ */
+
+import {Future} from 'zena:async';
+import {HashSet} from 'zena:collections';
+import {Box, StringBuilder, join} from 'zena:core';
+import {hasMagic} from 'zena:glob';
+import {JsonArray, JsonObject, JsonValue} from 'zena:json';
+import {joinWorkspace} from './fs-util.zena';
+import {
+  RuleResolveContext,
+  RuleResolver,
+  parseCommonRuleFields,
+} from './rules.zena';
+import {appendShellArgs} from './shell.zena';
+import {
+  ConfigError,
+  ScriptConfig,
+  parseJsonObject,
+  stringList,
+} from './wireit-config.zena';
+
+/** Rule `type` identifier for declarative TypeScript (`tsc`) builds. */
+export let TS_BUILD_RULE_TYPE = 'ts:build';
+
+/**
+ * Strips trailing commas before `}` or `]` outside strings and comments so
+ * JSONC `tsconfig.json` files with trailing commas parse via `zena:json`.
+ */
+function stripTrailingCommas(text: String) {
+  let sb = new StringBuilder(text.length);
+  let n = text.length;
+  var i = 0;
+  var inString = false;
+  var inLineComment = false;
+  var inBlockComment = false;
+  while (i < n) {
+    let b = text.getByteAt(i);
+    if (inLineComment) {
+      sb.appendByte(b);
+      if (b == 10) {
+        inLineComment = false;
+      }
+      i += 1;
+      continue;
+    }
+    if (inBlockComment) {
+      sb.appendByte(b);
+      if (b == 42 && i + 1 < n && text.getByteAt(i + 1) == 47) {
+        sb.appendByte(47);
+        inBlockComment = false;
+        i += 2;
+      } else {
+        i += 1;
+      }
+      continue;
+    }
+    if (inString) {
+      sb.appendByte(b);
+      if (b == 92 && i + 1 < n) {
+        sb.appendByte(text.getByteAt(i + 1));
+        i += 2;
+      } else {
+        if (b == 34) {
+          inString = false;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    if (b == 34) {
+      inString = true;
+      sb.appendByte(b);
+      i += 1;
+      continue;
+    }
+    if (b == 47 && i + 1 < n) {
+      let next = text.getByteAt(i + 1);
+      if (next == 47) {
+        inLineComment = true;
+        sb.appendByte(47);
+        sb.appendByte(47);
+        i += 2;
+        continue;
+      }
+      if (next == 42) {
+        inBlockComment = true;
+        sb.appendByte(47);
+        sb.appendByte(42);
+        i += 2;
+        continue;
+      }
+    }
+    if (b == 44) {
+      // Look ahead past whitespace and comments for `}` (125) or `]` (93).
+      var j = i + 1;
+      while (j < n) {
+        let c = text.getByteAt(j);
+        if (c == 32 || c == 9 || c == 10 || c == 13) {
+          j += 1;
+        } else if (c == 47 && j + 1 < n && text.getByteAt(j + 1) == 47) {
+          j += 2;
+          while (j < n && text.getByteAt(j) != 10) {
+            j += 1;
+          }
+        } else if (c == 47 && j + 1 < n && text.getByteAt(j + 1) == 42) {
+          j += 2;
+          while (j + 1 < n && !(text.getByteAt(j) == 42 && text.getByteAt(j + 1) == 47)) {
+            j += 1;
+          }
+          j += 2;
+        } else {
+          break;
+        }
+      }
+      if (j < n && (text.getByteAt(j) == 125 || text.getByteAt(j) == 93)) {
+        i += 1;
+        continue;
+      }
+    }
+    sb.appendByte(b);
+    i += 1;
+  }
+  return sb.toString();
+}
+
+function parentDir(wsPath: String) {
+  var slash = -1;
+  for (var i = 0; i < wsPath.length; i += 1) {
+    if (wsPath.getByteAt(i) == 47) {
+      slash = i;
+    }
+  }
+  return if (slash < 0) '' else wsPath.sliceBytes(0, slash);
+}
+
+function fileStem(path: String) {
+  var slash = -1;
+  for (var i = 0; i < path.length; i += 1) {
+    if (path.getByteAt(i) == 47) {
+      slash = i;
+    }
+  }
+  let base = if (slash < 0) path else path.sliceBytes(slash + 1, path.length);
+  if (base.endsWith('.json')) {
+    return base.sliceBytes(0, base.length - 5);
+  }
+  return base;
+}
+
+/** Converts a workspace-relative path to a path relative to `packageDir`. */
+function relativeFromPackage(packageDir: String, wsPath: String) {
+  if (packageDir == '') {
+    return if (wsPath == '') '.' else wsPath;
+  }
+  if (wsPath == packageDir) {
+    return '.';
+  }
+  let prefix = `${packageDir}/`;
+  if (wsPath.startsWith(prefix)) {
+    return wsPath.sliceBytes(prefix.length, wsPath.length);
+  }
+  let fromParts = packageDir.split('/');
+  let toParts: Array<String> = if (wsPath == '')
+    new Array<String>()
+  else
+    wsPath.split('/');
+  var common = 0;
+  while (
+    common < fromParts.length &&
+    common < toParts.length &&
+    fromParts[common] == toParts[common]
+  ) {
+    common += 1;
+  }
+  let out = new GrowableArray<String>();
+  for (var i = common; i < fromParts.length; i += 1) {
+    if (fromParts[i] != '') {
+      out.push('..');
+    }
+  }
+  for (var i = common; i < toParts.length; i += 1) {
+    if (toParts[i] != '') {
+      out.push(toParts[i]);
+    }
+  }
+  return if (out.length == 0) '.' else join(out, '/');
+}
+
+function stripTrailingSlashes(raw: String) {
+  var out = raw;
+  while (out.length > 1 && out.endsWith('/')) {
+    out = out.sliceBytes(0, out.length - 1);
+  }
+  return out;
+}
+
+/**
+ * Resolves a path or glob from a tsconfig at `declaringDir` (substituting
+ * TypeScript's `${configDir}` with `rootConfigDir`) into a workspace-relative
+ * string.
+ */
+function resolveTsPath(declaringDir: String, rootConfigDir: String, raw: String) {
+  var base = declaringDir;
+  var path = raw;
+  if (path == '${configDir}') {
+    base = rootConfigDir;
+    path = '.';
+  } else if (path.startsWith('${configDir}/')) {
+    base = rootConfigDir;
+    path = path.sliceBytes(13, path.length);
+  }
+  let joined = joinWorkspace(base, stripTrailingSlashes(path));
+  return joined;
+}
+
+function lastSegmentHasExtension(path: String) {
+  var slash = -1;
+  for (var i = 0; i < path.length; i += 1) {
+    if (path.getByteAt(i) == 47) {
+      slash = i;
+    }
+  }
+  let last = if (slash < 0) path else path.sliceBytes(slash + 1, path.length);
+  return last.contains('.') && !last.startsWith('.');
+}
+
+function toTsIncludeGlob(pkgRel: String) {
+  let cleaned = stripTrailingSlashes(pkgRel);
+  if (cleaned == '' || cleaned == '.') {
+    return '**/*';
+  }
+  if (hasMagic(cleaned) || lastSegmentHasExtension(cleaned)) {
+    return cleaned;
+  }
+  return `${cleaned}/**/*`;
+}
+
+function toTsExcludeGlob(pkgRel: String) {
+  let cleaned = stripTrailingSlashes(pkgRel);
+  if (cleaned == '' || cleaned == '.') {
+    return '**';
+  }
+  if (hasMagic(cleaned) || lastSegmentHasExtension(cleaned)) {
+    return cleaned;
+  }
+  return `${cleaned}/**`;
+}
+
+function addUnique(items: GrowableArray<String>, seen: HashSet<String>, value: String) {
+  if (seen.add(value)) {
+    items.push(value);
+  }
+}
+
+class ResolvedTsConfig {
+  var outDir: String? = null;
+  var rootDir: String? = null;
+  var outFile: String? = null;
+  var tsBuildInfoFile: String? = null;
+  var noEmit = false;
+  var emitDeclarationOnly = false;
+  var declaration = false;
+  var declarationMap = false;
+  var sourceMap = false;
+  var composite = false;
+  var incremental = false;
+  var resolveJsonModule = false;
+  var files: Array<String>? = null;
+  var include: Array<String>? = null;
+  var exclude: Array<String>? = null;
+  configFiles = new GrowableArray<String>();
+  seenConfigs = new HashSet<String>();
+}
+
+function readOptBool(
+  where: String,
+  obj: JsonObject,
+  key: String,
+  current: boolean,
+) {
+  let raw = obj[key];
+  if (raw == null) {
+    return current;
+  }
+  if (!(raw is Box<boolean>)) {
+    throw new ConfigError(`${where}: compilerOptions.${key} must be a boolean`);
+  }
+  return raw.value;
+}
+
+function readOptPath(
+  where: String,
+  obj: JsonObject,
+  key: String,
+  declaringDir: String,
+  rootConfigDir: String,
+  current: String?,
+) {
+  let raw = obj[key];
+  if (raw == null) {
+    return current;
+  }
+  if (!(raw is String) || raw == '') {
+    throw new ConfigError(`${where}: compilerOptions.${key} must be a non-empty string`);
+  }
+  return resolveTsPath(declaringDir, rootConfigDir, raw);
+}
+
+function parseExtendsList(where: String, raw: JsonValue): Array<String> {
+  if (raw is String) {
+    if (raw == '') {
+      throw new ConfigError(`${where}: "extends" must not be empty`);
+    }
+    return [raw];
+  }
+  if (raw is JsonArray) {
+    let list = stringList(raw, `${where}: extends`);
+    for (let item in list) {
+      if (item == '') {
+        throw new ConfigError(`${where}: "extends" entries must not be empty`);
+      }
+    }
+    return list;
+  }
+  throw new ConfigError(`${where}: "extends" must be a string or an array of strings`);
+}
+
+async function loadTsConfigRecursive(
+  wsPath: String,
+  rootConfigDir: String,
+  readFile: (path: String) => Future<String?>,
+  visiting: HashSet<String>,
+  out: ResolvedTsConfig,
+  where: String,
+): Future<void> {
+  if (!visiting.add(wsPath)) {
+    throw new ConfigError(`${where}: tsconfig extends cycle involving "${wsPath}"`);
+  }
+  let text = await readFile(wsPath);
+  if (text == null) {
+    throw new ConfigError(`${where}: tsconfig "${wsPath}" not found`);
+  }
+  if (out.seenConfigs.add(wsPath)) {
+    out.configFiles.push(wsPath);
+  }
+  let obj = parseJsonObject(wsPath, stripTrailingCommas(text));
+  let curDir = parentDir(wsPath);
+
+  let rawExtends = obj['extends'];
+  if (rawExtends != null) {
+    let parents = parseExtendsList(wsPath, rawExtends);
+    for (let parentSpec in parents) {
+      // Only resolve workspace-relative extends paths; npm package extends
+      // (e.g. `@tsconfig/node20/tsconfig.json`) are tracked via lockfiles.
+      if (!parentSpec.startsWith('.')) {
+        continue;
+      }
+      let candidate = joinWorkspace(curDir, parentSpec);
+      if (candidate.startsWith('..')) {
+        throw new ConfigError(
+          `${wsPath}: extends "${parentSpec}" escapes the workspace`,
+        );
+      }
+      var resolvedParent = candidate;
+      if (!candidate.endsWith('.json')) {
+        let exact = await readFile(candidate);
+        if (exact == null) {
+          resolvedParent = `${candidate}.json`;
+        }
+      }
+      await loadTsConfigRecursive(
+        resolvedParent,
+        rootConfigDir,
+        readFile,
+        visiting,
+        out,
+        where,
+      );
+    }
+  }
+
+  let rawOpts = obj['compilerOptions'];
+  if (rawOpts != null) {
+    if (!(rawOpts is JsonObject)) {
+      throw new ConfigError(`${wsPath}: "compilerOptions" must be an object`);
+    }
+    out.outDir = readOptPath(wsPath, rawOpts, 'outDir', curDir, rootConfigDir, out.outDir);
+    out.rootDir = readOptPath(wsPath, rawOpts, 'rootDir', curDir, rootConfigDir, out.rootDir);
+    out.outFile = readOptPath(wsPath, rawOpts, 'outFile', curDir, rootConfigDir, out.outFile);
+    out.tsBuildInfoFile = readOptPath(
+      wsPath,
+      rawOpts,
+      'tsBuildInfoFile',
+      curDir,
+      rootConfigDir,
+      out.tsBuildInfoFile,
+    );
+    out.noEmit = readOptBool(wsPath, rawOpts, 'noEmit', out.noEmit);
+    out.emitDeclarationOnly = readOptBool(
+      wsPath,
+      rawOpts,
+      'emitDeclarationOnly',
+      out.emitDeclarationOnly,
+    );
+    out.declaration = readOptBool(wsPath, rawOpts, 'declaration', out.declaration);
+    out.declarationMap = readOptBool(wsPath, rawOpts, 'declarationMap', out.declarationMap);
+    out.sourceMap = readOptBool(wsPath, rawOpts, 'sourceMap', out.sourceMap);
+    out.composite = readOptBool(wsPath, rawOpts, 'composite', out.composite);
+    out.incremental = readOptBool(wsPath, rawOpts, 'incremental', out.incremental);
+    out.resolveJsonModule = readOptBool(
+      wsPath,
+      rawOpts,
+      'resolveJsonModule',
+      out.resolveJsonModule,
+    );
+  }
+
+  let rawFiles = obj['files'];
+  if (rawFiles != null) {
+    let list = stringList(rawFiles, `${wsPath}: files`);
+    let resolved = new GrowableArray<String>();
+    for (let item in list) {
+      resolved.push(resolveTsPath(curDir, rootConfigDir, item));
+    }
+    out.files = resolved;
+  }
+
+  let rawInclude = obj['include'];
+  if (rawInclude != null) {
+    let list = stringList(rawInclude, `${wsPath}: include`);
+    let resolved = new GrowableArray<String>();
+    for (let item in list) {
+      resolved.push(resolveTsPath(curDir, rootConfigDir, item));
+    }
+    out.include = resolved;
+  }
+
+  let rawExclude = obj['exclude'];
+  if (rawExclude != null) {
+    let list = stringList(rawExclude, `${wsPath}: exclude`);
+    let resolved = new GrowableArray<String>();
+    for (let item in list) {
+      resolved.push(resolveTsPath(curDir, rootConfigDir, item));
+    }
+    out.exclude = resolved;
+  }
+
+  visiting.delete(wsPath);
+}
+
+function isInsideDir(path: String, dir: String) {
+  let cleanDir = stripTrailingSlashes(dir);
+  let cleanPath = stripTrailingSlashes(path);
+  return cleanPath == cleanDir || cleanPath.startsWith(`${cleanDir}/`);
+}
+
+function buildInPlaceEmitGlobs(rootDirPkgRel: String, cfg: ResolvedTsConfig) {
+  let exts = new GrowableArray<String>();
+  if (!cfg.emitDeclarationOnly) {
+    exts.push('js');
+    if (cfg.sourceMap) {
+      exts.push('js.map');
+    }
+  }
+  if (cfg.declaration || cfg.composite || cfg.emitDeclarationOnly) {
+    exts.push('d.ts');
+    if (cfg.declarationMap) {
+      exts.push('d.ts.map');
+    }
+  }
+  let out = new GrowableArray<String>();
+  if (exts.length == 0) {
+    return out;
+  }
+  let prefix = stripTrailingSlashes(rootDirPkgRel);
+  if (exts.length == 1) {
+    out.push(`${prefix}/**/*.${exts[0]}`);
+  } else {
+    out.push(`${prefix}/**/*.{${join(exts, ',')}}`);
+  }
+  return out;
+}
+
+function buildOutFileOutputs(outFilePkgRel: String, cfg: ResolvedTsConfig) {
+  let out = new GrowableArray<String>();
+  if (!cfg.emitDeclarationOnly) {
+    out.push(outFilePkgRel);
+    if (cfg.sourceMap) {
+      out.push(`${outFilePkgRel}.map`);
+    }
+  }
+  if (cfg.declaration || cfg.composite || cfg.emitDeclarationOnly) {
+    let dts = if (outFilePkgRel.endsWith('.js'))
+      `${outFilePkgRel.sliceBytes(0, outFilePkgRel.length - 3)}.d.ts`
+    else
+      `${outFilePkgRel}.d.ts`;
+    out.push(dts);
+    if (cfg.declarationMap) {
+      out.push(`${dts}.map`);
+    }
+  }
+  return out;
+}
+
+function hasFlag(args: Array<String>, flag: String) {
+  for (let arg in args) {
+    if (arg == flag) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Resolver for `"type": "ts:build"` TypeScript compilation steps.
+ *
+ * Reads `tsconfig.json` (or `"tsconfig": "<path>"`) and any workspace-relative
+ * `"extends"` chain through `ctx.readFile`, automatically deriving `files`,
+ * `output`, `clean`, and the `tsc` command.
+ */
+export class TsBuildRuleResolver implements RuleResolver {
+  ruleType: String {
+    get { return TS_BUILD_RULE_TYPE; }
+  }
+
+  async resolve(entry: JsonObject, ctx: RuleResolveContext): Future<ScriptConfig> {
+    let common = parseCommonRuleFields(
+      entry,
+      ctx,
+      ['tsconfig', 'output', 'args'],
+      TS_BUILD_RULE_TYPE,
+    );
+    let where = `script "${ctx.where}"`;
+
+    let rawTsconfig = entry['tsconfig'];
+    let tsconfigRel = if (rawTsconfig != null) {
+      if (!(rawTsconfig is String) || rawTsconfig == '') {
+        throw new ConfigError(`${where}: "tsconfig" must be a non-empty string`);
+      }
+      rawTsconfig
+    } else {
+      'tsconfig.json'
+    };
+
+    let extraArgs = stringList(entry['args'], `${where}: args`);
+    let hasExplicitOutput = entry['output'] != null;
+    let explicitOutput = stringList(entry['output'], `${where}: output`);
+    let hasExplicitClean = entry['clean'] != null;
+
+    let wsTsconfig = joinWorkspace(ctx.ref.packageDir, tsconfigRel);
+    if (wsTsconfig.startsWith('..')) {
+      throw new ConfigError(`${where}: tsconfig "${tsconfigRel}" escapes the workspace`);
+    }
+    let rootConfigDir = parentDir(wsTsconfig);
+
+    let resolved = new ResolvedTsConfig();
+    await loadTsConfigRecursive(
+      wsTsconfig,
+      rootConfigDir,
+      ctx.readFile,
+      new HashSet<String>(),
+      resolved,
+      where,
+    );
+
+    let noEmit = resolved.noEmit || hasFlag(extraArgs, '--noEmit');
+    let incremental = resolved.incremental || resolved.composite;
+
+    let outDirWs = resolved.outDir;
+    let outDirPkg = if (outDirWs != null)
+      relativeFromPackage(ctx.ref.packageDir, outDirWs)
+    else
+      null;
+    let rootDirWs = resolved.rootDir;
+    let rootDirPkg = if (rootDirWs != null)
+      relativeFromPackage(ctx.ref.packageDir, rootDirWs)
+    else
+      null;
+    let outFileWs = resolved.outFile;
+    let outFilePkg = if (outFileWs != null)
+      relativeFromPackage(ctx.ref.packageDir, outFileWs)
+    else
+      null;
+
+    // Resolve `tsBuildInfoFile` when incremental or composite is enabled.
+    var tsBuildInfoPkg: String? = null;
+    if (incremental) {
+      let explicitInfoWs = resolved.tsBuildInfoFile;
+      if (explicitInfoWs != null) {
+        tsBuildInfoPkg = relativeFromPackage(ctx.ref.packageDir, explicitInfoWs);
+      } else {
+        let infoName = `${fileStem(wsTsconfig)}.tsbuildinfo`;
+        let infoDirWs = if (outDirWs != null && !noEmit) outDirWs else rootConfigDir;
+        let infoWs = joinWorkspace(infoDirWs, infoName);
+        tsBuildInfoPkg = relativeFromPackage(ctx.ref.packageDir, infoWs);
+      }
+    }
+
+    // Derive `files` from tsconfig configs, `files`/`include`/`exclude`.
+    for (let cfgWs in resolved.configFiles) {
+      addUnique(
+        common.files,
+        common.seenFiles,
+        relativeFromPackage(ctx.ref.packageDir, cfgWs),
+      );
+    }
+    let tsFiles = resolved.files;
+    if (tsFiles != null) {
+      for (let f in tsFiles) {
+        addUnique(
+          common.files,
+          common.seenFiles,
+          relativeFromPackage(ctx.ref.packageDir, f),
+        );
+      }
+    }
+    let tsInclude = resolved.include;
+    if (tsInclude != null) {
+      for (let inc in tsInclude) {
+        let pkgRel = relativeFromPackage(ctx.ref.packageDir, inc);
+        addUnique(common.files, common.seenFiles, toTsIncludeGlob(pkgRel));
+      }
+    } else if (tsFiles == null) {
+      let defaultPrefix = relativeFromPackage(ctx.ref.packageDir, rootConfigDir);
+      let extGroup = if (resolved.resolveJsonModule)
+        '{ts,tsx,mts,cts,json}'
+      else
+        '{ts,tsx,mts,cts}';
+      let defaultGlob = if (defaultPrefix == '.' || defaultPrefix == '')
+        `**/*.${extGroup}`
+      else
+        `${stripTrailingSlashes(defaultPrefix)}/**/*.${extGroup}`;
+      addUnique(common.files, common.seenFiles, defaultGlob);
+    }
+    let tsExclude = resolved.exclude;
+    if (tsExclude != null) {
+      for (let exc in tsExclude) {
+        let pkgRel = relativeFromPackage(ctx.ref.packageDir, exc);
+        addUnique(common.files, common.seenFiles, `!${toTsExcludeGlob(pkgRel)}`);
+      }
+    }
+    if (outDirPkg != null && outDirPkg != '.' && outDirPkg != '') {
+      addUnique(
+        common.files,
+        common.seenFiles,
+        `!${stripTrailingSlashes(outDirPkg)}/**`,
+      );
+    }
+    let buildInfo = tsBuildInfoPkg;
+    if (buildInfo != null) {
+      addUnique(common.files, common.seenFiles, `!${buildInfo}`);
+    }
+
+    // Derive `output` from tsconfig emit settings (or use explicit override).
+    let outputs = new GrowableArray<String>();
+    let seenOutputs = new HashSet<String>();
+    if (hasExplicitOutput) {
+      for (let item in explicitOutput) {
+        addUnique(outputs, seenOutputs, item);
+      }
+    } else if (noEmit) {
+      // No emitted JS/d.ts files (only optional `.tsbuildinfo` below).
+    } else if (outFilePkg != null) {
+      for (let item in buildOutFileOutputs(outFilePkg, resolved)) {
+        addUnique(outputs, seenOutputs, item);
+      }
+    } else if (outDirPkg != null && outDirPkg != '.' && outDirPkg != '') {
+      addUnique(outputs, seenOutputs, stripTrailingSlashes(outDirPkg));
+    } else if (outDirPkg == null && rootDirPkg != null && rootDirPkg != '.' && rootDirPkg != '') {
+      for (let item in buildInPlaceEmitGlobs(rootDirPkg, resolved)) {
+        addUnique(outputs, seenOutputs, item);
+      }
+    } else {
+      throw new ConfigError(
+        `${where}: tsconfig "${tsconfigRel}" emits into the package root (outDir "."); ` +
+          `set a dedicated "outDir" (such as "lib" or "dist") or declare explicit "output" globs on the script`,
+      );
+    }
+
+    if (buildInfo != null) {
+      var coveredByOutDir = false;
+      for (let existing in outputs) {
+        if (!hasMagic(existing) && isInsideDir(buildInfo, existing)) {
+          coveredByOutDir = true;
+          break;
+        }
+      }
+      if (!coveredByOutDir) {
+        addUnique(outputs, seenOutputs, buildInfo);
+      }
+    }
+
+    let clean = if (hasExplicitClean)
+      common.clean
+    else if (incremental)
+      'if-file-deleted'
+    else if (outputs.length == 0)
+      'false'
+    else
+      'true';
+
+    let cmdArgs = new GrowableArray<String>();
+    if (tsconfigRel != 'tsconfig.json') {
+      cmdArgs.push('-p');
+      cmdArgs.push(tsconfigRel);
+    }
+    for (let arg in extraArgs) {
+      cmdArgs.push(arg);
+    }
+    let command = if (cmdArgs.length == 0) 'tsc' else appendShellArgs('tsc', cmdArgs);
+
+    return new ScriptConfig(
+      ctx.ref,
+      true,
+      command,
+      common.files,
+      outputs,
+      true,
+      true,
+      common.dependencies,
+      clean,
+      null,
+      common.env,
+      common.locks,
+      common.cacheEnabled,
+      false,
+      null,
+      common.concurrencyGroup,
+    );
+  }
+}
