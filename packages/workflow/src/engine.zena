@@ -121,7 +121,7 @@ export class ServicePool {
 
 /** Options for one engine run. */
 export class RunOptions {
-  /** Maximum number of steps in their cache-or-run section at once. */
+  /** Maximum number of steps executing their run callback at once. */
   parallelism: i32;
   /**
    * Bypass freshness and `StepCache.get` so every reachable task step
@@ -152,6 +152,12 @@ export class RunOptions {
    * Optional callback invoked as soon as a step's outcome is recorded.
    */
   onStepFinish: ((step: StepKey, outcome: StepOutcome) => void)?;
+  /**
+   * Maximum number of steps running cache lookups, restores, or uploads at
+   * once. Separate from `parallelism` so cache I/O neither stalls behind
+   * CPU-bound steps nor occupies execution slots while transferring archives.
+   */
+  cacheParallelism: i32;
 
   new(
     parallelism: i32 = 8,
@@ -160,12 +166,14 @@ export class RunOptions {
     servicePool: ServicePool? = null,
     onStepStart: ((step: StepKey) => void)? = null,
     onStepFinish: ((step: StepKey, outcome: StepOutcome) => void)? = null,
+    cacheParallelism: i32 = 16,
   ) : parallelism = parallelism,
       force = force,
       verifyOutputs = verifyOutputs,
       servicePool = servicePool,
       onStepStart = onStepStart,
-      onStepFinish = onStepFinish;
+      onStepFinish = onStepFinish,
+      cacheParallelism = cacheParallelism;
 }
 
 /** The result of an engine run. */
@@ -240,6 +248,7 @@ class RunState {
   outcomes: HashMap<String, StepOutcome>;
   done: HashMap<String, Completer<void>>;
   semaphore: Semaphore;
+  cacheSemaphore: Semaphore;
   options: RunOptions;
   taskList = new GrowableArray<TaskStep>();
   serviceList = new GrowableArray<ServiceRuntime>();
@@ -254,6 +263,7 @@ class RunState {
     this.outcomes,
     this.done,
     this.semaphore,
+    this.cacheSemaphore,
     this.options,
   );
 }
@@ -288,6 +298,7 @@ export class Engine {
     options: RunOptions? = null,
   ): Future<RunResult> {
     let opts = options ?? new RunOptions();
+    let cacheLimit = if (opts.cacheParallelism >= 1) opts.cacheParallelism else 1;
     let rs = new RunState(
       leaves,
       previous,
@@ -295,6 +306,7 @@ export class Engine {
       new HashMap<String, StepOutcome>(),
       new HashMap<String, Completer<void>>(),
       new Semaphore(opts.parallelism),
+      new Semaphore(cacheLimit),
       opts,
     );
     this.#classify(graph, rs);
@@ -588,19 +600,25 @@ export class Engine {
       }
     }
 
+    if (!rs.options.force) {
+      await rs.cacheSemaphore.acquire();
+      let cached = try {
+        await this.#cache.get(step.key, cacheKey)
+      } finally {
+        rs.cacheSemaphore.release();
+      };
+      if (cached != null) {
+        rs.next.setRecord(
+          step.key,
+          new StepRecord(step.config, cacheKey, cached, resolved),
+        );
+        return new Succeeded(cached, StepSource.Cache);
+      }
+    }
+
+    var produced: OutputManifest | null = null;
     await rs.semaphore.acquire();
     try {
-      if (!rs.options.force) {
-        let cached = await this.#cache.get(step.key, cacheKey);
-        if (cached != null) {
-          rs.next.setRecord(
-            step.key,
-            new StepRecord(step.config, cacheKey, cached, resolved),
-          );
-          return new Succeeded(cached, StepSource.Cache);
-        }
-      }
-
       // Only now is the step certain to execute, so only now are its
       // services demanded.
       let serviceFailure = await this.#acquireServices(step, rs);
@@ -621,15 +639,23 @@ export class Engine {
       // can reach the cache.
       manifestFingerprint(manifest, this.#digest);
       this.#verifyCarryOver(step, ctx, manifest);
-      await this.#cache.put(step.key, cacheKey, manifest);
-      rs.next.setRecord(
-        step.key,
-        new StepRecord(step.config, cacheKey, manifest, resolved),
-      );
-      return new Succeeded(manifest, StepSource.Ran);
+      produced = manifest;
     } finally {
       rs.semaphore.release();
     }
+
+    let manifest = produced as OutputManifest;
+    await rs.cacheSemaphore.acquire();
+    try {
+      await this.#cache.put(step.key, cacheKey, manifest);
+    } finally {
+      rs.cacheSemaphore.release();
+    }
+    rs.next.setRecord(
+      step.key,
+      new StepRecord(step.config, cacheKey, manifest, resolved),
+    );
+    return new Succeeded(manifest, StepSource.Ran);
   }
 
   /**

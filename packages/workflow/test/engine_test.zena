@@ -1,6 +1,7 @@
 import {suite, test} from 'zena:test';
 import {equal, fail, isFalse, isTrue} from 'zena:assert';
 import {Completer, drainMicrotasks} from 'zena:async';
+import {HashSet} from 'zena:collections';
 import {NullCache, StepCache} from 'workflow/cache';
 import {
   Engine,
@@ -551,4 +552,180 @@ export let tests = suite('engine', () => {
     equal(events.length, 4);
     equal(events[3], 'finish:compile:fresh');
   });
+
+  test('cache lookups use cacheParallelism independently of execution parallelism', async (ctx) => {
+    var activeGets = 0;
+    var maxActiveGets = 0;
+    let getGate = new Completer<void>();
+
+    let gatedCache = new GatedGetCache(
+      () => {
+        activeGets += 1;
+        if (activeGets > maxActiveGets) {
+          maxActiveGets = activeGets;
+        }
+      },
+      () => {
+        activeGets -= 1;
+      },
+      getGate,
+    );
+
+    let runs = new Runs();
+    let mkGraph = () => new Graph([
+      mkStep(runs, 'a', noStrings, noStrings, 'out-a'),
+      mkStep(runs, 'b', noStrings, noStrings, 'out-b'),
+      mkStep(runs, 'c', noStrings, noStrings, 'out-c'),
+      mkStep(runs, 'd', noStrings, noStrings, 'out-d'),
+    ]);
+
+    let engine = new Engine(digest, gatedCache);
+    // Warm the cache first (gate already open via unblocked puts).
+    getGate.complete();
+    let first = await engine.run(
+      mkGraph(),
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
+    );
+    isTrue(first.allSucceeded);
+    equal(runs.log.length, 4);
+
+    // Second run with empty state forces cache.get for all 4 steps.
+    // With parallelism = 1 and cacheParallelism = 3, three lookups run at once
+    // rather than serializing on execution parallelism.
+    let secondGate = new Completer<void>();
+    gatedCache.gate = secondGate;
+    activeGets = 0;
+    maxActiveGets = 0;
+    let opts = new RunOptions(1, false, null, null, null, null, 3);
+    let running = engine.run(
+      mkGraph(),
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
+      opts,
+    );
+    drainMicrotasks();
+    equal(activeGets, 3);
+    equal(maxActiveGets, 3);
+    secondGate.complete();
+    let second = await running;
+    isTrue(second.allSucceeded);
+    equal(runs.log.length, 4);
+    isTrue(sourceOf(second, 'a') == StepSource.Cache);
+    isTrue(sourceOf(second, 'b') == StepSource.Cache);
+    isTrue(sourceOf(second, 'c') == StepSource.Cache);
+    isTrue(sourceOf(second, 'd') == StepSource.Cache);
+  });
+
+  test('cache uploads release the execution slot before completing', async (ctx) => {
+    let putGates = new HashMap<String, Completer<void>>();
+    let putStarted = new HashSet<String>();
+    let gatedPutCache = new GatedPutCache(putGates, putStarted);
+    let events = new GrowableArray<String>();
+
+    let mkLogged = (key: String, deps: Array<String>): Step => new TaskStep(
+      new StepKey(key),
+      new Fingerprint('cfg:' + key),
+      mkInputs(deps, noStrings),
+      (ctx) => {
+        events.push('run:' + key);
+        return Future.of(new OutputManifest([
+          new OutputEntry('out/' + key, new Fingerprint('fp:' + key)),
+        ]));
+      },
+    );
+
+    putGates['a'] = new Completer<void>();
+    putGates['b'] = new Completer<void>();
+    putGates['dep'] = new Completer<void>();
+
+    // `a` and `b` are independent; `dep` depends on `a`.
+    // With parallelism = 1, once `a` finishes step.run and starts uploading
+    // (`cache.put`), `b` must be able to execute immediately even while `a`'s
+    // upload is still blocked — whereas `dep` must still wait for `a`'s upload.
+    let graph = new Graph([
+      mkLogged('a', noStrings),
+      mkLogged('b', noStrings),
+      mkLogged('dep', ['a']),
+    ]);
+    let engine = new Engine(digest, gatedPutCache);
+    let running = engine.run(
+      graph,
+      new HashMap<String, Fingerprint>(),
+      EngineState.empty(),
+      new RunOptions(1, false, null, null, null, null, 4),
+    );
+    drainMicrotasks();
+
+    // Both `a` and `b` have executed and entered cache.put while `a`'s put is blocked.
+    isTrue(putStarted.has('a'));
+    isTrue(putStarted.has('b'));
+    isFalse(putStarted.has('dep'));
+    equal(events.length, 2);
+
+    putGates['b'].complete();
+    drainMicrotasks();
+    // `dep` still waits on `a`'s cache.put.
+    isFalse(putStarted.has('dep'));
+
+    putGates['a'].complete();
+    drainMicrotasks();
+    isTrue(putStarted.has('dep'));
+    putGates['dep'].complete();
+
+    let result = await running;
+    isTrue(result.allSucceeded);
+    equal(events.length, 3);
+    equal(events[2], 'run:dep');
+  });
 });
+
+/** Test cache whose `get` blocks on a swappable gate while counting concurrency. */
+class GatedGetCache implements StepCache {
+  entries = new HashMap<String, OutputManifest>();
+  #onEnter: () => void;
+  #onExit: () => void;
+  var gate: Completer<void>;
+
+  new(onEnter: () => void, onExit: () => void, this.gate)
+      : #onEnter = onEnter,
+        #onExit = onExit;
+
+  async get(step: StepKey, key: CacheKey): Future<OutputManifest?> {
+    this.#onEnter();
+    try {
+      await this.gate.future;
+      if (let (true, manifest) = this.entries.get(key.value)) {
+        return manifest;
+      }
+      return null;
+    } finally {
+      this.#onExit();
+    }
+  }
+
+  async put(step: StepKey, key: CacheKey, manifest: OutputManifest): Future<void> {
+    this.entries[key.value] = manifest;
+  }
+}
+
+/** Test cache whose `put` blocks per step on `gates[step]`. */
+class GatedPutCache implements StepCache {
+  #gates: HashMap<String, Completer<void>>;
+  #started: HashSet<String>;
+
+  new(gates: HashMap<String, Completer<void>>, started: HashSet<String>)
+      : #gates = gates,
+        #started = started;
+
+  async get(step: StepKey, key: CacheKey): Future<OutputManifest?> {
+    return null;
+  }
+
+  async put(step: StepKey, key: CacheKey, manifest: OutputManifest): Future<void> {
+    this.#started.add(step.value);
+    if (let (true, gate) = this.#gates.get(step.value)) {
+      await gate.future;
+    }
+  }
+}

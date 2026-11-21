@@ -340,6 +340,21 @@ export function defaultParallelism(
   return 8;
 }
 
+/** Default max concurrent cache lookups/restores/uploads: ZEBRA_CACHE_PARALLEL, or 16. */
+export function defaultCacheParallelism(
+  lookupEnv: (name: String) => String? = getEnv,
+): i32 {
+  let raw = lookupEnv('ZEBRA_CACHE_PARALLEL');
+  if (raw != null) {
+    if (let (true, n) = parseI32(raw)) {
+      if (n >= 1) {
+        return n;
+      }
+    }
+  }
+  return 16;
+}
+
 async function verifyManifestOutputs(
   hasher: FileHasher,
   manifest: OutputManifest,
@@ -630,6 +645,7 @@ async function runTargetOnce(
             spinner.stop();
           }
         },
+        defaultCacheParallelism(envLookup),
       ),
     );
   } finally {
