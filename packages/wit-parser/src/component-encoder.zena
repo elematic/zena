@@ -406,12 +406,27 @@ export final class ComponentTypeEncoder {
    * from the world's own list still gets an instance. An `include`
    * brings the included world's imports and exports
    * (expandedWorldItems).
+   *
+   * With `only`, the component imports less than its world does. An
+   * interface the world imports is encoded only if `only` names it: by
+   * its qualified name, or its plain name for an inline interface. Then
+   * each interface `only` names that the world does not import itself
+   * is imported too, which is how an interface reached only through a
+   * `use` gets its instance. A caller passes the interfaces the program
+   * reaches, in an order that does not vary from run to run, and leaves
+   * out the ones the world exports. World-level function imports are
+   * encoded either way.
    */
-  encodeWorld(worldName: String): EncodedWorld {
+  encodeWorld(worldName: String, only: GrowableArray<String> | null = null): EncodedWorld {
     let world = this.#findWorld(worldName);
     for (let item in expandedWorldItems(this.#ast, world)) {
       if (item.tag == WorldItemTag.Import) {
-        this.#encodeWorldImport((item.importItem as Import).kind);
+        let kind = (item.importItem as Import).kind;
+        if (only != null && kind.tag != ExternKindTag.Func &&
+            !only.contains(this.#importName(kind))) {
+          continue;
+        }
+        this.#encodeWorldImport(kind);
       } else if (item.tag == WorldItemTag.Export) {
         this.#result.skippedExports.push(externName(
             (item.exportItem as Export).kind));
@@ -424,7 +439,24 @@ export final class ComponentTypeEncoder {
         throw new EncodeError("world `include` is not encodable yet");
       }
     }
+    if (only != null) {
+      for (let name in only) {
+        let reg = this.#findRegistered(name);
+        if (reg != null) {
+          this.#importInterface(reg);
+        }
+      }
+    }
     return this.#result;
+  }
+
+  /** The name a world's interface import is known by: qualified for a
+   * path, plain for an inline interface. */
+  #importName(kind: ExternKind): String {
+    if (kind.tag == ExternKindTag.Path) {
+      return this.#resolveInterface(kind.path as UsePath).qualifiedName;
+    }
+    return (kind.name as Id).name;
   }
 
   #encodeWorldImport(kind: ExternKind): void {
