@@ -1,0 +1,48 @@
+/**
+ * A WIT directory's `deps` directory holds the packages its own package
+ * refers to, as WIT tools lay them out: `.wit` files, and directories of
+ * them. See https://github.com/elematic/zena/issues/1297.
+ */
+
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { DiskHost } from '../lib/fs-host.zena';
+import { readWitDocument } from '../lib/wit-source.zena';
+import { compileFile } from '../lib/compile-file.zena';
+import { stdlibRoot } from './test-utils.zena';
+
+let fixtures = 'packages/compiler/test-files/wit-deps';
+
+export let tests = suite("WIT deps", () => {
+
+  test("a directory's own files come before its deps", async (t) => {
+    let doc = await readWitDocument(new DiskHost(), `${fixtures}/ext`);
+    equal(doc.files.length, 3);
+    // `deps/app.wit` sorts before `world.wit` by name. The directory's
+    // own package must still be the document's first.
+    equal(doc.files[0].name, `${fixtures}/ext/world.wit`);
+    equal(doc.files[1].name, `${fixtures}/ext/deps/app.wit`);
+    equal(doc.files[2].name, `${fixtures}/ext/deps/more/more.wit`);
+    isTrue(doc.source.startsWith('package test:ext@1.0.0;'));
+  });
+
+  test("an offset in a dep is located in the dep's file", async (t) => {
+    let doc = await readWitDocument(new DiskHost(), `${fixtures}/ext`);
+    let at = doc.locate(doc.files[1].start);
+    equal(at.file, `${fixtures}/ext/deps/app.wit`);
+    equal(at.line, 1);
+    equal(at.column, 1);
+  });
+
+  test("a world can include a world of a package in deps", async (t) => {
+    equal(await compileFile({
+      entry: `${fixtures}/main.zena`,
+      outPath: 'packages/compiler/out/wit-deps.wasm',
+      target: 'component',
+      stdlibRoot,
+      witPath: `${fixtures}/ext`,
+      worldName: 'ext',
+    }), 0);
+  });
+
+});
