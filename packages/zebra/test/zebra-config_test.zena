@@ -1,3 +1,5 @@
+import {Future} from 'zena:async';
+import {JsonObject} from 'zena:json';
 import {suite, test} from 'zena:test';
 import {equal, isFalse, isNotNull, isNull, isTrue, rejects, throws} from 'zena:assert';
 import {
@@ -6,6 +8,13 @@ import {
   planSnapshotToText,
 } from 'zebra/plan-cache';
 import {
+  RuleRegistry,
+  RuleResolveContext,
+  RuleResolver,
+  defaultRuleRegistry,
+  parseCommonRuleFields,
+} from 'zebra/rules';
+import {
   DependencySpec,
   EnvBinding,
   EnvExternal,
@@ -13,7 +22,11 @@ import {
   ScriptConfig,
   ScriptRef,
   ServiceConfig,
+  ZENA_BUILD_RULE_TYPE,
   ZENA_TEST_RULE_TYPE,
+  ZenaBuildEntry,
+  ZenaBuildRule,
+  ZenaTestRule,
   refKey,
 } from 'zebra/wireit-config';
 import {
@@ -30,6 +43,37 @@ function hasStr(items: Array<String>, target: String): boolean {
     }
   }
   return false;
+}
+
+class MockLangRule implements RuleResolver {
+  ruleType: String {
+    get { return 'mock:build'; }
+  }
+
+  async resolve(entry: JsonObject, ctx: RuleResolveContext): Future<ScriptConfig> {
+    let common = parseCommonRuleFields(entry, ctx, new GrowableArray<String>(), 'mock:build');
+    let langCfg = await ctx.readFile('packages/demo/lang.cfg');
+    let outName = if (langCfg != null) langCfg.trim() else 'default.out';
+    common.files.push('src/**/*.lang');
+    return new ScriptConfig(
+      ctx.ref,
+      true,
+      'mockc',
+      common.files,
+      [outName],
+      true,
+      true,
+      common.dependencies,
+      common.clean,
+      null,
+      common.env,
+      common.locks,
+      common.cacheEnabled,
+      false,
+      null,
+      common.concurrencyGroup,
+    );
+  }
 }
 
 export let tests = suite('zebra-config and plan-cache', () => {
@@ -587,11 +631,42 @@ export let tests = suite('zebra-config and plan-cache', () => {
         ['zena-lock.json'],
         true,
         false,
-        ['test/*_test.zena'],
+        new ZenaTestRule(['test/*_test.zena'], true),
+        'heavy-test',
+      ),
+      new ScriptConfig(
+        new ScriptRef('packages/app', 'build:wasm'),
         true,
         null,
-        ZENA_TEST_RULE_TYPE,
-        'heavy-test',
+        ['src/main.zena', 'wit/app.wit'],
+        ['out/app.wasm'],
+        true,
+        true,
+        [new DependencySpec(new ScriptRef('packages/app', 'source'), true)],
+        'true',
+        null,
+        new GrowableArray<(String, EnvBinding)>(),
+        ['zena-lock.json'],
+        true,
+        false,
+        new ZenaBuildRule(
+          [
+            new ZenaBuildEntry(
+              'src/main.zena',
+              'out/app.wasm',
+              'component',
+              '2',
+              true,
+              'wit/app.wit',
+              'app',
+              ['wit/ext.wit'],
+              'str',
+              true,
+            ),
+          ],
+          '../compiler/out/cli.wasm',
+        ),
+        'compile',
       ),
     ];
 
@@ -609,7 +684,7 @@ export let tests = suite('zebra-config and plan-cache', () => {
     equal(decProbes[1].size, 512 as i64);
     equal(decProbes[1].sha256, 'deadbeef');
 
-    equal(decConfigs.length, 4);
+    equal(decConfigs.length, 5);
     let c0 = decConfigs[0];
     equal(refKey(c0.ref), 'packages/app:build:all');
     isNull(c0.ruleType);
@@ -648,6 +723,30 @@ export let tests = suite('zebra-config and plan-cache', () => {
     let c3Tests = c3.tests ?? new GrowableArray<String>();
     equal(c3Tests.length, 1);
     equal(c3Tests[0], 'test/*_test.zena');
+
+    let c4 = decConfigs[4];
+    isNull(c4.command);
+    equal(c4.ruleType, ZENA_BUILD_RULE_TYPE);
+    equal(c4.concurrencyGroup, 'compile');
+    let c4Rule = c4.rule;
+    if (c4Rule is ZenaBuildRule) {
+      equal(c4Rule.compiler, '../compiler/out/cli.wasm');
+      equal(c4Rule.entries.length, 1);
+      let b0 = c4Rule.entries[0];
+      equal(b0.entry, 'src/main.zena');
+      equal(b0.output, 'out/app.wasm');
+      equal(b0.target, 'component');
+      equal(b0.opt, '2');
+      isTrue(b0.debug);
+      equal(b0.wit, 'wit/app.wit');
+      equal(b0.world, 'app');
+      equal(b0.extensionWit.length, 1);
+      equal(b0.extensionWit[0], 'wit/ext.wit');
+      equal(b0.importedStringConstants, 'str');
+      isTrue(b0.compactImports);
+    } else {
+      throws(() => { throw new Error('expected ZenaBuildRule'); });
+    }
 
     throws(() => {
       planSnapshotFromText('wrong-header\n');
@@ -742,5 +841,139 @@ export let tests = suite('zebra-config and plan-cache', () => {
     await rejects(async () => {
       await wsBadScript.scriptConfig(new ScriptRef('', 'a'));
     });
+  });
+
+  test('zena:build parses single and multi-entry configs, derives files/output/source, and validates errors', async () => {
+    let files = {
+      'zena-package.json' => `{"workspace": {"packages": ["packages/*"]}}`,
+      'packages/app/zena-package.json' => `{
+        "name": "app",
+        "scripts": {
+          "build:one": {
+            "type": "zena:build",
+            "entry": "src/main.zena",
+            "output": "out/app.wasm",
+            "target": "zena-js",
+            "opt": 2,
+            "debug": true,
+            "importedStringConstants": "strings",
+            "compactImports": true,
+            "compiler": "../compiler/out/cli.wasm"
+          },
+          "build:many": {
+            "type": "zena:build",
+            "target": "component",
+            "opt": "s",
+            "entries": [
+              {
+                "entry": "fixtures/a.zena",
+                "output": "out/a.wasm",
+                "wit": "fixtures/a.wit",
+                "world": "world-a"
+              },
+              {
+                "entry": "fixtures/b.zena",
+                "output": "out/b.wasm",
+                "target": "wasi",
+                "wit": "fixtures/wit-dir",
+                "extensionWit": "fixtures/ext.wit"
+              }
+            ]
+          }
+        }
+      }`,
+    };
+    let ws = new ZebraWorkspace(async (path): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    let one = await ws.scriptConfig(new ScriptRef('packages/app', 'build:one'));
+    equal(one.ruleType, ZENA_BUILD_RULE_TYPE);
+    isTrue(one.fingerprintable);
+    equal(one.output.length, 1);
+    equal(one.output[0], 'out/app.wasm');
+    isTrue(hasStr(one.files, 'src/main.zena'));
+    isTrue(hasStr(one.files, '../compiler/out/cli.wasm'));
+    equal(one.dependencies.length, 1);
+    equal(refKey(one.dependencies[0].ref), 'packages/app:source');
+    let oneRule = one.rule;
+    if (oneRule is ZenaBuildRule) {
+      equal(oneRule.compiler, '../compiler/out/cli.wasm');
+      equal(oneRule.entries.length, 1);
+      equal(oneRule.entries[0].opt, '2');
+      isTrue(oneRule.entries[0].debug);
+      equal(oneRule.entries[0].target, 'zena-js');
+      equal(oneRule.entries[0].importedStringConstants, 'strings');
+      isTrue(oneRule.entries[0].compactImports);
+    } else {
+      throws(() => { throw new Error('expected ZenaBuildRule'); });
+    }
+
+    let many = await ws.scriptConfig(new ScriptRef('packages/app', 'build:many'));
+    equal(many.ruleType, ZENA_BUILD_RULE_TYPE);
+    equal(many.output.length, 2);
+    equal(many.output[0], 'out/a.wasm');
+    equal(many.output[1], 'out/b.wasm');
+    isTrue(hasStr(many.files, 'fixtures/a.zena'));
+    isTrue(hasStr(many.files, 'fixtures/a.wit'));
+    isTrue(hasStr(many.files, 'fixtures/b.zena'));
+    isTrue(hasStr(many.files, 'fixtures/wit-dir/**/*.wit'));
+    isTrue(hasStr(many.files, 'fixtures/ext.wit'));
+    let manyRule = many.rule;
+    if (manyRule is ZenaBuildRule) {
+      equal(manyRule.entries.length, 2);
+      equal(manyRule.entries[0].target, 'component');
+      equal(manyRule.entries[0].opt, 's');
+      equal(manyRule.entries[1].target, 'wasi');
+      equal(manyRule.entries[1].opt, 's');
+      equal(manyRule.entries[1].extensionWit.length, 1);
+      equal(manyRule.entries[1].extensionWit[0], 'fixtures/ext.wit');
+    } else {
+      throws(() => { throw new Error('expected ZenaBuildRule'); });
+    }
+
+    let checkBad = async (json: String) => {
+      let badWs = new ZebraWorkspace(async (path): Future<String?> =>
+        if (path == 'zebra.json') json else null,
+      );
+      await rejects(async () => {
+        await badWs.scriptConfig(new ScriptRef('', 'b'));
+      });
+    };
+    await checkBad(`{"scripts": {"b": {"entry": "a.zena", "output": "a.wasm"}}}`);
+    await checkBad(`{"scripts": {"b": {"type": "zena:build"}}}`);
+    await checkBad(`{"scripts": {"b": {"type": "zena:build", "entry": "a.zena"}}}`);
+    await checkBad(`{"scripts": {"b": {"type": "zena:build", "entry": "a.zena", "output": "a.wasm", "command": "true"}}}`);
+    await checkBad(`{"scripts": {"b": {"type": "zena:build", "entry": "a.zena", "output": "a.wasm", "opt": "3"}}}`);
+    await checkBad(`{"scripts": {"b": {"type": "zena:build", "entries": []}}}`);
+    await checkBad(`{"scripts": {"b": {"type": "zena:build", "output": "x.wasm", "entries": [{"entry": "a.zena", "output": "a.wasm"}]}}}`);
+    await checkBad(`{"scripts": {"b": {"type": "zena:build", "entries": [{"entry": "a.zena", "output": "dup.wasm"}, {"entry": "b.zena", "output": "dup.wasm"}]}}}`);
+  });
+
+  test('RuleRegistry lets custom rules read language config files through RuleResolveContext.readFile', async () => {
+    let registry = defaultRuleRegistry();
+    registry.register(new MockLangRule());
+    let probed = new GrowableArray<String>();
+    let files = {
+      'packages/demo/zebra.json' => `{"scripts": {"build": {"type": "mock:build"}}}`,
+      'packages/demo/lang.cfg' => 'dist/app.out\n',
+    };
+    let ws = new ZebraWorkspace(async (path): Future<String?> => {
+      probed.push(path);
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    }, registry);
+
+    let cfg = await ws.scriptConfig(new ScriptRef('packages/demo', 'build'));
+    equal(cfg.command, 'mockc');
+    equal(cfg.output.length, 1);
+    equal(cfg.output[0], 'dist/app.out');
+    isTrue(hasStr(cfg.files, 'src/**/*.lang'));
+    isTrue(hasStr(probed, 'packages/demo/lang.cfg'));
   });
 });

@@ -1,0 +1,300 @@
+/**
+ * In-process executor for Zebra `"type": "zena:build"` steps.
+ *
+ * Groups compatible build entries within a step so they compile on one shared
+ * `CompileSession` (`zena build --batch`), while running incompatible sessions
+ * (or entries targeting an explicit `"compiler"` module) concurrently inside
+ * isolated Wasmtime stores under Zebra's shared `ConcurrencyGroups` tree.
+ */
+
+import { Future } from 'zena:async';
+import { HashMap } from 'zena:collections';
+import { StringBuilder } from 'zena:core';
+import { isFile } from 'zena:fs';
+import { div } from 'zena:math';
+import { AbsolutePath } from 'zena:path';
+import { monotonic } from 'zena:time';
+import { RunResult, runModule } from 'zena:wasm';
+import {
+  BuildStepRequest,
+  BuildStepRunner,
+  COMPILE_CONCURRENCY_GROUP,
+  ConcurrencyGroupConfig,
+  ConcurrencyGroups,
+  DEFAULT_CONCURRENCY_GROUP,
+  StepExecution,
+  ZenaBuildEntry,
+} from 'zebra/builder';
+import { joinWorkspace, withRoot } from 'zebra/fs-util';
+import { appendShellArgs } from 'zebra/shell';
+import { compilerFingerprint } from './compile.zena';
+import { Options, cliModule, parallelism, stdlibDir, workspaceRoot } from './env.zena';
+import { buildGuestEnv } from './test-run.zena';
+
+function createStandaloneBuildGroups(limit: i32) {
+  let cfg = {
+    COMPILE_CONCURRENCY_GROUP => ConcurrencyGroupConfig.childOf(DEFAULT_CONCURRENCY_GROUP),
+  };
+  return new ConcurrencyGroups(limit, cfg);
+}
+
+function entrySessionKey(item: ZenaBuildEntry) {
+  let sb = new StringBuilder();
+  sb.append(item.target ?? '');
+  sb.append('\0');
+  sb.append(item.opt ?? '');
+  sb.append('\0');
+  sb.append(if (item.debug) '1' else '0');
+  sb.append('\0');
+  sb.append(item.wit ?? '');
+  sb.append('\0');
+  sb.append(item.world ?? '');
+  sb.append('\0');
+  sb.append(item.importedStringConstants ?? '');
+  sb.append('\0');
+  sb.append(if (item.compactImports) '1' else '0');
+  for (let ext in item.extensionWit) {
+    sb.append('\0+');
+    sb.append(ext);
+  }
+  return sb.toString();
+}
+
+function appendEntryFlags(
+  args: GrowableArray<String>,
+  packageDir: String,
+  item: ZenaBuildEntry,
+  baseOptions: Options,
+) {
+  let target = item.target;
+  if (target != null) {
+    args.push('--target');
+    args.push(target);
+  }
+  let wit = item.wit;
+  if (wit != null) {
+    args.push('--wit');
+    args.push(joinWorkspace(packageDir, wit));
+  }
+  let world = item.world;
+  if (world != null) {
+    args.push('--world');
+    args.push(world);
+  }
+  for (let ext in item.extensionWit) {
+    args.push('--extension-wit');
+    args.push(joinWorkspace(packageDir, ext));
+  }
+  let strings = item.importedStringConstants;
+  if (strings != null) {
+    args.push('--imported-string-constants');
+    args.push(strings);
+  }
+  if (item.compactImports) {
+    args.push('--compact-imports');
+  }
+}
+
+function buildCopyArgs(
+  packageDir: String,
+  batch: Array<ZenaBuildEntry>,
+  baseOptions: Options,
+) {
+  let first = batch[0];
+  let args = new GrowableArray<String>();
+  args.push('zena');
+  if (baseOptions.debug || first.debug) {
+    args.push('-g');
+  }
+  let opt = first.opt ?? baseOptions.optLevel;
+  if (opt != null) {
+    args.push('-O');
+    args.push(opt);
+  }
+  args.push('build');
+  if (batch.length == 1) {
+    args.push(joinWorkspace(packageDir, first.entry));
+    args.push('-o');
+    args.push(joinWorkspace(packageDir, first.output));
+    appendEntryFlags(args, packageDir, first, baseOptions);
+  } else {
+    args.push('--batch');
+    appendEntryFlags(args, packageDir, first, baseOptions);
+    for (let item in batch) {
+      args.push(joinWorkspace(packageDir, item.entry));
+      args.push(joinWorkspace(packageDir, item.output));
+    }
+  }
+  return args;
+}
+
+function formatBuildLabel(entries: Array<ZenaBuildEntry>) {
+  if (entries.length == 1) {
+    let e = entries[0];
+    return appendShellArgs('zena build', [e.entry, '-o', e.output]);
+  }
+  return `zena build (${i32ToString(entries.length)} targets)`;
+}
+
+function appendOutput(sb: StringBuilder, text: String) {
+  if (text == '') {
+    return;
+  }
+  if (sb.length > 0) {
+    sb.append('\n');
+  }
+  sb.append(text);
+}
+
+/**
+ * Shared in-process runner passed to Zebra's `buildTarget` and `watchTarget`
+ * so `"type": "zena:build"` steps compile without spawning shell processes.
+ */
+export class CliBuildStepRunner implements BuildStepRunner {
+  #options: Options;
+  #builtCliPath: String;
+  #startedOnBootstrapFallback: boolean;
+
+  new(
+    options: Options,
+    builtCliPath: String,
+    startedOnBootstrapFallback: boolean,
+  ) : #options = options,
+      #builtCliPath = builtCliPath,
+      #startedOnBootstrapFallback = startedOnBootstrapFallback;
+
+  static async create(options: Options): Future<CliBuildStepRunner> {
+    let root = workspaceRoot().value;
+    let builtPath = `${root}/packages/cli/out/zena.wasm`;
+    let bootstrapPath = `${root}/packages/cli/bootstrap/zena.wasm`;
+    let startedOnBootstrap =
+      cliModule().value == bootstrapPath && !(await isFile(builtPath));
+    return new CliBuildStepRunner(options, builtPath, startedOnBootstrap);
+  }
+
+  async #activeCliModule(): Future<AbsolutePath> {
+    if (this.#startedOnBootstrapFallback && (await isFile(this.#builtCliPath))) {
+      return new AbsolutePath(this.#builtCliPath);
+    }
+    return cliModule();
+  }
+
+  async fingerprint(compilerOverride: String?): Future<String> {
+    let activeCli = await this.#activeCliModule();
+    let explicitCompiler = if (compilerOverride != null)
+      new AbsolutePath(withRoot(workspaceRoot().value, compilerOverride))
+    else
+      null;
+    return await compilerFingerprint(this.#options, activeCli, explicitCompiler);
+  }
+
+  async #runBatch(
+    request: BuildStepRequest,
+    batch: Array<ZenaBuildEntry>,
+    activeCli: AbsolutePath,
+    guestEnv: Map<String, String>,
+    groups: ConcurrencyGroups,
+    buildGroup: String,
+    queueId: i32,
+  ): Future<RunResult> {
+    let permit = await groups.acquire(buildGroup, queueId);
+    let args = buildCopyArgs(request.packageDir, batch, this.#options);
+    let debug = this.#options.debug || batch[0].debug;
+    return try {
+      await runModule(activeCli.value, {
+        args: args,
+        env: guestEnv,
+        inheritEnv: false,
+        dirs: [
+          {from: request.root, to: '.'},
+          {from: stdlibDir().value, to: '/stdlib'},
+          {from: '/', to: '/'},
+        ],
+        grant: true,
+        grantExtensions: true,
+        debug,
+      })
+    } finally {
+      permit.release();
+    };
+  }
+
+  async runBuild(request: BuildStepRequest): Future<StepExecution> {
+    let startNs = monotonic() as i64;
+    let label = formatBuildLabel(request.entries);
+    let activeCli = await this.#activeCliModule();
+    let envOverrides = new GrowableArray<(String, String)>();
+    for (let pair in request.env) {
+      envOverrides.push(pair);
+    }
+    let compiler = request.compiler;
+    if (compiler != null) {
+      envOverrides.push(('ZENA_COMPILER_WASM', withRoot(request.root, compiler)));
+    }
+    let guestEnv = buildGuestEnv(
+      request.root,
+      envOverrides,
+      request.envRemove,
+      true,
+      activeCli,
+    );
+
+    // Group compatible entries into shared CompileSession batches unless an
+    // external raw `zc` compiler is requested (which compiles one entry per
+    // invocation and benefits from running entries in parallel).
+    let batches = new GrowableArray<GrowableArray<ZenaBuildEntry>>();
+    if (compiler != null) {
+      for (let item in request.entries) {
+        let single = new GrowableArray<ZenaBuildEntry>();
+        single.push(item);
+        batches.push(single);
+      }
+    } else {
+      let byKey = new HashMap<String, GrowableArray<ZenaBuildEntry>>();
+      for (let item in request.entries) {
+        let k = entrySessionKey(item);
+        if (let (true, existing) = byKey.get(k)) {
+          existing.push(item);
+        } else {
+          let created = new GrowableArray<ZenaBuildEntry>();
+          created.push(item);
+          byKey[k] = created;
+          batches.push(created);
+        }
+      }
+    }
+
+    let groups = request.concurrency ?? createStandaloneBuildGroups(parallelism());
+    let buildGroup = request.buildGroup ?? COMPILE_CONCURRENCY_GROUP;
+    let queueId = groups.allocateQueue();
+    let tasks = new GrowableArray<Future<RunResult>>();
+    for (let batch in batches) {
+      tasks.push(
+        this.#runBatch(request, batch, activeCli, guestEnv, groups, buildGroup, queueId),
+      );
+    }
+
+    let stdoutSb = new StringBuilder();
+    let stderrSb = new StringBuilder();
+    var exitCode = 0;
+    for (let task in tasks) {
+      let res = await task;
+      appendOutput(stdoutSb, res.stdout);
+      appendOutput(stderrSb, res.stderr);
+      if (res.message != '') {
+        appendOutput(stderrSb, res.message);
+      }
+      if (!res.succeeded() && exitCode == 0) {
+        exitCode = if (res.exitCode != 0) res.exitCode else 1;
+      }
+    }
+    let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+    return new StepExecution(
+      label,
+      exitCode,
+      stdoutSb.toString(),
+      stderrSb.toString(),
+      durationMs,
+    );
+  }
+}

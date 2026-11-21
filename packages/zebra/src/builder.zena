@@ -36,8 +36,13 @@ import {
   EnvBinding,
   EnvExternal,
   EnvLiteral,
+  RuleConfig,
   ScriptConfig,
+  ZENA_BUILD_RULE_TYPE,
   ZENA_TEST_RULE_TYPE,
+  ZenaBuildEntry,
+  ZenaBuildRule,
+  ZenaTestRule,
   refKey,
 } from './wireit-config.zena';
 
@@ -46,6 +51,14 @@ export {
   ConcurrencyGroups,
   DEFAULT_CONCURRENCY_GROUP,
 } from 'workflow/concurrency';
+export {
+  RuleConfig,
+  ZENA_BUILD_RULE_TYPE,
+  ZENA_TEST_RULE_TYPE,
+  ZenaBuildEntry,
+  ZenaBuildRule,
+  ZenaTestRule,
+} from './wireit-config.zena';
 
 /** Captured command output and wall-clock duration for a step that executed. */
 export class StepExecution {
@@ -117,6 +130,49 @@ export interface TestStepRunner {
   fingerprint(): Future<String>;
   /** Runs one package's Zena test step and returns its captured output and status. */
   runTests(request: TestStepRequest): Future<StepExecution>;
+}
+
+/** Parameters for running one package's native `"type": "zena:build"` step. */
+export class BuildStepRequest {
+  root: String;
+  packageDir: String;
+  entries: Array<ZenaBuildEntry>;
+  /** Optional workspace-relative path to an explicit compiler `.wasm` module. */
+  compiler: String?;
+  env: Array<(String, String)>;
+  envRemove: Array<String>;
+  /** Engine concurrency group tree for this run, or `null` when run standalone. */
+  concurrency: ConcurrencyGroups?;
+  /** Explicit concurrency group for compilation (`null` uses `'compile'`). */
+  buildGroup: String?;
+
+  new(
+    this.root,
+    this.packageDir,
+    this.entries,
+    this.compiler = null,
+    this.env = new GrowableArray<(String, String)>(),
+    this.envRemove = new GrowableArray<String>(),
+    this.concurrency = null,
+    this.buildGroup = null,
+  );
+}
+
+/**
+ * In-process executor for native `"type": "zena:build"` steps, supplied by
+ * `zena` so compilation targets share `CompileSession` instances and run
+ * without spawning shell or CLI child processes.
+ */
+export interface BuildStepRunner {
+  /**
+   * Identity of the compiler and standard library building targets, evaluated
+   * lazily after upstream dependencies settle. `compilerOverride` is a
+   * workspace-relative `.wasm` path when `"compiler"` is set, or `null` for
+   * the default CLI compiler.
+   */
+  fingerprint(compilerOverride: String?): Future<String>;
+  /** Compiles all entries in one `"type": "zena:build"` step. */
+  runBuild(request: BuildStepRequest): Future<StepExecution>;
 }
 
 /** A planned build: the step graph, initial leaf map, and captured step runs. */
@@ -221,7 +277,8 @@ function configFingerprint(
   config: ScriptConfig,
   salt: String,
   forceSalted: boolean = false,
-  hasInProcessRunner: boolean = false,
+  hasInProcessTestRunner: boolean = false,
+  hasInProcessBuildRunner: boolean = false,
 ) {
   let sb = new StringBuilder();
   appendSegment(sb, 'zebra-config-v1');
@@ -239,20 +296,43 @@ function configFingerprint(
   } else {
     appendSegment(sb, 'service:none');
   }
-  let ruleType = config.ruleType;
-  if (ruleType != null) {
-    appendSegment(sb, 'type:' + ruleType);
-  }
-  let tests = config.tests;
-  if (ruleType == ZENA_TEST_RULE_TYPE && tests != null) {
-    for (let pat in tests) {
-      appendSegment(sb, 'test-glob:' + pat);
+  let rule = config.rule;
+  if (rule != null) {
+    match (rule) {
+      case ZenaTestRule as tr: {
+        appendSegment(sb, 'type:' + ZENA_TEST_RULE_TYPE);
+        for (let pat in tr.patterns) {
+          appendSegment(sb, 'test-glob:' + pat);
+        }
+        appendSegment(sb, if (tr.debug) 'test-debug:1' else 'test-debug:0');
+        appendSegment(
+          sb,
+          if (hasInProcessTestRunner) 'test-runner:in-process' else 'test-runner:shell',
+        );
+      }
+      case ZenaBuildRule as br: {
+        appendSegment(sb, 'type:' + ZENA_BUILD_RULE_TYPE);
+        appendSegment(sb, 'build-compiler:' + (br.compiler ?? ''));
+        for (let item in br.entries) {
+          appendSegment(sb, 'build-entry:' + item.entry);
+          appendSegment(sb, 'build-output:' + item.output);
+          appendSegment(sb, 'build-target:' + (item.target ?? ''));
+          appendSegment(sb, 'build-opt:' + (item.opt ?? ''));
+          appendSegment(sb, if (item.debug) 'build-debug:1' else 'build-debug:0');
+          appendSegment(sb, 'build-wit:' + (item.wit ?? ''));
+          appendSegment(sb, 'build-world:' + (item.world ?? ''));
+          for (let ext in item.extensionWit) {
+            appendSegment(sb, 'build-ext-wit:' + ext);
+          }
+          appendSegment(sb, 'build-strings:' + (item.importedStringConstants ?? ''));
+          appendSegment(sb, if (item.compactImports) 'build-compact:1' else 'build-compact:0');
+        }
+        appendSegment(
+          sb,
+          if (hasInProcessBuildRunner) 'build-runner:in-process' else 'build-runner:shell',
+        );
+      }
     }
-    appendSegment(sb, if (config.testDebug) 'test-debug:1' else 'test-debug:0');
-    appendSegment(
-      sb,
-      if (hasInProcessRunner) 'test-runner:in-process' else 'test-runner:shell',
-    );
   }
   for (let glob in config.files) {
     appendSegment(sb, 'file:' + glob);
@@ -334,11 +414,70 @@ function fallbackTestShellCommand(
   return appendShellArgs(base, allArgs);
 }
 
+function fallbackBuildShellCommand(
+  entries: Array<ZenaBuildEntry>,
+  compiler: String?,
+) {
+  let sb = new StringBuilder();
+  for (var i = 0; i < entries.length; i += 1) {
+    if (i > 0) {
+      sb.append(' && ');
+    }
+    let item = entries[i];
+    let args = new GrowableArray<String>();
+    if (item.debug) {
+      args.push('-g');
+    }
+    let opt = item.opt;
+    if (opt != null) {
+      args.push('-O');
+      args.push(opt);
+    }
+    args.push('build');
+    args.push(item.entry);
+    args.push('-o');
+    args.push(item.output);
+    let target = item.target;
+    if (target != null) {
+      args.push('--target');
+      args.push(target);
+    }
+    let wit = item.wit;
+    if (wit != null) {
+      args.push('--wit');
+      args.push(wit);
+    }
+    let world = item.world;
+    if (world != null) {
+      args.push('--world');
+      args.push(world);
+    }
+    for (let ext in item.extensionWit) {
+      args.push('--extension-wit');
+      args.push(ext);
+    }
+    let strings = item.importedStringConstants;
+    if (strings != null) {
+      args.push('--imported-string-constants');
+      args.push(strings);
+    }
+    if (item.compactImports) {
+      args.push('--compact-imports');
+    }
+    let prefix = if (compiler != null)
+      appendShellArgs(`ZENA_COMPILER_WASM=${compiler} zena`, args)
+    else
+      appendShellArgs('zena', args);
+    sb.append(prefix);
+  }
+  return sb.toString();
+}
+
 /**
- * Runs one script's command (or native Zena `"tests"` step) and collects its
- * outputs. Shell commands run through `sh -c` in the package directory with
- * node_modules/.bin on PATH, like wireit through npm, and await exit
- * asynchronously so independent steps run in parallel.
+ * Runs one script's command (or declarative `zena:test` / `zena:build` rule)
+ * and collects its outputs. Shell commands run through `sh -c` in the package
+ * directory with node_modules/.bin on PATH, like wireit through npm, and await
+ * exit asynchronously so independent steps run in parallel.
  */
 export async function runScript(
   root: String,
@@ -348,11 +487,11 @@ export async function runScript(
   hasher: FileHasher?,
   executions: HashMap<String, StepExecution>? = null,
   testRunner: TestStepRunner? = null,
+  buildRunner: BuildStepRunner? = null,
 ): Future<OutputManifest> {
   let command = config.command;
-  let isZenaTest = config.ruleType == ZENA_TEST_RULE_TYPE;
-  let tests = if (isZenaTest) config.tests else null;
-  if (command == null && tests == null && config.output.length == 0) {
+  let rule = config.rule;
+  if (command == null && rule == null && config.output.length == 0) {
     // Command-less group or fileset scripts forward their resolved
     // inputs as virtual entries so upstream manifest changes (and
     // $volatile markers) propagate to downstream dependents.
@@ -365,7 +504,7 @@ export async function runScript(
     }
     return new OutputManifest(forwarded);
   }
-  if (tests != null) {
+  if (rule is ZenaTestRule) {
     let key = refKey(config.ref);
     let sigBefore = checkSignal();
     if (sigBefore != 0) {
@@ -373,7 +512,7 @@ export async function runScript(
         `script "${key}" interrupted by signal ${i32ToString(sigBefore)}`,
       );
     }
-    let extra = config.testExtraArgs ?? new GrowableArray<String>();
+    let extra = rule.extraArgs ?? new GrowableArray<String>();
     let envOverrides = resolveEnvOverrides(config.env);
     let envRemovals = resolveEnvRemovals(config.env);
     var exec: StepExecution | null = null;
@@ -382,11 +521,11 @@ export async function runScript(
         new TestStepRequest(
           root,
           config.ref.packageDir,
-          tests,
+          rule.patterns,
           extra,
           envOverrides,
           envRemovals,
-          config.testDebug,
+          rule.debug,
           ctx.concurrency,
           config.concurrencyGroup,
         ),
@@ -394,7 +533,76 @@ export async function runScript(
     } else {
       let startNs = monotonic() as i64;
       let cwd = withRoot(root, config.ref.packageDir);
-      let shellCmd = fallbackTestShellCommand(tests, extra, config.testDebug);
+      let shellCmd = fallbackTestShellCommand(rule.patterns, extra, rule.debug);
+      let wrapped =
+        `export PATH="${binPathPrefix(config.ref.packageDir)}:$PATH"; ${shellCmd}`;
+      let result = await runWith(['sh', '-c', wrapped], {
+        cwd: cwd,
+        env: envOverrides,
+        envRemove: envRemovals,
+        processGroup: true,
+      });
+      let durationMs = div((monotonic() as i64) - startNs, 1000000 as i64);
+      exec = new StepExecution(
+        shellCmd,
+        result.exitCode,
+        result.stdout,
+        result.stderr,
+        durationMs,
+      );
+    }
+    let sigAfter = checkSignal();
+    if (sigAfter != 0) {
+      throw new Error(
+        `script "${key}" interrupted by signal ${i32ToString(sigAfter)}`,
+      );
+    }
+    let finished = exec;
+    if (executions != null) {
+      executions[key] = finished;
+    }
+    if (finished.exitCode != 0) {
+      throw new Error(
+        `script "${key}" failed (exit ${i32ToString(finished.exitCode)}): ${finished.command}\n` +
+        finished.stdout + finished.stderr,
+      );
+    }
+  } else if (rule is ZenaBuildRule) {
+    let key = refKey(config.ref);
+    let sigBefore = checkSignal();
+    if (sigBefore != 0) {
+      throw new Error(
+        `script "${key}" interrupted by signal ${i32ToString(sigBefore)}`,
+      );
+    }
+    if (hasher != null) {
+      hasher.markMutated();
+    }
+    await cleanOutputs(root, config, ctx);
+    let envOverrides = resolveEnvOverrides(config.env);
+    let envRemovals = resolveEnvRemovals(config.env);
+    let wsCompiler = if (rule.compiler != null)
+      joinWorkspace(config.ref.packageDir, rule.compiler)
+    else
+      null;
+    var exec: StepExecution | null = null;
+    if (buildRunner != null) {
+      exec = await buildRunner.runBuild(
+        new BuildStepRequest(
+          root,
+          config.ref.packageDir,
+          rule.entries,
+          wsCompiler,
+          envOverrides,
+          envRemovals,
+          ctx.concurrency,
+          config.concurrencyGroup,
+        ),
+      );
+    } else {
+      let startNs = monotonic() as i64;
+      let cwd = withRoot(root, config.ref.packageDir);
+      let shellCmd = fallbackBuildShellCommand(rule.entries, rule.compiler);
       let wrapped =
         `export PATH="${binPathPrefix(config.ref.packageDir)}:$PATH"; ${shellCmd}`;
       let result = await runWith(['sh', '-c', wrapped], {
@@ -748,18 +956,45 @@ class CoalescedRunnerLeaf {
   }
 }
 
+async function resolveBuildRunnerLeaf(
+  runner: BuildStepRunner,
+  compilerOverride: String?,
+): Future<Array<(String, Fingerprint)>> {
+  return [
+    ('__zena_build_runner__', new Fingerprint(await runner.fingerprint(compilerOverride))),
+  ];
+}
+
+class CoalescedBuildRunnerLeaf {
+  #runner: BuildStepRunner;
+  #pending = new HashMap<String, Future<Array<(String, Fingerprint)>>>();
+
+  new(runner: BuildStepRunner) : #runner = runner;
+
+  resolve(compilerOverride: String?): Future<Array<(String, Fingerprint)>> {
+    let cacheKey = compilerOverride ?? '';
+    if (let (true, existing) = this.#pending.get(cacheKey)) {
+      return existing;
+    }
+    let started = resolveBuildRunnerLeaf(this.#runner, compilerOverride);
+    this.#pending[cacheKey] = started;
+    return started;
+  }
+}
+
 function buildStepInputs(
   config: ScriptConfig,
   hasher: FileHasher,
   runnerLeaf: CoalescedRunnerLeaf? = null,
+  buildRunnerLeaf: CoalescedBuildRunnerLeaf? = null,
 ): Array<InputRef> {
   validateGlobs(config.ref.packageDir, config.files);
   validateGlobs(config.ref.packageDir, config.output);
   let inputs = new GrowableArray<InputRef>();
-  let isZenaTest = config.ruleType == ZENA_TEST_RULE_TYPE && config.tests != null;
+  let rule = config.rule;
   let lockCandidates = if (
     config.isWireit &&
-    (config.command != null || isZenaTest) &&
+    (config.command != null || rule != null) &&
     config.fingerprintable &&
     config.packageLocks.length > 0
   )
@@ -773,9 +1008,18 @@ function buildStepInputs(
       new LeafSet('files', () => hasher.hashInputs(pkgDir, globs, lockCandidates)),
     );
   }
-  if (isZenaTest && config.fingerprintable && runnerLeaf != null) {
+  if (rule is ZenaTestRule && config.fingerprintable && runnerLeaf != null) {
     let sharedLeaf = runnerLeaf;
     inputs.push(new LeafSet('test-runner', () => sharedLeaf.resolve()));
+  } else if (rule is ZenaBuildRule && config.fingerprintable && buildRunnerLeaf != null) {
+    let sharedBuildLeaf = buildRunnerLeaf;
+    let wsCompiler = if (rule.compiler != null)
+      joinWorkspace(config.ref.packageDir, rule.compiler)
+    else
+      null;
+    inputs.push(
+      new LeafSet('build-runner', () => sharedBuildLeaf.resolve(wsCompiler)),
+    );
   }
   // Deduplicate dependency edges, letting `cascade: true` win if listed both ways.
   let order = new GrowableArray<String>();
@@ -814,10 +1058,16 @@ export function planScripts(
   foregroundServiceKey: String? = null,
   testRunner: TestStepRunner? = null,
   concurrencyGroups: ConcurrencyGroups? = null,
+  buildRunner: BuildStepRunner? = null,
 ): Plan {
   let fileHasher = hasher ?? new FileHasher(root);
-  let hasRunner = testRunner != null;
+  let hasTestRunner = testRunner != null;
+  let hasBuildRunner = buildRunner != null;
   let runnerLeaf = if (testRunner != null) new CoalescedRunnerLeaf(testRunner) else null;
+  let buildRunnerLeaf = if (buildRunner != null)
+    new CoalescedBuildRunnerLeaf(buildRunner)
+  else
+    null;
   let leaves = new HashMap<String, Fingerprint>();
   let executions = new HashMap<String, StepExecution>();
   let steps = new GrowableArray<Step>();
@@ -833,13 +1083,13 @@ export function planScripts(
         `script "${key}": unknown concurrencyGroup "${explicitGroup}"`,
       );
     }
-    let inputs = buildStepInputs(config, fileHasher, runnerLeaf);
+    let inputs = buildStepInputs(config, fileHasher, runnerLeaf, buildRunnerLeaf);
     if (config.service != null) {
       let readyRegex = compileReadyRegex(config);
       if (foregroundServiceKey != null && key == foregroundServiceKey) {
         steps.push(new TaskStep(
           new StepKey(key),
-          configFingerprint(config, salt, true, hasRunner),
+          configFingerprint(config, salt, true, hasTestRunner, hasBuildRunner),
           inputs,
           (ctx) => runForegroundService(root, config, readyRegex, salt, fileHasher),
           explicitGroup ?? DEFAULT_CONCURRENCY_GROUP,
@@ -847,25 +1097,31 @@ export function planScripts(
       } else {
         steps.push(new ServiceStep(
           new StepKey(key),
-          configFingerprint(config, salt, false, hasRunner),
+          configFingerprint(config, salt, false, hasTestRunner, hasBuildRunner),
           inputs,
           (svcCtx) => startService(root, config, readyRegex, fileHasher, executions),
         ));
       }
     } else {
-      let isZenaTest = config.ruleType == ZENA_TEST_RULE_TYPE && config.tests != null;
+      let rule = config.rule;
+      let isInProcessCoordinator =
+        (rule is ZenaTestRule && hasTestRunner) ||
+        (rule is ZenaBuildRule && hasBuildRunner);
       let isAggregate =
-        config.command == null && !isZenaTest && config.output.length == 0;
-      // Aggregate/fileset steps do no I/O work, and in-process `zena:test`
-      // steps coordinate sub-tasks that acquire `'compile'` / `'test'` permits
-      // directly from `ctx.concurrency` — neither should occupy a parent slot.
-      let stepGroup = if (isAggregate || (isZenaTest && hasRunner))
+        config.command == null && rule == null && config.output.length == 0;
+      // Aggregate/fileset steps do no I/O work, and in-process `zena:test` /
+      // `zena:build` steps coordinate sub-tasks that acquire `'compile'` /
+      // `'test'` permits directly from `ctx.concurrency` — neither should
+      // occupy a parent slot.
+      let stepGroup = if (isAggregate || isInProcessCoordinator)
         null
+      else if (rule is ZenaBuildRule)
+        explicitGroup ?? COMPILE_CONCURRENCY_GROUP
       else
         explicitGroup ?? DEFAULT_CONCURRENCY_GROUP;
       steps.push(new TaskStep(
         new StepKey(key),
-        configFingerprint(config, salt, false, hasRunner),
+        configFingerprint(config, salt, false, hasTestRunner, hasBuildRunner),
         inputs,
         (ctx) => runScript(
           root,
@@ -875,6 +1131,7 @@ export function planScripts(
           fileHasher,
           executions,
           testRunner,
+          buildRunner,
         ),
         stepGroup,
       ));

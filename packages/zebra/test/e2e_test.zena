@@ -20,6 +20,8 @@ import {PlanLoadStats} from 'zebra/plan-cache';
 import {
   BuildOptions,
   BuildOutcome,
+  BuildStepRequest,
+  BuildStepRunner,
   TestStepRequest,
   TestStepRunner,
   WatchOptions,
@@ -65,6 +67,36 @@ class FakeTestRunner implements TestStepRunner {
   }
 }
 
+class FakeBuildRunner implements BuildStepRunner {
+  calls: GrowableArray<BuildStepRequest>;
+  var fp: String;
+  fpFile: String?;
+
+  new(this.calls, this.fp, this.fpFile = null);
+
+  async fingerprint(compilerOverride: String?): Future<String> {
+    let path = this.fpFile;
+    if (path != null && (await isFile(path))) {
+      return `${await readFile(path)}:${compilerOverride ?? ''}`;
+    }
+    return `${this.fp}:${compilerOverride ?? ''}`;
+  }
+
+  async runBuild(req: BuildStepRequest): Future<StepExecution> {
+    this.calls.push(req);
+    for (let item in req.entries) {
+      let outRel = if (req.packageDir == '')
+        item.output
+      else
+        `${req.packageDir}/${item.output}`;
+      let full = withRoot(req.root, outRel);
+      await ensureParentDir(full);
+      await writeFile(full, `built:${item.entry}:${item.target ?? ''}:${item.opt ?? ''}\n`);
+    }
+    return new StepExecution('zena build', 0, '', '', 1 as i64);
+  }
+}
+
 async function buildTarget(
   root: String,
   entry: ScriptRef,
@@ -85,6 +117,8 @@ async function buildTarget(
   if (let {extraArgs as a} = options) { extraArgs = a; }
   var testRunner: TestStepRunner? = null;
   if (let {testRunner as tr} = options) { testRunner = tr; }
+  var buildRunner: BuildStepRunner? = null;
+  if (let {buildRunner as br} = options) { buildRunner = br; }
   return await runBuildTarget(root, entry, {
     parallelism,
     force,
@@ -96,6 +130,7 @@ async function buildTarget(
     planStatsOut,
     extraArgs,
     testRunner,
+    buildRunner,
   });
 }
 
@@ -1750,5 +1785,84 @@ export let tests = suite('zebra end to end', () => {
     await rejects(async () => {
       await buildTarget(root, new ScriptRef('', 'bad'), {useCache: false});
     });
+  });
+
+  test('zena:build steps execute via BuildStepRunner, cache outputs, and track lazy compiler fingerprints', async () => {
+    let root = `/tmp/zebra-build-rule-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    await write(root, 'zena-lock.json', '{"v":1}\n');
+    await write(root, 'zena-package.json', `{
+      "workspace": {"packages": ["packages/*"]}
+    }`);
+    let fpPath = withRoot(root, 'packages/compiler/out/compiler.fp');
+    await write(root, 'packages/compiler/zena-package.json', `{
+      "name": "compiler",
+      "scripts": {
+        "build": {
+          "command": "mkdir -p out && cat src/ver.txt > out/compiler.fp",
+          "files": ["src/**"],
+          "output": ["out/**"]
+        }
+      }
+    }`);
+    await write(root, 'packages/compiler/src/ver.txt', 'v1\n');
+    await write(root, 'packages/app/zena-package.json', `{
+      "name": "app",
+      "scripts": {
+        "build": {
+          "type": "zena:build",
+          "entries": [
+            {"entry": "src/a.zena", "output": "out/a.wasm", "target": "wasi"},
+            {"entry": "src/b.zena", "output": "out/b.wasm", "target": "component", "wit": "wit/b.wit", "world": "app"}
+          ],
+          "dependencies": [{"script": "../compiler:build", "cascade": false}]
+        }
+      }
+    }`);
+    await write(root, 'packages/app/src/a.zena', 'export let a = 1;\n');
+    await write(root, 'packages/app/src/b.zena', 'export let b = 2;\n');
+    await write(root, 'packages/app/wit/b.wit', 'package demo:b;\nworld app {}\n');
+
+    let calls = new GrowableArray<BuildStepRequest>();
+    let runner = new FakeBuildRunner(calls, 'bootstrap-fp', fpPath);
+    let entry = new ScriptRef('packages/app', 'build');
+
+    // Cold run compiles both entries and tracks both outputs.
+    let r1 = await buildTarget(root, entry, {buildRunner: runner});
+    isTrue(r1.result.allSucceeded, formatBuildReport(r1, true));
+    equal(calls.length, 1);
+    equal(calls[0].entries.length, 2);
+    isTrue(sourceOf(r1.result, 'packages/app:build') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'packages/app/out/a.wasm')), 'built:src/a.zena:wasi:\n');
+    equal(await readFile(withRoot(root, 'packages/app/out/b.wasm')), 'built:src/b.zena:component:\n');
+
+    // Warm run is fresh without invoking BuildStepRunner.
+    let r2 = await buildTarget(root, entry, {buildRunner: runner});
+    isTrue(r2.result.allSucceeded, formatBuildReport(r2, true));
+    equal(calls.length, 1);
+    isTrue(sourceOf(r2.result, 'packages/app:build') == StepSource.Fresh);
+
+    // Deleting an output restores from Zebra disk cache without recompiling.
+    await unlink(withRoot(root, 'packages/app/out/a.wasm'));
+    let r3 = await buildTarget(root, entry, {buildRunner: runner});
+    isTrue(r3.result.allSucceeded, formatBuildReport(r3, true));
+    equal(calls.length, 1);
+    isTrue(sourceOf(r3.result, 'packages/app:build') == StepSource.Cache);
+    equal(await readFile(withRoot(root, 'packages/app/out/a.wasm')), 'built:src/a.zena:wasi:\n');
+
+    // Editing a WIT input invalidates the build step.
+    await write(root, 'packages/app/wit/b.wit', 'package demo:b;\nworld app { export run: func(); }\n');
+    let r4 = await buildTarget(root, entry, {buildRunner: runner});
+    isTrue(r4.result.allSucceeded, formatBuildReport(r4, true));
+    equal(calls.length, 2);
+    isTrue(sourceOf(r4.result, 'packages/app:build') == StepSource.Ran);
+
+    // Upstream compiler rebuild (even with cascade: false) invalidates via lazy fingerprint().
+    await write(root, 'packages/compiler/src/ver.txt', 'v2\n');
+    let r5 = await buildTarget(root, entry, {buildRunner: runner});
+    isTrue(r5.result.allSucceeded, formatBuildReport(r5, true));
+    equal(calls.length, 3);
+    isTrue(sourceOf(r5.result, 'packages/compiler:build') == StepSource.Ran);
+    isTrue(sourceOf(r5.result, 'packages/app:build') == StepSource.Ran);
   });
 });
