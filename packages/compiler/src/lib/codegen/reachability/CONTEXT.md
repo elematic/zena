@@ -46,6 +46,16 @@ graph TD
   name symbols only: they hold no instantiations, string literals or
   interface members. So a new fact RTA collects from nodes has to be
   collected in both walks, as `noteInterfaceDispatch` is.
+- **`registerInstantiations` visits a body's sites, not its nodes.** A
+  body is walked once for each specialization that reaches it, about
+  seven times on average in the compiler's own compile, and two nodes
+  in three are ones no arm acts on. `isInstantiationSite` says which
+  nodes are sites, from the node and the model alone; the first walk
+  of a body collects them and every later walk visits that list. The
+  first walk is filtered the same way, so an arm added for a kind of
+  node `isInstantiationSite` does not accept never runs, and its tests
+  say so at once: add the kind there. `registerLiterals` likewise
+  registers a body's string payloads on its first walk only.
 - **Look a member access up by `accessKeyOf(model, expr)`**
   (`semantic-model.zena`). A member declared with a symbol is keyed by
   that symbol's identity (`:act_368`), which only the checker can
