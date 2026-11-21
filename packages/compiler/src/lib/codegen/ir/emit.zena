@@ -1,7 +1,7 @@
 /**
  * ZIR → wasm emission (docs/design/ir.md §12). Values get wasm locals
  * except where stack scheduling (#scheduleStack) keeps them on the wasm
- * value stack; copy coalescing (#coalesceCopies) lets branch arguments
+ * value stack; copy coalescing (coalesce.zena) lets branch arguments
  * share their target params' locals. The CFG is reconstructed into
  * wasm's structured control flow with the dominator-based stackifier
  * (Ramsey, "Beyond Relooper" — reducible CFGs only, which lowering
@@ -26,6 +26,7 @@ import {
   IrBody, IrOp, IrSuccessor, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isCommutativeOp, isIrTerminator, simdExtraOperandCount, isWideArithOp, isWideMulOp, wideArithOpcode, IrScratch } from './ir.zena';
 import { WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
+import { coalesceCopies } from './coalesce.zena';
 import { growable } from 'zena:core';
 
 final class EmitFrame {
@@ -256,7 +257,8 @@ export final class ZirFunctionEmitter {
       this.localTypes.push(this.#localTypeFor(body.varTypes[i]));
       i += 1;
     }
-    this.#coalesceCopies();
+    coalesceCopies(body, this.streamed, this.remat, this.localOf,
+        this.#classOf, this.scratch);
     i = 0;
     while (i < body.instCount()) {
       if (body.producesValue(i) && this.localOf[i] < 0 &&
@@ -511,278 +513,6 @@ export final class ZirFunctionEmitter {
     }
     if (any) {
       this.emitter.dropAssertsForLocals(graduated);
-    }
-  }
-
-  /**
-   * Copy coalescing over branch edges (ir.md §12): a branch argument
-   * and its target block param share one wasm local when their live
-   * ranges do not interfere — the argument's definition then writes
-   * the param's local directly, and the edge copy degenerates to an
-   * identity move that #planMoves drops. Classes are built with a
-   * union-find over every (arg, param) edge pair, guarded by an SSA
-   * liveness analysis: values may share a local only if neither is
-   * live just after the other's definition (uses read their operands
-   * before the definition writes, so a definition's own operands do
-   * not conflict). Entry params keep their exact signature locals —
-   * possibly non-nullable, unlike the nullable locals #localTypeFor
-   * hands out — so their classes never grow.
-   */
-  #coalesceCopies(): void {
-    let {body} = this;
-    let count = body.instCount();
-    let {blocks} = body;
-    let nb = blocks.length;
-    let {streamed} = this;
-    let {localOf} = this;
-    // Decoded value operands (uses) per instruction, computed once and
-    // packed end to end: instruction i's are
-    // useList[useStart[i] .. useStart[i + 1]). One list rather than one
-    // per instruction, which was the compiler's single largest source
-    // of garbage.
-    let useStart = new Array<i32>(count + 1);
-    let useList = new Array<i32>(count * 2);
-    for (var i = 0; i < count; i += 1) {
-      useStart.push(useList.length);
-      body.appendValueOperands(i, useList);
-    }
-    useStart.push(useList.length);
-
-    // Position of each instruction within its block; params sit at -1,
-    // before every instruction. mv_get projections adopt their call's
-    // position: the call's emission is what writes projection locals,
-    // so their live ranges must start there.
-    let posOf = this.scratch.i32();
-    for (var i = 0; i < count; i += 1) {
-      posOf.push(-1);
-    }
-    for (let blk in blocks) {
-      for (var k = 0; k < blk.insts.length; k += 1) {
-        posOf[blk.insts[k]] = k;
-      }
-    }
-    for (var i = 0; i < count; i += 1) {
-      if (body.op(i) == IrOp.mv_get &&
-          body.instBlock[i] == body.instBlock[body.a[i]]) {
-        posOf[i] = posOf[body.a[i]];
-      }
-    }
-
-    // Block-granularity liveness bitsets, flattened [block * words + w].
-    // Sized up front: they are blocks x values bits, and a large
-    // function's four of them pushed from empty doubled through half a
-    // gigabyte of discarded buffers.
-    let words = (count + 31) >> 5;
-    // Fresh and sized up front rather than pooled: built once per
-    // function, and for a large function too big to keep around.
-    let liveIn = new Array<i32>(nb * words);
-    let liveOut = new Array<i32>(nb * words);
-    let defs = new Array<i32>(nb * words);
-    let upUse = new Array<i32>(nb * words);
-    for (var i = 0; i < nb * words; i += 1) {
-      liveIn.push(0);
-      liveOut.push(0);
-      defs.push(0);
-      upUse.push(0);
-    }
-    let bitGet = (arr: GrowableArray<i32>, blk: i32, v: i32) =>
-        (arr[blk * words + (v >> 5)] & (1 << (v & 31))) != 0;
-    let bitSet = (arr: GrowableArray<i32>, blk: i32, v: i32) => {
-      let at = blk * words + (v >> 5);
-      arr[at] = arr[at] | (1 << (v & 31));
-    };
-
-    var b = 0;
-    while (b < nb) {
-      let blk = blocks[b];
-      for (let p in blk.params) {
-        bitSet(defs, b, p);
-      }
-      for (let inst in blk.insts) {
-        if (body.producesValue(inst)) {
-          bitSet(defs, b, inst);
-        }
-        for (var ui = useStart[inst]; ui < useStart[inst + 1]; ui += 1) {
-          let v = useList[ui];
-          if (v >= 0 && v < count && body.instBlock[v] != b) {
-            bitSet(upUse, b, v);
-          }
-        }
-      }
-      b += 1;
-    }
-
-    // Backward fixpoint: liveOut(B) = union of liveIn over successors;
-    // liveIn(B) = upUse(B) | (liveOut(B) & ~defs(B)). A successor's
-    // params are its own defs, so they never flow back into liveOut —
-    // branch arguments are already uses at the predecessor's terminator.
-    var changed = true;
-    while (changed) {
-      changed = false;
-      b = nb - 1;
-      while (b >= 0) {
-        let blk = blocks[b];
-        if (blk.insts.length > 0) {
-          let term = blk.insts[blk.insts.length - 1];
-          if (isIrTerminator(body.op(term))) {
-            let n = body.successorCount(term);
-            for (var k = 0; k < n; k += 1) {
-              let target = body.extra[body.successorRecord(term, k)];
-              var w = 0;
-              while (w < words) {
-                let merged = liveOut[b * words + w] |
-                    liveIn[target * words + w];
-                if (merged != liveOut[b * words + w]) {
-                  liveOut[b * words + w] = merged;
-                  changed = true;
-                }
-                w += 1;
-              }
-            }
-          }
-        }
-        var w = 0;
-        while (w < words) {
-          let vIn = upUse[b * words + w] |
-              (liveOut[b * words + w] & (defs[b * words + w] ^ -1));
-          if (vIn != liveIn[b * words + w]) {
-            liveIn[b * words + w] = vIn;
-            changed = true;
-          }
-          w += 1;
-        }
-        b -= 1;
-      }
-    }
-
-    // Is x live just after y's definition point?
-    let liveAtDef = (x: i32, y: i32): boolean => {
-      let yb = body.instBlock[y];
-      if (body.instBlock[x] == yb && posOf[x] > posOf[y]) {
-        return false; // x is defined later in the same block
-      }
-      if (bitGet(liveOut, yb, x)) {
-        return true;
-      }
-      let insts = blocks[yb].insts;
-      var k = posOf[y] + 1;
-      while (k < insts.length) {
-        let user = insts[k];
-        for (var ui = useStart[user]; ui < useStart[user + 1]; ui += 1) {
-          let v = useList[ui];
-          if (v == x) {
-            return true;
-          }
-        }
-        k += 1;
-      }
-      return false;
-    };
-
-    let interferes = (x: i32, y: i32): boolean => {
-      if (body.op(x) == IrOp.param && body.op(y) == IrOp.param &&
-          body.instBlock[x] == body.instBlock[y]) {
-        return true; // same-block params are simultaneously live at entry
-      }
-      return liveAtDef(x, y) || liveAtDef(y, x);
-    };
-
-    // The local a value's class would occupy (mirrors #localTypeFor).
-    let localShape = (v: i32): ValType => {
-      let vt = body.resultType(v) as ValType;
-      return match (vt) {
-        case ValTypeRef as r: new ValTypeRefNull(r.target)
-        case ValTypeRefExtern: new ValTypeExternRef()
-        case _: vt
-      };
-    };
-
-    let parent = this.#classOf;
-    for (var i = 0; i < count; i += 1) {
-      parent.push(i);
-    }
-    let find = (v: i32) => {
-      var c = v;
-      while (parent[c] != c) {
-        c = parent[c];
-      }
-      return c;
-    };
-    let membersOf = new Map<i32, GrowableArray<i32>>();
-    let members = (root: i32) => {
-      if (let (true, list) = membersOf.get(root)) {
-        return list;
-      }
-      let list = growable<i32>([root]);
-      membersOf[root] = list;
-      return list;
-    };
-
-    let tryUnion = (arg: i32, param: i32) => {
-      if (arg < 0 || arg >= count || !body.producesValue(arg) ||
-          streamed[arg] || this.remat[arg]) {
-        return;
-      }
-      let ra = find(arg);
-      let rp = find(param);
-      if (ra == rp) {
-        return;
-      }
-      if (!valTypeEquals(localShape(arg), localShape(param))) {
-        return;
-      }
-      let ma = members(ra);
-      let mp = members(rp);
-      // A pinned local (an entry param's signature slot) never merges.
-      for (let x in ma) {
-        if (localOf[x] >= 0) {
-          return;
-        }
-      }
-      for (let y in mp) {
-        if (localOf[y] >= 0) {
-          return;
-        }
-      }
-      for (let x in ma) {
-        for (let y in mp) {
-          if (interferes(x, y)) {
-            return;
-          }
-        }
-      }
-      parent[rp] = ra;
-      for (let y in mp) {
-        ma.push(y);
-      }
-      membersOf.delete(rp);
-    };
-
-    b = 0;
-    while (b < nb) {
-      let blk = blocks[b];
-      if (blk.insts.length > 0) {
-        let term = blk.insts[blk.insts.length - 1];
-        if (isIrTerminator(body.op(term))) {
-          let sN = body.successorCount(term);
-          for (var sK = 0; sK < sN; sK += 1) {
-            let sRec = body.successorRecord(term, sK);
-            let params = blocks[body.extra[sRec]].params;
-            var i = 0;
-            while (i < body.extra[sRec + 1]) {
-              tryUnion(body.extra[(sRec + 2) + i], params[i]);
-              i += 1;
-            }
-          }
-        }
-      }
-      b += 1;
-    }
-
-    // Flatten chains to final representatives (find tolerates the
-    // in-place rewrite: replacing a link with its root keeps roots).
-    for (var i = 0; i < count; i += 1) {
-      this.#classOf[i] = find(i);
     }
   }
 

@@ -1,0 +1,418 @@
+/**
+ * Copy coalescing over branch edges (ir.md §12), for emission.
+ *
+ * A branch argument and its target block param share one wasm local
+ * when their live ranges do not interfere: the argument's definition
+ * then writes the param's local directly, and the edge copy becomes an
+ * identity move that the emitter's move planning drops. Classes are
+ * built with a union-find over every (argument, param) edge pair,
+ * guarded by an SSA liveness analysis: two values may share a local
+ * only if neither is live just after the other's definition. A use
+ * reads its operands before the definition writes, so a definition's
+ * own operands do not conflict with it. Entry params keep their exact
+ * signature locals, which may be non-nullable where the locals the
+ * emitter hands out are nullable, so their classes never grow.
+ *
+ * Only branch arguments and block params are ever asked about, so the
+ * analysis numbers those densely and tracks nothing else. Its bitsets
+ * are blocks x candidates bits where blocks x values was most of an
+ * `-O1` compile's emission time, and a function with no branch
+ * arguments, which is most functions, skips it altogether.
+ */
+import { ValType, ValTypeRef, ValTypeRefNull, ValTypeRefExtern, ValTypeExternRef, valTypeEquals } from '../wasm.zena';
+import { IrBody, IrOp, IrScratch, isIrTerminator } from './ir.zena';
+import { growable } from 'zena:core';
+
+/**
+ * Where the candidates are live: at each block's end, and up to which
+ * instruction of each block that uses them.
+ */
+final class CandidateLiveness {
+  body: IrBody;
+  /** Per value: its dense candidate index, or -1. */
+  candidateOf: GrowableArray<i32>;
+  /**
+   * Per value: its position in its block. Params sit at -1, before
+   * every instruction.
+   */
+  positionOf: GrowableArray<i32>;
+  /** Words per block in `liveOut`. */
+  words: i32;
+  /** Candidates live at each block's end, as `block * words + word`. */
+  liveOut: GrowableArray<i32>;
+  /**
+   * The blocks that use each candidate: candidate `c`'s are entries
+   * `useStart[c] .. useStart[c + 1]` of `useBlock`, ascending, and
+   * `useLast` is the position of its last use in that block.
+   */
+  useStart: GrowableArray<i32>;
+  useBlock: GrowableArray<i32>;
+  useLast: GrowableArray<i32>;
+
+  new(this.body, this.candidateOf, this.positionOf, this.words,
+      this.liveOut, this.useStart, this.useBlock, this.useLast);
+
+  /** The position of `candidate`'s last use in `block`, or -1. */
+  #lastUseIn(candidate: i32, block: i32): i32 {
+    let {useBlock} = this;
+    var low = this.useStart[candidate];
+    var high = this.useStart[candidate + 1];
+    while (low < high) {
+      let mid = (low + high) >> 1;
+      let at = useBlock[mid];
+      if (at == block) {
+        return this.useLast[mid];
+      }
+      if (at < block) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    return -1;
+  }
+
+  /** Whether `x` is live just after `y`'s definition. */
+  #liveAfter(x: i32, y: i32): boolean {
+    let {body} = this;
+    let block = body.instBlock[y];
+    let position = this.positionOf[y];
+    if (body.instBlock[x] == block && this.positionOf[x] > position) {
+      // `x` is defined later in the same block.
+      return false;
+    }
+    let candidate = this.candidateOf[x];
+    let word = this.liveOut[block * this.words + (candidate >> 5)];
+    if ((word & (1 << (candidate & 31))) != 0) {
+      return true;
+    }
+    return this.#lastUseIn(candidate, block) > position;
+  }
+
+  /** Whether `x` and `y` cannot share a local. */
+  interferes(x: i32, y: i32): boolean {
+    let {body} = this;
+    if (body.op(x) == IrOp.param && body.op(y) == IrOp.param &&
+        body.instBlock[x] == body.instBlock[y]) {
+      // Params of one block are all live at its entry.
+      return true;
+    }
+    return this.#liveAfter(x, y) || this.#liveAfter(y, x);
+  }
+}
+
+/** Whether a branch argument can be in a class: it has a local. */
+function hasLocal(body: IrBody, streamed: GrowableArray<boolean>,
+    remat: GrowableArray<boolean>, arg: i32) {
+  return arg >= 0 && arg < body.instCount() && body.producesValue(arg) &&
+      !streamed[arg] && !remat[arg];
+}
+
+/** The type of the local a value's class would occupy. */
+function localShape(body: IrBody, v: i32): ValType {
+  let type = body.resultType(v) as ValType;
+  return match (type) {
+    case ValTypeRef as r: new ValTypeRefNull(r.target)
+    case ValTypeRefExtern: new ValTypeExternRef()
+    case _: type
+  };
+}
+
+function sameLocalShape(body: IrBody, a: i32, b: i32) {
+  // One type table entry is one type.
+  return body.typeId[a] == body.typeId[b] ||
+      valTypeEquals(localShape(body, a), localShape(body, b));
+}
+
+function rootOf(parent: GrowableArray<i32>, v: i32) {
+  var c = v;
+  while (parent[c] != c) {
+    c = parent[c];
+  }
+  return c;
+}
+
+function zeros(list: GrowableArray<i32>, count: i32) {
+  for (var i = 0; i < count; i += 1) {
+    list.push(0);
+  }
+  return list;
+}
+
+function setBit(bits: GrowableArray<i32>, index: i32, bit: i32) {
+  let at = index + (bit >> 5);
+  bits[at] = bits[at] | (1 << (bit & 31));
+}
+
+/**
+ * Fills `classOf` with each value's class representative. `streamed`
+ * and `remat` mark the values that get no local, and `localOf` the
+ * locals already pinned, which are the entry params'. The tables this
+ * builds are taken from `scratch`, in the caller's scope.
+ */
+export function coalesceCopies(body: IrBody, streamed: GrowableArray<boolean>,
+    remat: GrowableArray<boolean>, localOf: GrowableArray<i32>,
+    classOf: GrowableArray<i32>, scratch: IrScratch): void {
+  let count = body.instCount();
+  let {blocks} = body;
+  let blockCount = blocks.length;
+  for (var i = 0; i < count; i += 1) {
+    classOf.push(i);
+  }
+
+  // The candidates: every block param, and every branch argument that
+  // has a local.
+  let candidateOf = scratch.i32();
+  for (var i = 0; i < count; i += 1) {
+    candidateOf.push(-1);
+  }
+  var candidates = 0;
+  var edgeArguments = 0;
+  for (let block in blocks) {
+    for (let param in block.params) {
+      candidateOf[param] = candidates;
+      candidates += 1;
+    }
+  }
+  for (let block in blocks) {
+    let {insts} = block;
+    if (insts.length == 0) {
+      continue;
+    }
+    let terminator = insts[insts.length - 1];
+    if (!isIrTerminator(body.op(terminator))) {
+      continue;
+    }
+    let successors = body.successorCount(terminator);
+    for (var k = 0; k < successors; k += 1) {
+      let record = body.successorRecord(terminator, k);
+      let argc = body.extra[record + 1];
+      for (var i = 0; i < argc; i += 1) {
+        let arg = body.extra[record + 2 + i];
+        if (!hasLocal(body, streamed, remat, arg)) {
+          continue;
+        }
+        edgeArguments += 1;
+        if (candidateOf[arg] < 0) {
+          candidateOf[arg] = candidates;
+          candidates += 1;
+        }
+      }
+    }
+  }
+  if (edgeArguments == 0) {
+    return;
+  }
+
+  // Each instruction's position in its block. An mv_get projection
+  // takes its call's position: emitting the call is what writes the
+  // projections' locals, so their live ranges start there.
+  let positionOf = scratch.i32();
+  for (var i = 0; i < count; i += 1) {
+    positionOf.push(-1);
+  }
+  for (let block in blocks) {
+    let {insts} = block;
+    for (var k = 0; k < insts.length; k += 1) {
+      positionOf[insts[k]] = k;
+    }
+  }
+  for (var i = 0; i < count; i += 1) {
+    if (body.op(i) == IrOp.mv_get &&
+        body.instBlock[i] == body.instBlock[body.a[i]]) {
+      positionOf[i] = positionOf[body.a[i]];
+    }
+  }
+
+  // One walk of the uses fills the per-block sets and counts, per
+  // candidate, the blocks that use it; a second walk records the last
+  // use in each. Blocks are walked in order, so a candidate's entries
+  // come out ascending by block.
+  let words = (candidates + 31) >> 5;
+  let defs = zeros(scratch.i32(), blockCount * words);
+  let upwardUses = zeros(scratch.i32(), blockCount * words);
+  let useStart = zeros(scratch.i32(), candidates + 1);
+  let lastBlock = scratch.i32();
+  for (var c = 0; c < candidates; c += 1) {
+    lastBlock.push(-1);
+  }
+  let operands = scratch.i32();
+  for (var b = 0; b < blockCount; b += 1) {
+    let block = blocks[b];
+    for (let param in block.params) {
+      setBit(defs, b * words, candidateOf[param]);
+    }
+    for (let inst in block.insts) {
+      let defined = candidateOf[inst];
+      if (defined >= 0) {
+        setBit(defs, b * words, defined);
+      }
+      operands.clear();
+      body.appendValueOperands(inst, operands);
+      for (let v in operands) {
+        if (v < 0 || v >= count) {
+          continue;
+        }
+        let candidate = candidateOf[v];
+        if (candidate < 0) {
+          continue;
+        }
+        if (body.instBlock[v] != b) {
+          setBit(upwardUses, b * words, candidate);
+        }
+        if (lastBlock[candidate] != b) {
+          lastBlock[candidate] = b;
+          useStart[candidate + 1] = useStart[candidate + 1] + 1;
+        }
+      }
+    }
+  }
+  for (var c = 0; c < candidates; c += 1) {
+    useStart[c + 1] = useStart[c + 1] + useStart[c];
+  }
+  let useBlock = zeros(scratch.i32(), useStart[candidates]);
+  let useLast = zeros(scratch.i32(), useStart[candidates]);
+  // The entry each candidate's next block goes in.
+  let next = scratch.i32();
+  for (var c = 0; c < candidates; c += 1) {
+    next.push(useStart[c]);
+  }
+  for (var b = 0; b < blockCount; b += 1) {
+    let {insts} = blocks[b];
+    for (var k = 0; k < insts.length; k += 1) {
+      operands.clear();
+      body.appendValueOperands(insts[k], operands);
+      for (let v in operands) {
+        if (v < 0 || v >= count) {
+          continue;
+        }
+        let candidate = candidateOf[v];
+        if (candidate < 0) {
+          continue;
+        }
+        let at = next[candidate];
+        if (at > useStart[candidate] && useBlock[at - 1] == b) {
+          useLast[at - 1] = k;
+        } else {
+          useBlock[at] = b;
+          useLast[at] = k;
+          next[candidate] = at + 1;
+        }
+      }
+    }
+  }
+
+  // Backward fixpoint: liveOut(B) is the union of liveIn over B's
+  // successors, and liveIn(B) = upwardUses(B) | (liveOut(B) & ~defs(B)).
+  // A successor's params are its own definitions, so they never flow
+  // back into liveOut; branch arguments are already uses at the
+  // predecessor's terminator.
+  let liveIn = zeros(scratch.i32(), blockCount * words);
+  let liveOut = zeros(scratch.i32(), blockCount * words);
+  var changed = true;
+  while (changed) {
+    changed = false;
+    for (var b = blockCount - 1; b >= 0; b -= 1) {
+      let {insts} = blocks[b];
+      let base = b * words;
+      if (insts.length > 0) {
+        let terminator = insts[insts.length - 1];
+        if (isIrTerminator(body.op(terminator))) {
+          let successors = body.successorCount(terminator);
+          for (var k = 0; k < successors; k += 1) {
+            let target = body.extra[body.successorRecord(terminator, k)] * words;
+            for (var w = 0; w < words; w += 1) {
+              let merged = liveOut[base + w] | liveIn[target + w];
+              if (merged != liveOut[base + w]) {
+                liveOut[base + w] = merged;
+                changed = true;
+              }
+            }
+          }
+        }
+      }
+      for (var w = 0; w < words; w += 1) {
+        let entering = upwardUses[base + w] |
+            (liveOut[base + w] & (defs[base + w] ^ -1));
+        if (entering != liveIn[base + w]) {
+          liveIn[base + w] = entering;
+          changed = true;
+        }
+      }
+    }
+  }
+
+  let liveness = new CandidateLiveness(body, candidateOf, positionOf, words,
+      liveOut, useStart, useBlock, useLast);
+  // The members of each class with more than one, by representative.
+  let membersOf = new Map<i32, GrowableArray<i32>>();
+  let members = (root: i32) => {
+    if (let (true, list) = membersOf.get(root)) {
+      return list;
+    }
+    let list = growable<i32>([root]);
+    membersOf[root] = list;
+    return list;
+  };
+  let unite = (arg: i32, param: i32) => {
+    if (!hasLocal(body, streamed, remat, arg)) {
+      return;
+    }
+    let argRoot = rootOf(classOf, arg);
+    let paramRoot = rootOf(classOf, param);
+    if (argRoot == paramRoot || !sameLocalShape(body, arg, param)) {
+      return;
+    }
+    let argMembers = members(argRoot);
+    let paramMembers = members(paramRoot);
+    // A pinned local, an entry param's signature slot, never merges.
+    for (let x in argMembers) {
+      if (localOf[x] >= 0) {
+        return;
+      }
+    }
+    for (let y in paramMembers) {
+      if (localOf[y] >= 0) {
+        return;
+      }
+    }
+    for (let x in argMembers) {
+      for (let y in paramMembers) {
+        if (liveness.interferes(x, y)) {
+          return;
+        }
+      }
+    }
+    classOf[paramRoot] = argRoot;
+    for (let y in paramMembers) {
+      argMembers.push(y);
+    }
+    membersOf.delete(paramRoot);
+  };
+  for (let block in blocks) {
+    let {insts} = block;
+    if (insts.length == 0) {
+      continue;
+    }
+    let terminator = insts[insts.length - 1];
+    if (!isIrTerminator(body.op(terminator))) {
+      continue;
+    }
+    let successors = body.successorCount(terminator);
+    for (var k = 0; k < successors; k += 1) {
+      let record = body.successorRecord(terminator, k);
+      let {params} = blocks[body.extra[record]];
+      let argc = body.extra[record + 1];
+      for (var i = 0; i < argc; i += 1) {
+        unite(body.extra[record + 2 + i], params[i]);
+      }
+    }
+  }
+
+  // Every value points at its class's final representative. `rootOf`
+  // tolerates the rewrite in place: replacing a link with its root
+  // keeps roots.
+  for (var i = 0; i < count; i += 1) {
+    classOf[i] = rootOf(classOf, i);
+  }
+}
