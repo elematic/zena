@@ -116,9 +116,12 @@ duplicates:
   Zena relies on (GC, exception handling, typed function references,
   tail calls — on by default since wasmtime 48 — and wide arithmetic,
   still opt-in), backtrace details and inlining, and the ZENA_GC and
-  ZENA_PROFILE environment switches; `reserve_gc_heap` reads
-  ZENA_GC_RESERVE_MB. `shared_component_engine(debug)` is the one engine
-  per setting.
+  ZENA_PROFILE environment switches. `reserve_gc_heap` grows a store's
+  GC heap by ZENA_GC_RESERVE_MB before a program runs in it, and
+  `reserve_gc_heap_or` takes the reserve to use when the variable is
+  not set, which is how the store that compiles gets one
+  (docs/design/compiler-memory.md, "The heap reserve").
+  `shared_component_engine(debug)` is the one engine per setting.
 - `cache`: ahead-of-time compiled `.cwasm` files kept beside each `.wasm`
   (or `.wat`; wasmtime reads the text format for components too), written
   under a file lock (`foo.lock`, beside it too) so concurrent processes

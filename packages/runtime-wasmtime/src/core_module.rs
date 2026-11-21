@@ -135,7 +135,7 @@ pub(crate) fn run(engine: &Engine, config: &RunConfig) -> RunFinished {
         store.set_epoch_deadline(ticks);
         store.epoch_deadline_trap();
     }
-    let _ = crate::engine::reserve_gc_heap(engine, &mut store);
+    let _ = crate::engine::reserve_gc_heap_for_run(&mut store, &config.env);
     let t0 = Instant::now();
     let called = call_export(&mut store, &module, &config.invoke);
     let call_nanos = t0.elapsed().as_nanos() as i64;

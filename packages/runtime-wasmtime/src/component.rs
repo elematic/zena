@@ -218,8 +218,7 @@ pub fn run_main(
         .build()
         .map_err(|e| format_err!("failed to start a runtime: {e}"))?;
     // Headroom for the GC heap, as for a core module (ZENA_GC_RESERVE_MB).
-    let engine = store.engine().clone();
-    let _ = crate::engine::reserve_gc_heap(&engine, store);
+    let _ = crate::engine::reserve_gc_heap(store);
     runtime.block_on(async {
         let instance: Instance = linker.instantiate_async(&mut *store, component).await?;
         store.data_mut().component = Some(component.clone());
@@ -1273,6 +1272,9 @@ fn run(engine: &Engine, config: &RunConfig) -> RunFinished {
         Ok(l) => l,
         Err(e) => return RunFinished::failed(format!("{e:#}")),
     };
+    // Before `run_main`, whose own reserve is this process's: the heap
+    // only grows, so the larger of the two stands.
+    let _ = crate::engine::reserve_gc_heap_for_run(&mut store, &config.env);
     let t0 = Instant::now();
     let called = run_main(&mut store, &linker, &component, &config.invoke);
     let call_nanos = t0.elapsed().as_nanos() as i64;
