@@ -162,7 +162,7 @@ pub fn apply_gc_config(config: &mut Config) {
 /// The reserve [`reserve_gc_heap_or`] gives the store that runs the
 /// compiler when ZENA_GC_RESERVE_MB does not name one, in MiB.
 ///
-/// Compiling a three-line program allocates about 50 MiB. With no
+/// Compiling a three-line program allocates about 120 MiB. With no
 /// reserve the heap starts small and is collected at every doubling,
 /// which was two thirds of that compile's 0.75 s; with this reserve
 /// nothing is collected and it takes 0.25 s. A larger compile gains
