@@ -201,7 +201,7 @@
       ]
     },
     "test:execution:o2": {
-      "#": "The execution suite compiled at -O2, through the module loop the default level skips. It writes to out/test-exec-O2, and runs after test:execution rather than beside it, which keeps CI's peak memory where it was.",
+      "#": "The execution suite compiled at -O2, through the module loop the default level skips. Writes to out/test-exec-O2 so it can run alongside test:execution.",
       "command": "node scripts/run-wasmtime.js execution",
       "files": [
         "../../tests/language/execution/**/*.zena",
@@ -222,8 +222,7 @@
           "script": "build:tests",
           "cascade": false
         },
-        "../cli:build",
-        "test:execution"
+        "../cli:build"
       ]
     },
     "test:interop": {
@@ -241,7 +240,6 @@
       ]
     },
     "test:fixpoint": {
-      "#dependencies": "test:execution:o2 without its fingerprint, so the 4.7 GiB stage-C compile never runs beside the 6.5 GiB execution suite and cli:test:zena on CI's 16 GiB runner.",
       "command": "node scripts/check-fixpoint.js",
       "files": [
         "src/cli/**/*.zena",
@@ -255,10 +253,6 @@
         "build:scripts",
         {
           "script": "build:self-hosted",
-          "cascade": false
-        },
-        {
-          "script": "test:execution:o2",
           "cascade": false
         },
         "../cli:build"
@@ -296,9 +290,9 @@
       ]
     },
     "precompile:cli": {
-      "#": "Stage A's .cwasm, untracked so remote caches never save machine code built for one host CPU and restore it onto another.",
-      "command": "../../target/release/zena precompile out/cli.wasm",
-      "dependencies": ["build:cli", "../cli:build"]
+      "#": "Stage A's .cwasm, untracked so remote caches never save machine code built for one host CPU and restore it onto another. Runs through bootstrap/zena.wasm on the freshly built host binary so cli:build:module and compiler-js:build:wasm can share one AOT compile instead of compiling out/cli.wasm concurrently.",
+      "command": "ZENA_CLI_MODULE=../cli/bootstrap/zena.wasm ../../target/release/zena precompile out/cli.wasm",
+      "dependencies": ["build:cli", "../cli:build:binary"]
     }
   }
 }
