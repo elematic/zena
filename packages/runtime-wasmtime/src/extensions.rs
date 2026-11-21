@@ -2340,6 +2340,9 @@ pub fn check_world(
         &resolve,
         world_id,
         wit_component::StringEncoding::UTF8,
+        // Interface names with their full versions, as a tested
+        // component's are; a canonical name shortens `@0.3.1` to `@0.3`.
+        false,
     )?;
     let stand_in = wit_component::ComponentEncoder::default()
         .module(&module)?

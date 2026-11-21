@@ -1634,7 +1634,7 @@ impl wasmtime::component::StreamProducer<ComponentState> for RequestStreamProduc
         mut destination: wasmtime::component::Destination<'a, Self::Item, Self::Buffer>,
         _finish: bool,
     ) -> std::task::Poll<Result<wasmtime::component::StreamResult>> {
-        let max_items = destination.remaining(&mut store).unwrap_or(64).max(1);
+        let max_items = destination.remaining(&mut store)?.unwrap_or(64).max(1);
         let mut rx = self.rx.lock().unwrap();
         let first = match rx.poll_recv(cx) {
             std::task::Poll::Ready(Some(item)) => item,
