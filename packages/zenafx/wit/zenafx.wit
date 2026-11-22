@@ -49,7 +49,29 @@ interface style {
   enum align { start, center, end, stretch }
   record edges { top: f32, right: f32, bottom: f32, left: f32 }
 
-  /// Geometry only. Nothing here affects painting, and nothing in
+  /// What becomes of content that does not fit in a box, on one axis.
+  ///
+  /// It is cut off at the box's edge in every case: nothing is drawn
+  /// outside a box, and what is cut off is not under the pointer. The three
+  /// values are CSS's, with CSS's meanings. CSS's fourth, `visible`, is left
+  /// out.
+  enum overflow {
+    /// The default, for a box whose content is expected to fit. The box is
+    /// never laid out smaller than its content. If the content still does
+    /// not fit, because the box was given a size, it is cut off, and the
+    /// host logs that it was.
+    clip,
+    /// For a box that is meant to hold more than fits. It may be laid out
+    /// smaller than its content, which is what lets a flex item give up
+    /// room.
+    hidden,
+    /// As `hidden`, and the box scrolls: the scroll wheel over the box
+    /// moves the content, as far as its far edge and no further. The host
+    /// keeps how far it has scrolled, and scrolling wakes no component.
+    scroll,
+  }
+
+  /// Geometry, and what becomes of content that does not fit. Nothing in
   /// `box-style` or `text-style` affects measurement.
   record flex {
     axis: axis,
@@ -61,6 +83,8 @@ interface style {
     height: length,
     grow: f32,
     shrink: f32,
+    overflow-x: overflow,
+    overflow-y: overflow,
   }
 }
 

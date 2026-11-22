@@ -152,8 +152,27 @@ impl Edges {
     }
 }
 
-/// Geometry only. Nothing here affects painting, and nothing in a style
-/// affects measurement.
+/// What becomes of content that does not fit in a box, on one axis.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, ComponentType, Lift, Lower)]
+#[component(enum)]
+#[repr(u8)]
+pub enum Overflow {
+    /// Cut off at the box's edge. The box is never laid out smaller than
+    /// its content, so this is for a box whose content is expected to fit.
+    #[default]
+    #[component(name = "clip")]
+    Clip,
+    /// Cut off at the box's edge. The box may be laid out smaller than its
+    /// content.
+    #[component(name = "hidden")]
+    Hidden,
+    /// Cut off, and the box scrolls.
+    #[component(name = "scroll")]
+    Scroll,
+}
+
+/// Geometry, and what becomes of content that does not fit. Nothing in a
+/// style affects measurement.
 #[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
 #[component(record)]
 pub struct Flex {
@@ -168,6 +187,10 @@ pub struct Flex {
     pub height: Length,
     pub grow: f32,
     pub shrink: f32,
+    #[component(name = "overflow-x")]
+    pub overflow_x: Overflow,
+    #[component(name = "overflow-y")]
+    pub overflow_y: Overflow,
 }
 
 impl Default for Flex {
@@ -184,6 +207,8 @@ impl Default for Flex {
             // CSS's default, and taffy's: a flex item may shrink below its
             // basis before it overflows.
             shrink: 1.0,
+            overflow_x: Overflow::Clip,
+            overflow_y: Overflow::Clip,
         }
     }
 }

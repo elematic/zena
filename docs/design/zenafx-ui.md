@@ -62,6 +62,8 @@
       - [WIT](#wit)
       - [Implementation status of events](#implementation-status-of-events)
       - [State styles](#state-styles)
+      - [Scrolling](#scrolling)
+      - [Drawing outside a box](#drawing-outside-a-box)
     - [Context: values that inherit down the tree](#context-values-that-inherit-down-the-tree)
   - [Host primitives](#host-primitives)
     - [Layout with measurement inside the solve](#layout-with-measurement-inside-the-solve)
@@ -1022,7 +1024,7 @@ own thread, some time after the input that led to them, so the window's thread
 never waits on a component. When a handler changes the tree, the `render` call
 that changes it asks the window for a frame.
 
-Not built: keyboard input and focus, the scroll wheel, pointer capture, so an
+Not built: keyboard input and focus, a `wheel` listener, pointer capture, so an
 `up` goes to whatever the pointer is over when the button is released, and a
 budget for a pass of handlers that keep raising events.
 
@@ -1083,9 +1085,156 @@ predicate fixed to "this node, or that node of the same template". The rule
 sets designed there would replace the list.
 
 A fill's look is drawn in the frame that finds its state. A text node's look is
-shaped before the solve, because it can change how wide the run is, so a state
-that a frame finds changed is drawn one frame later. A look is the same for
-every instance of a template: no hole writes one yet.
+shaped before the solve, because it can change how wide the run is. When a
+frame finds a text node's state changed after it has solved, it shapes the run
+for the next frame to lay out and owes that one frame more. A frame that finds
+only fills changed owes none. A look is the same for every instance of a
+template: no hole writes one yet.
+
+#### Scrolling
+
+How far a box has scrolled is state of the same kind as what the pointer is
+over, and it is kept in the same place. A box's layout says what becomes of
+content that does not fit, on each axis:
+
+```wit
+enum overflow { clip, hidden, scroll }
+```
+
+All three cut the content off at the box, and
+[Drawing outside a box](#drawing-outside-a-box) says why there is no fourth.
+`clip` is the default, for a box whose content is expected to fit. `hidden` is
+for a box meant to hold more than fits. `scroll` is `hidden`, and lets the
+wheel move the content. The scene keeps the offset on the node, moves it when the wheel turns
+over the box, and holds it within how far the content reaches each time it
+solves. `examples/zenafx/scroll/` is forty rows in a box that shows six, and
+`packages/zenafx/tests/scroll.rs` wheels it to its end and back with no event
+written to the component.
+
+Nothing is delivered for the wheel. A component could be told, and move its own
+content by writing a layout hole, but each notch would then be an event to the
+component and a write back, for a number the component has no other use for.
+The reasons under [State styles](#state-styles) apply unchanged: the scene has
+the rectangles, a busy component would freeze its own scrolling, and the frame
+after a scroll has to find what is now under the pointer in any case. A `wheel`
+listener for a component that wants one, such as a map that zooms, is not
+built.
+
+Three things follow from the offset being the scene's.
+
+- **The solve does not know about it.** Layout places everything as if nothing
+  were scrolled, and reports how far each box's content runs past it. The scene
+  shifts each node by what the boxes it sits in have scrolled, and cuts it off
+  at their edges, when it walks the solved tree. A scroll therefore changes
+  nothing the solver reads, and the frame after one does not solve. The scene
+  keeps the solver's last answer and uses it until the component writes the
+  tree, the window changes size or the text scale does.
+  `scrolling_and_hovering_solve_nothing` in `ui/scene.rs` counts the solves.
+- **What is cut off is not there.** A node wholly outside the box it is cut
+  off at is not drawn, so a frame costs what shows and not what the list holds.
+  The pointer is not over it either: the hit test reads the same clip the paint
+  does.
+- **A box at its end passes the wheel on.** The wheel goes to the nearest box
+  under the pointer that scrolls on that axis and has further to go, so a list
+  at its last row scrolls the page it is in.
+
+`overflow` is in `flex` because it changes layout as well as paint. A `clip`
+box is never laid out smaller than its content. A `hidden` or a `scroll` box
+can be, which is what lets a list take the room it is given and scroll the
+rest. `a_hidden_or_scrolling_box_can_be_smaller_than_its_content` in
+`ui/layout.rs` has a 300 tall box in a 100 tall column each way. The names and
+the meanings are CSS's and taffy's, so the host passes them through.
+
+Nodes are painted level by level, so a box's content is not one run of commands
+and a clip cannot be opened before a box and closed after it. The scene works
+out the clip each node is under and opens and closes one round each stretch of
+commands that share it. Painting a node's whole subtree before its next
+sibling's would give one clip per box, and is the order overlapping content
+will need.
+
+A box with further to scroll shows a thumb, drawn by the scene over everything
+else: as long, against the box, as the box is against its content. Every thumb
+looks the same, and the pointer cannot drag one, which waits on pointer
+capture.
+
+Not built: reading or setting a box's offset from a component, which restoring
+a position and scrolling a row into view both need, a clip that follows rounded
+corners, a thumb that can be dragged or styled, and momentum.
+
+#### Drawing outside a box
+
+Nothing is drawn outside a box. Content that does not fit in a box is cut off
+at the box's edge, and what is cut off is not under the pointer.
+
+CSS draws such content outside the box unless the box says otherwise, with
+`overflow: visible` as the default. That one default serves three purposes,
+and each is better served by something that says what it is for.
+
+**Content that was not meant to overflow.** A label too long for a button of a
+fixed width. CSS draws it over whatever is beside the button. Here it is cut
+off at the button, and the host logs a warning the first time, since the
+author most likely did not intend it. This part is built. A box whose content
+fits is drawn with no clip: the scene compares each child's box with its
+parent's after a solve and narrows the clip only where one sticks out, so the
+default costs the paint nothing in the usual case.
+`content_that_does_not_fit_is_cut_off_by_default` and
+`a_box_whose_content_fits_is_drawn_with_no_clip` in `ui/scene.rs` have both
+cases. What a box cuts off also adds nothing to how far a box above it
+scrolls, which `what_a_box_cuts_off_does_not_scroll_the_box_above` in
+`ui/layout.rs` checks.
+
+**Decorations.** A shadow, or a ring round the node with the focus, is drawn
+beyond a box's edge. It belongs to the box's style, and how far it extends is
+known from its declaration: a shadow's offset and blur, a ring's width. A
+decoration is never under the pointer and takes no part in layout. A `clip`
+box does not cut off the decorations of the nodes inside it, so a box that
+fits tightly round a card does not cut the card's shadow. A `hidden` or a
+`scroll` box does. Not built: a box has no shadow yet.
+
+One choice is open. CSS draws a shadow with its own box, so it can fall on a
+sibling drawn earlier. If a parent drew its children's shadows before any of
+the children, a shadow would fall on the parent's background and never on a
+sibling.
+
+**Content placed outside on purpose.** A badge on the corner of an avatar,
+controls that appear over a row while the pointer is on it, a menu under a
+button. For these a node can have boxes beside its main one. Not built. The
+design is:
+
+- A node has a main box, which is the one layout places among its siblings,
+  and any number of **extra boxes**. An extra box is placed against the main
+  box: at a corner or along an edge, with an offset. It takes no room among
+  the node's siblings and never changes their sizes.
+- An extra box is a box like any other for hit testing and for working out
+  what to repaint. Nothing is drawn outside it either.
+- An extra box belongs to its node. The node is hovered while the pointer is
+  over any of its boxes, so controls that show while a row is hovered stay
+  when the pointer moves onto them. An event in an extra box travels through
+  the node, as one in its interior does.
+- An extra box is beside the main box and not inside it. If the node scrolls
+  or cuts off its content, its extra boxes are not part of that content.
+- An extra box is cut off by the nearest `hidden` or `scroll` box above its
+  node, so a badge on a row scrolls under a header with the row. A `clip` box
+  between the two does not cut it, for the reason it does not cut a shadow.
+  An extra box can instead be in the window's top layer, above everything and
+  cut off by the window alone, which is what a menu and a tooltip need.
+- An extra box is drawn above the content of the box that cuts it off, so a
+  later sibling does not cover a badge.
+- An extra box is laid out by itself after the main solve, and then placed.
+
+The anchor of an extra box is always its own node's main box, so a widget
+never names a node it does not own.
+
+Two alternatives were considered for content placed outside. A node could
+declare how far it extends past its box on each side, which makes the author
+state a bound the host can find for itself. And a node could be anchored to
+any other node, as CSS anchor positioning allows, which needs a way to name a
+node in another widget.
+
+Not designed: whether an extra box past the end of a scrolling box's content
+adds to how far it scrolls, moving a menu that does not fit to the other side
+of its anchor, and a box drawn larger than it is laid out, as one that grows
+under the pointer is.
 
 ### Context: values that inherit down the tree
 

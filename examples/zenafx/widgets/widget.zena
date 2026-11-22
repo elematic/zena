@@ -16,9 +16,9 @@
  * written and leaves the numbering to the compiler.
  */
 import { Flex, Edges, Axis, Justify, Align, Length, BoxStyle, TextStyle,
-         LengthAuto, LengthPercent } from 'zenafx:ui/style';
+         LengthAuto, LengthPercent, Overflow } from 'zenafx:ui/style';
 import { NodeDef, Appearance, AppearanceNothing, AppearanceFill, AppearanceText,
-         TextContent, Binding } from 'zenafx:host/scene';
+         TextContent, Binding, StateStyle } from 'zenafx:host/scene';
 import { Template } from '../framework.zena';
 
 export let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
@@ -40,6 +40,20 @@ export type BoxOpts = {
   width?: Length,
   height?: Length,
   grow?: f32,
+  /**
+   * How readily the box gives up room it has no space for. 1 unless said
+   * otherwise, and 0 for a row of a list, which keeps its height and lets the
+   * list scroll.
+   */
+  shrink?: f32,
+  /**
+   * What becomes of content that does not fit, sideways and downwards. It is
+   * cut off at the box in every case. `Clip`, the default, is for a box whose
+   * content is expected to fit. `Hidden` and `Scroll` are for a box meant to
+   * hold more than fits, which may then be laid out smaller than its content.
+   */
+  overflowX?: Overflow,
+  overflowY?: Overflow,
   style?: BoxStyle,
 };
 
@@ -54,7 +68,9 @@ function flexOf(opts: BoxOpts) {
   opts.width ?? new LengthAuto(),
   opts.height ?? new LengthAuto(),
   opts.grow ?? 0.0,
-  1.0,
+  opts.shrink ?? 1.0,
+  opts.overflowX ?? Overflow.Clip,
+  opts.overflowY ?? Overflow.Clip,
 );
 }
 
@@ -138,7 +154,11 @@ export function flatten(root: Box): Array<NodeDef> {
   return nodes;
 }
 
-/** A template: a box tree, and where its holes are. */
-export function template(root: Box, bindings: Array<Binding>): Template {
-  return new Template(flatten(root), bindings);
+/**
+ * A template: a box tree, where its holes are, and how its nodes look while the
+ * pointer is over them or pressing them.
+ */
+export function template(root: Box, bindings: Array<Binding>,
+                         states: Array<StateStyle> = []): Template {
+  return new Template(flatten(root), bindings, states);
 }

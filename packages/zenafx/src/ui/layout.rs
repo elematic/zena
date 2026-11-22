@@ -15,8 +15,8 @@ use taffy::{
 
 use super::text::TextEngine;
 use super::types::{
-    Align, Available, Axis, Content, Flex, Justify, Length, Measured, MeasureRequest, Node, Rect,
-    Size,
+    Align, Available, Axis, Content, Flex, Justify, Length, Measured, MeasureRequest, Node,
+    Overflow, Rect, Size,
 };
 
 /// Solve one tree. The result is parallel to `nodes`, and each rect is in the
@@ -54,6 +54,16 @@ pub fn measure_text(text: &mut TextEngine, run: u32, query: MeasureRequest) -> M
     text.measure_run(run, width)
 }
 
+/// Where a solve put one node, and how far its content runs past it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Placed {
+    /// The node's box, in the root's coordinate space, with nothing scrolled.
+    pub rect: Rect,
+    /// How far the content can be scrolled on each axis before its far edge
+    /// reaches the box's: zero when the content fits.
+    pub reach: Size,
+}
+
 /// [`solve`] with measurement supplied by the caller.
 ///
 /// `measure` is given a leaf's content and one [`MeasureRequest`], and is
@@ -64,8 +74,21 @@ pub fn measure_text(text: &mut TextEngine, run: u32, query: MeasureRequest) -> M
 pub fn solve_with(
     nodes: &[Node],
     available: Size,
-    mut measure: impl FnMut(&Content, MeasureRequest) -> Measured,
+    measure: impl FnMut(&Content, MeasureRequest) -> Measured,
 ) -> Vec<Rect> {
+    place_with(nodes, available, measure)
+        .into_iter()
+        .map(|placed| placed.rect)
+        .collect()
+}
+
+/// [`solve_with`], also saying how far each node's content overflows it,
+/// which is what a caller that scrolls needs to know.
+pub fn place_with(
+    nodes: &[Node],
+    available: Size,
+    mut measure: impl FnMut(&Content, MeasureRequest) -> Measured,
+) -> Vec<Placed> {
     if nodes.is_empty() {
         return Vec::new();
     }
@@ -129,15 +152,19 @@ pub fn solve_with(
 
     // taffy reports each node's location relative to its parent's border box;
     // the scene wants window coordinates.
-    let mut out = vec![
-        Rect {
+    let nowhere = Placed {
+        rect: Rect {
             x: 0.0,
             y: 0.0,
             width: 0.0,
-            height: 0.0
-        };
-        nodes.len()
-    ];
+            height: 0.0,
+        },
+        reach: Size {
+            width: 0.0,
+            height: 0.0,
+        },
+    };
+    let mut out = vec![nowhere; nodes.len()];
     absolutize(&tree, nodes, &ids, 0, 0.0, 0.0, &mut out);
     out
 }
@@ -157,17 +184,23 @@ fn absolutize(
     index: usize,
     parent_x: f32,
     parent_y: f32,
-    out: &mut [Rect],
+    out: &mut [Placed],
 ) {
     let Some(id) = ids[index] else { return };
     let l = tree.layout(id).expect("taffy has no layout for a node it built");
     let x = parent_x + l.location.x;
     let y = parent_y + l.location.y;
-    out[index] = Rect {
-        x,
-        y,
-        width: l.size.width,
-        height: l.size.height,
+    out[index] = Placed {
+        rect: Rect {
+            x,
+            y,
+            width: l.size.width,
+            height: l.size.height,
+        },
+        reach: Size {
+            width: l.scroll_width(),
+            height: l.scroll_height(),
+        },
     };
     let node = &nodes[index];
     for c in node.first_child as usize..node.first_child as usize + node.child_count as usize {
@@ -212,7 +245,30 @@ fn taffy_style(flex: &Flex) -> Style {
         },
         flex_grow: flex.grow,
         flex_shrink: flex.shrink,
+        overflow: taffy::Point {
+            x: overflow(flex.overflow_x),
+            y: overflow(flex.overflow_y),
+        },
         ..Style::DEFAULT
+    }
+}
+
+/// The three values are CSS's and taffy's, with their meanings.
+///
+/// `Clip` keeps a flex item's automatic minimum size, so the box is not laid
+/// out smaller than its content, and what sticks out of it does not add to
+/// how far a box above it scrolls. `Hidden` may be laid out smaller than its
+/// content. `Scroll` is `Hidden` with room kept for a scrollbar, and the
+/// scrollbar's width is left at zero.
+///
+/// CSS and taffy also have `Visible`, which draws what does not fit outside
+/// the box. ZenaFX leaves it out: see "Drawing outside a box" in
+/// `docs/design/zenafx-ui.md`.
+fn overflow(overflow: Overflow) -> taffy::Overflow {
+    match overflow {
+        Overflow::Clip => taffy::Overflow::Clip,
+        Overflow::Hidden => taffy::Overflow::Hidden,
+        Overflow::Scroll => taffy::Overflow::Scroll,
     }
 }
 
@@ -513,6 +569,109 @@ mod tests {
 
         assert!(imposed.len() > 1, "{imposed:?}");
         assert!(discovered.len() > 1, "{discovered:?}");
+    }
+
+    /// A column 100 tall holding a box whose own content is 300 tall. A
+    /// `clip` box is never laid out smaller than its content, so it stays
+    /// 300 and sticks out of the column, which cuts it off. A `hidden` or a
+    /// `scroll` box gives up the room: it is laid out at 100, with 200
+    /// further for its content to scroll.
+    #[test]
+    fn a_hidden_or_scrolling_box_can_be_smaller_than_its_content() {
+        let tree = |overflow_y| {
+            vec![
+                boxed(
+                    Flex {
+                        height: Length::Px(100.0),
+                        ..Flex::default()
+                    },
+                    1,
+                    1,
+                ),
+                boxed(
+                    Flex {
+                        overflow_y,
+                        ..Flex::default()
+                    },
+                    2,
+                    1,
+                ),
+                boxed(
+                    Flex {
+                        width: Length::Px(50.0),
+                        height: Length::Px(300.0),
+                        shrink: 0.0,
+                        ..Flex::default()
+                    },
+                    0,
+                    0,
+                ),
+            ]
+        };
+        let window = Size {
+            width: 800.0,
+            height: 600.0,
+        };
+        let place = |overflow_y| {
+            place_with(&tree(overflow_y), window, |_, _| unreachable!("no text"))[1]
+        };
+
+        let kept = place(Overflow::Clip);
+        assert_eq!((kept.rect.height, kept.reach.height), (300.0, 0.0));
+        for gives in [Overflow::Hidden, Overflow::Scroll] {
+            let given = place(gives);
+            assert_eq!(
+                (given.rect.height, given.reach.height),
+                (100.0, 200.0),
+                "{gives:?}"
+            );
+        }
+    }
+
+    /// A scrolling box 100 tall holds a box 50 tall, whose own content is
+    /// 300 tall and sticks out of it. The inner box cuts that content off,
+    /// so there is nothing more for the outer box to scroll to.
+    #[test]
+    fn what_a_box_cuts_off_does_not_scroll_the_box_above() {
+        let tree = vec![
+            boxed(
+                Flex {
+                    height: Length::Px(100.0),
+                    overflow_y: Overflow::Scroll,
+                    ..Flex::default()
+                },
+                1,
+                1,
+            ),
+            boxed(
+                Flex {
+                    height: Length::Px(50.0),
+                    shrink: 0.0,
+                    ..Flex::default()
+                },
+                2,
+                1,
+            ),
+            boxed(
+                Flex {
+                    width: Length::Px(50.0),
+                    height: Length::Px(300.0),
+                    shrink: 0.0,
+                    ..Flex::default()
+                },
+                0,
+                0,
+            ),
+        ];
+        let window = Size {
+            width: 800.0,
+            height: 600.0,
+        };
+        let placed = place_with(&tree, window, |_, _| unreachable!("no text"));
+
+        assert_eq!(placed[0].reach.height, 0.0, "the scrolling box");
+        assert_eq!(placed[1].rect.height, 50.0);
+        assert_eq!(placed[2].rect.height, 300.0, "which sticks out of it");
     }
 
     #[test]

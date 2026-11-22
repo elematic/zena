@@ -92,6 +92,15 @@ pub enum PointerInput {
         button: u8,
         down: bool,
     },
+    /// The scroll wheel turned, or two fingers moved on a touchpad, with the
+    /// pointer at `x`, `y`. `dx` and `dy` are how far to scroll, in the same
+    /// units as a position: positive is further right and further down.
+    Wheel {
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+    },
     /// The pointer left the window.
     Left,
 }

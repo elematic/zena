@@ -25,11 +25,11 @@ use wasmtime::component::{ComponentType, Lift, Lower};
 use super::events::{
     Call, Delivery, Listener, Phase, PointerEvent, PointerInput, PointerKind, Scope,
 };
-use super::layout::{measure_text, solve_with};
+use super::layout::{Placed, measure_text, place_with};
 use super::text::TextEngine;
 use super::types::{
-    BoxStyle, Color, Command, Content, Flex, Glyphs, Length, Measured, Node as FlatNode, Quad,
-    Rect, Size, TextStyle,
+    BoxStyle, Color, Command, Content, Flex, Glyphs, Length, Measured, Node as FlatNode, Overflow,
+    Quad, Rect, Size, TextStyle,
 };
 
 /// A node of the retained tree, as a component sends it.
@@ -190,6 +190,15 @@ struct Template {
     states: Vec<StateStyle>,
 }
 
+/// One answer from the solver, and the question it answers: the window's
+/// size and the text scale. The tree is the rest of the question, and
+/// `Scene::unsolved` says when that has changed.
+struct Solved {
+    available: Size,
+    scale: f32,
+    placed: Vec<Placed>,
+}
+
 /// A [`StateStyle`] on the node it changes, with `of` resolved to the scene
 /// node whose state is read.
 struct Look {
@@ -241,6 +250,14 @@ struct Retained {
     /// The style a text node's run is shaped with when that is one of its
     /// `looks`. `None` when it is the node's own.
     shaped_as: Option<TextStyle>,
+    /// How far this node's content is scrolled, right and down. Moved by the
+    /// wheel on an axis whose overflow is `scroll`, and kept within how far
+    /// the content reaches each time a frame solves.
+    scroll: (f32, f32),
+    /// Whether the last frame found content sticking out of this node when
+    /// its content was expected to fit. Kept so that it is logged when it
+    /// starts and not on every frame after.
+    spilled: bool,
 }
 
 impl Retained {
@@ -259,6 +276,8 @@ impl Retained {
             looks: Vec::new(),
             watched: [false; 2],
             shaped_as: None,
+            scroll: (0.0, 0.0),
+            spilled: false,
         }
     }
 
@@ -303,6 +322,23 @@ pub struct Scene {
     /// `enter` and `leave` calls a frame found it owed: the tree moved under
     /// a pointer that did not, so no input arrived to deliver them with.
     owed: Vec<Delivery>,
+    /// What the last frame cut each node off at, indexed by node id: the
+    /// boxes of the clipping and scrolling nodes it sits in, intersected.
+    /// `None` for a node nothing cuts off.
+    clips: Vec<Option<Rect>>,
+    /// How far each node's content could be scrolled at the last solve,
+    /// indexed by node id.
+    reaches: Vec<Size>,
+    /// What layout was last solved for, and what it answered. A frame that
+    /// would ask the same question again uses the answer: scrolling and
+    /// hovering change where and how things are drawn, and not where the
+    /// solve puts them.
+    solved: Option<Solved>,
+    /// Set when the tree was written since the last solve, so the answer
+    /// kept in `solved` is to a question nobody is asking any more.
+    unsolved: bool,
+    /// How many times layout has been solved, for tests of what a frame costs.
+    pub solves: u32,
     /// The node each listener is on, by the listener's id, so that one can
     /// be removed without a search.
     listening: std::collections::HashMap<u32, u32>,
@@ -387,7 +423,15 @@ impl Scene {
         for hole in holes {
             self.write_hole(node, &bindings, hole, text);
         }
+        self.changed();
+    }
+
+    /// Record that the tree was written: a frame is owed, and the frame has
+    /// to solve layout again. A hole can change what a node says or how it
+    /// lays out, and the scene does not look to see which.
+    fn changed(&mut self) {
         self.dirty = true;
+        self.unsolved = true;
     }
 
     /// The nodes hanging in slot `index` of `node`'s interior, made exactly
@@ -420,7 +464,7 @@ impl Scene {
             children.push(self.alloc(Retained::under(slot)));
         }
         self.get_mut(slot)?.children = children.clone();
-        self.dirty = true;
+        self.changed();
         Some(children)
     }
 
@@ -472,7 +516,7 @@ impl Scene {
             self.end(&listeners);
         }
         if defs.is_empty() {
-            self.dirty = true;
+            self.changed();
             return;
         }
 
@@ -551,7 +595,7 @@ impl Scene {
                 nodes: ids,
             });
         }
-        self.dirty = true;
+        self.changed();
     }
 
     /// Shape a node's text, if it has any. The run belongs to the node from
@@ -652,42 +696,146 @@ impl Scene {
         // solve has to measure the run it is going to draw.
         self.reshape_for_states(&order, text);
 
-        let flat: Vec<FlatNode> = order
-            .iter()
-            .zip(&children_of)
-            .map(|(id, children)| {
-                let node = self.get(*id).expect("a live node");
-                let first = children
-                    .first()
-                    .map(|c| position_of[*c as usize])
-                    .unwrap_or(0);
-                FlatNode {
-                    layout: node.layout,
-                    content: match node.run {
-                        Some(run) => Content::Text(run),
-                        None => Content::Box,
-                    },
-                    first_child: first,
-                    child_count: children.len() as u32,
-                }
-            })
-            .collect();
+        // The solve is the costly part of a frame, and most frames have no
+        // need of one: nothing the solver reads has changed when the pointer
+        // moved or a box scrolled. The last answer stands until the tree is
+        // written, the window changes size, or the text scale does.
+        let stands = !self.unsolved
+            && self
+                .solved
+                .as_ref()
+                .is_some_and(|s| s.available == available && s.scale == text.scale());
+        if !stands {
+            let flat: Vec<FlatNode> = order
+                .iter()
+                .zip(&children_of)
+                .map(|(id, children)| {
+                    let node = self.get(*id).expect("a live node");
+                    let first = children
+                        .first()
+                        .map(|c| position_of[*c as usize])
+                        .unwrap_or(0);
+                    FlatNode {
+                        layout: node.layout,
+                        content: match node.run {
+                            Some(run) => Content::Text(run),
+                            None => Content::Box,
+                        },
+                        first_child: first,
+                        child_count: children.len() as u32,
+                    }
+                })
+                .collect();
+            let placed = place_with(&flat, available, |content, query| match content {
+                Content::Text(run) => measure_text(text, *run, query),
+                _ => Measured {
+                    width: 0.0,
+                    height: 0.0,
+                    baseline: 0.0,
+                },
+            });
+            self.solved = Some(Solved {
+                available,
+                scale: text.scale(),
+                placed,
+            });
+            self.unsolved = false;
+            self.solves += 1;
+        }
+        let placed = self.solved.as_ref().expect("solved above").placed.clone();
 
-        let rects = solve_with(&flat, available, |content, query| match content {
-            Content::Text(run) => measure_text(text, *run, query),
-            _ => Measured {
-                width: 0.0,
-                height: 0.0,
-                baseline: 0.0,
-            },
-        });
+        // The solve places everything as if nothing were scrolled. A node is
+        // drawn that far from where the solve put it as the nodes it sits in
+        // have scrolled between them, and is cut off at their boxes. A parent
+        // comes before its children in `order`, so what a node passes down
+        // is known by the time its children are reached.
+        let mut parent_of = vec![usize::MAX; order.len()];
+        for (index, children) in children_of.iter().enumerate() {
+            for child in children {
+                parent_of[position_of[*child as usize] as usize] = index;
+            }
+        }
+        // For each node: how far its children are shifted, and what they are
+        // cut off at.
+        let mut passed_down: Vec<((f32, f32), Option<Rect>)> = Vec::with_capacity(order.len());
+        let mut rects: Vec<Rect> = Vec::with_capacity(order.len());
+        let mut clips: Vec<Option<Rect>> = Vec::with_capacity(order.len());
+        for (index, id) in order.iter().enumerate() {
+            let (shift, clip) = match parent_of[index] {
+                usize::MAX => ((0.0, 0.0), None),
+                parent => passed_down[parent],
+            };
+            let Placed {
+                rect: solved,
+                reach,
+            } = placed[index];
+            let rect = Rect {
+                x: solved.x - shift.0,
+                y: solved.y - shift.1,
+                ..solved
+            };
+            // A box whose content is expected to fit is cut off at only when
+            // a child's box sticks out of it. What sticks out of a child is
+            // the child's to cut off, so the children are all there is to
+            // look at.
+            let spills = children_of[index]
+                .iter()
+                .any(|child| !contains(solved, placed[position_of[*child as usize] as usize].rect));
+            let held = self.get_mut(*id).expect("a live node");
+            let (over_x, over_y) = (held.layout.overflow_x, held.layout.overflow_y);
+            let expects_more = over_x != Overflow::Clip || over_y != Overflow::Clip;
+            if spills && !expects_more && !held.spilled {
+                log::warn!(
+                    "content does not fit in node {id}, which is {} by {}, and is cut off; \
+                     a box meant to hold more than fits says `hidden` or `scroll`",
+                    solved.width,
+                    solved.height,
+                );
+            }
+            held.spilled = spills && !expects_more;
+            // Content that shrank, or a window that grew, can leave a node
+            // scrolled further than its content now reaches.
+            held.scroll = (
+                within(held.scroll.0, reach.width, over_x),
+                within(held.scroll.1, reach.height, over_y),
+            );
+            let inner_shift = (shift.0 + held.scroll.0, shift.1 + held.scroll.1);
+            // Content is cut off inside the border, so a list's rows scroll
+            // under its border and not over it.
+            let border = match &held.appearance {
+                Appearance::Fill(style) if style.border_color.is_some() => style.border_width,
+                _ => 0.0,
+            };
+            let inside = Rect {
+                x: rect.x + border,
+                y: rect.y + border,
+                width: (rect.width - 2.0 * border).max(0.0),
+                height: (rect.height - 2.0 * border).max(0.0),
+            };
+            let inner_clip = cut(clip, inside, expects_more || spills);
+            passed_down.push((inner_shift, inner_clip));
+            rects.push(rect);
+            clips.push(clip);
+        }
 
         // Keep where everything went: the pointer is tested against what the
         // last frame showed, which is what the person was pointing at.
         self.rects.clear();
         self.rects.resize(self.nodes.len(), None);
+        self.clips.clear();
+        self.clips.resize(self.nodes.len(), None);
+        self.reaches.clear();
+        self.reaches.resize(
+            self.nodes.len(),
+            Size {
+                width: 0.0,
+                height: 0.0,
+            },
+        );
         for (index, id) in order.iter().enumerate() {
             self.rects[*id as usize] = Some(rects[index]);
+            self.clips[*id as usize] = clips[index];
+            self.reaches[*id as usize] = placed[index].reach;
         }
         self.painted = order;
 
@@ -698,47 +846,130 @@ impl Scene {
             let (x, y) = self.pointer;
             self.hover(self.hit(x, y))
         };
+        // A fill's look is drawn below, in this frame, from the states as
+        // they now are. A text node's look can change how wide its run is,
+        // so it is shaped before the solve, and one that changed just now is
+        // shaped here for the next frame to lay out. Only then is another
+        // frame owed: a list of rows with hovered fills scrolls in one frame
+        // a notch.
+        let late = restyled && {
+            let painted = std::mem::take(&mut self.painted);
+            let reshaped = self.reshape_for_states(&painted, text);
+            self.painted = painted;
+            reshaped
+        };
 
         let (hovered, pressed) = (self.path(self.hovered), self.path(self.pressed));
         let mut commands = Vec::new();
+        // The clip the commands being added are inside. Nodes are painted
+        // level by level, so one node's subtree is not a run of commands and
+        // a clip is opened and closed round each stretch that shares one.
+        let mut open: Option<Rect> = None;
         for (index, id) in self.painted.iter().enumerate() {
-            let rect = rects[index];
+            let (rect, clip) = (rects[index], clips[index]);
+            // What is cut off entirely is not drawn, which is what keeps a
+            // long list scrolled to its middle from costing its whole length.
+            if clip.is_some_and(|clip| !overlaps(clip, rect)) {
+                continue;
+            }
             let node = self.get(*id).expect("a live node");
             let look = node.looks.iter().rev().find_map(|l| match &l.style {
                 Restyle::Fill(style) if holds(l, &hovered, &pressed) => Some(style),
                 _ => None,
             });
-            match (look, &node.appearance, node.run) {
+            let command = match (look, &node.appearance, node.run) {
                 (Some(style), _, None) | (None, Appearance::Fill(style), _) => {
-                    commands.push(Command::Quad(Quad {
+                    Command::Quad(Quad {
                         bounds: rect,
                         background: style.background,
                         border_color: style.border_color,
                         border_width: style.border_width,
                         corner_radius: style.corner_radius,
-                    }))
+                    })
                 }
-                (_, Appearance::Text(_), Some(run)) => commands.push(Command::Glyphs(Glyphs {
+                (_, Appearance::Text(_), Some(run)) => Command::Glyphs(Glyphs {
                     run,
                     x: rect.x,
                     y: rect.y,
-                })),
-                _ => {}
+                }),
+                _ => continue,
+            };
+            if clip != open {
+                if open.is_some() {
+                    commands.push(Command::PopClip);
+                }
+                if let Some(clip) = clip {
+                    commands.push(Command::PushClip(clip));
+                }
+                open = clip;
+            }
+            commands.push(command);
+        }
+        if open.is_some() {
+            commands.push(Command::PopClip);
+        }
+
+        // Last, and so on top of everything: a thumb in each box that has
+        // further to scroll, showing how much of the content the box shows
+        // and where in it. It is cut off where the box itself is.
+        for (index, id) in self.painted.iter().enumerate() {
+            let (rect, clip) = (rects[index], clips[index]);
+            if clip.is_some_and(|clip| !overlaps(clip, rect)) {
+                continue;
+            }
+            let node = self.get(*id).expect("a live node");
+            let reach = placed[index].reach;
+            let across = node.layout.overflow_x == Overflow::Scroll && reach.width > 0.0;
+            let down = node.layout.overflow_y == Overflow::Scroll && reach.height > 0.0;
+            let mut thumbs = Vec::new();
+            if down {
+                let (at, length) = thumb(rect.height, reach.height, node.scroll.1);
+                thumbs.push(Rect {
+                    x: rect.x + rect.width - THUMB_INSET - THUMB_WIDTH,
+                    y: rect.y + at,
+                    width: THUMB_WIDTH,
+                    height: length,
+                });
+            }
+            if across {
+                let (at, length) = thumb(rect.width, reach.width, node.scroll.0);
+                thumbs.push(Rect {
+                    x: rect.x + at,
+                    y: rect.y + rect.height - THUMB_INSET - THUMB_WIDTH,
+                    width: length,
+                    height: THUMB_WIDTH,
+                });
+            }
+            if thumbs.is_empty() {
+                continue;
+            }
+            if let Some(clip) = clip {
+                commands.push(Command::PushClip(clip));
+            }
+            commands.extend(thumbs.into_iter().map(|bounds| {
+                Command::Quad(Quad {
+                    bounds,
+                    background: Some(THUMB),
+                    border_color: None,
+                    border_width: 0.0,
+                    corner_radius: THUMB_WIDTH / 2.0,
+                })
+            }));
+            if clip.is_some() {
+                commands.push(Command::PopClip);
             }
         }
 
-        // A fill's look is drawn above, in this frame. A text node's is
-        // shaped before the solve, so one that changed just now is a frame
-        // behind and this frame is followed by another.
-        self.dirty = restyled;
+        self.dirty = late;
         commands
     }
 
     /// Shape each text node's run with the look that holds for it, or with
     /// its own style when none does. Only a node whose look changed since it
-    /// was last shaped costs anything.
-    fn reshape_for_states(&mut self, order: &[u32], text: &mut TextEngine) {
+    /// was last shaped costs anything. Returns whether any did.
+    fn reshape_for_states(&mut self, order: &[u32], text: &mut TextEngine) -> bool {
         let (hovered, pressed) = (self.path(self.hovered), self.path(self.pressed));
+        let mut reshaped = false;
         for id in order {
             let Some(held) = self.get_mut(*id) else {
                 continue;
@@ -753,8 +984,13 @@ impl Scene {
             if look != held.shaped_as {
                 text.update_run(run, &own.content, look.as_ref().unwrap_or(&own.style));
                 held.shaped_as = look;
+                reshaped = true;
             }
         }
+        // A run that changed can measure differently, so the last solve's
+        // answer no longer stands.
+        self.unsolved |= reshaped;
+        reshaped
     }
 
     /// Make `target` the node the pointer is over. Returns whether that
@@ -870,7 +1106,7 @@ impl Scene {
     /// changes how some node looks, `dirty` is set and a frame is owed.
     pub fn pointer(&mut self, input: PointerInput) -> Vec<Delivery> {
         let (position, press) = match input {
-            PointerInput::Moved { x, y } => (Some((x, y)), None),
+            PointerInput::Moved { x, y } | PointerInput::Wheel { x, y, .. } => (Some((x, y)), None),
             PointerInput::Button { x, y, button, down } => (Some((x, y)), Some((button, down))),
             PointerInput::Left => (None, None),
         };
@@ -889,10 +1125,21 @@ impl Scene {
             Some((0, false)) => restyled |= self.press(None),
             _ => {}
         }
+        // The wheel is the scene's own business. What moves is a number the
+        // scene keeps, and the frame that follows finds for itself what the
+        // content brought under the pointer, so no listener hears of it.
+        let wheel = match (input, target) {
+            (PointerInput::Wheel { dx, dy, .. }, Some(target)) => {
+                restyled |= self.scroll_from(target, dx, dy);
+                true
+            }
+            (PointerInput::Wheel { .. }, None) => true,
+            _ => false,
+        };
         self.dirty |= restyled;
 
         let mut deliveries = std::mem::take(&mut self.owed);
-        if let (Some(target), Some(_)) = (target, position) {
+        if let (Some(target), Some(_), false) = (target, position, wheel) {
             let (kind, button) = match press {
                 Some((button, true)) => (PointerKind::Down, button),
                 Some((button, false)) => (PointerKind::Up, button),
@@ -904,14 +1151,57 @@ impl Scene {
         deliveries
     }
 
-    /// The node painted last at a point, which is the one on top there.
+    /// Scroll by `dx`, `dy` from `target`: on each axis, the nearest node at
+    /// or above it that scrolls on that axis and has further to go that way.
+    /// Returns whether anything moved.
+    ///
+    /// A node already at its end passes the wheel to the one it sits in, so
+    /// a list scrolled to its last row scrolls the page. The two axes look
+    /// separately, since the row that scrolls sideways and the page that
+    /// scrolls down are often different nodes.
+    fn scroll_from(&mut self, target: u32, dx: f32, dy: f32) -> bool {
+        let path = self.path(Some(target));
+        let mut moved = false;
+        for (by, vertical) in [(dx, false), (dy, true)] {
+            if by == 0.0 {
+                continue;
+            }
+            for id in &path {
+                // A node no frame has placed has nowhere to scroll to yet.
+                let placed = self.rects.get(*id as usize).copied().flatten().is_some();
+                let reach = match (placed, self.reaches.get(*id as usize)) {
+                    (true, Some(reach)) if vertical => reach.height,
+                    (true, Some(reach)) => reach.width,
+                    _ => 0.0,
+                };
+                let Some(held) = self.get_mut(*id) else {
+                    continue;
+                };
+                let (overflow, at) = if vertical {
+                    (held.layout.overflow_y, &mut held.scroll.1)
+                } else {
+                    (held.layout.overflow_x, &mut held.scroll.0)
+                };
+                let to = within(*at + by, reach, overflow);
+                if to != *at {
+                    *at = to;
+                    moved = true;
+                    break;
+                }
+            }
+        }
+        moved
+    }
+
+    /// The node painted last at a point, which is the one on top there. A
+    /// node is only there where it is drawn, so not where a node it sits in
+    /// cuts it off.
     fn hit(&self, x: f32, y: f32) -> Option<u32> {
+        let at = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
         self.painted.iter().rev().copied().find(|id| {
-            self.rects
-                .get(*id as usize)
-                .copied()
-                .flatten()
-                .is_some_and(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+            let rect = self.rects.get(*id as usize).copied().flatten();
+            let clip = self.clips.get(*id as usize).copied().flatten();
+            rect.is_some_and(at) && clip.is_none_or(at)
         })
     }
 
@@ -1124,6 +1414,86 @@ fn holds(look: &Look, hovered: &[u32], pressed: &[u32]) -> bool {
         State::Hovered => hovered.contains(&look.of),
         State::Pressed => pressed.contains(&look.of),
     }
+}
+
+/// How wide a scroll thumb is, how far it sits from the box's edge, and the
+/// shortest it gets however long the content.
+pub const THUMB_WIDTH: f32 = 6.0;
+const THUMB_INSET: f32 = 3.0;
+const THUMB_SHORTEST: f32 = 24.0;
+
+/// A grey that shows over light content and dark. Every thumb looks like
+/// this: nothing styles one yet.
+const THUMB: Color = Color {
+    r: 0.45,
+    g: 0.47,
+    b: 0.52,
+    a: 0.55,
+};
+
+/// Where a scroll thumb starts along a box `extent` long, and how long it
+/// is, when the content runs `reach` past the box and is scrolled `scroll`
+/// into it.
+///
+/// The thumb is to its track as the box is to the content, and sits as far
+/// along the track as the box is through the content.
+fn thumb(extent: f32, reach: f32, scroll: f32) -> (f32, f32) {
+    let track = (extent - 2.0 * THUMB_INSET).max(0.0);
+    let length = (track * extent / (extent + reach))
+        .max(THUMB_SHORTEST)
+        .min(track);
+    let along = if reach > 0.0 { scroll / reach } else { 0.0 };
+    (THUMB_INSET + (track - length) * along, length)
+}
+
+/// A scroll position kept within what is allowed: nowhere on an axis that
+/// does not scroll, and otherwise between the content's near edge and as far
+/// as it reaches.
+fn within(scroll: f32, reach: f32, overflow: Overflow) -> f32 {
+    match overflow {
+        Overflow::Scroll => scroll.clamp(0.0, reach.max(0.0)),
+        Overflow::Clip | Overflow::Hidden => 0.0,
+    }
+}
+
+/// Whether `inner` lies wholly inside `outer`. Layout rounds to whole
+/// pixels, so the slack is for arithmetic and not for a visible overlap.
+fn contains(outer: Rect, inner: Rect) -> bool {
+    const SLACK: f32 = 0.01;
+    inner.x >= outer.x - SLACK
+        && inner.y >= outer.y - SLACK
+        && inner.x + inner.width <= outer.x + outer.width + SLACK
+        && inner.y + inner.height <= outer.y + outer.height + SLACK
+}
+
+/// What a node's children are cut off at: what the node itself is cut off
+/// at, narrowed to the node's own box when `narrows`.
+///
+/// Every box cuts off content that does not fit in it, on both axes. Most
+/// boxes hold content that fits, and narrowing the clip for those would
+/// change nothing drawn and cost a clip in the paint, so the caller asks for
+/// it only where something sticks out or the box scrolls.
+fn cut(clip: Option<Rect>, rect: Rect, narrows: bool) -> Option<Rect> {
+    if !narrows {
+        return clip;
+    }
+    let Some(outer) = clip else {
+        return Some(rect);
+    };
+    let (left, top) = (outer.x.max(rect.x), outer.y.max(rect.y));
+    let right = (outer.x + outer.width).min(rect.x + rect.width);
+    let bottom = (outer.y + outer.height).min(rect.y + rect.height);
+    Some(Rect {
+        x: left,
+        y: top,
+        width: (right - left).max(0.0),
+        height: (bottom - top).max(0.0),
+    })
+}
+
+/// Whether two boxes share any area.
+fn overlaps(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
 }
 
 /// Unused today; kept so the background a scene draws on has one home.
@@ -2039,12 +2409,12 @@ mod tests {
         }
     }
 
-    /// The red of each quad's fill, in paint order.
+    /// The red of each quad's fill, in paint order, scroll thumbs aside.
     fn reds(commands: &[Command]) -> Vec<f32> {
         commands
             .iter()
             .filter_map(|c| match c {
-                Command::Quad(q) => q.background.map(|c| c.r),
+                Command::Quad(q) if q.background != Some(THUMB) => q.background.map(|c| c.r),
                 _ => None,
             })
             .collect()
@@ -2263,11 +2633,78 @@ mod tests {
         assert_eq!(reds(&drawn), vec![PLAIN, HOVERED]);
         assert_eq!(heard(&scene.take_owed()), vec![1, 2]);
         assert!(
-            scene.dirty,
-            "a look changed in the frame, so one more follows"
+            !scene.dirty,
+            "a fill's look is drawn in the frame that finds it, so none follows"
+        );
+    }
+
+    /// A text node's look can change how wide its run is, so a frame that
+    /// finds one changed cannot lay it out: the solve is over. It shapes the
+    /// run with the new look and owes one more frame, which lays it out.
+    #[test]
+    fn a_text_look_found_by_a_frame_is_laid_out_in_the_next() {
+        let quiet = TextStyle::default();
+        let loud = TextStyle {
+            size: quiet.size * 2.0,
+            ..quiet.clone()
+        };
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        scene.render(
+            root,
+            &with_states(
+                PANEL,
+                vec![
+                    NodeDef {
+                        layout: row(),
+                        first_child: 1,
+                        child_count: 2,
+                        ..blank()
+                    },
+                    sized(100.0, 40.0),
+                    text_node("go"),
+                ],
+                vec![Binding {
+                    node: 1,
+                    target: BindingTarget::Layout,
+                }],
+                vec![look(2, State::Hovered, 2, Restyle::Text(loud.clone()))],
+            ),
+            &[],
+            &mut text,
+        );
+        let before = glyphs(&scene.draw(window(), &mut text))[0];
+        scene.pointer(moved(5.0, 5.0));
+        scene.draw(window(), &mut text);
+        assert!(
+            !scene.dirty,
+            "the pointer is over the box, which has no look"
+        );
+
+        // The box shrinks to nothing and the text slides under the pointer.
+        scene.render(
+            root,
+            &TemplateRef::Known(PANEL),
+            &[Hole {
+                binding: 0,
+                value: BindingValue::Layout(Flex {
+                    width: Length::Px(0.0),
+                    height: Length::Px(40.0),
+                    ..Flex::default()
+                }),
+            }],
+            &mut text,
         );
         scene.draw(window(), &mut text);
-        assert!(!scene.dirty, "and that one finds nothing new");
+        assert_eq!(text.get(before.run).expect("a live run").style(), &loud);
+        assert!(scene.dirty, "the run changed size after the solve");
+
+        scene.draw(window(), &mut text);
+        assert!(
+            !scene.dirty,
+            "and the frame that lays it out finds nothing new"
+        );
     }
 
     /// A pointer that has left the window is over nothing, so a frame does
@@ -2347,6 +2784,407 @@ mod tests {
         let mut ended = scene.take_ended();
         ended.sort();
         assert_eq!(ended, vec![1, 2], "the page's own, and its other child's");
+    }
+
+    const LIST: u32 = 11;
+
+    /// A row of a list: 100 by 40, and as tall as that however little room
+    /// there is. A flex item gives up height before it overflows unless it
+    /// is told not to, and a list whose rows did would never need to scroll.
+    fn list_row(red: f32) -> NodeDef {
+        NodeDef {
+            layout: Flex {
+                shrink: 0.0,
+                ..sized(100.0, 40.0).layout
+            },
+            appearance: Appearance::Fill(filled(red)),
+            ..blank()
+        }
+    }
+
+    /// A list in the window's top left corner: a box 100 by 100 holding five
+    /// rows of 40, so twice as much as fits. Position 1 is the list and
+    /// positions 2 to 6 its rows, each with a look for when it is hovered.
+    fn a_list(text: &mut TextEngine, overflow_y: Overflow) -> (Scene, u32) {
+        let mut scene = Scene::new();
+        let root = scene.root();
+        let mut nodes = vec![
+            NodeDef {
+                first_child: 1,
+                child_count: 1,
+                ..blank()
+            },
+            NodeDef {
+                layout: Flex {
+                    overflow_y,
+                    ..sized(100.0, 100.0).layout
+                },
+                first_child: 2,
+                child_count: 5,
+                ..blank()
+            },
+        ];
+        nodes.extend((0..5).map(|_| list_row(PLAIN)));
+        let looks = (2..7)
+            .map(|at| look(at, State::Hovered, at, Restyle::Fill(filled(HOVERED))))
+            .collect();
+        scene.render(root, &with_states(LIST, nodes, vec![], looks), &[], text);
+        scene.draw(window(), text);
+        (scene, root)
+    }
+
+    /// Draw until a frame owes no other, and return the last one. A frame
+    /// that finds a new row under the pointer is followed by one more.
+    fn settled(scene: &mut Scene, text: &mut TextEngine) -> Vec<Command> {
+        let mut commands = scene.draw(window(), text);
+        for _ in 0..4 {
+            if !scene.dirty {
+                break;
+            }
+            commands = scene.draw(window(), text);
+        }
+        assert!(!scene.dirty, "the scene never stopped asking for frames");
+        commands
+    }
+
+    fn wheel(dy: f32) -> PointerInput {
+        PointerInput::Wheel {
+            x: 50.0,
+            y: 10.0,
+            dx: 0.0,
+            dy,
+        }
+    }
+
+    /// The top of each row a frame draws, in paint order.
+    fn tops(commands: &[Command]) -> Vec<f32> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::Quad(q) if q.background != Some(THUMB) => Some(q.bounds.y),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The scroll thumbs a frame draws.
+    fn thumbs(commands: &[Command]) -> Vec<Rect> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::Quad(q) if q.background == Some(THUMB) => Some(q.bounds),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Content past the edge of a scrolling box is cut off there. The rows
+    /// that show are drawn inside a clip of the list's own box, and the two
+    /// that are wholly past it are not drawn at all.
+    #[test]
+    fn content_past_a_scrolling_box_is_cut_off() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_list(&mut text, Overflow::Scroll);
+        let commands = scene.draw(window(), &mut text);
+
+        let list = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        assert_eq!(commands.first(), Some(&Command::PushClip(list)));
+        assert_eq!(tops(&commands), vec![0.0, 40.0, 80.0]);
+        assert_eq!(
+            commands[4],
+            Command::PopClip,
+            "the clip closes after the three rows"
+        );
+    }
+
+    /// A box with further to scroll shows a thumb down its right edge: as
+    /// long, against its track, as the box is against the content, and as far
+    /// along. The list is 100 tall over 200 of rows, so the thumb is half of
+    /// a 94 long track, at its top and then at its bottom. A box whose
+    /// content fits shows none.
+    #[test]
+    fn a_thumb_shows_how_much_shows_and_where() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_list(&mut text, Overflow::Scroll);
+
+        let at_the_top = thumbs(&scene.draw(window(), &mut text));
+        assert_eq!(
+            at_the_top,
+            vec![Rect {
+                x: 100.0 - 3.0 - THUMB_WIDTH,
+                y: 3.0,
+                width: THUMB_WIDTH,
+                height: 47.0,
+            }]
+        );
+
+        scene.pointer(wheel(1000.0));
+        let at_the_bottom = thumbs(&settled(&mut scene, &mut text));
+        assert_eq!(at_the_bottom[0].y, 100.0 - 3.0 - 47.0);
+
+        let (mut hidden, _) = a_list(&mut text, Overflow::Hidden);
+        assert!(thumbs(&hidden.draw(window(), &mut text)).is_empty());
+    }
+
+    /// A frame solves layout only when the answer could differ. Scrolling
+    /// and hovering change where and how things are drawn and not where the
+    /// solve puts them, so the frames after them reuse the last answer. A
+    /// write to the tree, or a window of another size, asks again.
+    #[test]
+    fn scrolling_and_hovering_solve_nothing() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_list(&mut text, Overflow::Scroll);
+        let solves = scene.solves;
+
+        scene.pointer(moved(50.0, 10.0));
+        scene.draw(window(), &mut text);
+        scene.pointer(wheel(40.0));
+        scene.draw(window(), &mut text);
+        scene.draw(window(), &mut text);
+        assert_eq!(scene.solves, solves, "nothing the solver reads changed");
+
+        let wider = Size {
+            width: 900.0,
+            height: 600.0,
+        };
+        scene.draw(wider, &mut text);
+        assert_eq!(scene.solves, solves + 1, "the window changed size");
+
+        scene.render(root, &TemplateRef::Known(LIST), &[], &mut text);
+        scene.draw(wider, &mut text);
+        assert_eq!(scene.solves, solves + 2, "the component wrote the tree");
+    }
+
+    /// The wheel moves the content, as far as its last row's bottom edge
+    /// reaching the list's and no further, and back as far as the top.
+    /// Nothing is told about it: the scene keeps how far a node is scrolled.
+    #[test]
+    fn the_wheel_scrolls_as_far_as_the_content_reaches() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_list(&mut text, Overflow::Scroll);
+        // Bring the pointer over the list first, so that what follows is the
+        // wheel's doing and not the pointer arriving.
+        scene.pointer(moved(50.0, 10.0));
+        settled(&mut scene, &mut text);
+
+        assert!(
+            scene.pointer(wheel(50.0)).is_empty(),
+            "no listener hears the wheel"
+        );
+        assert!(scene.dirty, "the content moved, so a frame is owed");
+        assert_eq!(
+            tops(&settled(&mut scene, &mut text)),
+            vec![-10.0, 30.0, 70.0],
+            "the first row is wholly above the list now, and not drawn"
+        );
+
+        scene.pointer(wheel(1000.0));
+        assert_eq!(
+            tops(&settled(&mut scene, &mut text)),
+            vec![-20.0, 20.0, 60.0],
+            "200 of rows in 100 of list scroll 100"
+        );
+        scene.pointer(wheel(10.0));
+        assert!(!scene.dirty, "it is at its end, so nothing moved");
+
+        scene.pointer(wheel(-1000.0));
+        assert_eq!(tops(&settled(&mut scene, &mut text)), vec![0.0, 40.0, 80.0]);
+    }
+
+    /// The pointer is over what is drawn under it. After the list scrolls,
+    /// a press at the same place lands on the row that moved there, and a
+    /// press below the list lands on nothing, though a row is laid out there.
+    #[test]
+    fn a_press_lands_on_what_scrolled_under_it_and_not_on_what_is_cut_off() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_list(&mut text, Overflow::Scroll);
+        for at in 2..7 {
+            scene.listen(
+                root,
+                at,
+                hears(PointerKind::Down, Scope::Node, Phase::Bubble, at),
+            );
+        }
+        assert_eq!(heard(&scene.pointer(pressed(50.0, 10.0))), vec![2]);
+        assert!(
+            scene.pointer(pressed(50.0, 130.0)).is_empty(),
+            "the fourth row is laid out here and cut off"
+        );
+
+        scene.pointer(wheel(100.0));
+        scene.draw(window(), &mut text);
+
+        assert_eq!(heard(&scene.pointer(pressed(50.0, 10.0))), vec![4]);
+        let deliveries = scene.pointer(pressed(50.0, 30.0));
+        assert_eq!(heard(&deliveries), vec![5]);
+        assert_eq!(
+            deliveries[0].calls[0].event.y, 10.0,
+            "measured from where the row is drawn"
+        );
+    }
+
+    /// A row scrolled under a pointer that did not move is hovered, in the
+    /// frame that draws it there: the frame after a scroll tests the pointer
+    /// against where things now are.
+    #[test]
+    fn the_row_scrolled_under_the_pointer_is_hovered() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_list(&mut text, Overflow::Scroll);
+        scene.pointer(moved(50.0, 10.0));
+        assert_eq!(
+            reds(&scene.draw(window(), &mut text)),
+            vec![HOVERED, PLAIN, PLAIN]
+        );
+
+        scene.pointer(wheel(40.0));
+        assert_eq!(
+            reds(&scene.draw(window(), &mut text)),
+            vec![HOVERED, PLAIN, PLAIN],
+            "the second row is the first one drawn now, and under the pointer"
+        );
+        assert_eq!(
+            tops(&scene.draw(window(), &mut text)),
+            vec![0.0, 40.0, 80.0]
+        );
+    }
+
+    /// A box that cuts its content off without scrolling ignores the wheel.
+    #[test]
+    fn only_a_scrolling_box_scrolls() {
+        let mut text = TextEngine::new();
+        for cuts in [Overflow::Hidden, Overflow::Clip] {
+            let (mut list, _) = a_list(&mut text, cuts);
+            list.pointer(moved(50.0, 10.0));
+            settled(&mut list, &mut text);
+            list.pointer(wheel(50.0));
+            assert!(!list.dirty, "{cuts:?}");
+            assert_eq!(
+                tops(&list.draw(window(), &mut text)),
+                vec![0.0, 40.0, 80.0],
+                "{cuts:?}"
+            );
+        }
+    }
+
+    /// Rows that do not fit in a box are cut off at it though the box says
+    /// nothing about overflow: nothing is drawn outside a box. The part of a
+    /// row that is cut off is not under the pointer either.
+    #[test]
+    fn content_that_does_not_fit_is_cut_off_by_default() {
+        let mut text = TextEngine::new();
+        let (mut list, root) = a_list(&mut text, Overflow::default());
+        list.listen(
+            root,
+            5,
+            hears(PointerKind::Down, Scope::Node, Phase::Bubble, 5),
+        );
+
+        let commands = list.draw(window(), &mut text);
+
+        assert_eq!(tops(&commands), vec![0.0, 40.0, 80.0]);
+        assert!(
+            commands.contains(&Command::PushClip(Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            })),
+            "the list cuts its rows off at its own box"
+        );
+        assert!(
+            heard(&list.pointer(pressed(50.0, 130.0))).is_empty(),
+            "where the fourth row would have been"
+        );
+    }
+
+    /// A box whose content fits is not given a clip, so cutting off by
+    /// default costs the paint nothing where there is nothing to cut.
+    #[test]
+    fn a_box_whose_content_fits_is_drawn_with_no_clip() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = two_styled_buttons(&mut text);
+
+        let commands = scene.draw(window(), &mut text);
+
+        assert!(!commands.iter().any(|c| matches!(c, Command::PushClip(_))));
+    }
+
+    /// A node already at its end passes the wheel to the one it sits in. The
+    /// inner list has 20 further to go and the outer one 100: three turns of
+    /// 20 scroll the inner once and then the outer twice.
+    #[test]
+    fn a_scroller_at_its_end_passes_the_wheel_outward() {
+        let scrolls = |height| Flex {
+            overflow_y: Overflow::Scroll,
+            shrink: 0.0,
+            ..sized(100.0, height).layout
+        };
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        scene.render(
+            root,
+            &fresh(
+                LIST,
+                vec![
+                    NodeDef {
+                        first_child: 1,
+                        child_count: 1,
+                        ..blank()
+                    },
+                    // The outer list: 100 tall, holding 100 of inner list and
+                    // 100 of footer.
+                    NodeDef {
+                        layout: scrolls(100.0),
+                        first_child: 2,
+                        child_count: 2,
+                        ..blank()
+                    },
+                    // The inner list: 100 tall, holding three rows of 40.
+                    NodeDef {
+                        layout: scrolls(100.0),
+                        first_child: 4,
+                        child_count: 3,
+                        ..blank()
+                    },
+                    NodeDef {
+                        layout: Flex {
+                            shrink: 0.0,
+                            ..sized(100.0, 100.0).layout
+                        },
+                        ..blank()
+                    },
+                    list_row(PLAIN),
+                    list_row(PLAIN),
+                    list_row(PLAIN),
+                ],
+                vec![],
+            ),
+            &[],
+            &mut text,
+        );
+        scene.draw(window(), &mut text);
+        let mut turn = |scene: &mut Scene| {
+            scene.pointer(wheel(20.0));
+            tops(&scene.draw(window(), &mut text))
+        };
+
+        assert_eq!(
+            turn(&mut scene),
+            vec![-20.0, 20.0, 60.0],
+            "the inner list scrolled"
+        );
+        assert_eq!(
+            turn(&mut scene),
+            vec![0.0, 40.0],
+            "it had no further to go, so the outer one took it 20 up"
+        );
+        assert_eq!(turn(&mut scene), vec![-20.0, 20.0]);
     }
 }
 

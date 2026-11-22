@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
@@ -22,6 +22,10 @@ use super::events::PointerInput;
 use super::paint::Painter;
 use super::text::TextEngine;
 use super::types::{Color, Command, FrameEvent, KeyEvent};
+
+/// How far one notch of a mouse wheel scrolls, in physical pixels. Three
+/// lines of body text, near enough, which is what desktops default to.
+const WHEEL_NOTCH: f32 = 48.0;
 
 /// Asks the window for a frame. Callable from any thread, any number of
 /// times: requests made before the next frame become one frame.
@@ -226,6 +230,26 @@ impl ApplicationHandler for App {
 
             WindowEvent::CursorLeft { .. } => {
                 if self.scene.pointer(PointerInput::Left) {
+                    live.window.request_redraw();
+                }
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                // winit says which way the wheel or the fingers moved, and
+                // the content follows them: fingers moving up bring the
+                // content up, which is scrolling further down. A wheel
+                // reports notches, and a touchpad the distance itself.
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (-x * WHEEL_NOTCH, -y * WHEEL_NOTCH),
+                    MouseScrollDelta::PixelDelta(by) => (-by.x as f32, -by.y as f32),
+                };
+                let wants = self.scene.pointer(PointerInput::Wheel {
+                    x: live.cursor.0,
+                    y: live.cursor.1,
+                    dx,
+                    dy,
+                });
+                if wants {
                     live.window.request_redraw();
                 }
             }
