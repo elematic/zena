@@ -20,9 +20,10 @@
   pressed, which the host draws without entering the component:
   [State styles](#state-styles). Keys reach the listeners of the node that has
   the focus, and the host moves the focus:
-  [The keyboard and the focus](#the-keyboard-and-the-focus). Text input,
-  widget-defined events, context, style rules, navigation and assets do not
-  exist. The authoring surface in
+  [The keyboard and the focus](#the-keyboard-and-the-focus). A text field is a
+  widget in the component, with the host drawing its caret:
+  [Text fields](#text-fields). Widget-defined events, context, style rules,
+  navigation and assets do not exist. The authoring surface in
   [zenafx-widget-authoring.md](./zenafx-widget-authoring.md) does not exist, so a
   widget is written by hand against the protocol.
 - **Date**: 2026-10-02
@@ -70,6 +71,7 @@
       - [Pointer capture](#pointer-capture)
       - [Cursors](#cursors)
       - [The keyboard and the focus](#the-keyboard-and-the-focus)
+      - [Text fields](#text-fields)
     - [Context: values that inherit down the tree](#context-values-that-inherit-down-the-tree)
   - [Host primitives](#host-primitives)
     - [Layout with measurement inside the solve](#layout-with-measurement-inside-the-solve)
@@ -1374,10 +1376,145 @@ Not built:
   is scrolled out of sight, and stays there.
 - **A ring only for the keyboard.** A press gives a node the focused look as
   `Tab` does, where a browser shows a ring only after a key.
-- **Text.** A key event is a key. Composed input, an input method's candidate
-  text and a selection are a text field's, and there is none.
+- **Text from an input method.** [Text fields](#text-fields) has what a field
+  gets today.
 - **The window's own focus.** The focused look stays while another window is
   in front.
+
+#### Text fields
+
+A text field is a widget in the component. `examples/zenafx/input/` has one,
+in Zena. The work is divided in two.
+
+**The text is the component's**, and so is what each key does to it.
+`input/editing.zena` takes a text and a selection and says what a key makes of
+them. It has no host in it and is tested by itself.
+
+**The selection is the host's.** A window has one selection, and the scene
+keeps it as it keeps the focus and what the pointer is over. A text node says
+whether a person edits it, in `node-def.editable` beside `focusable`, and in
+such a node the host does everything the pointer does:
+
+- A press anywhere in the field puts the caret at the place in the text
+  nearest the pointer, and dragging from there selects.
+- A press with Shift held moves the end of the selection to the pointer.
+- A second press in the same place selects the word there, and a third all
+  the field's text.
+- A field that gets the focus when the selection is somewhere else gets the
+  caret, at the end of its text.
+
+None of that calls the component, for the reasons hover does not: the scene
+has the shaped text and the rectangles, a busy component would otherwise
+freeze its own selection, and the gestures are then the same in every field
+of every application. `tests/input.rs` presses and drags in the built example
+and counts no event written to it.
+
+The host draws the caret and a highlight over what is selected, while the
+node with the keyboard focus is the text node or one above it. A field shows
+no caret once the focus leaves it, and the component is not told. A caret
+and a highlight look the same in every field for now, as a scroll thumb does.
+
+The host keeps the caret in sight. When the selection moves, or the text it
+is in changes, the next frame scrolls the nearest `hidden` or `scroll` box
+above the text until the caret shows, and no further. It happens once for
+each change, so a person who then scrolls the caret away with the wheel is
+not pulled back. A `hidden` box is scrolled by the host alone, as in CSS,
+which is what a one-line field wants: it follows the caret and shows no
+thumb.
+
+The component edits when it hears a key, with two calls and one field of the
+key event:
+
+```wit
+resource node {
+  selection: func(target: u32) -> option<text-selection>;
+  select: func(target: u32, to: text-selection);
+}
+
+record text-selection { anchor: u32, focus: u32 }
+
+record key-event {
+  // ...
+  text: option<string>,
+}
+```
+
+It asks where the selection is, works out the text and the selection the key
+leads to, writes the text into its hole, and says where the caret now is.
+`anchor` is where a selection began and `focus` where it ends, which is where
+the caret is. The names are the DOM's. `key-event.text` is the text a key
+press produces on the keyboard's layout, with dead keys applied. It is `none`
+for a key that types nothing and for a letter pressed with Control or Meta.
+
+A field is the nearest node that can have the focus round an editable text
+node. A press on the field's padding, or on a placeholder beside its text, is
+a press in the field: the caret goes to the nearest place in the editable
+text, which is one of its ends.
+
+Five decisions are in that.
+
+- **Where the editing lives.** The other place is the host. Parley, the
+  library that shapes text, has an editor of its own, and an editable text
+  node could do its own editing and report its text when it changes. That
+  gives every component in any language a field for nothing. It also puts a
+  widget's behaviour in the host: what Enter does, which characters a field
+  accepts and how a value is formatted as it is typed would each need an
+  option on the node or an event to ask the component. Here the component
+  decides those in its own code.
+- **The component asks for the selection and keeps no copy.** The pointer
+  moves the selection without telling the component, so a copy would be out
+  of date by the next key. Two alternatives were considered. The host could
+  write each change to a stream, which is an event for every move of a drag,
+  and leaves the order of a selection event and a key event on two streams to
+  be got right. Or the component could own the selection and be sent the
+  place of each press, which is what an earlier version did: it put the
+  gestures in the component, where a second press and Shift were left
+  undone. Asking costs one call for each key a field uses.
+- **The selection is set by a call and is not a hole.** A hole is a value the
+  component owns, and the framework sends one only when it differs from the
+  last it sent. The pointer may have moved the selection since, so the same
+  value again is not the same selection.
+- **A place in a text is a count of UTF-8 bytes.** It is Parley's unit, so the
+  host passes a place on as it is. Zena turns one into a position in a
+  `String` in constant time, since its strings are stored as UTF-8. The DOM
+  counts UTF-16 units, and a component in a language whose strings are UTF-16
+  would convert. A place is always between two characters as a reader sees
+  them: the host moves one that is not, and the field steps by grapheme.
+- **`text` is on the key event.** The W3C's keyboard events report typed text
+  in a separate `input` event, and `key` holds the character for a key that
+  types one. `key` alone cannot be told apart from a name: nothing says
+  whether `Enter` is a key or five characters. A separate event is where text
+  from an input method would arrive, and that is not built, so for now one
+  field on the event a field already hears is the smaller interface.
+
+A single-line field needs no new layout. Its box is a row, and a row lays its
+items out at their full width, so text that is told not to shrink is one line
+however long it is. An empty text node is still one line high, so an empty
+field keeps its height. A text node's padding is inside its box, and its
+glyphs, its caret and the place of a press are all measured from inside it.
+
+A key that changes the text is two calls, the text and then the selection,
+and the window may draw between them. The frame in between shows the new text
+with the caret where it was, held within the text. Batching a component's
+writes into one frame is not built.
+
+A press moves the selection before any listener on the press's path has
+answered, as it moves the focus. A listener cannot yet keep a press from
+doing either.
+
+Not built:
+
+- **The clipboard.** Copy, cut and paste need the platform's clipboard, which
+  the window library does not provide.
+- **Selecting text that is not in a field.** The selection is one for the
+  whole window, and only editable text can hold it so far.
+- **Text from an input method**, and with it the candidate text an input
+  method shows while composing, and telling the platform where the caret is.
+- **Dragging by words** after a second press.
+- **A caret that blinks.** The window draws only when something changes.
+- **Undo**, which is the component's to add.
+- **More than one line.** The caret is kept in sight on both axes and a place
+  is found in wrapped text, but the editing has no up or down.
 
 [understory]: https://github.com/forest-rs/understory
 

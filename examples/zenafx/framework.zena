@@ -20,7 +20,7 @@
  * arrives on it.
  */
 import { Node, NodeDef, Binding, BindingValue, Hole, StateStyle, TemplateDef,
-         TemplateRef, TemplateRefKnown, TemplateRefFresh, root,
+         TemplateRef, TemplateRefKnown, TemplateRefFresh, TextSelection, root,
          ready } from 'zenafx:host/scene';
 import { PointerKind, PointerEvent, Delivery, KeyEvent, KeyDelivery, Scope,
          Phase } from 'zenafx:host/events';
@@ -464,6 +464,36 @@ export abstract class Widget {
     let node = this.#node;
     if (node != null) {
       this.#renderInto(node);
+    }
+  }
+
+  /**
+   * Where the window's selection is in the text node at `position` of this
+   * widget's template: `(true, anchor, focus)`, two places in the text in
+   * UTF-8 bytes, or `(false, _, _)` when the selection is somewhere else.
+   *
+   * The host keeps the selection, and the pointer moves it without telling
+   * anyone. So a widget that edits text asks here each time it is about to,
+   * and keeps no copy of its own.
+   */
+  selectionAt(position: u32): inline (true, i32, i32) | inline (false, _, _) {
+    let node = this.#node;
+    if (node != null) {
+      if (let Some {value} = node.selection(position)) {
+        return (true, value.anchor as i32, value.focus as i32);
+      }
+    }
+    return (false, _, _);
+  }
+
+  /**
+   * Put the window's selection in the text node at `position`: from `anchor`
+   * to `focus`, where the caret then is. What a widget does after an edit.
+   */
+  select(position: u32, anchor: i32, focus: i32): void {
+    let node = this.#node;
+    if (node != null) {
+      node.select(position, new TextSelection(anchor as u32, focus as u32));
     }
   }
 

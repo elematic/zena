@@ -1,0 +1,256 @@
+/**
+ * The editing a text field does, with no field: a text, what is selected in
+ * it, and what each key makes of the two.
+ *
+ * Nothing here draws or hears anything, so it is tested by itself in
+ * `editing_test.zena`. `text-input.zena` is the widget: for each key it makes
+ * an `Editing` of its text and the selection the host has, and shows what the
+ * key made of it.
+ *
+ * A place in the text is a count of UTF-8 bytes from its start. That is the
+ * unit the host keeps a selection in, since it is the unit of the library that
+ * shapes the text, so a place crosses to the host and back as it is. A place is always between two characters as a reader sees
+ * them: stepping moves by a whole grapheme, so a caret never lands inside an
+ * accented letter or an emoji.
+ */
+import { StringIndex } from 'zena:core';
+import { isUnicodeWhitespace } from 'zena:string';
+
+/** How far a caret moves, or how much a deletion takes. */
+export enum Step {
+  /** One character, as a reader sees one. */
+  Character,
+  /** To the nearer end of a word. */
+  Word,
+  /** To the end of the text. A field has one line. */
+  Line,
+}
+
+/**
+ * A key, as the editing needs to know it. The fields are the ones of the
+ * host's key event, so a widget passes them on.
+ *
+ * `key` is the key's name, such as `ArrowLeft`. `typed` is the text the key
+ * types, and is left out for a key that types nothing.
+ */
+export type Key = {
+  key: String,
+  typed?: String,
+  shift?: boolean,
+  control?: boolean,
+  alt?: boolean,
+  meta?: boolean,
+};
+
+/** The String position at `offset`, which is on a character's edge. */
+function indexAt(text: String, offset: i32) {
+  return text.utf8.indexAt(offset) ?? text.endIndex;
+}
+
+/** How many UTF-8 bytes come before `index`. */
+function offsetOf(text: String, index: StringIndex) {
+  return text.slice(text.startIndex, index).utf8.length;
+}
+
+/** Whether the character starting at `offset` is white space. */
+function isSpaceAt(text: String, offset: i32) {
+  return isUnicodeWhitespace(text.codePointAt(indexAt(text, offset)));
+}
+
+/** The place one character after `offset`, or `offset` at the end. */
+function after(text: String, offset: i32) {
+  if (offset >= text.utf8.length) {
+    return text.utf8.length;
+  }
+  return offsetOf(text, text.indexAfter(indexAt(text, offset)));
+}
+
+/** The place one character before `offset`, or 0 at the start. */
+function before(text: String, offset: i32): i32 {
+  if (offset <= 0) {
+    return 0;
+  }
+  return offsetOf(text, text.indexBefore(indexAt(text, offset)));
+}
+
+/**
+ * The end of the word at or after `offset`: past any white space, then past
+ * what follows it up to the next white space.
+ */
+function wordAfter(text: String, offset: i32) {
+  let end = text.utf8.length;
+  var at = offset;
+  while (at < end && isSpaceAt(text, at)) {
+    at = after(text, at);
+  }
+  while (at < end && !isSpaceAt(text, at)) {
+    at = after(text, at);
+  }
+  return at;
+}
+
+/** The start of the word at or before `offset`, found the same way. */
+function wordBefore(text: String, offset: i32) {
+  var at = offset;
+  while (at > 0 && isSpaceAt(text, before(text, at))) {
+    at = before(text, at);
+  }
+  while (at > 0 && !isSpaceAt(text, before(text, at))) {
+    at = before(text, at);
+  }
+  return at;
+}
+
+/**
+ * A text and the selection in it.
+ *
+ * `anchor` is where the selection began and `focus` where it ends, which is
+ * where the caret is. They are equal when nothing is selected, and `focus` is
+ * before `anchor` in a selection made backwards. The names are the DOM's.
+ *
+ * A value, and never changed: each edit gives a new one, so a widget can
+ * compare the one it had with the one it has.
+ */
+export class Editing(text: String, anchor: i32, focus: i32) {
+  /** The earlier of the selection's two ends. */
+  start: i32 {
+    get {
+      return if (this.anchor < this.focus) this.anchor else this.focus;
+    }
+  }
+
+  /** The later of the selection's two ends. */
+  end: i32 {
+    get {
+      return if (this.anchor < this.focus) this.focus else this.anchor;
+    }
+  }
+
+  /** Whether nothing is selected, so there is only a caret. */
+  isCollapsed: boolean {
+    get {
+      return this.anchor == this.focus;
+    }
+  }
+
+  /** The text that is selected. */
+  selected: String {
+    get {
+      return this.text.slice(indexAt(this.text, this.start), indexAt(this.text, this.end));
+    }
+  }
+
+  /**
+   * Put the caret at `place`. With `extending`, the selection's other end
+   * stays where it is, as when Shift is held or the pointer is dragged.
+   * A place outside the text is moved to the nearer end.
+   */
+  movedTo(place: i32, extending: boolean = false): Editing {
+    let length = this.text.utf8.length;
+    let to = if (place < 0) 0 else if (place > length) length else place;
+    return new Editing(this.text, if (extending) this.anchor else to, to);
+  }
+
+  /**
+   * Move the caret towards the start. A selection that is not being extended
+   * collapses to its start when the step is one character, which is what the
+   * left arrow does to selected text.
+   */
+  movedBack(step: Step = Step.Character, extending: boolean = false): Editing {
+    if (!extending && !this.isCollapsed && step == Step.Character) {
+      return this.movedTo(this.start);
+    }
+    let to = match (step) {
+      case Step.Character: before(this.text, this.focus)
+      case Step.Word: wordBefore(this.text, this.focus)
+      case Step.Line: 0
+    };
+    return this.movedTo(to, extending);
+  }
+
+  /** Move the caret towards the end, as `movedBack` moves it to the start. */
+  movedForward(step: Step = Step.Character, extending: boolean = false): Editing {
+    if (!extending && !this.isCollapsed && step == Step.Character) {
+      return this.movedTo(this.end);
+    }
+    let to = match (step) {
+      case Step.Character: after(this.text, this.focus)
+      case Step.Word: wordAfter(this.text, this.focus)
+      case Step.Line: this.text.utf8.length
+    };
+    return this.movedTo(to, extending);
+  }
+
+  /** Select everything, with the caret at the end. */
+  selectedAll(): Editing {
+    return new Editing(this.text, 0, this.text.utf8.length);
+  }
+
+  /** Put `typed` where the selection is, and the caret after it. */
+  inserted(typed: String): Editing {
+    return this.#replaced(this.start, this.end, typed);
+  }
+
+  /**
+   * Delete the selection, or with none, what is between the caret and one
+   * step back: what Backspace does.
+   */
+  deletedBack(step: Step = Step.Character): Editing {
+    if (!this.isCollapsed) {
+      return this.inserted('');
+    }
+    return this.#replaced(this.movedBack(step).focus, this.focus, '');
+  }
+
+  /** As `deletedBack`, one step forward: what Delete does. */
+  deletedForward(step: Step = Step.Character): Editing {
+    if (!this.isCollapsed) {
+      return this.inserted('');
+    }
+    return this.#replaced(this.focus, this.movedForward(step).focus, '');
+  }
+
+  /**
+   * What a key does. `null` when the key is not one a text field uses, such
+   * as `Tab` or `Enter`, which then go on to whoever else wants them.
+   *
+   * The arrows move by a character, by a word with Control or Alt held, and
+   * to the end with Meta held. `Home` and `End` go to the ends. Shift extends
+   * the selection with any of them. Backspace and Delete take a character, or
+   * a word with Control or Alt. Control or Meta with `a` selects everything.
+   * Any other key that types text inserts it.
+   */
+  pressed(pressed: Key): Editing | null {
+    let {key, shift = false, control = false, alt = false, meta = false} = pressed;
+    let step = if (meta) Step.Line else if (control || alt) Step.Word else Step.Character;
+    if ((control || meta) && (key == 'a' || key == 'A')) {
+      return this.selectedAll();
+    }
+    if (let {typed} = pressed) {
+      return this.inserted(typed);
+    }
+    return match (key) {
+      case 'ArrowLeft': this.movedBack(step, shift)
+      case 'ArrowRight': this.movedForward(step, shift)
+      case 'Home': this.movedBack(Step.Line, shift)
+      case 'End': this.movedForward(Step.Line, shift)
+      case 'Backspace': this.deletedBack(step)
+      case 'Delete': this.deletedForward(step)
+      case _: null
+    };
+  }
+
+  /** Put `with` in place of what is between two places, the caret after it. */
+  #replaced(from: i32, to: i32, with: String): Editing {
+    let head = this.text.slice(this.text.startIndex, indexAt(this.text, from));
+    let tail = this.text.slice(indexAt(this.text, to));
+    let caret = from + with.utf8.length;
+    return new Editing(`${head}${with}${tail}`, caret, caret);
+  }
+}
+
+/** A text with the caret at its end, which is how a field starts. */
+export function editing(text: String = ''): Editing {
+  let end = text.utf8.length;
+  return new Editing(text, end, end);
+}

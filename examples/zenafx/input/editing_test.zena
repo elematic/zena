@@ -1,0 +1,148 @@
+import {suite, test} from 'zena:test';
+import {equal, isNull, isTrue} from 'zena:assert';
+import {Editing, Step, editing} from './editing.zena';
+
+/** An editing's text with `|` at the caret, or `[` and `]` round a selection. */
+function shown(e: Editing) {
+  let text = e.movedTo(e.start).inserted('[').text;
+  let closed = new Editing(text, e.end + 1, e.end + 1).inserted(']').text;
+  if (e.isCollapsed) {
+    return new Editing(e.text, e.focus, e.focus).inserted('|').text;
+  }
+  return closed;
+}
+
+/** `text` with the caret at `place`. */
+function at(text: String, place: i32) {
+  return editing(text).movedTo(place);
+}
+
+export let tests = suite('the editing a text field does', () => {
+  test('a field starts with the caret at the end', () => {
+    equal(shown(editing('abc')), 'abc|');
+    equal(shown(editing()), '|');
+  });
+
+  test('typing puts text at the caret and the caret after it', () => {
+    equal(shown(editing().inserted('a').inserted('b')), 'ab|');
+    equal(shown(at('ad', 1).inserted('bc')), 'abc|d');
+  });
+
+  test('typing replaces what is selected', () => {
+    let selected = at('hello', 1).movedTo(4, true);
+    equal(shown(selected), 'h[ell]o');
+    equal(shown(selected.inserted('ipp')), 'hipp|o');
+  });
+
+  test('the arrows step one character and stop at the ends', () => {
+    equal(shown(at('abc', 1).movedBack()), '|abc');
+    equal(shown(at('abc', 0).movedBack()), '|abc');
+    equal(shown(at('abc', 2).movedForward()), 'abc|');
+    equal(shown(at('abc', 3).movedForward()), 'abc|');
+  });
+
+  test('a step is a whole character as a reader sees one', () => {
+    // é is two bytes, and the flag is two code points of four bytes each.
+    let text = 'é🇫🇮!';
+    equal(text.utf8.length, 11);
+    let afterE = at(text, 0).movedForward();
+    equal(afterE.focus, 2);
+    let afterFlag = afterE.movedForward();
+    equal(afterFlag.focus, 10);
+    equal(afterFlag.movedBack().focus, 2);
+    equal(shown(afterFlag.deletedBack()), 'é|!');
+  });
+
+  test('an arrow collapses a selection to the end it points at', () => {
+    let selected = at('hello', 1).movedTo(4, true);
+    equal(shown(selected.movedBack()), 'h|ello');
+    equal(shown(selected.movedForward()), 'hell|o');
+  });
+
+  test('extending keeps the other end of the selection', () => {
+    let e = at('hello', 3).movedBack(Step.Character, true).movedBack(Step.Character, true);
+    equal(shown(e), 'h[el]lo');
+    equal(e.anchor, 3);
+    equal(e.focus, 1);
+    equal(e.selected, 'el');
+    equal(shown(e.movedForward(Step.Character, true)), 'he[l]lo');
+  });
+
+  test('a word step goes to the nearer end of a word', () => {
+    let text = 'one  two three';
+    equal(shown(at(text, 0).movedForward(Step.Word)), 'one|  two three');
+    equal(shown(at(text, 3).movedForward(Step.Word)), 'one  two| three');
+    equal(shown(at(text, 14).movedBack(Step.Word)), 'one  two |three');
+    equal(shown(at(text, 5).movedBack(Step.Word)), '|one  two three');
+  });
+
+  test('a line step goes to the end of the text', () => {
+    equal(shown(at('hello', 2).movedBack(Step.Line)), '|hello');
+    equal(shown(at('hello', 2).movedForward(Step.Line)), 'hello|');
+    equal(shown(at('hello', 2).movedForward(Step.Line, true)), 'he[llo]');
+  });
+
+  test('Backspace and Delete take a character, a word, or the selection', () => {
+    equal(shown(at('abc', 2).deletedBack()), 'a|c');
+    equal(shown(at('abc', 0).deletedBack()), '|abc');
+    equal(shown(at('abc', 1).deletedForward()), 'a|c');
+    equal(shown(at('abc', 3).deletedForward()), 'abc|');
+    equal(shown(at('one two', 7).deletedBack(Step.Word)), 'one |');
+    equal(shown(at('one two', 0).deletedForward(Step.Word)), '| two');
+    let selected = at('hello', 1).movedTo(4, true);
+    equal(shown(selected.deletedBack()), 'h|o');
+    equal(shown(selected.deletedForward(Step.Word)), 'h|o');
+  });
+
+  test('a place outside the text is moved to the nearer end', () => {
+    equal(shown(editing('abc').movedTo(0 - 5)), '|abc');
+    equal(shown(editing('abc').movedTo(99)), 'abc|');
+  });
+
+  test('select all has the caret at the end', () => {
+    let all = at('hello', 2).selectedAll();
+    equal(shown(all), '[hello]');
+    equal(all.focus, 5);
+  });
+
+  test('a key that types inserts what it types', () => {
+    let e = editing().pressed({key: 'h', typed: 'h'});
+    isTrue(e != null);
+    if (e != null) {
+      equal(shown(e), 'h|');
+    }
+  });
+
+  test('the editing keys do what a field does with them', () => {
+    let press = (e: Editing, key: String, shift: boolean, control: boolean) => {
+      let next = e.pressed({key: key, shift: shift, control: control});
+      return if (next == null) 'not used' else shown(next);
+    };
+    let e = at('one two', 6);
+    equal(press(e, 'ArrowLeft', false, false), 'one t|wo');
+    equal(press(e, 'ArrowLeft', true, false), 'one t[w]o');
+    equal(press(e, 'ArrowLeft', false, true), 'one |two');
+    equal(press(e, 'ArrowRight', true, true), 'one tw[o]');
+    equal(press(e, 'Home', false, false), '|one two');
+    equal(press(e, 'End', true, false), 'one tw[o]');
+    equal(press(e, 'Backspace', false, false), 'one t|o');
+    equal(press(e, 'Backspace', false, true), 'one |o');
+    equal(press(e, 'Delete', false, false), 'one tw|');
+    equal(press(e, 'a', false, true), '[one two]');
+  });
+
+  test('Meta with an arrow goes to the end', () => {
+    let next = at('hello', 2).pressed({key: 'ArrowRight', meta: true});
+    isTrue(next != null);
+    if (next != null) {
+      equal(shown(next), 'hello|');
+    }
+  });
+
+  test('keys a field does not use are passed on', () => {
+    isNull(editing('abc').pressed({key: 'Tab'}));
+    isNull(editing('abc').pressed({key: 'Enter'}));
+    isNull(editing('abc').pressed({key: 'Escape'}));
+    isNull(editing('abc').pressed({key: 'ArrowDown'}));
+  });
+});

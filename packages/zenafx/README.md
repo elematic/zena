@@ -500,6 +500,79 @@ through the built component. An editor that indents with `Tab` would call
 it is in the DOM: it keeps later listeners from hearing the key, and the focus
 still moves.
 
+### A text field
+
+[`examples/zenafx/input/`](../../examples/zenafx/input/) is two one-line text
+fields, written in Zena.
+
+```bash
+./target/release/zena build ./packages/zenafx:build:input   # compiles it to out/input.wasm
+./target/release/zfx --app packages/zenafx/out/input.wasm
+```
+
+The text is the component's, and so is what each key does to it.
+`input/editing.zena` takes a text and a selection and says what a key makes of
+them: the arrows, by character or by word, `Home` and `End`, Backspace and
+Delete, Shift to extend the selection, and select all. It has no host in it,
+and `input/editing_test.zena` tests it by itself. `input/text-input.zena` is
+the widget.
+
+The selection is the host's. A window has one selection, as it has one focus,
+and a text node says whether a person edits it:
+
+```wit
+record node-def {
+  // ...
+  editable: bool,
+}
+```
+
+In such a text node the host does everything the pointer does, with no call to
+the component:
+
+- A press anywhere in the field puts the caret at the place in the text
+  nearest the pointer, and dragging from there selects.
+- A press with Shift held moves the end of the selection to the pointer.
+- A second press in the same place selects the word there, and a third all the
+  field's text.
+- A field that gets the focus gets the caret, at the end of its text.
+
+The host draws the caret and a highlight over what is selected, while the
+field has the focus. It scrolls the nearest box above the text that says
+`hidden` or `scroll` to keep the caret in sight. A `hidden` box is scrolled by
+the host alone and never by the wheel.
+
+The component edits when it hears a key. It asks where the selection is,
+writes the new text into its hole, and says where the caret now is:
+
+```wit
+resource node {
+  selection: func(target: u32) -> option<text-selection>;
+  select: func(target: u32, to: text-selection);
+}
+
+record text-selection { anchor: u32, focus: u32 }
+
+record key-event {
+  // ...
+  text: option<string>,
+}
+```
+
+A place in a text is a count of UTF-8 bytes from its start, on both sides.
+`text` is the text a key press types on the keyboard's layout. A key that
+types nothing has none, and neither does a letter pressed with Control or
+Meta.
+
+The field's template is a box and two text nodes. The box is a row that hides
+what does not fit, so its text is laid out on one line and never wrapped. The
+second text node is the placeholder, which says something only while the
+first is empty.
+
+`tests/input.rs` types into the built component with no window, and presses,
+drags and presses twice in it. It checks the caret, the highlight and the
+text drawn, and that the pointer selecting writes no event to the component.
+
 ### What is not here yet
 
 A window shows one component. Embedding one component in another is designed
@@ -514,8 +587,8 @@ three components drawing one card came to 6 solves and 54 cross-component
 `measure` calls per frame, against 0 and 0 for the retained tree. Those
 numbers are no longer reproducible from this tree.
 
-A key is a key and not yet text: there is no text field, no composed input and
-no selection. A component cannot move the focus itself, and a node that gets
+A text field has no clipboard, no undo, no text from an input method, and a
+caret that does not blink. A component cannot move the focus itself, and a node that gets
 the focus while it is scrolled out of sight stays there. A box has no minimum
 or maximum size of its own, which the split
 example gets from what shrinks and what does not. A scroll thumb cannot be dragged

@@ -67,6 +67,12 @@ export type BoxOpts = {
    * gives it the focus, and the keyboard goes to it while it has it.
    */
   focusable?: boolean,
+  /**
+   * Whether a person edits the text. For a `text` inside a box that can have
+   * the focus, which makes that box a text field: the host keeps a caret and
+   * a selection in the text, and the pointer moves both with no handler.
+   */
+  editable?: boolean,
 };
 
 /** Read the options, filling in what was left out. */
@@ -109,11 +115,13 @@ export class Box {
   cursor: Option<Cursor>;
   /** Whether the node can have the focus. */
   focusable: boolean;
+  /** Whether a person edits the node's text. */
+  editable: boolean;
   /** Whether content hangs here. */
   isSlot: boolean;
 
   new(this.layout, this.appearance, this.children, this.cursor, this.focusable = false,
-      this.isSlot = false);
+      this.editable = false, this.isSlot = false);
 }
 
 /** A box. Lays out its children, and draws a panel when given a `style`. */
@@ -132,7 +140,8 @@ export function box(opts: BoxOpts = {}, children: Array<Box> = []): Box {
  * panel of its own, put the slot inside a `box` and style that.
  */
 export function slot(): Box {
-  return new Box(flexOf({}), new AppearanceNothing(), new GrowableArray<Box>(), none, false, true);
+  return new Box(flexOf({}), new AppearanceNothing(), new GrowableArray<Box>(), none,
+                 false, false, true);
 }
 
 /**
@@ -144,8 +153,9 @@ export function slot(): Box {
  * in the template they share.
  */
 export function text(content: String, style: TextStyle, opts: BoxOpts = {}): Box {
+  let {focusable = false, editable = false} = opts;
   return new Box(flexOf(opts), new AppearanceText(new TextContent(content, style)),
-                 new GrowableArray<Box>(), cursorOf(opts));
+                 new GrowableArray<Box>(), cursorOf(opts), focusable, editable);
 }
 
 /**
@@ -175,7 +185,7 @@ export function flatten(root: Box): Array<NodeDef> {
     let node = order[n];
     nodes.push(new NodeDef(node.layout, node.appearance, firstChildOf[n] as u32,
                            node.children.length as u32, node.isSlot, node.cursor,
-                           node.focusable));
+                           node.focusable, node.editable));
     n += 1;
   }
   return nodes;

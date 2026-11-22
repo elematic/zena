@@ -9,11 +9,11 @@
 //! `harfrust` for shaping and `skrifa` for outlines.
 
 use parley::{
-    Alignment, AlignmentOptions, FontContext, FontFamily, FontStyle, FontWeight, GenericFamily,
-    Layout, LayoutContext, StyleProperty,
+    Affinity, Alignment, AlignmentOptions, BoundingBox, Cursor, FontContext, FontFamily, FontStyle,
+    FontWeight, GenericFamily, Layout, LayoutContext, Selection, StyleProperty,
 };
 
-use super::types::{Measured, TextStyle};
+use super::types::{Measured, Rect, TextStyle};
 
 /// A registered run: the source text, the style it was shaped under, and the
 /// parley layout, broken at whatever width it was last measured or painted
@@ -183,6 +183,79 @@ impl TextEngine {
             (w.min, w.max)
         })
     }
+
+    /// The place in `id`'s content nearest a point, in UTF-8 bytes from the
+    /// start. The point is measured from the run's top left corner, and the
+    /// run is as it was last broken into lines.
+    ///
+    /// The answer is always between two characters as a reader sees them. A
+    /// point before the text gives 0 and one past it the content's length,
+    /// so a pointer dragged out of a text field still says where its
+    /// selection ends.
+    pub fn index_at(&self, id: u32, x: f32, y: f32) -> u32 {
+        match self.get(id) {
+            Some(run) => Cursor::from_point(&run.layout, x, y).index() as u32,
+            None => 0,
+        }
+    }
+
+    /// The two ends of the word at `index`, a place in `id`'s content in
+    /// UTF-8 bytes: what a second press there selects. Between two words it
+    /// is the white space between them.
+    pub fn word_at(&self, id: u32, index: u32) -> (u32, u32) {
+        let Some(run) = self.get(id) else {
+            return (0, 0);
+        };
+        // Parley finds a word from a point, so ask at the middle of the
+        // caret the index has.
+        let caret = cursor(&run.layout, index).geometry(&run.layout, 0.0);
+        let (x, y) = (caret.x0 as f32 + 0.5, ((caret.y0 + caret.y1) / 2.0) as f32);
+        let range = Selection::word_from_point(&run.layout, x, y).text_range();
+        (range.start as u32, range.end as u32)
+    }
+
+    /// Where to draw a caret `width` wide at `index`, a place in `id`'s
+    /// content in UTF-8 bytes. Measured from the run's top left corner.
+    ///
+    /// An index inside a character, or past the end, is moved to the nearest
+    /// place a caret can be. A run with no content has a caret too, at its
+    /// start and one line high.
+    pub fn caret(&self, id: u32, index: u32, width: f32) -> Option<Rect> {
+        let run = self.get(id)?;
+        let at = cursor(&run.layout, index);
+        Some(rect_of(at.geometry(&run.layout, width)))
+    }
+
+    /// The boxes that cover `id`'s content between two places, one for each
+    /// line the selection touches. Empty when the two are the same place.
+    pub fn selection(&self, id: u32, anchor: u32, focus: u32) -> Vec<Rect> {
+        let Some(run) = self.get(id) else {
+            return Vec::new();
+        };
+        let (anchor, focus) = (cursor(&run.layout, anchor), cursor(&run.layout, focus));
+        if anchor.index() == focus.index() {
+            return Vec::new();
+        }
+        Selection::new(anchor, focus)
+            .geometry(&run.layout)
+            .into_iter()
+            .map(|(bounds, _line)| rect_of(bounds))
+            .collect()
+    }
+}
+
+/// A place a caret can be, at or next to a UTF-8 offset.
+fn cursor(layout: &Layout<()>, index: u32) -> Cursor {
+    Cursor::from_byte_index(layout, index as usize, Affinity::Downstream)
+}
+
+fn rect_of(bounds: BoundingBox) -> Rect {
+    Rect {
+        x: bounds.x0 as f32,
+        y: bounds.y0 as f32,
+        width: (bounds.x1 - bounds.x0) as f32,
+        height: (bounds.y1 - bounds.y0) as f32,
+    }
 }
 
 /// Re-break `run` if it does not already reflect `available_width`.
@@ -349,5 +422,100 @@ mod tests {
         let b = text.register_run("Hello", &large);
         let (a, b) = (text.measure_run(a, None), text.measure_run(b, None));
         assert!(b.width > a.width && b.height > a.height, "{a:?} vs {b:?}");
+    }
+
+    /// One line of text, measured, which is how a run is when a frame draws
+    /// it.
+    fn a_line(text: &mut TextEngine, content: &str) -> (u32, Measured) {
+        let id = text.register_run(content, &TextStyle::default());
+        let measured = text.measure_run(id, None);
+        (id, measured)
+    }
+
+    /// A caret moves right as its index grows, stands as tall as the line,
+    /// and sits at the two ends of the run for the first and last index.
+    #[test]
+    fn a_caret_is_where_its_index_is() {
+        let mut text = TextEngine::new();
+        let (id, line) = a_line(&mut text, "caret");
+        let at = |index| text.caret(id, index, 2.0).expect("a run");
+
+        let lefts: Vec<f32> = (0..=5).map(|index| at(index).x).collect();
+        assert!(lefts.windows(2).all(|pair| pair[0] < pair[1]), "{lefts:?}");
+        assert!(lefts[0].abs() <= 2.0, "{lefts:?}");
+        assert!(
+            (lefts[5] - line.width).abs() <= 2.0,
+            "{lefts:?} in {line:?}"
+        );
+        assert_eq!(at(2).width, 2.0);
+        // The caret covers the line and a pixel or so above and below it.
+        assert!((at(2).height - line.height).abs() <= 3.0, "{:?}", at(2));
+    }
+
+    /// A point gives the index nearest it: the left half of a letter the
+    /// index before the letter, the right half the one after. A point outside
+    /// the run gives its nearer end.
+    #[test]
+    fn a_point_is_nearest_one_index() {
+        let mut text = TextEngine::new();
+        let (id, line) = a_line(&mut text, "point");
+        let middle = line.height / 2.0;
+        let edge = |index| text.caret(id, index, 0.0).expect("a run").x;
+        let (second, third) = (edge(1), edge(2));
+        let quarter = (third - second) / 4.0;
+
+        assert_eq!(text.index_at(id, second + quarter, middle), 1);
+        assert_eq!(text.index_at(id, third - quarter, middle), 2);
+        assert_eq!(text.index_at(id, -50.0, middle), 0);
+        assert_eq!(text.index_at(id, line.width + 50.0, middle), 5);
+        assert_eq!(text.index_at(id, line.width + 50.0, -50.0), 5, "above");
+    }
+
+    /// Indexes count UTF-8 bytes, and never fall inside a character: `é` is
+    /// two bytes and one place to step over.
+    #[test]
+    fn an_index_counts_bytes_and_keeps_out_of_characters() {
+        let mut text = TextEngine::new();
+        let (id, line) = a_line(&mut text, "né");
+        let at = |index| text.caret(id, index, 0.0).expect("a run").x;
+
+        assert!((at(3) - line.width).abs() <= 1.0, "after the é");
+        assert!(
+            at(2) == at(1) || at(2) == at(3),
+            "an index inside the é is moved to one of its edges"
+        );
+        assert_eq!(text.index_at(id, line.width + 50.0, 5.0), 3);
+    }
+
+    /// A selection covers the text between its two places whichever way
+    /// round they are, and nothing when they are the same.
+    #[test]
+    fn a_selection_covers_what_is_between_its_ends() {
+        let mut text = TextEngine::new();
+        let (id, _) = a_line(&mut text, "select");
+        let edge = |index| text.caret(id, index, 0.0).expect("a run").x;
+
+        let forwards = text.selection(id, 1, 4);
+        assert_eq!(forwards.len(), 1, "one line");
+        assert!((forwards[0].x - edge(1)).abs() < 0.5, "{forwards:?}");
+        assert!((forwards[0].x + forwards[0].width - edge(4)).abs() < 0.5);
+        assert_eq!(text.selection(id, 4, 1), forwards, "made backwards");
+        assert!(text.selection(id, 3, 3).is_empty());
+    }
+
+    /// A run with no content is still a line: it has a height for the box
+    /// round it, and a caret at its start. An empty text field depends on
+    /// both.
+    #[test]
+    fn an_empty_run_is_one_line_with_a_caret() {
+        let mut text = TextEngine::new();
+        let (empty, measured) = a_line(&mut text, "");
+        let (_, full) = a_line(&mut text, "x");
+
+        assert_eq!(measured.width, 0.0);
+        assert!((measured.height - full.height).abs() < 1.0, "{measured:?}");
+        let caret = text.caret(empty, 0, 2.0).expect("a run");
+        assert!((caret.height - full.height).abs() <= 3.0, "{caret:?}");
+        assert_eq!(text.index_at(empty, 40.0, 5.0), 0);
     }
 }

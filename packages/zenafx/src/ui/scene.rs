@@ -75,6 +75,8 @@ pub struct NodeDef {
     pub cursor: Option<Cursor>,
     /// Whether this node can have the focus.
     pub focusable: bool,
+    /// Whether a person edits this node's text.
+    pub editable: bool,
 }
 
 /// Which property of a node a binding writes.
@@ -88,6 +90,16 @@ pub enum BindingTarget {
     Style,
     #[component(name = "layout")]
     Layout,
+}
+
+/// What is selected in a text node's content: two places in UTF-8 bytes
+/// from the start. The caret is at `focus`. See `text-selection` in
+/// `wit/zenafx.wit`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ComponentType, Lift, Lower)]
+#[component(record)]
+pub struct TextSelection {
+    pub anchor: u32,
+    pub focus: u32,
 }
 
 /// One bound property of a template, named by the template node it belongs
@@ -318,6 +330,38 @@ struct Template {
     states: Vec<StateStyle>,
 }
 
+/// A place in the window's text: a text node, and how many UTF-8 bytes into
+/// its content.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct Place {
+    node: u32,
+    index: u32,
+}
+
+/// What is selected in the window, from where the selection began to where
+/// it ends. The caret, when there is one, is at `focus`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct Selected {
+    anchor: Place,
+    focus: Place,
+}
+
+/// A press: when and where the primary button last went down, and how many
+/// times running it has gone down there. A second press soon after the
+/// first, in the same place, selects a word and a third selects everything.
+#[derive(Copy, Clone, Debug)]
+struct Press {
+    at: std::time::Instant,
+    x: f32,
+    y: f32,
+    count: u8,
+}
+
+/// How long after a press another one counts as following it, and how far
+/// from it.
+const PRESS_AGAIN_WITHIN: std::time::Duration = std::time::Duration::from_millis(500);
+const PRESS_AGAIN_NEAR: f32 = 4.0;
+
 /// One answer from the solver, and the question it answers: the window's
 /// size and the text scale. The tree is the rest of the question, and
 /// `Scene::unsolved` says when that has changed.
@@ -394,6 +438,9 @@ struct Retained {
     /// The cursor to show over this node, and over what is beneath it that
     /// names none.
     cursor: Option<Cursor>,
+    /// Whether this is a text node whose text a person edits. A caret is
+    /// drawn in one, and a selection begun in one stays in it.
+    editable: bool,
 }
 
 impl Retained {
@@ -417,6 +464,7 @@ impl Retained {
             scroll: (0.0, 0.0),
             spilled: false,
             cursor: None,
+            editable: false,
         }
     }
 
@@ -500,6 +548,23 @@ pub struct Scene {
     /// Listeners whose nodes have gone since this was last taken. Whoever
     /// holds the other end of each one ends it.
     ended: Vec<u32>,
+    /// What is selected in the window. The scene keeps it, as it keeps the
+    /// focus: the pointer changes it with no component called, and a text
+    /// field asks for it and sets it.
+    selection: Option<Selected>,
+    /// The text node a selection is being dragged out in: from the primary
+    /// button going down on text until it comes up.
+    selecting: Option<u32>,
+    /// The last press of the primary button, for counting presses.
+    pressed_last: Option<Press>,
+    /// Whether `Shift` is held, which a press reads: the scene sees every
+    /// key and no pointer input says which keys are down.
+    shift: bool,
+    /// Whether the next frame is to bring the caret into sight: set when the
+    /// selection moved or the text it is in changed. A frame scrolls for it
+    /// once, so that a person who then scrolls the caret out of sight with
+    /// the wheel is not pulled back to it.
+    reveal: bool,
 }
 
 impl Scene {
@@ -697,6 +762,8 @@ impl Scene {
                 is_slot: def.is_slot,
                 cursor: def.cursor,
                 focusable: def.focusable,
+                // Only text can be edited.
+                editable: def.editable && run.is_some(),
                 ..Retained::empty()
             }));
         }
@@ -707,6 +774,7 @@ impl Scene {
             held.run = run;
             held.cursor = filled[0].cursor;
             held.focusable = filled[0].focusable;
+            held.editable = filled[0].editable && run.is_some();
         }
 
         for (index, def) in filled.iter().enumerate() {
@@ -787,9 +855,13 @@ impl Scene {
         let Some(held) = self.get_mut(id) else {
             return;
         };
+        // Whether the write changed a text, which may be the one the caret
+        // is in.
+        let mut rewrote = false;
         match (target, &hole.value) {
             (BindingTarget::Content, BindingValue::Content(content)) => {
                 if let Appearance::Text(text_content) = &mut held.appearance {
+                    rewrote = true;
                     text_content.content = content.clone();
                     // The style the run has now, which is a look's while a
                     // state holds.
@@ -822,6 +894,338 @@ impl Scene {
                 held.layout = *layout;
             }
             _ => {}
+        }
+        // New text under the selection leaves the selection's places where
+        // they were, held within the text, and the caret may have moved out
+        // of sight with it.
+        if rewrote && self.selection.is_some_and(|s| s.focus.node == id) {
+            self.keep_selection_in_text();
+            self.reveal = true;
+        }
+    }
+
+    /// Whether `node` is `above` or sits somewhere beneath it.
+    fn is_at_or_beneath(&self, node: u32, above: Option<u32>) -> bool {
+        let Some(above) = above else {
+            return false;
+        };
+        let mut at = Some(node);
+        while let Some(id) = at {
+            if id == above {
+                return true;
+            }
+            at = self.get(id).and_then(|n| n.parent);
+        }
+        false
+    }
+
+    /// How many UTF-8 bytes of text a node shows. 0 for a node that is not
+    /// text.
+    fn length_of(&self, node: u32) -> u32 {
+        match self.get(node).map(|n| &n.appearance) {
+            Some(Appearance::Text(shown)) => shown.content.len() as u32,
+            _ => 0,
+        }
+    }
+
+    /// Hold the selection's two places within the text they are in, after
+    /// that text was replaced by a shorter one.
+    fn keep_selection_in_text(&mut self) {
+        if let Some(selected) = self.selection {
+            let held = |place: Place| Place {
+                index: place.index.min(self.length_of(place.node)),
+                ..place
+            };
+            self.selection = Some(Selected {
+                anchor: held(selected.anchor),
+                focus: held(selected.focus),
+            });
+        }
+    }
+
+    /// Change the selection. A frame is owed when that changes what is
+    /// drawn, and the frame brings the caret into sight.
+    fn set_selection(&mut self, to: Option<Selected>) -> bool {
+        if to == self.selection {
+            return false;
+        }
+        self.selection = to;
+        self.reveal = to.is_some();
+        self.dirty = true;
+        true
+    }
+
+    /// What of the selection is in the text node `node`: the two places it
+    /// runs between there, and where the caret is if the selection ends in
+    /// this node. `None` when none of the selection is in it.
+    fn selected_in(&self, node: u32) -> Option<(u32, u32, Option<u32>)> {
+        let selected = self.selection?;
+        (selected.anchor.node == node && selected.focus.node == node).then_some((
+            selected.anchor.index,
+            selected.focus.index,
+            Some(selected.focus.index),
+        ))
+    }
+
+    /// The node at position `target` of the template `node` shows.
+    fn at_position(&self, node: u32, target: u32) -> Option<u32> {
+        let interior = self.get(node)?.interior.as_ref()?;
+        interior.nodes.get(target as usize).copied()
+    }
+
+    /// Where the selection is in the text node at position `target` of the
+    /// template `node` shows, for a component that edits that text. `None`
+    /// when the selection is not wholly in that node.
+    pub fn selection_in(&self, node: u32, target: u32) -> Option<TextSelection> {
+        let text = self.at_position(node, target)?;
+        let selected = self.selection?;
+        (selected.anchor.node == text && selected.focus.node == text).then_some(TextSelection {
+            anchor: selected.anchor.index,
+            focus: selected.focus.index,
+        })
+    }
+
+    /// Put the selection in the text node at position `target` of the
+    /// template `node` shows, as a component does after an edit. Returns
+    /// whether there is such a text node.
+    pub fn select(&mut self, node: u32, target: u32, to: TextSelection) -> bool {
+        let Some(text) = self.at_position(node, target) else {
+            return false;
+        };
+        if self.get(text).is_none_or(|n| n.run.is_none()) {
+            return false;
+        }
+        let length = self.length_of(text);
+        let place = |index: u32| Place {
+            node: text,
+            index: index.min(length),
+        };
+        self.set_selection(Some(Selected {
+            anchor: place(to.anchor),
+            focus: place(to.focus),
+        }));
+        // The same place again is still an answer to an edit, and the text
+        // may have changed round it.
+        self.reveal = true;
+        self.dirty = true;
+        true
+    }
+
+    /// The first text node a person edits at or beneath `node`, in the order
+    /// the nodes come in the tree.
+    fn editable_in(&self, node: u32) -> Option<u32> {
+        let mut ahead = vec![node];
+        while let Some(id) = ahead.pop() {
+            let held = self.get(id)?;
+            if held.editable {
+                return Some(id);
+            }
+            ahead.extend(held.children.iter().rev());
+        }
+        None
+    }
+
+    /// The text field a press on `target` is a press in: the editable text
+    /// node that `target` is, or else the first one inside the node the
+    /// press gave the focus to. A press on a field's padding, or on the
+    /// placeholder beside its text, is a press in the field.
+    fn field_at(&self, target: Option<u32>) -> Option<u32> {
+        let target = target?;
+        if self.get(target)?.editable {
+            return Some(target);
+        }
+        let focused = self.focused?;
+        self.is_at_or_beneath(target, Some(focused))
+            .then(|| self.editable_in(focused))
+            .flatten()
+    }
+
+    /// The place in the text node `node` nearest a point in the window, as
+    /// the last frame drew it.
+    fn place_at(&self, node: u32, x: f32, y: f32, text: &TextEngine) -> Option<Place> {
+        let held = self.get(node)?;
+        let (left, top) = self.origin(node);
+        let padding = held.layout.padding;
+        let index = text.index_at(held.run?, x - left - padding.left, y - top - padding.top);
+        Some(Place { node, index })
+    }
+
+    /// What the pointer does to the selection. Called with each pointer
+    /// input after [`Scene::pointer`], by whoever holds the text engine: a
+    /// place in text is found from the shaped run, which the scene does not
+    /// hold. Returns whether a frame is owed.
+    ///
+    /// No component is called. In a text field:
+    ///
+    /// - A press puts the caret at the place nearest the pointer, and
+    ///   dragging from there moves the selection's other end.
+    /// - A press with `Shift` held moves the end of the selection that is
+    ///   already there.
+    /// - A second press in the same place selects the word there, and a
+    ///   third all the field's text.
+    pub fn select_with(&mut self, input: PointerInput, text: &TextEngine) -> bool {
+        match input {
+            PointerInput::Button {
+                x,
+                y,
+                button: 0,
+                down: true,
+            } => {
+                let count = self.count_press(x, y);
+                let Some(field) = self.field_at(self.pressed) else {
+                    self.selecting = None;
+                    return false;
+                };
+                let Some(at) = self.place_at(field, x, y, text) else {
+                    return false;
+                };
+                let run = self.get(field).and_then(|n| n.run);
+                let begun = self.selection.filter(|s| s.focus.node == field);
+                let to = match (count, run) {
+                    (1, _) => Selected {
+                        // `Shift` keeps where the selection began.
+                        anchor: match begun {
+                            Some(begun) if self.shift => begun.anchor,
+                            _ => at,
+                        },
+                        focus: at,
+                    },
+                    (2, Some(run)) => {
+                        let (start, end) = text.word_at(run, at.index);
+                        Selected {
+                            anchor: Place {
+                                node: field,
+                                index: start,
+                            },
+                            focus: Place {
+                                node: field,
+                                index: end,
+                            },
+                        }
+                    }
+                    _ => Selected {
+                        anchor: Place {
+                            node: field,
+                            index: 0,
+                        },
+                        focus: Place {
+                            node: field,
+                            index: self.length_of(field),
+                        },
+                    },
+                };
+                // Only a first press is dragged from: a word or a field
+                // selected by pressing again stays as it is.
+                self.selecting = (count == 1).then_some(field);
+                self.set_selection(Some(to))
+            }
+            PointerInput::Button {
+                button: 0,
+                down: false,
+                ..
+            } => {
+                self.selecting = None;
+                false
+            }
+            PointerInput::Moved { x, y } => {
+                let (Some(field), Some(selected)) = (self.selecting, self.selection) else {
+                    return false;
+                };
+                let Some(focus) = self.place_at(field, x, y, text) else {
+                    return false;
+                };
+                self.set_selection(Some(Selected { focus, ..selected }))
+            }
+            _ => false,
+        }
+    }
+
+    /// How many times running the primary button has now gone down in one
+    /// place: 1 for a press on its own.
+    fn count_press(&mut self, x: f32, y: f32) -> u8 {
+        let now = std::time::Instant::now();
+        let again = self.pressed_last.filter(|last| {
+            now.duration_since(last.at) <= PRESS_AGAIN_WITHIN
+                && (x - last.x).abs() <= PRESS_AGAIN_NEAR
+                && (y - last.y).abs() <= PRESS_AGAIN_NEAR
+        });
+        let count = again.map_or(1, |last| last.count.saturating_add(1));
+        self.pressed_last = Some(Press {
+            at: now,
+            x,
+            y,
+            count,
+        });
+        count
+    }
+
+    /// Scroll so that the caret shows.
+    ///
+    /// On each axis it is the nearest box above the caret's text node that
+    /// says `hidden` or `scroll` that moves, and no further than it has to:
+    /// a caret already in sight moves nothing. `placed` is the solve's
+    /// answer, which has nothing scrolled, and the scroll positions set here
+    /// are held within what the content reaches by the walk that follows.
+    ///
+    /// The caret is kept inside the box's padding, so one at the end of a
+    /// field's text stops where the text would and not at the field's edge.
+    fn bring_caret_into_sight(
+        &mut self,
+        placed: &[Placed],
+        position_of: &[u32],
+        text: &TextEngine,
+    ) {
+        let solved = |id: u32| match position_of.get(id as usize) {
+            Some(&at) if at != u32::MAX => Some(placed[at as usize].rect),
+            _ => None,
+        };
+        let Some(at) = self.selection.map(|s| s.focus) else {
+            return;
+        };
+        let Some(held) = self.get(at.node) else {
+            return;
+        };
+        let (Some(run), Some(own)) = (held.run, solved(at.node)) else {
+            return;
+        };
+        let Some(caret) = text.caret(run, at.index, CARET_WIDTH) else {
+            return;
+        };
+        let inset = held.layout.padding;
+        let (left, top) = (own.x + inset.left + caret.x, own.y + inset.top + caret.y);
+        let (right, bottom) = (left + caret.width, top + caret.height);
+
+        let (mut across, mut down) = (false, false);
+        let mut above = held.parent;
+        while let Some(id) = above {
+            if across && down {
+                break;
+            }
+            let Some(outer) = self.get_mut(id) else {
+                break;
+            };
+            above = outer.parent;
+            // A slot has no box, and so nothing to scroll.
+            let Some(frame) = solved(id) else {
+                continue;
+            };
+            let padding = outer.layout.padding;
+            if !across && outer.layout.overflow_x != Overflow::Clip {
+                let (start, extent) = (
+                    frame.x + padding.left,
+                    frame.width - padding.left - padding.right,
+                );
+                outer.scroll.0 = shown(outer.scroll.0, left, right, start, extent);
+                across = true;
+            }
+            if !down && outer.layout.overflow_y != Overflow::Clip {
+                let (start, extent) = (
+                    frame.y + padding.top,
+                    frame.height - padding.top - padding.bottom,
+                );
+                outer.scroll.1 = shown(outer.scroll.1, top, bottom, start, extent);
+                down = true;
+            }
         }
     }
 
@@ -901,6 +1305,12 @@ impl Scene {
             self.solves += 1;
         }
         let placed = self.solved.as_ref().expect("solved above").placed.clone();
+
+        // A caret that has moved since the last frame is brought into sight
+        // before anything is shifted, by scrolling the box it is in.
+        if std::mem::take(&mut self.reveal) {
+            self.bring_caret_into_sight(&placed, &position_of, text);
+        }
 
         // The solve places everything as if nothing were scrolled. A node is
         // drawn that far from where the solve put it as the nodes it sits in
@@ -1037,23 +1447,53 @@ impl Scene {
                 Restyle::Fill(style) if holding.holds(l) => Some(style),
                 _ => None,
             });
-            let command = match (look, &node.appearance, node.run) {
+            let mut drawn: Vec<Command> = Vec::new();
+            match (look, &node.appearance, node.run) {
                 (Some(style), _, None) | (None, Appearance::Fill(style), _) => {
-                    Command::Quad(Quad {
+                    drawn.push(Command::Quad(Quad {
                         bounds: rect,
                         background: style.background,
                         border_color: style.border_color,
                         border_width: style.border_width,
                         corner_radius: style.corner_radius,
-                    })
+                    }));
                 }
-                (_, Appearance::Text(_), Some(run)) => Command::Glyphs(Glyphs {
-                    run,
-                    x: rect.x,
-                    y: rect.y,
-                }),
+                (_, Appearance::Text(own), Some(run)) => {
+                    // A text node's padding is inside its box, so its text
+                    // starts that far in.
+                    let (x, y) = (
+                        rect.x + node.layout.padding.left,
+                        rect.y + node.layout.padding.top,
+                    );
+                    let placed = |r: Rect| Rect {
+                        x: r.x + x,
+                        y: r.y + y,
+                        ..r
+                    };
+                    // What is selected in this node shows as a highlight
+                    // behind the glyphs. In text a person edits there is a
+                    // caret too, over the glyphs and in the colour the text
+                    // is drawn in, and both show only while the keyboard
+                    // goes to that text.
+                    let selected = self
+                        .selected_in(*id)
+                        .filter(|_| !node.editable || self.is_at_or_beneath(*id, self.focused));
+                    if let Some((from, to, _)) = selected {
+                        let covered = text.selection(run, from, to);
+                        drawn.extend(covered.into_iter().map(|r| plain(placed(r), SELECTION)));
+                    }
+                    drawn.push(Command::Glyphs(Glyphs { run, x, y }));
+                    let caret = selected
+                        .filter(|_| node.editable)
+                        .and_then(|(_, _, caret)| caret)
+                        .and_then(|at| text.caret(run, at, CARET_WIDTH));
+                    if let Some(caret) = caret {
+                        let ink = node.shaped_as.as_ref().unwrap_or(&own.style).color;
+                        drawn.push(plain(placed(caret), ink));
+                    }
+                }
                 _ => continue,
-            };
+            }
             if clip != open {
                 if open.is_some() {
                     commands.push(Command::PopClip);
@@ -1063,7 +1503,7 @@ impl Scene {
                 }
                 open = clip;
             }
-            commands.push(command);
+            commands.extend(drawn);
         }
         if open.is_some() {
             commands.push(Command::PopClip);
@@ -1314,7 +1754,42 @@ impl Scene {
         }
         let restyled = self.watched_between(self.focused, node, State::Focused);
         self.focused = node;
-        restyled
+        // The keyboard now goes to this node. If it is a text field and the
+        // selection is somewhere else, the caret goes to the end of the
+        // field's text, so that what is typed next has somewhere to go.
+        let field = node.and_then(|id| self.editable_in(id));
+        let elsewhere = field.is_some_and(|f| self.selection.is_none_or(|s| s.focus.node != f));
+        let moved = match field {
+            Some(field) if elsewhere => {
+                let end = Place {
+                    node: field,
+                    index: self.length_of(field),
+                };
+                self.set_selection(Some(Selected {
+                    anchor: end,
+                    focus: end,
+                }))
+            }
+            _ => false,
+        };
+        // A caret shows and hides with the focus, so either way a field
+        // gaining or losing it is a frame.
+        let had = self
+            .selection
+            .is_some_and(|s| self.get(s.focus.node).is_some_and(|n| n.editable));
+        restyled || moved || had
+    }
+
+    /// Note which keys are held, from a key the window was given. A press
+    /// reads `Shift` from here.
+    pub fn notice(&mut self, key: &KeyEvent) {
+        // The key that is `Shift` reports the modifiers as they were before
+        // it, so its own going down and coming up is what says.
+        self.shift = if key.key == "Shift" {
+            key.down
+        } else {
+            key.modifiers.shift
+        };
     }
 
     /// Move the focus to the next node that can have it, in the order the
@@ -1500,6 +1975,11 @@ impl Scene {
                 } else {
                     (held.layout.overflow_x, &mut held.scroll.0)
                 };
+                // Only a box that says `scroll` moves with the wheel. A
+                // `hidden` one is scrolled by the host alone.
+                if overflow != Overflow::Scroll {
+                    continue;
+                }
                 let to = within(*at + by, reach, overflow);
                 if to != *at {
                     *at = to;
@@ -1663,6 +2143,20 @@ impl Scene {
         if self.path(self.focused).contains(&gone) {
             self.focused = None;
         }
+        // Text that has gone is not selected, and nothing is dragged in it.
+        let within = |place: Place| self.is_at_or_beneath(place.node, Some(gone));
+        if self
+            .selection
+            .is_some_and(|s| within(s.anchor) || within(s.focus))
+        {
+            self.selection = None;
+        }
+        if self
+            .selecting
+            .is_some_and(|node| self.is_at_or_beneath(node, Some(gone)))
+        {
+            self.selecting = None;
+        }
     }
 
     /// A node's children as layout sees them, with slots spliced out.
@@ -1795,10 +2289,51 @@ fn thumb(extent: f32, reach: f32, scroll: f32) -> (f32, f32) {
 /// as it reaches.
 fn within(scroll: f32, reach: f32, overflow: Overflow) -> f32 {
     match overflow {
-        Overflow::Scroll => scroll.clamp(0.0, reach.max(0.0)),
-        Overflow::Clip | Overflow::Hidden => 0.0,
+        // A `hidden` box is scrolled by the host and never by the wheel, as
+        // in CSS: it is how a text field keeps its caret in sight.
+        Overflow::Scroll | Overflow::Hidden => scroll.clamp(0.0, reach.max(0.0)),
+        Overflow::Clip => 0.0,
     }
 }
+
+/// How far a box must be scrolled for the stretch from `near` to `far` to
+/// show in it, given how far it is scrolled now: unchanged if the stretch
+/// already shows, and otherwise the least change that brings it in. The box
+/// starts at `start` and is `extent` long, and all four are measured with
+/// nothing scrolled.
+fn shown(scroll: f32, near: f32, far: f32, start: f32, extent: f32) -> f32 {
+    if near < start + scroll {
+        near - start
+    } else if far > start + extent + scroll {
+        far - start - extent
+    } else {
+        scroll
+    }
+}
+
+/// A box of one colour with no border, which is what a caret and a
+/// selection's highlight are.
+fn plain(bounds: Rect, color: Color) -> Command {
+    Command::Quad(Quad {
+        bounds,
+        background: Some(color),
+        border_color: None,
+        border_width: 0.0,
+        corner_radius: 0.0,
+    })
+}
+
+/// How wide a caret is drawn.
+const CARET_WIDTH: f32 = 1.5;
+
+/// What selected text is drawn on: every selection looks the same, as every
+/// scroll thumb does.
+const SELECTION: Color = Color {
+    r: 0.20,
+    g: 0.45,
+    b: 0.95,
+    a: 0.30,
+};
 
 /// Whether `inner` lies wholly inside `outer`. Layout rounds to whole
 /// pixels, so the slack is for arithmetic and not for a visible overlap.
@@ -1887,6 +2422,7 @@ mod tests {
             is_slot: false,
             cursor: None,
             focusable: false,
+            editable: false,
         }
     }
 
@@ -3771,6 +4307,7 @@ mod tests {
             code: name.to_owned(),
             modifiers: Default::default(),
             repeat: false,
+            text: None,
         }
     }
 
@@ -3956,5 +4493,326 @@ mod tests {
         };
         assert_eq!(up.default_action(), KeyDefault::None);
     }
+
+    const FIELD: u32 = 30;
+
+    /// How far inside its box the field's text starts.
+    const INSET: f32 = 4.0;
+
+    /// A text field in the window's top left corner, as a component would
+    /// build one: a padded box 100 wide that can have the focus and hides
+    /// what does not fit, and in it one line of text a person edits, which
+    /// is never squeezed. Hole 0 is the text.
+    fn a_field(text: &mut TextEngine, says: &str) -> (Scene, u32) {
+        let mut scene = Scene::new();
+        let root = scene.root();
+        scene.render(root, &field_template(), &[content(0, says)], text);
+        scene.draw(window(), text);
+        (scene, root)
+    }
+
+    fn field_template() -> TemplateRef {
+        let nodes = vec![
+            NodeDef {
+                layout: Flex {
+                    axis: Axis::Row,
+                    width: Length::Px(100.0),
+                    padding: Edges::all(INSET),
+                    overflow_x: Overflow::Hidden,
+                    ..Flex::default()
+                },
+                first_child: 1,
+                child_count: 1,
+                focusable: true,
+                ..blank()
+            },
+            NodeDef {
+                layout: Flex {
+                    shrink: 0.0,
+                    ..Flex::default()
+                },
+                editable: true,
+                ..text_node("")
+            },
+        ];
+        fresh(FIELD, nodes, vec![content_binding(1)])
+    }
+
+    /// Put the field's selection somewhere, as a component does after an
+    /// edit.
+    fn select(scene: &mut Scene, root: u32, anchor: u32, focus: u32) {
+        assert!(scene.select(root, 1, TextSelection { anchor, focus }));
+    }
+
+    /// What is selected in the field, as its component would be told.
+    fn selected(scene: &Scene, root: u32) -> Option<(u32, u32)> {
+        scene.selection_in(root, 1).map(|s| (s.anchor, s.focus))
+    }
+
+    /// A pointer input, and what it does to the selection.
+    fn point(scene: &mut Scene, input: PointerInput, text: &TextEngine) {
+        scene.pointer(input);
+        scene.select_with(input, text);
+    }
+
+    /// Where in the window the field's text has its `index`th byte, on the
+    /// line's middle.
+    fn in_text(scene: &mut Scene, index: u32, text: &mut TextEngine) -> (f32, f32) {
+        let shown = glyphs(&scene.draw(window(), text))[0];
+        let caret = text.caret(shown.run, index, 0.0).expect("a run");
+        (shown.x + caret.x, shown.y + caret.y + caret.height / 2.0)
+    }
+
+    fn quads(commands: &[Command]) -> Vec<Quad> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::Quad(q) => Some(*q),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A caret is drawn at the selection's focus, over the text, and only
+    /// while the keyboard goes to the field.
+    #[test]
+    fn a_caret_shows_while_its_field_has_the_focus() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_field(&mut text, "hello");
+        select(&mut scene, root, 2, 2);
+
+        let unfocused = scene.draw(window(), &mut text);
+        assert_eq!(glyphs(&unfocused)[0].x, INSET);
+        assert_eq!(glyphs(&unfocused)[0].y, INSET);
+        assert!(quads(&unfocused).is_empty(), "no caret without the focus");
+
+        scene.move_focus(false);
+        let focused = scene.draw(window(), &mut text);
+        let run = glyphs(&focused)[0].run;
+        let expected = text.caret(run, 2, CARET_WIDTH).expect("a run");
+        let carets = quads(&focused);
+        assert_eq!(carets.len(), 1);
+        assert_eq!(carets[0].bounds.x, INSET + expected.x);
+        assert_eq!(carets[0].bounds.width, CARET_WIDTH);
+        assert_eq!(
+            carets[0].background,
+            Some(TextStyle::default().color),
+            "the colour of the text"
+        );
+        let caret_at = focused.iter().position(|c| matches!(c, Command::Quad(_)));
+        let glyphs_at = focused.iter().position(|c| matches!(c, Command::Glyphs(_)));
+        assert!(caret_at > glyphs_at, "drawn after the glyphs, so over them");
+    }
+
+    /// A text node's padding is inside its box, so its text starts that far
+    /// in, and so does a caret in it.
+    #[test]
+    fn padding_on_text_moves_its_glyphs_in() {
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        let padded = NodeDef {
+            layout: Flex {
+                padding: Edges::all(7.0),
+                ..Flex::default()
+            },
+            ..text_node("padded")
+        };
+        scene.render(root, &fresh(OTHER, vec![padded], vec![]), &[], &mut text);
+
+        let shown = glyphs(&scene.draw(window(), &mut text))[0];
+
+        assert_eq!((shown.x, shown.y), (7.0, 7.0));
+    }
+
+    /// A field that gets the focus when nothing in it is selected gets a
+    /// caret at the end of its text, so that typing has somewhere to go. One
+    /// that already holds the selection keeps it where it is.
+    #[test]
+    fn focusing_a_field_puts_the_caret_at_its_end() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_field(&mut text, "hello");
+        assert_eq!(selected(&scene, root), None);
+
+        scene.move_focus(false);
+        assert_eq!(selected(&scene, root), Some((5, 5)));
+        assert_eq!(quads(&scene.draw(window(), &mut text)).len(), 1, "a caret");
+
+        select(&mut scene, root, 1, 3);
+        scene.move_focus(false);
+        assert_eq!(selected(&scene, root), Some((1, 3)), "round to itself");
+    }
+
+    /// A press in a field puts the caret at the place in the text nearest
+    /// the pointer, and dragging from there selects up to wherever the
+    /// pointer is, outside the field included. No listener is involved.
+    #[test]
+    fn a_press_and_a_drag_select_in_a_field() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_field(&mut text, "hello");
+        let (x, y) = in_text(&mut scene, 2, &mut text);
+
+        point(&mut scene, pressed(x + 1.0, y), &text);
+        assert_eq!(selected(&scene, root), Some((2, 2)));
+        assert!(scene.dirty, "a frame, for the caret");
+
+        let (further, _) = in_text(&mut scene, 4, &mut text);
+        point(&mut scene, moved(further + 1.0, y), &text);
+        assert_eq!(selected(&scene, root), Some((2, 4)));
+
+        point(&mut scene, moved(-50.0, 300.0), &text);
+        assert_eq!(selected(&scene, root), Some((2, 0)), "back past the start");
+
+        point(&mut scene, released(-50.0, 300.0), &text);
+        point(&mut scene, moved(further, y), &text);
+        assert_eq!(selected(&scene, root), Some((2, 0)), "the drag is over");
+    }
+
+    /// A press on a field's padding is a press in the field: the caret goes
+    /// to the nearest place in its text, which is one of its ends.
+    #[test]
+    fn a_press_on_a_fields_padding_is_a_press_in_the_field() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_field(&mut text, "hi");
+        let (_, y) = in_text(&mut scene, 0, &mut text);
+
+        point(&mut scene, pressed(1.0, y), &text);
+        assert_eq!(selected(&scene, root), Some((0, 0)), "the leading padding");
+
+        point(&mut scene, released(1.0, y), &text);
+        point(&mut scene, pressed(90.0, y), &text);
+        assert_eq!(selected(&scene, root), Some((2, 2)), "past the text");
+    }
+
+    /// `Shift` with a press moves the end of the selection and leaves where
+    /// it began.
+    #[test]
+    fn shift_with_a_press_extends_the_selection() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_field(&mut text, "hello");
+        let (first, y) = in_text(&mut scene, 1, &mut text);
+        let (later, _) = in_text(&mut scene, 4, &mut text);
+        point(&mut scene, pressed(first + 1.0, y), &text);
+        point(&mut scene, released(first + 1.0, y), &text);
+
+        scene.notice(&key("Shift"));
+        point(&mut scene, pressed(later + 1.0, y), &text);
+
+        assert_eq!(selected(&scene, root), Some((1, 4)));
+    }
+
+    /// A second press in the same place selects the word there, and a third
+    /// all the field's text.
+    #[test]
+    fn pressing_again_selects_a_word_and_then_everything() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_field(&mut text, "one two");
+        let (x, y) = in_text(&mut scene, 5, &mut text);
+        let press = |scene: &mut Scene, text: &TextEngine| {
+            point(scene, pressed(x + 1.0, y), text);
+            point(scene, released(x + 1.0, y), text);
+        };
+
+        press(&mut scene, &text);
+        assert_eq!(selected(&scene, root), Some((5, 5)));
+        press(&mut scene, &text);
+        assert_eq!(selected(&scene, root), Some((4, 7)), "the word `two`");
+        press(&mut scene, &text);
+        assert_eq!(selected(&scene, root), Some((0, 7)));
+    }
+
+    /// A shorter text under the selection holds the selection's places
+    /// within it, and text that goes away takes its selection with it.
+    #[test]
+    fn a_selection_follows_what_happens_to_its_text() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_field(&mut text, "hello");
+        select(&mut scene, root, 1, 5);
+
+        scene.render(
+            root,
+            &TemplateRef::Known(FIELD),
+            &[content(0, "he")],
+            &mut text,
+        );
+        assert_eq!(selected(&scene, root), Some((1, 2)));
+
+        scene.render(root, &just_text(OTHER, "gone"), &[], &mut text);
+        assert_eq!(scene.selection, None);
+    }
+
+    /// Selected text has a highlight behind it, between the selection's two
+    /// ends whichever way round they are, and the caret is at its focus.
+    #[test]
+    fn a_selection_is_drawn_behind_its_text() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_field(&mut text, "hello");
+        scene.move_focus(false);
+        select(&mut scene, root, 4, 1);
+
+        let commands = scene.draw(window(), &mut text);
+
+        let run = glyphs(&commands)[0].run;
+        let edge = |index| INSET + text.caret(run, index, 0.0).expect("a run").x;
+        // The field hides what does not fit, so all of it is inside a clip.
+        let kinds: Vec<&str> = commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::Quad(_) => Some("quad"),
+                Command::Glyphs(_) => Some("glyphs"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, ["quad", "glyphs", "quad"]);
+        let (highlight, caret) = (quads(&commands)[0], quads(&commands)[1]);
+        assert_eq!(highlight.background, Some(SELECTION));
+        assert!((highlight.bounds.x - edge(1)).abs() < 0.5);
+        assert!((highlight.bounds.x + highlight.bounds.width - edge(4)).abs() < 0.5);
+        assert!((caret.bounds.x - edge(1)).abs() < 0.5, "at the focus");
+    }
+
+    /// A caret moved out of sight scrolls the field until the caret shows,
+    /// and no further. At the end of text longer than the field the caret is
+    /// at the far edge of the field's padding. Back at the start, nothing is
+    /// scrolled. The wheel does not move a box that hides its overflow, so
+    /// only the caret does.
+    #[test]
+    fn a_caret_moved_out_of_sight_is_scrolled_to() {
+        let mut text = TextEngine::new();
+        let long = "a field holds more text than it shows";
+        let (mut scene, root) = a_field(&mut text, long);
+        scene.move_focus(false);
+        let caret = |commands: &[Command]| quads(commands)[0].bounds;
+
+        let end = long.len() as u32;
+        select(&mut scene, root, end, end);
+        let at_the_end = scene.draw(window(), &mut text);
+        assert!(glyphs(&at_the_end)[0].x < 0.0, "the text has moved left");
+        let right = caret(&at_the_end).x + caret(&at_the_end).width;
+        // The text ends where the padding begins, and the caret after its
+        // last letter reaches a little way into the padding.
+        assert!(
+            right > 100.0 - INSET - 0.5 && right <= 100.0 - INSET + CARET_WIDTH,
+            "caret ends at {right}"
+        );
+
+        select(&mut scene, root, 0, 0);
+        let at_the_start = scene.draw(window(), &mut text);
+        assert_eq!(glyphs(&at_the_start)[0].x, INSET, "nothing scrolled");
+
+        select(&mut scene, root, 3, 3);
+        let near_the_start = scene.draw(window(), &mut text);
+        assert_eq!(glyphs(&near_the_start)[0].x, INSET, "already in sight");
+
+        scene.pointer(PointerInput::Wheel {
+            x: 50.0,
+            y: 10.0,
+            dx: 40.0,
+            dy: 0.0,
+        });
+        let wheeled = scene.draw(window(), &mut text);
+        assert_eq!(glyphs(&wheeled)[0].x, INSET, "the wheel moved nothing");
+    }
+
 }
 

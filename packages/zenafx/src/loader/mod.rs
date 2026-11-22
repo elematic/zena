@@ -505,7 +505,11 @@ impl Scene for GuestScene {
     fn pointer(&mut self, input: PointerInput) -> bool {
         let (deliveries, restyled) = {
             let mut scene = self.scene.lock().unwrap();
-            (scene.pointer(input), scene.dirty)
+            let deliveries = scene.pointer(input);
+            // What the pointer does to the selection is the scene's too, and
+            // needs the shaped text to find a place in it.
+            scene.select_with(input, &self.text.lock().unwrap());
+            (deliveries, scene.dirty)
         };
         self.hand_over(deliveries);
         restyled
@@ -520,6 +524,7 @@ impl Scene for GuestScene {
     /// listens for no keys at all without waking it.
     fn key(&mut self, event: KeyEvent) -> bool {
         let mut scene = self.scene.lock().unwrap();
+        scene.notice(&event);
         let delivery = scene.key(event);
         if delivery.listeners.is_empty() {
             return act_on(&delivery.event, &mut scene);
@@ -578,6 +583,7 @@ mod tests {
                     is_slot: false,
                     cursor: None,
                     focusable: true,
+                    editable: false,
                 }],
                 bindings: vec![],
                 states: vec![],
@@ -621,6 +627,7 @@ mod tests {
                 code: "Tab".to_owned(),
                 modifiers: Modifiers::default(),
                 repeat: false,
+                text: None,
             };
             let key = KeyDelivery {
                 event: tab,

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use super::listeners::{DeliveryRecord, HostReply, KeyDeliveryRecord, Listeners, Replies};
 use crate::ui::events::{KeyListener, Listener, Phase, PointerKind, Scope};
-use crate::ui::scene::{Hole, Scene, TemplateRef};
+use crate::ui::scene::{Hole, Scene, TemplateRef, TextSelection};
 use crate::ui::surface::Wake;
 use crate::ui::text::TextEngine;
 use crate::ui::types::{Content, Measured, Node, Rect, Size, TextStyle};
@@ -312,6 +312,30 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
                 )));
             }
             Ok((StreamReader::new(&mut caller, stream)?,))
+        },
+    )?;
+    scene.func_wrap(
+        "[method]node.selection",
+        |caller: StoreContextMut<'_, UiHostState>, (node, target): (Resource<HostNode>, u32)| {
+            let scene = caller.data().scene.lock().unwrap();
+            Ok((scene.selection_in(node.rep(), target),))
+        },
+    )?;
+    scene.func_wrap(
+        "[method]node.select",
+        |mut caller: StoreContextMut<'_, UiHostState>,
+         (node, target, to): (Resource<HostNode>, u32, TextSelection)| {
+            let data = caller.data_mut();
+            // The same reasoning as a listener at a position that is not
+            // there: a caret put in no text would never show, and the guest
+            // would not find out why.
+            if !data.scene.lock().unwrap().select(node.rep(), target, to) {
+                return Err(wasmtime::Error::msg(format!(
+                    "a node shows no template with text at position {target} to select in"
+                )));
+            }
+            data.changed();
+            Ok(())
         },
     )?;
     scene.func_wrap(
