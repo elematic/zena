@@ -1432,6 +1432,11 @@ styles](#state-styles). Until then a cursor that changes with state, such as
 
 ### Context: values that inherit down the tree
 
+[zenafx-styles.md](./zenafx-styles.md#one-mechanism-for-values-that-go-down-the-tree)
+proposes that the values here and its inheriting properties are one
+mechanism: a key that is a symbol, a type for each value, a declaration in
+place of `provide`, and a watcher in place of `inherited`.
+
 Events handle one child talking to one parent. The harder direction is one
 provider reaching a whole subtree: a theme, a locale, a text direction, a density
 setting. Threading those down as props fails because the components in between
