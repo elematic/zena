@@ -1,0 +1,152 @@
+/**
+ * A list longer than the box it is in, and a line saying which row was pressed.
+ *
+ * The list's box says that what does not fit in it scrolls. Nothing else here
+ * is about scrolling: no handler hears the wheel and no widget keeps a
+ * position. The host cuts the rows off at the list's edge, moves them when the
+ * wheel turns over the list, and keeps how far they have moved. Scrolling wakes
+ * the component as little as resizing the window does.
+ *
+ * A row does hear a press, and looks different while the pointer is over it.
+ * Both follow the rows as they move: the host knows where it last drew each
+ * one, so a press lands on the row that is under the pointer now, and the row
+ * that scrolls under a still pointer is the one drawn hovered.
+ */
+import { Color, BoxStyle, TextStyle, Edges, Justify, Align, LengthPx,
+         Overflow } from 'zenafx:ui/style';
+import { Binding, BindingTarget, BindingValueContent, StateStyle, State,
+         RestyleFill } from 'zenafx:host/scene';
+import { PointerKind } from 'zenafx:host/events';
+import { Rendering, Widget, shows, holds, on, runApp } from '../framework.zena';
+import { box, slot, text, full, template } from '../widgets/widget.zena';
+import { some, none } from 'zena:core';
+
+let page = new Color(0.98, 0.98, 0.99, 1.0);
+let ink = new Color(0.10, 0.11, 0.13, 1.0);
+let muted = new Color(0.42, 0.45, 0.52, 1.0);
+let paper = new Color(1.0, 1.0, 1.0, 1.0);
+let edge = new Color(0.78, 0.82, 0.90, 1.0);
+let hovered = new Color(0.90, 0.93, 0.99, 1.0);
+
+let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
+let listStyle = new BoxStyle(some(paper), some(edge), 1.0, 8.0, 1.0);
+let rowStyle = new BoxStyle(some(paper), none, 0.0, 0.0, 1.0);
+let hoveredStyle = new BoxStyle(some(hovered), none, 0.0, 0.0, 1.0);
+let rowText = new TextStyle('system-ui', 16.0, 400 as u16, false, ink);
+let chosenText = new TextStyle('system-ui', 15.0, 500 as u16, false, muted);
+
+/** How many rows there are: several times what the list shows at once. */
+let rowCount = 40;
+
+/** The line above the list: one text node, and a hole for what it says. */
+let chosenTemplate = template(text('', chosenText), [
+  new Binding(0 as u32, BindingTarget.Content),
+]);
+
+/** Says which row was last pressed. Told by whoever owns the choice. */
+class Chosen extends Widget {
+  var #row = 0;
+
+  show(row: i32): void {
+    this.#row = row;
+    this.refresh();
+  }
+
+  build(): Rendering {
+    let says = if (this.#row == 0) 'Nothing chosen' else `Chose row ${this.#row}`;
+    return shows(chosenTemplate, [new BindingValueContent(says)]);
+  }
+}
+
+/**
+ * A row's template: node 0 is its own box and node 1 its label.
+ *
+ * `shrink: 0.0` is what makes the list scroll. A box in a column gives up
+ * height before it overflows unless it is told not to, and forty rows that each
+ * gave up a little would fit in the list at a few pixels apiece.
+ *
+ * The one state style is the row's own box while the pointer is over the row.
+ */
+let rowTemplate = template(
+  box({style: rowStyle, padding: new Edges(10.0, 16.0, 10.0, 16.0), shrink: 0.0}, [
+    text('', rowText),
+  ]),
+  [new Binding(1 as u32, BindingTarget.Content)],
+  [new StateStyle(0 as u32, State.Hovered, 0 as u32, new RestyleFill(hoveredStyle))],
+);
+
+/** One row: a number, and what to do when it is pressed. */
+class Row extends Widget {
+  #number: i32;
+  #pressed: (row: i32) => void;
+
+  new(number: i32, pressed: (row: i32) => void)
+      : #number = number, #pressed = pressed, super();
+
+  build(): Rendering {
+    return shows(rowTemplate, [new BindingValueContent(`Row ${this.#number}`)]).hearing([
+      on(PointerKind.Down, () => {
+        this.#pressed(this.#number);
+      })
+    ]);
+  }
+}
+
+/**
+ * The list's template: a box of a fixed size whose content scrolls, and the
+ * slot the rows hang in.
+ *
+ * The slot is not a box, so the rows lay out in the list's own column, and it
+ * is the list's box they are cut off at.
+ */
+let listTemplate = template(
+  box({style: listStyle, align: Align.Stretch, width: new LengthPx(280.0),
+       height: new LengthPx(240.0), overflowY: Overflow.Scroll}, [slot()]),
+  [],
+);
+
+/** The rows, in a box that shows six of them. */
+class List extends Widget {
+  #rows: Array<Widget>;
+
+  new(rows: Array<Widget>) : #rows = rows, super();
+
+  build(): Rendering {
+    return holds(listTemplate, [this.#rows]);
+  }
+}
+
+/** The page: its own box, and one slot for the line and the list. */
+let pageTemplate = template(
+  box({style: pageStyle, justify: Justify.Center, align: Align.Center, gap: 16.0,
+       width: full, height: full}, [slot()]),
+  [],
+);
+
+/** The page: which row is chosen lives here, above the line and the list. */
+class Page extends Widget {
+  #chosen = new Chosen();
+  /** Made on the first render. See the same field in `counter/main.zena`. */
+  var #content: Array<Widget> | null = null;
+
+  build(): Rendering {
+    var content = this.#content;
+    if (content == null) {
+      let rows = new GrowableArray<Widget>();
+      for (let number in 1..(rowCount + 1)) {
+        rows.push(new Row(number, (row) => {
+          this.#chosen.show(row);
+        }));
+      }
+      let made: Array<Widget> = [this.#chosen, new List(rows)];
+      this.#content = made;
+      content = made;
+    }
+    return holds(pageTemplate, [content]);
+  }
+}
+
+/** The component's entry: build the widget tree and show it. */
+export function main(): void {
+  runApp(new Page());
+}

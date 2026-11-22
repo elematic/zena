@@ -291,6 +291,72 @@ change slides a different node under a still pointer, the frame that solves the
 new layout draws that node hovered, and the `enter` and `leave` calls that
 follow from it are delivered afterwards.
 
+### Scrolling
+
+[`examples/zenafx/scroll/`](../../examples/zenafx/scroll/) is forty rows in a
+box that shows six, under a line saying which row was pressed.
+
+```bash
+./target/release/zena build ./packages/zenafx:build:scroll   # compiles it to out/scroll.wasm
+./target/release/zfx --app packages/zenafx/out/scroll.wasm
+```
+
+The list scrolls because its box says so, and for no other reason:
+
+```zena
+box({style: listStyle, align: Align.Stretch, width: new LengthPx(280.0),
+     height: new LengthPx(240.0), overflowY: Overflow.Scroll}, [slot()])
+```
+
+```wit
+enum overflow { clip, hidden, scroll }
+
+record flex {
+  // ...
+  overflow-x: overflow,
+  overflow-y: overflow,
+}
+```
+
+Content that does not fit in a box is cut off at the box's edge, whichever of
+the three the box says. Nothing is drawn outside a box. The values are CSS's,
+with CSS's meanings, and CSS's `visible` is left out.
+
+- `clip` is the default, for a box whose content is expected to fit. The box
+  is never laid out smaller than its content. If the content still does not
+  fit, because the box was given a size, it is cut off and the host logs a
+  warning.
+- `hidden` is for a box meant to hold more than fits. It may be laid out
+  smaller than its content.
+- `scroll` is `hidden`, and the wheel moves the content as far as it reaches.
+
+A box whose content fits is drawn with no clip, so cutting off by default
+costs nothing where there is nothing to cut.
+
+How far a box has scrolled is the host's to keep, as what the pointer is over
+is. The component has no handler for the wheel and holds no position:
+`tests/scroll.rs` wheels the list to its end and back, and no event is written
+to the component.
+
+The rows say `shrink: 0.0`, because a box in a column otherwise gives up height
+before it overflows, and forty rows that each gave up a little would fit.
+
+What is cut off entirely is not drawn, so a frame costs the rows that show. It
+is not under the pointer either: a press below the list reaches no row, though
+rows are laid out there, and a press after scrolling reaches the row drawn under
+it. The frame after a scroll tests the pointer again, so the row that scrolled
+under a still pointer is the one drawn hovered.
+
+The wheel goes to the nearest box under the pointer that scrolls that way and
+has further to go, so a list at its last row passes the wheel to the page.
+
+A box with further to scroll shows a thumb along its edge: as long, against the
+box, as the box is against its content, and as far along.
+
+A frame after a scroll solves no layout. The solver's answer stands until the
+component writes the tree or the window changes size, and scrolling and
+hovering do neither, so those frames are a walk of the tree and a paint.
+
 ### What is not here yet
 
 A window shows one component. Embedding one component in another is designed
@@ -306,8 +372,11 @@ three components drawing one card came to 6 solves and 54 cross-component
 numbers are no longer reproducible from this tree.
 
 Keyboard events reach the window but are not routed to the component, and there
-is no focus. The scroll wheel is not read. A press does not capture the pointer,
-so the `up` that ends a drag goes to whatever the pointer is over by then.
+is no focus. A press does not capture the pointer, so the `up` that ends a drag
+goes to whatever the pointer is over by then. A scroll thumb cannot be dragged
+or styled, a component cannot read or set how far a box has scrolled, and a
+box's content is cut off at a rectangle, so it shows in the corners of a box
+with rounded ones.
 Navigation and asset loading are
 designed in
 [zenafx-navigation-and-assets.md](../../docs/design/zenafx-navigation-and-assets.md)
