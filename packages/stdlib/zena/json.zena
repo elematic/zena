@@ -458,10 +458,35 @@ export function stringify(value: JsonValue, indent: String | null = null): Strin
 
 // === Parse Options ===
 
-// TODO: Use optional record fields when supported, e.g.:
-//   type JsonOptions = { allowComments?: boolean, trackLocations?: boolean };
-// This would allow: parseJson(input, { allowComments: true })
-export type JsonOptions = { allowComments: boolean, trackLocations: boolean };
+export type JsonOptions = {
+  allowComments?: boolean,
+  allowTrailingCommas?: boolean,
+  trackLocations?: boolean,
+};
+
+function optAllowComments(options: JsonOptions | null) {
+  if (options == null) {
+    return false;
+  }
+  let {allowComments = false} = options;
+  return allowComments;
+}
+
+function optAllowTrailingCommas(options: JsonOptions | null) {
+  if (options == null) {
+    return false;
+  }
+  let {allowTrailingCommas = false} = options;
+  return allowTrailingCommas;
+}
+
+function optTrackLocations(options: JsonOptions | null) {
+  if (options == null) {
+    return false;
+  }
+  let {trackLocations = false} = options;
+  return trackLocations;
+}
 
 // === Parse Error ===
 
@@ -495,14 +520,16 @@ class JsonParser {
   #reader: StringReader;
   var #depth = 0;
   #allowComments: boolean;
+  #allowTrailingCommas: boolean;
   #trackLocations: boolean;
   var #line = 1;
   var #column = 1;
 
   new(input: String, options: JsonOptions | null)
     : #reader = new StringReader(input),
-      #allowComments = options?.allowComments ?? false,
-      #trackLocations = options?.trackLocations ?? false
+      #allowComments = optAllowComments(options),
+      #allowTrailingCommas = optAllowTrailingCommas(options),
+      #trackLocations = optTrackLocations(options)
   {}
 
   parse(): JsonValue {
@@ -574,6 +601,11 @@ class JsonParser {
       
       // Parse key
       if (this.#peek() != 34) {  // '"'
+        // Checked only on the non-'"' cold path so standard JSON pays nothing.
+        if (this.#peek() == 125 && this.#allowTrailingCommas) {  // '}'
+          this.#advance();
+          return obj;
+        }
         this.#error("Expected string key");
       }
       let key = this.#parseString();
@@ -631,7 +663,13 @@ class JsonParser {
     
     while (true) {
       this.#skipWhitespaceAndComments();
-      
+
+      // Standard JSON never sees ']' here, so the option field is not loaded on valid input.
+      if (this.#peek() == 93 && this.#allowTrailingCommas) {  // ']'
+        this.#advance();
+        return arr;
+      }
+
       let valueStartLine = this.#line;
       let valueStartCol = this.#column;
       let value = this.#parseValue();
@@ -908,7 +946,7 @@ class JsonParser {
         reader.advance();
         this.#line += 1;
         this.#column = 1;
-      } else if (this.#allowComments && cp == 47) {  // '/'
+      } else if (cp == 47 && this.#allowComments) {  // '/'
         if (reader.matchString("//")) {  // '//' line comment
           this.#column += 2;
           while (!reader.isAtEnd && reader.peek() != 10) {
@@ -965,6 +1003,17 @@ class JsonParser {
 export function parseJson(input: String, options: JsonOptions | null = null): JsonValue {
   let parser = new JsonParser(input, options);
   return parser.parse();
+}
+
+/**
+ * Parses `input` as JSON with Comments and trailing commas (JSONC).
+ */
+export function parseJsonc(input: String, trackLocations: boolean = false): JsonValue {
+  return parseJson(input, {
+    allowComments: true,
+    allowTrailingCommas: true,
+    trackLocations,
+  });
 }
 
 // === jq-Style Query Functions ===

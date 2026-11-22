@@ -2,7 +2,7 @@
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse, throws} from 'zena:assert';
 import {StringBuilder} from 'zena:core';
-import {JsonBuilder, parseJson, jsonGet, JsonObject, JsonArray, JsonOptions, JsonParseError, stringify} from 'zena:json';
+import {JsonBuilder, parseJson, parseJsonc, jsonGet, JsonObject, JsonArray, JsonOptions, JsonParseError, stringify} from 'zena:json';
 
 // Helper to test that parsing throws JsonParseError
 let expectParseError = (input: String) => {
@@ -628,6 +628,46 @@ export let tests = suite('JSON Parser', () => {
 
     test('comments not allowed by default', (ctx) => {
       expectParseError('{"a": 1} // comment');
+    });
+
+    test('trailing commas in objects and arrays when opt-in', (ctx) => {
+      let jsoncOpts: JsonOptions = {
+        allowComments: true,
+        allowTrailingCommas: true,
+      };
+      let obj = parseJson(
+        '{\n  "a": [1, 2, /* trailing */ ],\n  "b": {"x": true,},\n}',
+        jsoncOpts,
+      ) as JsonObject;
+      equal(obj.size, 2);
+      let arr = obj['a'] as JsonArray;
+      equal(arr.length, 2);
+      let nested = obj['b'] as JsonObject;
+      equal(nested.size, 1);
+
+      let viaHelper = parseJsonc('{\n  // comment\n  "k": [1,],\n}') as JsonObject;
+      equal(viaHelper.size, 1);
+    });
+
+    test('trailing commas rejected by default and double/leading commas always rejected', (ctx) => {
+      expectParseError('{"a": 1,}');
+      expectParseError('[1, 2,]');
+      let jsoncOpts: JsonOptions = {allowTrailingCommas: true};
+      let checkErr = (input: String) => {
+        var threw = false;
+        try {
+          parseJson(input, jsoncOpts);
+        } catch (e) {
+          if (e is JsonParseError) {
+            threw = true;
+          }
+        }
+        isTrue(threw);
+      };
+      checkErr('[,]');
+      checkErr('[1,,]');
+      checkErr('{,}');
+      checkErr('{"a": 1,,}');
     });
   });
 
