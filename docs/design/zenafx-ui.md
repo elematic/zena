@@ -12,8 +12,11 @@
   [The scene interface](#the-scene-interface) is not: there is no runtime
   component, so no `zenafx:ui/scene` and no viewport resource, and the host calls
   the root once a frame rather than the root driving the frame as
-  [The root drives the frame](#the-root-drives-the-frame) has it. Input, events,
-  context, styling, navigation and assets do not exist. The authoring surface in
+  [The root drives the frame](#the-root-drives-the-frame) has it. Pointer events
+  reach a component's listeners, driven by `examples/zenafx/button/`, and
+  [Implementation status of events](#implementation-status-of-events) says how
+  that differs from the design. Keyboard input, widget-defined events, context,
+  styling, navigation and assets do not exist. The authoring surface in
   [zenafx-widget-authoring.md](./zenafx-widget-authoring.md) does not exist, so a
   widget is written by hand against the protocol.
 - **Date**: 2026-10-02
@@ -55,6 +58,7 @@
       - [Why this survives the boundary moving](#why-this-survives-the-boundary-moving)
       - [Pushed bindings elsewhere](#pushed-bindings-elsewhere)
       - [WIT](#wit)
+      - [Implementation status of events](#implementation-status-of-events)
     - [Context: values that inherit down the tree](#context-values-that-inherit-down-the-tree)
   - [Host primitives](#host-primitives)
     - [Layout with measurement inside the solve](#layout-with-measurement-inside-the-solve)
@@ -914,6 +918,110 @@ Handling an event can raise more of them, because a parent responding to a child
 may update and cause another child to report. The pass therefore runs to a
 quiescent state or to a budget, and anything outstanding rides to the next frame
 — the same budget [Open questions](#open-questions) needs for a slow component.
+
+#### Implementation status of events
+
+Pointer events are built, against the tree the host holds: `listen-pointer` is a
+method of the `node` resource in `zenafx:host/scene`, and the event types are in
+`zenafx:host/events`. `examples/zenafx/button/` has three listeners on a
+button's box and one on the page it sits in, and
+`packages/zenafx/tests/button.rs` presses and hovers it with no window.
+
+The host remembers the rectangle that layout gave each node in the last frame.
+The target of a pointer input is the node that frame painted last under the
+pointer. The host then lists the listeners the input reaches from the ones it
+holds, and an input that reaches none ends there: in that test the pointer
+crosses the page and moves about inside the button without the component being
+woken.
+
+The interface is this, and five things in it differ from the one under
+[WIT](#wit) above.
+
+```wit
+interface events {
+  resource reply { stop-propagation: func(); }
+  record delivery { event: pointer-event, reply: option<reply> }
+}
+
+resource node {
+  listen-pointer: func(target: u32, kind: pointer-kind, in-scope: scope, at: phase)
+      -> stream<delivery>;
+}
+```
+
+- **Each listener has a stream.** `listen-pointer` adds a listener and returns
+  a `stream<delivery>`. The host writes the listener's events to the stream,
+  where the design has the host call an exported `handle`, and the component
+  reads them in a loop that calls the handler. The component needs no table
+  from a listener's name to its handler. Dropping the stream removes the
+  listener, which is the design's `unlisten`. The host removes the listener
+  and ends the stream when the node the listener is on goes away, and the
+  component has no cleanup to do then: its loop finishes. A listener is added
+  at a position in a template, as a binding is, so it lasts as long as the
+  interior it was added in: a patch keeps it and a different template removes
+  it.
+- **A method listens for one family of events.** The design's `listen` takes
+  any kind of event, as a `u32`, and delivers an untyped payload. A stream has
+  one element type, so here each family of events whose payload has a shape of
+  its own gets a method that returns a stream of that payload:
+  `listen-pointer` for the five pointer kinds, and later ones for keys, for
+  the wheel and for events a widget defines. The alternative that keeps one
+  `listen` is a `variant` of every payload as the stream's element. Every
+  listener would then test a discriminant, and adding a family would change
+  the type every listener reads.
+- **A listener answers through a resource the event carries.** The design's
+  `handle` returns whether the event was handled, and a stream has no return
+  value. A `down`, `up` or `move` therefore comes with a `reply`. The host
+  offers the event to the next listener on its path when this one drops the
+  reply, and to none if `stop-propagation` was called first, so each listener
+  still sees the tree as the one before it left it. An `enter` or a `leave` carries no reply,
+  since nothing a listener does with one changes who else hears it. What
+  happened is a record, read without a call, and only the answer is a resource.
+- **The payload is a `pointer-event` record** and the kind is an enum of `down`,
+  `up`, `move`, `enter` and `leave`. This is the typed half of the closed variant
+  that the third open question describes. `raise` and widget-defined events are
+  not built, so nothing yet needs the opaque half.
+- **A position is measured from the listening node's box.** A component
+  therefore does not learn where its nodes sit in the window, which is the
+  second choice in the open question about coordinate spaces.
+
+A stream for every listener costs more than a table entry for every listener. A
+component with one stream on its root takes about 3µs to go from a press to its
+answer. With 10,000 streams on that node, of which the first stops the press,
+it takes about 43µs. Starting those 10,000 adds about 30ms to the component's
+start, and the process grows by about 4kB for each. These are from a probe
+component on one machine, and they are the reason a list of thousands of rows
+would listen once, on the node that holds the rows.
+
+The host does not take the component reading its stream again as an answer. A
+stream is read ahead: the read for the next event is under way before the
+handler for this one has run. A version that answered on the next read let a
+press through to the page before the button had stopped it, which
+`a_press_the_button_stops_does_not_reach_the_page` in that test now covers. A
+listener that keeps a reply therefore holds up the events behind it, in its own
+component.
+
+A component that reads a listener's stream has work outstanding for as long as
+it listens, so its `main` never finishes. The window used to redraw for as long
+as a component was running. It now redraws when the tree is written, and a
+running component owes no frame on that account.
+
+`enter` and `leave` use scope in a way the design does not spell out. They
+report a listener's scope gaining or losing the target, and they do not
+propagate. A `subtree` listener on a button hears `enter` when the pointer comes
+onto the button from outside it, and nothing when the pointer moves between the
+button's label and its padding. A `node` listener hears its own box becoming and
+ceasing to be the target. One pair of kinds covers what the DOM splits into
+`mouseenter` and `mouseover`.
+
+A listener's events are written, and its answers waited for, on the component's
+own thread, some time after the input that led to them, so the window's thread
+never waits on a component. When a handler changes the tree, the `render` call
+that changes it asks the window for a frame.
+
+Not built: keyboard input and focus, the scroll wheel, pointer capture, so an
+`up` goes to whatever the pointer is over when the button is released, and a
+budget for a pass of handlers that keep raising events.
 
 ### Context: values that inherit down the tree
 
@@ -1954,6 +2062,10 @@ has them, both waiting on a second component:
 application; the runtime hit-tests a point against the retained tree and
 reports the node; an event handler changes a colour and the frame that follows
 shows it. This is the first milestone where `bounds` earns its place.
+
+The pointer half is done, in the host:
+[Implementation status of events](#implementation-status-of-events). The host
+does the hit test against the tree it holds, so no component reads `bounds`.
 
 **Milestone 3: widgets, templates and the scheduler.** Template registration,
 positional bindings, per-widget dirty checking, the depth-ordered queue. A counter

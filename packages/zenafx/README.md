@@ -190,6 +190,78 @@ digits, so it really was reshaped. Four of those tests wait out real sleeps and
 are `#[ignore]`d until a clock can be substituted for `wasi:clocks`; run them with
 `cargo test -p zenafx --test counter -- --ignored`.
 
+### Hearing the pointer
+
+[`examples/zenafx/button/`](../../examples/zenafx/button/) is a count and a
+button that adds one to it. The button changes colour while the pointer is over
+it, and a press anywhere else on the page sets the count back to zero.
+
+```bash
+./target/release/zena build ./packages/zenafx:build:button   # compiles it to out/button.wasm
+./target/release/zfx --app packages/zenafx/out/button.wasm
+```
+
+A handler is a function, and a function cannot cross to the host. So a widget
+describes each one: which node of its template hears, and which kind of event.
+
+```zena
+return shows(buttonTemplate, [...]).hearing([
+  on(PointerKind.Down, () => {
+    this.#pressed();
+  }),
+  on(PointerKind.Enter, () => {
+    this.#hover(true);
+  }),
+  on(PointerKind.Leave, () => {
+    this.#hover(false);
+  })
+]);
+```
+
+Each becomes one call when the template is built. The call adds a listener in
+the host and returns a stream:
+
+```wit
+resource node {
+  listen-pointer: func(target: u32, kind: pointer-kind, in-scope: scope, at: phase)
+      -> stream<delivery>;
+}
+
+record delivery { event: pointer-event, reply: option<reply> }
+resource reply { stop-propagation: func(); }
+```
+
+The host writes each event the listener hears to its stream. The framework
+reads the stream in a loop and calls the handler with each event. Dropping the
+stream removes the listener. When the node goes away, the host removes the
+listener and ends the stream, and the framework's loop finishes. A widget has
+no cleanup of its own to do for its listeners.
+
+The host remembers the layout: the rectangle each node was given in the last
+frame. From those rectangles it finds the node under the pointer, and from the
+listeners it holds it finds which of them an input reaches, before it writes
+anything to the component. An input that reaches none does not wake the
+component.
+`tests/button.rs` moves the pointer across the page and about inside the button,
+and asserts that no event is written until the pointer crosses onto the button
+or presses it.
+
+A `down`, `up` or `move` is offered along the path between the root and the node
+under the pointer, to one listener at a time. It comes with a `reply`. The next
+listener is offered the event when this one drops the reply, and no listener is
+if this one called `stop-propagation` first. A press on the button reaches the
+button, which stops its propagation, so the page's listener does not set the
+count back to zero.
+
+`enter` and `leave` tell a listener that its scope gained or lost the pointer,
+so a button hears nothing when the pointer moves from its padding onto its
+label. They carry no reply. A position is measured from the listening node's
+own box.
+
+The handlers run on the component's thread, after the window's thread has moved
+on. When one changes the tree, the `render` that changes it wakes the window for
+a frame.
+
 ### What is not here yet
 
 A window shows one component. Embedding one component in another is designed
@@ -204,8 +276,10 @@ three components drawing one card came to 6 solves and 54 cross-component
 `measure` calls per frame, against 0 and 0 for the retained tree. Those
 numbers are no longer reproducible from this tree.
 
-Pointer and keyboard events reach the window but are not routed to the
-component, so nothing is interactive. Navigation and asset loading are
+Keyboard events reach the window but are not routed to the component, and there
+is no focus. The scroll wheel is not read. A press does not capture the pointer,
+so the `up` that ends a drag goes to whatever the pointer is over by then.
+Navigation and asset loading are
 designed in
 [zenafx-navigation-and-assets.md](../../docs/design/zenafx-navigation-and-assets.md)
 and not built. Milestone 1 of the UI design says what else that leaves out.

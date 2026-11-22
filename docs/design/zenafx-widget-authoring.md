@@ -677,7 +677,8 @@ boundary, so composition happens at compile time regardless.
 6. **Input routing, with registration as data.** Hit test, the scene path, `listen`
    with a scope, one exported entry point per component. Unblocks a container
    hearing its children, the `state` facts, and every interactive widget. The
-   largest single piece.
+   largest single piece. Built for the pointer:
+   [Implementation status of events](./zenafx-ui.md#implementation-status-of-events).
 7. **Rules.** Inheritance is designed; rules need the attachment op and the subtree
    scoping, and can ship with `is-kind` and `from` only.
 8. **The rest of the predicate algebra**, which needs step 6.

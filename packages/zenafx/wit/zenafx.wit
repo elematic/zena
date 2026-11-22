@@ -249,6 +249,85 @@ package zenafx:host@0.1.0 {
     request-redraw: func();
   }
 
+  /// What the host tells a component about the pointer, how a component says
+  /// which of it a node hears, and how a listener answers. `scene` registers
+  /// a listener and hands back the stream its events arrive on.
+  interface events {
+    enum pointer-kind {
+      /// A button went down over the target.
+      down,
+      /// A button came up over the target.
+      up,
+      /// The pointer moved, and the target is what it is now over.
+      move,
+      /// The target is now inside the listener's scope and was not before.
+      enter,
+      /// The target was inside the listener's scope and no longer is.
+      leave,
+    }
+
+    /// Which targets a listener hears. The target of a pointer event is the
+    /// node painted last under the pointer.
+    enum scope {
+      /// Only when the listening node is the target.
+      node,
+      /// When the listening node or any node beneath it is the target,
+      /// content in its slots included.
+      subtree,
+    }
+
+    /// When a listener is offered a `down`, `up` or `move`. `enter` and `leave`
+    /// go to every listener whose scope changed and ignore this.
+    enum phase {
+      /// After the target, walking up to the root.
+      bubble,
+      /// Before the target, walking down from the root.
+      intercept,
+    }
+
+    record pointer-event {
+      kind: pointer-kind,
+      /// Where the pointer is, measured from the top left corner of the
+      /// listening node's box. A slot has no box, so a listener on one is
+      /// given the position in the box that contains the slot.
+      x: f32,
+      y: f32,
+      /// 0 left, 1 middle, 2 right, 3 back, 4 forward. 0 for a kind that is
+      /// not about a button.
+      button: u8,
+    }
+
+    /// A listener's answer to one `down`, `up` or `move`.
+    ///
+    /// Such an event is offered to one listener at a time, along the path
+    /// between the root and its target. The host offers it to the next
+    /// listener when this one has answered, so each listener sees the tree as
+    /// the one before it left it. A listener answers by dropping the reply:
+    /// the event goes on to the next listener, unless `stop-propagation` was
+    /// called first.
+    ///
+    /// Nothing else answers. A listener that keeps a reply holds up the
+    /// events behind it, for its own component and for no other.
+    resource reply {
+      /// Stop the event from propagating: no listener after this one is
+      /// offered it. As `stopPropagation` in the DOM, it changes nothing
+      /// else about the event.
+      stop-propagation: func();
+    }
+
+    /// One event, as one listener receives it.
+    ///
+    /// The event is a record, so reading what happened costs no call. The
+    /// reply is a resource because answering is an action, and there is one
+    /// only when there is something to answer: `enter` and `leave` go to
+    /// every listener whose scope changed, and nothing a listener does stops
+    /// them.
+    record delivery {
+      event: pointer-event,
+      reply: option<reply>,
+    }
+  }
+
   /// The retained scene: a tree of trees the host holds and draws from.
   ///
   /// Every widget occupies exactly one node and owns the subtree beneath it —
@@ -262,6 +341,7 @@ package zenafx:host@0.1.0 {
   /// component — which is what makes resizing free.
   interface scene {
     use zenafx:ui/style@0.1.0.{flex, box-style, text-style};
+    use events.{pointer-kind, scope, phase, delivery};
 
     /// Chosen by the guest, so a template definition needs no round trip.
     type template-id = u32;
@@ -398,6 +478,30 @@ package zenafx:host@0.1.0 {
       /// and the one a component cannot see across: a parent is handed a node
       /// to put a child in and can read nothing the child puts there.
       content: func(slot: u32, count: u32) -> list<own<node>>;
+
+      /// Hear pointer events of one kind at a node of this node's interior.
+      ///
+      /// `target` is a position in the template this node shows, as in a
+      /// `binding`: 0 is this node itself, and a slot's position is the slot,
+      /// which with `subtree` scope hears the content hanging in it.
+      ///
+      /// The events arrive on the stream this returns, one stream for each
+      /// listener. The host keeps the description on the node, so it knows
+      /// which listeners an event reaches before it writes anything, and an
+      /// event that reaches none wakes nobody.
+      ///
+      /// A component stops listening by dropping the stream, which removes
+      /// the listener. The host removes the listener itself, and ends the
+      /// stream, when the node it listens at goes away. That happens when
+      /// the interior the node belongs to is replaced: a patch keeps the
+      /// listener, and rendering a different template removes it with the
+      /// rest of the old interior, so a widget listens again after a rebuild.
+      ///
+      /// This method is for pointer events only. A stream has one element
+      /// type, so each family of events with a payload of its own gets a
+      /// method of its own.
+      listen-pointer: func(target: u32, kind: pointer-kind, in-scope: scope, at: phase)
+          -> stream<delivery>;
     }
 
     /// The scene's root. The first `render` on it installs the tree.
