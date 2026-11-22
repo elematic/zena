@@ -23,7 +23,8 @@
 use wasmtime::component::{ComponentType, Lift, Lower};
 
 use super::events::{
-    Call, Delivery, Listener, Phase, PointerEvent, PointerInput, PointerKind, Scope,
+    Call, Delivery, KeyDelivery, KeyEvent, KeyListener, Listener, Phase, PointerEvent,
+    PointerInput, PointerKind, Scope,
 };
 use super::layout::{Placed, measure_text, place_with};
 use super::text::TextEngine;
@@ -72,6 +73,8 @@ pub struct NodeDef {
     /// The cursor to show over this node and over what is beneath it that
     /// names none. `None` leaves it to the node above.
     pub cursor: Option<Cursor>,
+    /// Whether this node can have the focus.
+    pub focusable: bool,
 }
 
 /// Which property of a node a binding writes.
@@ -133,6 +136,9 @@ pub enum State {
     /// has not come up since.
     #[component(name = "pressed")]
     Pressed,
+    /// The node that has the focus is this node or one beneath it.
+    #[component(name = "focused")]
+    Focused,
 }
 
 /// How a node looks while a state holds.
@@ -362,13 +368,18 @@ struct Retained {
     /// What this node hears. Registered by the widget whose interior the node
     /// belongs to, and dropped with that interior.
     listeners: Vec<Listener>,
+    /// What this node hears of the keyboard, while the focus is on it or
+    /// beneath it. Registered and dropped as `listeners` are.
+    key_listeners: Vec<KeyListener>,
+    /// Whether this node can have the focus.
+    focusable: bool,
     /// The looks this node takes while a state holds, in the template's
     /// order. The last one whose state holds is the one drawn.
     looks: Vec<Look>,
     /// Whether some node's look depends on this node being hovered, and on
     /// its being pressed. The pointer coming or going here is then worth a
     /// frame, and anywhere else it is not.
-    watched: [bool; 2],
+    watched: [bool; 3],
     /// The style a text node's run is shaped with when that is one of its
     /// `looks`. `None` when it is the node's own.
     shaped_as: Option<TextStyle>,
@@ -398,8 +409,10 @@ impl Retained {
             interior: None,
             parent: None,
             listeners: Vec::new(),
+            key_listeners: Vec::new(),
+            focusable: false,
             looks: Vec::new(),
-            watched: [false; 2],
+            watched: [false; 3],
             shaped_as: None,
             scroll: (0.0, 0.0),
             spilled: false,
@@ -413,6 +426,13 @@ impl Retained {
             parent: Some(parent),
             ..Self::empty()
         }
+    }
+
+    /// The ids of everything listening at this node, pointer and keyboard.
+    fn listener_ids(&self) -> Vec<u32> {
+        let pointer = self.listeners.iter().map(|l| l.id);
+        let keys = self.key_listeners.iter().map(|l| l.id);
+        pointer.chain(keys).collect()
     }
 }
 
@@ -444,6 +464,8 @@ pub struct Scene {
     /// the target of every input and the node the pointer is over, whatever
     /// is drawn under the pointer.
     captured: Option<u32>,
+    /// The node that has the focus, which is where the keyboard goes.
+    focused: Option<u32>,
     /// Where the pointer last was, for a `leave` that arrives with no
     /// position because the pointer left the window.
     pointer: (f32, f32),
@@ -637,7 +659,7 @@ impl Scene {
             let gone = held.run.take();
             // Its listeners and looks go with the rest: they came with the
             // template that is being replaced. Where it hangs does not change.
-            let listeners = std::mem::take(&mut held.listeners);
+            let listeners = held.listener_ids();
             *held = Retained {
                 parent: held.parent,
                 ..Retained::empty()
@@ -645,7 +667,7 @@ impl Scene {
             if let Some(run) = gone {
                 text.release_run(run);
             }
-            self.end(&listeners);
+            self.end(listeners);
         }
         if defs.is_empty() {
             self.changed();
@@ -674,6 +696,7 @@ impl Scene {
                 run,
                 is_slot: def.is_slot,
                 cursor: def.cursor,
+                focusable: def.focusable,
                 ..Retained::empty()
             }));
         }
@@ -683,6 +706,7 @@ impl Scene {
             held.appearance = filled[0].appearance.clone();
             held.run = run;
             held.cursor = filled[0].cursor;
+            held.focusable = filled[0].focusable;
         }
 
         for (index, def) in filled.iter().enumerate() {
@@ -995,7 +1019,7 @@ impl Scene {
             reshaped
         };
 
-        let (hovered, pressed) = (self.path(self.hovered), self.path(self.pressed));
+        let holding = self.holding();
         let mut commands = Vec::new();
         // The clip the commands being added are inside. Nodes are painted
         // level by level, so one node's subtree is not a run of commands and
@@ -1010,7 +1034,7 @@ impl Scene {
             }
             let node = self.get(*id).expect("a live node");
             let look = node.looks.iter().rev().find_map(|l| match &l.style {
-                Restyle::Fill(style) if holds(l, &hovered, &pressed) => Some(style),
+                Restyle::Fill(style) if holding.holds(l) => Some(style),
                 _ => None,
             });
             let command = match (look, &node.appearance, node.run) {
@@ -1104,7 +1128,7 @@ impl Scene {
     /// its own style when none does. Only a node whose look changed since it
     /// was last shaped costs anything. Returns whether any did.
     fn reshape_for_states(&mut self, order: &[u32], text: &mut TextEngine) -> bool {
-        let (hovered, pressed) = (self.path(self.hovered), self.path(self.pressed));
+        let holding = self.holding();
         let mut reshaped = false;
         for id in order {
             let Some(held) = self.get_mut(*id) else {
@@ -1114,7 +1138,7 @@ impl Scene {
                 continue;
             };
             let look = held.looks.iter().rev().find_map(|l| match &l.style {
-                Restyle::Text(style) if holds(l, &hovered, &pressed) => Some(style.clone()),
+                Restyle::Text(style) if holding.holds(l) => Some(style.clone()),
                 _ => None,
             });
             if look != held.shaped_as {
@@ -1155,6 +1179,15 @@ impl Scene {
         let restyled = self.watched_between(self.pressed, target, State::Pressed);
         self.pressed = target;
         restyled
+    }
+
+    /// The nodes each state holds for now.
+    fn holding(&self) -> Holding {
+        Holding {
+            hovered: self.path(self.hovered),
+            pressed: self.path(self.pressed),
+            focused: self.path(self.focused),
+        }
     }
 
     /// Whether some look depends on `state` at a node that is on the path
@@ -1209,6 +1242,7 @@ impl Scene {
         };
         if let Some(held) = self.get_mut(node) {
             held.listeners.retain(|l| l.id != id);
+            held.key_listeners.retain(|l| l.id != id);
         }
     }
 
@@ -1218,12 +1252,113 @@ impl Scene {
         std::mem::take(&mut self.ended)
     }
 
-    /// Record that these listeners' node has gone.
-    fn end(&mut self, listeners: &[Listener]) {
-        for listener in listeners {
-            self.listening.remove(&listener.id);
-            self.ended.push(listener.id);
+    /// Record that the node these listeners were on has gone.
+    fn end(&mut self, listeners: Vec<u32>) {
+        for id in listeners {
+            self.listening.remove(&id);
+            self.ended.push(id);
         }
+    }
+
+    /// Hear the keyboard at position `target` of the template `node` shows,
+    /// while the focus is on that node or beneath it. Returns whether there
+    /// was such a position, as [`Scene::listen`] does, and the listener
+    /// lasts as long as one registered there.
+    pub fn listen_keys(&mut self, node: u32, target: u32, listener: KeyListener) -> bool {
+        let Some(id) = self
+            .get(node)
+            .and_then(|n| n.interior.as_ref())
+            .and_then(|i| i.nodes.get(target as usize).copied())
+        else {
+            return false;
+        };
+        match self.get_mut(id) {
+            Some(held) => {
+                held.key_listeners.push(listener);
+                self.listening.insert(listener.id, id);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The listeners one key reaches, in order: `intercept` listeners from
+    /// the root down to the node with the focus, then `bubble` listeners
+    /// from it back up.
+    ///
+    /// With nothing focused the key goes to the root alone, so a listener
+    /// there hears every key the window is given.
+    pub fn key(&self, event: KeyEvent) -> KeyDelivery {
+        let path = self.path(self.focused.or(self.root));
+        let on = |id: &u32, phase: Phase| -> Vec<u32> {
+            let listeners = self.get(*id).map(|n| &n.key_listeners[..]).unwrap_or(&[]);
+            listeners
+                .iter()
+                .filter(|l| l.phase == phase)
+                .map(|l| l.id)
+                .collect()
+        };
+        let down = path.iter().rev().flat_map(|id| on(id, Phase::Intercept));
+        let up = path.iter().flat_map(|id| on(id, Phase::Bubble));
+        KeyDelivery {
+            listeners: down.chain(up).collect(),
+            event,
+        }
+    }
+
+    /// Give the focus to `node`, or take it from every node. Returns whether
+    /// that changes how anything looks.
+    fn focus(&mut self, node: Option<u32>) -> bool {
+        if node == self.focused {
+            return false;
+        }
+        let restyled = self.watched_between(self.focused, node, State::Focused);
+        self.focused = node;
+        restyled
+    }
+
+    /// Move the focus to the next node that can have it, in the order the
+    /// nodes come in the tree, or to the one before. Past either end it goes
+    /// round to the other, and from nowhere it goes to the first, or to the
+    /// last when going backwards. A frame is owed if that changes a look.
+    pub fn move_focus(&mut self, backwards: bool) {
+        let order = self.focus_order();
+        if order.is_empty() {
+            return;
+        }
+        let at = self
+            .focused
+            .and_then(|id| order.iter().position(|n| *n == id));
+        let to = match (at, backwards) {
+            (Some(at), false) => (at + 1) % order.len(),
+            (Some(at), true) => (at + order.len() - 1) % order.len(),
+            (None, false) => 0,
+            (None, true) => order.len() - 1,
+        };
+        self.dirty |= self.focus(Some(order[to]));
+    }
+
+    /// The nodes that can have the focus, in the order they come in the
+    /// tree: a node before what is beneath it, and that before its next
+    /// sibling. Content in a slot comes where the slot is.
+    fn focus_order(&self) -> Vec<u32> {
+        let mut order = Vec::new();
+        let mut ahead: Vec<u32> = self.root.into_iter().collect();
+        while let Some(id) = ahead.pop() {
+            let Some(held) = self.get(id) else {
+                continue;
+            };
+            if held.focusable {
+                order.push(id);
+            }
+            ahead.extend(held.children.iter().rev());
+        }
+        order
+    }
+
+    /// Whether any node has the focus, for tests.
+    pub fn has_focus(&self) -> bool {
+        self.focused.is_some()
     }
 
     /// What one pointer input leads to: the listeners to call, in order.
@@ -1261,7 +1396,16 @@ impl Scene {
         // The primary button alone presses. A press ends when the button
         // comes up, wherever the pointer is by then.
         match press {
-            Some((0, true)) => restyled |= self.press(target),
+            Some((0, true)) => {
+                restyled |= self.press(target);
+                // A press gives the focus to the nearest node at or above it
+                // that can have it, and takes it away when there is none.
+                let takes = self
+                    .path(target)
+                    .into_iter()
+                    .find(|id| self.get(*id).is_some_and(|n| n.focusable));
+                restyled |= self.focus(takes);
+            }
             Some((0, false)) => restyled |= self.press(None),
             _ => {}
         }
@@ -1512,9 +1656,12 @@ impl Scene {
         if self.path(self.pressed).contains(&gone) {
             self.pressed = above;
         }
-        // A node that has gone has no pointer captured.
+        // A node that has gone has no pointer captured and no focus.
         if self.path(self.captured).contains(&gone) {
             self.captured = None;
+        }
+        if self.path(self.focused).contains(&gone) {
+            self.focused = None;
         }
     }
 
@@ -1579,7 +1726,7 @@ impl Scene {
             *rect = None;
         }
         self.free.push(id);
-        self.end(&node.listeners);
+        self.end(node.listener_ids());
         for child in node.children {
             self.drop_subtree(child, text);
         }
@@ -1591,14 +1738,25 @@ impl Scene {
     }
 }
 
-/// Whether a look's state holds, given the paths from the node the pointer is
-/// over and from the node the button went down on. A state holds for every
-/// node on its path, which is what makes it true of a button when the pointer
-/// is over the button's label.
-fn holds(look: &Look, hovered: &[u32], pressed: &[u32]) -> bool {
-    match look.when {
-        State::Hovered => hovered.contains(&look.of),
-        State::Pressed => pressed.contains(&look.of),
+/// The nodes each state holds for: the paths up from the node the pointer is
+/// over, from the node the button went down on, and from the node with the
+/// focus. A state holds for every node on its path, which is what makes it
+/// true of a button when the pointer is over the button's label.
+struct Holding {
+    hovered: Vec<u32>,
+    pressed: Vec<u32>,
+    focused: Vec<u32>,
+}
+
+impl Holding {
+    /// Whether a look's state holds.
+    fn holds(&self, look: &Look) -> bool {
+        let path = match look.when {
+            State::Hovered => &self.hovered,
+            State::Pressed => &self.pressed,
+            State::Focused => &self.focused,
+        };
+        path.contains(&look.of)
     }
 }
 
@@ -1728,6 +1886,7 @@ mod tests {
             child_count: 0,
             is_slot: false,
             cursor: None,
+            focusable: false,
         }
     }
 
@@ -3603,6 +3762,199 @@ mod tests {
         scene.draw(window(), &mut text);
         scene.pointer(moved(50.0, 20.0));
         assert_eq!(scene.cursor(), Cursor::Default);
+    }
+
+    fn key(name: &str) -> KeyEvent {
+        KeyEvent {
+            down: true,
+            key: name.to_owned(),
+            code: name.to_owned(),
+            modifiers: Default::default(),
+            repeat: false,
+        }
+    }
+
+    /// [`two_styled_buttons`] with both buttons able to have the focus, and a
+    /// look for the one that has it. `FOCUSED` is listed last, so it is the
+    /// look drawn when the pointer is over the button too.
+    const FOCUSED: f32 = 0.7;
+
+    fn two_focusable_buttons(text: &mut TextEngine) -> (Scene, u32) {
+        let button = || NodeDef {
+            appearance: Appearance::Fill(filled(PLAIN)),
+            focusable: true,
+            ..sized(100.0, 40.0)
+        };
+        let mut scene = Scene::new();
+        let root = scene.root();
+        scene.render(
+            root,
+            &with_states(
+                PANEL,
+                vec![
+                    NodeDef {
+                        layout: Flex {
+                            axis: Axis::Row,
+                            padding: Edges::all(10.0),
+                            ..Flex::default()
+                        },
+                        first_child: 1,
+                        child_count: 2,
+                        ..blank()
+                    },
+                    button(),
+                    button(),
+                ],
+                vec![],
+                vec![
+                    look(1, State::Hovered, 1, Restyle::Fill(filled(HOVERED))),
+                    look(1, State::Focused, 1, Restyle::Fill(filled(FOCUSED))),
+                    look(2, State::Focused, 2, Restyle::Fill(filled(FOCUSED))),
+                ],
+            ),
+            &[],
+            text,
+        );
+        scene.draw(window(), text);
+        (scene, root)
+    }
+
+    /// The focus moves through the nodes that can have it in the order they
+    /// come in the tree, round at either end, and backwards the other way.
+    /// The node that has it takes its focused look, with nobody told.
+    #[test]
+    fn the_focus_moves_through_the_nodes_that_can_have_it() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = two_focusable_buttons(&mut text);
+        let mut after = |scene: &mut Scene, backwards| {
+            scene.move_focus(backwards);
+            assert!(scene.dirty, "the focus moved to a node with a look for it");
+            reds(&scene.draw(window(), &mut text))
+        };
+        assert!(!scene.has_focus(), "nothing has the focus to begin with");
+
+        assert_eq!(after(&mut scene, false), vec![FOCUSED, PLAIN]);
+        assert_eq!(after(&mut scene, false), vec![PLAIN, FOCUSED]);
+        assert_eq!(
+            after(&mut scene, false),
+            vec![FOCUSED, PLAIN],
+            "round to the first"
+        );
+        assert_eq!(
+            after(&mut scene, true),
+            vec![PLAIN, FOCUSED],
+            "and back to the last"
+        );
+    }
+
+    /// A press gives the focus to the node pressed, when it can have it, and
+    /// takes the focus away when it lands where nothing can.
+    #[test]
+    fn a_press_moves_the_focus_to_what_was_pressed() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = two_focusable_buttons(&mut text);
+
+        scene.pointer(pressed(150.0, 30.0));
+        scene.pointer(released(150.0, 30.0));
+        assert_eq!(reds(&settled(&mut scene, &mut text)), vec![PLAIN, FOCUSED]);
+
+        scene.pointer(pressed(50.0, 30.0));
+        scene.pointer(released(50.0, 30.0));
+        assert_eq!(
+            reds(&settled(&mut scene, &mut text)),
+            vec![FOCUSED, PLAIN],
+            "focused is listed after hovered, so it is the look drawn"
+        );
+
+        scene.pointer(pressed(5.0, 5.0));
+        assert!(
+            !scene.has_focus(),
+            "the panel's padding cannot have the focus"
+        );
+    }
+
+    /// A key goes to the node with the focus: `intercept` listeners from the
+    /// root down to it, then `bubble` listeners back up. The other button's
+    /// listener is not on that path and hears nothing. With nothing focused
+    /// a key goes to the root alone.
+    #[test]
+    fn a_key_travels_the_path_to_the_node_with_the_focus() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_focusable_buttons(&mut text);
+        let hears = |phase, id| KeyListener { phase, id };
+        scene.listen_keys(root, 0, hears(Phase::Bubble, 1));
+        scene.listen_keys(root, 0, hears(Phase::Intercept, 2));
+        scene.listen_keys(root, 1, hears(Phase::Bubble, 3));
+        scene.listen_keys(root, 2, hears(Phase::Bubble, 4));
+
+        assert_eq!(
+            scene.key(key("a")).listeners,
+            vec![2, 1],
+            "nothing has the focus"
+        );
+
+        scene.move_focus(false);
+        assert_eq!(scene.key(key("a")).listeners, vec![2, 3, 1]);
+        scene.move_focus(false);
+        assert_eq!(scene.key(key("a")).listeners, vec![2, 4, 1]);
+    }
+
+    /// A keyboard listener is withdrawn and ended as a pointer listener is,
+    /// and the focus does not stay on a node that has gone.
+    #[test]
+    fn key_listeners_and_the_focus_go_with_their_node() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_focusable_buttons(&mut text);
+        let hears = |id| KeyListener {
+            phase: Phase::Bubble,
+            id,
+        };
+        scene.listen_keys(root, 1, hears(1));
+        scene.listen_keys(root, 1, hears(2));
+        scene.move_focus(false);
+
+        scene.unlisten(1);
+        assert_eq!(scene.key(key("a")).listeners, vec![2]);
+
+        scene.render(root, &TemplateRef::Known(PANEL), &[], &mut text);
+        assert!(scene.has_focus(), "the same template keeps its nodes");
+        assert_eq!(scene.key(key("a")).listeners, vec![2]);
+
+        scene.render(root, &just_text(OTHER, "gone"), &[], &mut text);
+        assert_eq!(scene.take_ended(), vec![2]);
+        assert!(!scene.has_focus());
+    }
+
+    /// `Tab` going down moves the focus, backwards with `Shift`, and nothing
+    /// else does: not `Tab` coming up, nor `Tab` held with a key that makes
+    /// it some other shortcut.
+    #[test]
+    fn tab_is_the_key_that_moves_the_focus() {
+        use crate::ui::events::{KeyDefault, Modifiers};
+        let held = |shift, alt| KeyEvent {
+            modifiers: Modifiers {
+                shift,
+                alt,
+                ..Modifiers::default()
+            },
+            ..key("Tab")
+        };
+
+        assert_eq!(
+            key("Tab").default_action(),
+            KeyDefault::MoveFocus { backwards: false }
+        );
+        assert_eq!(
+            held(true, false).default_action(),
+            KeyDefault::MoveFocus { backwards: true }
+        );
+        assert_eq!(held(false, true).default_action(), KeyDefault::None);
+        assert_eq!(key("Enter").default_action(), KeyDefault::None);
+        let up = KeyEvent {
+            down: false,
+            ..key("Tab")
+        };
+        assert_eq!(up.default_action(), KeyDefault::None);
     }
 }
 

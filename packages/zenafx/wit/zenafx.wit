@@ -327,7 +327,7 @@ package zenafx:host@0.1.0 {
       button: u8,
     }
 
-    /// A listener's answer to one `down`, `up` or `move`.
+    /// A listener's answer to one `down`, `up` or `move`, or to one key.
     ///
     /// Such an event is offered to one listener at a time, along the path
     /// between the root and its target. The host offers it to the next
@@ -343,6 +343,13 @@ package zenafx:host@0.1.0 {
       /// offered it. As `stopPropagation` in the DOM, it changes nothing
       /// else about the event.
       stop-propagation: func();
+
+      /// Keep the host from doing what it otherwise does with the event
+      /// once its listeners have answered, as `preventDefault` in the DOM.
+      /// The host acts on one event so far: `Tab` going down moves the
+      /// focus. On the reply to any other event this does nothing. Later
+      /// listeners are still offered the event.
+      prevent-default: func();
 
       /// Capture the pointer, as `setPointerCapture` does in the DOM. From
       /// this answer until the primary button comes up, the target of every
@@ -372,6 +379,46 @@ package zenafx:host@0.1.0 {
       event: pointer-event,
       reply: option<reply>,
     }
+
+    /// The keys held with another key, as the platform reports them.
+    record modifiers {
+      shift: bool,
+      control: bool,
+      alt: bool,
+      /// The Command key on a Mac, and the Windows or Super key elsewhere.
+      meta: bool,
+    }
+
+    /// A key going down or coming up, named as the W3C's keyboard events
+    /// name it.
+    record key-event {
+      /// Whether the key went down. It came up otherwise.
+      down: bool,
+      /// What the key means, with the keyboard's layout and the modifiers
+      /// held: `a`, `A`, `é`, a space, or the name of a key that types
+      /// nothing, such as `Enter`, `Tab`, `Escape` or `ArrowDown`. What a
+      /// handler for a shortcut or for an activation reads.
+      key: string,
+      /// Which key it is on the keyboard, whatever it means on this layout:
+      /// `KeyA`, `Space`, `Enter`. What a handler reads when the key's place
+      /// is what matters, as in a game.
+      code: string,
+      modifiers: modifiers,
+      /// Whether this is the key repeating because it is being held down.
+      repeat: bool,
+    }
+
+    /// One key event, as one listener receives it.
+    ///
+    /// A key travels the path between the root and the node that has the
+    /// focus, as a `down` travels the path to its target, and a listener
+    /// answers it the same way. When the listeners have answered, the host
+    /// does what it does with the key, unless one of them called
+    /// `prevent-default`: `Tab` moves the focus.
+    record key-delivery {
+      event: key-event,
+      reply: reply,
+    }
   }
 
   /// The retained scene: a tree of trees the host holds and draws from.
@@ -387,7 +434,7 @@ package zenafx:host@0.1.0 {
   /// component — which is what makes resizing free.
   interface scene {
     use zenafx:ui/style@0.1.0.{flex, box-style, text-style};
-    use events.{pointer-kind, scope, phase, delivery};
+    use events.{pointer-kind, scope, phase, delivery, key-delivery};
 
     /// Chosen by the guest, so a template definition needs no round trip.
     type template-id = u32;
@@ -495,6 +542,15 @@ package zenafx:host@0.1.0 {
       /// one the pointer counts as over, so a divider's cursor stays for the
       /// whole of a drag.
       cursor: option<cursor>,
+      /// Whether this node can have the focus.
+      ///
+      /// One node in a window has the focus, or none does, and the keyboard
+      /// goes to it. `Tab` moves the focus to the next node that can have it,
+      /// in the order they come in the tree, and `Shift` with `Tab` to the
+      /// one before, going round at the ends. A press gives the focus to the
+      /// nearest such node at or above the node pressed, and takes it away
+      /// when there is none.
+      focusable: bool,
     }
 
     /// Which property of a node a hole writes. The set is what the host can
@@ -527,8 +583,9 @@ package zenafx:host@0.1.0 {
       value: binding-value,
     }
 
-    /// Something true of a node because of where the pointer is. The host
-    /// works it out, since the host finds what the pointer is over.
+    /// Something true of a node because of where the pointer is or where the
+    /// focus is. The host works it out, since the host finds what the
+    /// pointer is over and moves the focus.
     enum state {
       /// The node the pointer is over is this node or one beneath it,
       /// content in its slots included.
@@ -536,6 +593,8 @@ package zenafx:host@0.1.0 {
       /// The primary button went down while the node under the pointer was
       /// this node or one beneath it, and has not come up since.
       pressed,
+      /// The node that has the focus is this node or one beneath it.
+      focused,
     }
 
     /// How a node looks while a state holds. A `fill` is for a box and a
@@ -650,6 +709,20 @@ package zenafx:host@0.1.0 {
       /// method of its own.
       listen-pointer: func(target: u32, kind: pointer-kind, in-scope: scope, at: phase)
           -> stream<delivery>;
+
+      /// Hear the keyboard at a node of this node's interior, while the
+      /// focus is on that node or on one beneath it.
+      ///
+      /// `target` is a position in the template, as for `listen-pointer`. A key
+      /// travels from the root down to the node with the focus and back up,
+      /// and `at` says on which leg this listener is offered it. A listener
+      /// on the root hears every key, since every node is beneath it, and
+      /// hears the keys pressed while nothing has the focus.
+      ///
+      /// The keys arrive on the stream this returns. As for `listen-pointer`,
+      /// dropping the stream removes the listener, and the host removes the
+      /// listener and ends the stream when the node goes away.
+      listen-keys: func(target: u32, at: phase) -> stream<key-delivery>;
     }
 
     /// The scene's root. The first `render` on it installs the tree.

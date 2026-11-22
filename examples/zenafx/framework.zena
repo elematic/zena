@@ -22,7 +22,8 @@
 import { Node, NodeDef, Binding, BindingValue, Hole, StateStyle, TemplateDef,
          TemplateRef, TemplateRefKnown, TemplateRefFresh, root,
          ready } from 'zenafx:host/scene';
-import { PointerKind, PointerEvent, Delivery, Scope, Phase } from 'zenafx:host/events';
+import { PointerKind, PointerEvent, Delivery, KeyEvent, KeyDelivery, Scope,
+         Phase } from 'zenafx:host/events';
 import { Stream } from 'zena:stream';
 import { Disposable } from 'zena:core';
 
@@ -190,12 +191,19 @@ export class Rendering {
   values: Array<BindingValue>;
   content: Array<Array<Widget>>;
   listeners: Array<Listener>;
+  /** What it hears of the keyboard, matched by place as `listeners` are. */
+  keys: Array<KeyListener>;
 
-  new(this.template, this.values, this.content, this.listeners);
+  new(this.template, this.values, this.content, this.listeners, this.keys = []);
 
   /** The same rendering, hearing `listeners`. */
   hearing(listeners: Array<Listener>): Rendering {
-    return new Rendering(this.template, this.values, this.content, listeners);
+    return new Rendering(this.template, this.values, this.content, listeners, this.keys);
+  }
+
+  /** The same rendering, hearing `keys` while the focus is in the widget. */
+  hearingKeys(keys: Array<KeyListener>): Rendering {
+    return new Rendering(this.template, this.values, this.content, this.listeners, keys);
   }
 }
 
@@ -223,6 +231,84 @@ class Hearing {
   var handler: Handler;
 
   new(this.handler);
+}
+
+/**
+ * What a handler says about the key it was given. The two things a handler can
+ * ask for are separate, as `stopPropagation` and `preventDefault` are in the
+ * DOM.
+ */
+export enum KeyAnswer {
+  /** It was not for this handler. Whoever is next on the path is offered it. */
+  Pass,
+  /** Nobody further along the path is offered it. The host still acts on it. */
+  StopPropagation,
+  /**
+   * The host does not act on it: `Tab` does not move the focus. Whoever is
+   * next on the path is still offered it.
+   */
+  PreventDefault,
+  /**
+   * The handler used the key. Nobody further along the path is offered it, and
+   * the host does not act on it.
+   */
+  Used,
+}
+
+/** What a widget does with a key. */
+export type KeyHandler = (event: KeyEvent) => KeyAnswer;
+
+/**
+ * One thing a widget hears of the keyboard: at one node of its template, while
+ * the focus is on that node or beneath it, and what to do about it.
+ */
+export class KeyListener {
+  handler: KeyHandler;
+  position: u32;
+  phase: Phase;
+
+  new(this.handler, this.position = 0, this.phase = Phase.Bubble);
+}
+
+/**
+ * Hear one key going down while the focus is in the widget: `Enter`, a space,
+ * `ArrowDown`. Any other key is passed on, so whoever is further along the
+ * path, and the host after them, still get it.
+ */
+export function onKey(key: String, handler: () => void): KeyListener {
+  return new KeyListener((event) => {
+    if (event.down && event.key == key) {
+      handler();
+      return KeyAnswer.Used;
+    }
+    return KeyAnswer.Pass;
+  });
+}
+
+/** The handler one keyboard listener's events go to. */
+class KeyHearing {
+  var handler: KeyHandler;
+
+  new(this.handler);
+}
+
+/**
+ * Read one keyboard listener's events until there are no more, as `pump` does
+ * a pointer listener's. A key always comes with a reply, and the handler's
+ * answer says which of `stopPropagation` and `preventDefault` to call on it
+ * before it is dropped.
+ */
+async function pumpKeys(events: Stream<KeyDelivery>, hearing: KeyHearing): Future<void> {
+  for await (let delivery in events) {
+    let answer = hearing.handler(delivery.event);
+    if (answer == KeyAnswer.StopPropagation || answer == KeyAnswer.Used) {
+      delivery.reply.stopPropagation();
+    }
+    if (answer == KeyAnswer.PreventDefault || answer == KeyAnswer.Used) {
+      delivery.reply.preventDefault();
+    }
+    delivery.reply.[Disposable.dispose]();
+  }
 }
 
 /**
@@ -291,6 +377,8 @@ export abstract class Widget {
    * order the rendering lists them.
    */
   var #listening = new GrowableArray<Hearing>();
+  /** The same for each keyboard listener. */
+  var #listeningForKeys = new GrowableArray<KeyHearing>();
 
   /**
    * What to show: the template, its hole values, and the content for its slots.
@@ -313,6 +401,27 @@ export abstract class Widget {
     this.#sent = noValues;
     this.#hung = new GrowableArray<Hung>();
     this.#listening = new GrowableArray<Hearing>();
+    this.#listeningForKeys = new GrowableArray<KeyHearing>();
+  }
+
+  /** `#hear`, for the keyboard. */
+  #hearKeys(node: Node, keys: Array<KeyListener>, rebuilt: boolean): void {
+    if (rebuilt) {
+      this.#listeningForKeys = new GrowableArray<KeyHearing>();
+      for (let listener in keys) {
+        let hearing = new KeyHearing(listener.handler);
+        this.#listeningForKeys.push(hearing);
+        pumpKeys(node.listenKeys(listener.position, listener.phase), hearing);
+      }
+      return;
+    }
+    var place = 0;
+    for (let listener in keys) {
+      if (place < this.#listeningForKeys.length) {
+        this.#listeningForKeys[place].handler = listener.handler;
+      }
+      place += 1;
+    }
   }
 
   /**
@@ -386,6 +495,7 @@ export abstract class Widget {
     }
 
     this.#hear(node, shown.listeners, rebuilt);
+    this.#hearKeys(node, shown.keys, rebuilt);
     this.#hang(node, shown.content, rebuilt);
   }
 

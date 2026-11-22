@@ -62,6 +62,11 @@ export type BoxOpts = {
    * whatever it is in.
    */
   cursor?: Cursor,
+  /**
+   * Whether the box can have the focus: `Tab` stops at it, a press on it
+   * gives it the focus, and the keyboard goes to it while it has it.
+   */
+  focusable?: boolean,
 };
 
 /** Read the options, filling in what was left out. */
@@ -102,16 +107,20 @@ export class Box {
   children: GrowableArray<Box>;
   /** The cursor the node names, if it names one. */
   cursor: Option<Cursor>;
+  /** Whether the node can have the focus. */
+  focusable: boolean;
   /** Whether content hangs here. */
   isSlot: boolean;
 
-  new(this.layout, this.appearance, this.children, this.cursor, this.isSlot = false);
+  new(this.layout, this.appearance, this.children, this.cursor, this.focusable = false,
+      this.isSlot = false);
 }
 
 /** A box. Lays out its children, and draws a panel when given a `style`. */
 export function box(opts: BoxOpts = {}, children: Array<Box> = []): Box {
+  let {focusable = false} = opts;
   return new Box(flexOf(opts), appearanceOf(opts), GrowableArray.from(children),
-                 cursorOf(opts));
+                 cursorOf(opts), focusable);
 }
 
 /**
@@ -123,7 +132,7 @@ export function box(opts: BoxOpts = {}, children: Array<Box> = []): Box {
  * panel of its own, put the slot inside a `box` and style that.
  */
 export function slot(): Box {
-  return new Box(flexOf({}), new AppearanceNothing(), new GrowableArray<Box>(), none, true);
+  return new Box(flexOf({}), new AppearanceNothing(), new GrowableArray<Box>(), none, false, true);
 }
 
 /**
@@ -165,7 +174,8 @@ export function flatten(root: Box): Array<NodeDef> {
   while (n < order.length) {
     let node = order[n];
     nodes.push(new NodeDef(node.layout, node.appearance, firstChildOf[n] as u32,
-                           node.children.length as u32, node.isSlot, node.cursor));
+                           node.children.length as u32, node.isSlot, node.cursor,
+                           node.focusable));
     n += 1;
   }
   return nodes;

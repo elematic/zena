@@ -333,11 +333,3 @@ pub struct PointerEvent {
     pub button: u8,
     pub down: bool,
 }
-
-#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(record)]
-pub struct KeyEvent {
-    pub code: u32,
-    pub down: bool,
-    pub text: String,
-}

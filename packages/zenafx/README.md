@@ -438,6 +438,68 @@ for each of the 34 cursors:
 ./target/release/zfx --app packages/zenafx/out/cursors.wasm
 ```
 
+### The keyboard and the focus
+
+[`examples/zenafx/disclosure/`](../../examples/zenafx/disclosure/) is two
+summaries, each showing and hiding the lines under it, worked from the keyboard
+as well as with the pointer.
+
+```bash
+./target/release/zena build ./packages/zenafx:build:disclosure   # compiles it to out/disclosure.wasm
+./target/release/zfx --app packages/zenafx/out/disclosure.wasm
+```
+
+One node in a window has the focus, or none does. A node says whether it can
+have it, and a template says how a node looks while it does, beside its other
+state styles:
+
+```wit
+record node-def {
+  // ...
+  focusable: bool,
+}
+
+enum state { hovered, pressed, focused }
+```
+
+`Tab` moves the focus to the next node that can have it, in the order the nodes
+come in the tree, and `Shift` with `Tab` to the one before, going round at the
+ends. A press gives the focus to the nearest such node at or above the one
+pressed. The host does all of that and draws the ring. In the example no
+handler hears `Tab`, and the first `Tab` in a window reaches no listener at
+all.
+
+A component hears keys on a stream per listener, as it hears the pointer:
+
+```wit
+listen-keys: func(target: u32, at: phase) -> stream<key-delivery>;
+
+record key-event {
+  down: bool,
+  key: string,    // what the key means: `a`, ` `, `Enter`, `ArrowDown`
+  code: string,   // which key it is: `KeyA`, `Space`
+  modifiers: modifiers,
+  repeat: bool,
+}
+```
+
+A key travels the path from the root to the node with the focus and back, so a
+listener hears the keys pressed while the focus is at its node or beneath it.
+The names in `key` and `code` are the ones the W3C's keyboard events use.
+
+```zena
+[onKey('Enter', () => { this.#toggle(); }),
+ onKey(' ', () => { this.#toggle(); })]
+```
+
+The host acts on a key after its listeners have answered, unless one of them
+called `prevent-default` on the reply. A summary with the focus is offered
+`Tab`, passes it on, and the focus moves, which `tests/disclosure.rs` asserts
+through the built component. An editor that indents with `Tab` would call
+`prevent-default`, and the focus would stay. `stop-propagation` is separate, as
+it is in the DOM: it keeps later listeners from hearing the key, and the focus
+still moves.
+
 ### What is not here yet
 
 A window shows one component. Embedding one component in another is designed
@@ -452,8 +514,10 @@ three components drawing one card came to 6 solves and 54 cross-component
 `measure` calls per frame, against 0 and 0 for the retained tree. Those
 numbers are no longer reproducible from this tree.
 
-Keyboard events reach the window but are not routed to the component, and there
-is no focus. A box has no minimum or maximum size of its own, which the split
+A key is a key and not yet text: there is no text field, no composed input and
+no selection. A component cannot move the focus itself, and a node that gets
+the focus while it is scrolled out of sight stays there. A box has no minimum
+or maximum size of its own, which the split
 example gets from what shrinks and what does not. A scroll thumb cannot be dragged
 or styled, a component cannot read or set how far a box has scrolled, and a
 box's content is cut off at a rectangle, so it shows in the corners of a box

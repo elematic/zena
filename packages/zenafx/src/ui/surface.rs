@@ -15,14 +15,14 @@ use anyhow::{Context as _, Result};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::PhysicalKey;
+use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
-use super::events::PointerInput;
+use super::events::{KeyEvent, Modifiers, PointerInput};
 use super::scene::Cursor;
 use super::paint::Painter;
 use super::text::TextEngine;
-use super::types::{Color, Command, FrameEvent, KeyEvent};
+use super::types::{Color, Command, FrameEvent};
 
 /// How far one notch of a mouse wheel scrolls, in physical pixels. Three
 /// lines of body text, near enough, which is what desktops default to.
@@ -141,6 +141,9 @@ struct Live {
     cursor: (f32, f32),
     /// The cursor the window was last told to show.
     shown: Cursor,
+    /// The modifier keys held, which winit reports apart from the keys they
+    /// are held with.
+    modifiers: Modifiers,
 }
 
 struct App {
@@ -194,6 +197,7 @@ impl ApplicationHandler for App {
             painter: Painter::new(size.width as u16, size.height as u16),
             cursor: (0.0, 0.0),
             shown: Cursor::Default,
+            modifiers: Modifiers::default(),
         });
         self.started = Instant::now();
         window.request_redraw();
@@ -276,14 +280,23 @@ impl ApplicationHandler for App {
                 }
             }
 
+            WindowEvent::ModifiersChanged(modifiers) => {
+                let held = modifiers.state();
+                live.modifiers = Modifiers {
+                    shift: held.shift_key(),
+                    control: held.control_key(),
+                    alt: held.alt_key(),
+                    meta: held.super_key(),
+                };
+            }
+
             WindowEvent::KeyboardInput { event, .. } => {
                 let wants = self.scene.key(KeyEvent {
-                    code: match event.physical_key {
-                        PhysicalKey::Code(c) => c as u32,
-                        PhysicalKey::Unidentified(_) => 0,
-                    },
                     down: event.state == ElementState::Pressed,
-                    text: event.text.map(|t| t.to_string()).unwrap_or_default(),
+                    key: key_name(&event.logical_key),
+                    code: code_name(event.physical_key),
+                    modifiers: live.modifiers,
+                    repeat: event.repeat,
                 });
                 if wants {
                     live.window.request_redraw();
@@ -365,6 +378,35 @@ impl ApplicationHandler for App {
     }
 }
 
+/// What a key means, as the W3C's keyboard events name it: the character it
+/// types, or the name of a key that types none.
+///
+/// winit names its keys after the same specification, so a named key's name
+/// is the one wanted, with two exceptions: the space bar's value is the space
+/// it types, and the key winit calls Super is `Meta`.
+pub fn key_name(key: &Key) -> String {
+    match key {
+        Key::Character(typed) => typed.to_string(),
+        Key::Named(NamedKey::Space) => " ".to_owned(),
+        Key::Named(NamedKey::Super) => "Meta".to_owned(),
+        Key::Named(named) => format!("{named:?}"),
+        Key::Dead(_) => "Dead".to_owned(),
+        Key::Unidentified(_) => "Unidentified".to_owned(),
+    }
+}
+
+/// Which key it is on the keyboard, as the W3C's keyboard events name it:
+/// `KeyA`, `Space`, `Enter`. winit's names are the specification's, but for
+/// the two it calls Super.
+pub fn code_name(key: PhysicalKey) -> String {
+    match key {
+        PhysicalKey::Code(KeyCode::SuperLeft) => "MetaLeft".to_owned(),
+        PhysicalKey::Code(KeyCode::SuperRight) => "MetaRight".to_owned(),
+        PhysicalKey::Code(code) => format!("{code:?}"),
+        PhysicalKey::Unidentified(_) => "Unidentified".to_owned(),
+    }
+}
+
 /// The platform cursor for a cursor. winit names its cursors after CSS's
 /// keywords, as the interface does, so each is the one of the same name.
 /// The platform draws it.
@@ -430,5 +472,23 @@ mod tests {
         for cursor in Cursor::ALL {
             assert_eq!(format!("{cursor:?}"), format!("{:?}", icon(cursor)));
         }
+    }
+
+    /// A handler compares `key` with the names the W3C gives, so the names
+    /// the window hands on are those: the character for a key that types
+    /// one, the space bar included, and the specification's name otherwise.
+    #[test]
+    fn keys_are_named_as_the_w3c_names_them() {
+        assert_eq!(key_name(&Key::Character("a".into())), "a");
+        assert_eq!(key_name(&Key::Character("É".into())), "É");
+        assert_eq!(key_name(&Key::Named(NamedKey::Space)), " ");
+        assert_eq!(key_name(&Key::Named(NamedKey::Enter)), "Enter");
+        assert_eq!(key_name(&Key::Named(NamedKey::Tab)), "Tab");
+        assert_eq!(key_name(&Key::Named(NamedKey::ArrowDown)), "ArrowDown");
+        assert_eq!(key_name(&Key::Named(NamedKey::Super)), "Meta");
+
+        assert_eq!(code_name(PhysicalKey::Code(KeyCode::KeyA)), "KeyA");
+        assert_eq!(code_name(PhysicalKey::Code(KeyCode::Space)), "Space");
+        assert_eq!(code_name(PhysicalKey::Code(KeyCode::SuperLeft)), "MetaLeft");
     }
 }

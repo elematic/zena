@@ -126,3 +126,68 @@ pub struct Delivery {
     /// and another listener's answer says nothing about this one.
     pub stops_when_handled: bool,
 }
+
+/// The keys held with another key.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ComponentType, Lift, Lower)]
+#[component(record)]
+pub struct Modifiers {
+    pub shift: bool,
+    pub control: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
+/// A key going down or coming up, named as the W3C's keyboard events name
+/// it. The window makes one from what the platform reports, and a listener
+/// receives it unchanged: a key has no position to measure from a node.
+#[derive(Clone, Debug, PartialEq, Eq, ComponentType, Lift, Lower)]
+#[component(record)]
+pub struct KeyEvent {
+    pub down: bool,
+    /// What the key means: a character, or a name such as `Enter`.
+    pub key: String,
+    /// Which key it is on the keyboard: `KeyA`, `Space`.
+    pub code: String,
+    pub modifiers: Modifiers,
+    pub repeat: bool,
+}
+
+/// A registration for the keyboard: which leg of a key's journey a node
+/// hears it on, and which stream hears it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct KeyListener {
+    pub phase: Phase,
+    pub id: u32,
+}
+
+/// The listeners one key reaches, in the order to offer it to them, each
+/// waiting for the answer of the one before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyDelivery {
+    pub event: KeyEvent,
+    pub listeners: Vec<u32>,
+}
+
+/// What the scene itself does with a key that no listener stopped.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum KeyDefault {
+    /// Nothing.
+    None,
+    /// Move the focus to the next node that can have it, or the one before.
+    MoveFocus { backwards: bool },
+}
+
+impl KeyEvent {
+    /// What the scene does with this key unless a listener stops it. `Tab`
+    /// going down moves the focus, and back with `Shift`. With another
+    /// modifier it is some other shortcut, such as the platform's window
+    /// switcher, and moves nothing.
+    pub fn default_action(&self) -> KeyDefault {
+        let m = self.modifiers;
+        if self.down && self.key == "Tab" && !m.control && !m.alt && !m.meta {
+            KeyDefault::MoveFocus { backwards: m.shift }
+        } else {
+            KeyDefault::None
+        }
+    }
+}
