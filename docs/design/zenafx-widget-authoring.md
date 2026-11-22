@@ -541,6 +541,12 @@ arrives without needing a component boundary.
 
 ## Selectors as data
 
+[zenafx-styles.md](./zenafx-styles.md) proposes a change to this section. The
+syntax stays. The predicate algebra becomes its conditions, which test facts
+whose keys are symbols in place of the text tags and the closed set of states
+here. The host still evaluates them, and does the part a template fixes once
+for each template.
+
 ### Why not exported predicates
 
 Style resolution visits every node and may test a predicate against each, so
