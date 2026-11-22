@@ -41,6 +41,9 @@ pub enum Scope {
     /// When the listening node or any node beneath it is the target.
     #[component(name = "subtree")]
     Subtree,
+    /// As `Subtree`, and only while the pointer is captured for the target.
+    #[component(name = "captured")]
+    Captured,
 }
 
 /// When a listener is offered a `down`, `up` or `move`.

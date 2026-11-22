@@ -35,12 +35,22 @@ use crate::ui::scene::Scene;
 /// [`Replies`].
 pub struct HostReply;
 
+/// What a listener answered an event with, by the time it dropped the reply.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Answer {
+    /// No listener after this one is offered the event.
+    pub stop_propagation: bool,
+    /// The pointer is captured for the listener's node until the button
+    /// comes up.
+    pub capture: bool,
+}
+
 /// One event on its way to one listener.
 pub struct Offered {
     pub event: PointerEvent,
-    /// Where the listener's answer goes: whether it stopped the event. `None`
-    /// for an event nothing can stop, which then carries no reply.
-    pub answered: Option<oneshot::Sender<bool>>,
+    /// Where the listener's answer goes. `None` for an event nothing can
+    /// stop, which then carries no reply.
+    pub answered: Option<oneshot::Sender<Answer>>,
 }
 
 /// `delivery` in `zenafx:host/events`: what a listener's stream carries.
@@ -62,18 +72,18 @@ pub struct Replies {
 }
 
 struct Waiting {
-    stop: bool,
-    answered: oneshot::Sender<bool>,
+    answer: Answer,
+    answered: oneshot::Sender<Answer>,
 }
 
 impl Replies {
     /// A new reply whose answer goes to `answered`.
-    fn open(&mut self, answered: oneshot::Sender<bool>) -> u32 {
+    fn open(&mut self, answered: oneshot::Sender<Answer>) -> u32 {
         self.last += 1;
         self.waiting.insert(
             self.last,
             Waiting {
-                stop: false,
+                answer: Answer::default(),
                 answered,
             },
         );
@@ -84,7 +94,15 @@ impl Replies {
     /// listener is offered the event.
     pub fn stop_propagation(&mut self, reply: u32) {
         if let Some(waiting) = self.waiting.get_mut(&reply) {
-            waiting.stop = true;
+            waiting.answer.stop_propagation = true;
+        }
+    }
+
+    /// `reply.capture`: the answer, once given, is that the listener keeps
+    /// the pointer.
+    pub fn capture(&mut self, reply: u32) {
+        if let Some(waiting) = self.waiting.get_mut(&reply) {
+            waiting.answer.capture = true;
         }
     }
 
@@ -93,7 +111,7 @@ impl Replies {
         if let Some(waiting) = self.waiting.remove(&reply) {
             // Nobody may be waiting any more: the delivery ended with the
             // component's thread.
-            let _ = waiting.answered.send(waiting.stop);
+            let _ = waiting.answered.send(waiting.answer);
         }
     }
 }

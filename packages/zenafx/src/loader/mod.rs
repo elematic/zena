@@ -44,7 +44,7 @@ use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
 
 use crate::ui::events::{Delivery, PointerInput};
-use crate::ui::scene::Scene as RetainedScene;
+use crate::ui::scene::{Cursor, Scene as RetainedScene};
 use crate::ui::surface::{Scene, Wake};
 use crate::ui::text::TextEngine;
 use crate::ui::types::{Color, Command, FrameEvent, Size};
@@ -201,6 +201,12 @@ impl GuestScene {
         self.listeners.offered()
     }
 
+    /// How many times the component has written the tree, with a `render`
+    /// or a `content`.
+    pub fn writes(&self) -> u32 {
+        self.scene.lock().unwrap().writes
+    }
+
     /// How many inputs have been handed to the component's thread and not
     /// yet been through all of their listeners.
     ///
@@ -259,6 +265,7 @@ fn run_component(
 
     let entries = state.guest_entries.clone();
     let listeners = state.listeners.clone();
+    let (scene, wake) = (state.scene.clone(), state.wake.clone());
     let mut store = Store::new(engine, state);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -302,7 +309,7 @@ fn run_component(
                 // listeners before it left it.
                 let inputs = async {
                     while let Some(input) = deliveries.recv().await {
-                        deliver(&listeners, &input).await;
+                        deliver(&listeners, &scene, &wake, &input).await;
                         undelivered.fetch_sub(1, Ordering::Relaxed);
                     }
                 };
@@ -324,14 +331,23 @@ fn run_component(
 ///
 /// A `down`, `up` or `move` goes to one listener at a time. The next is
 /// offered it only once this one has answered, by dropping the reply that
-/// came with it or by reading its stream again, and not at all if the answer
-/// was to stop. The wait is on the component and has no limit, as a call
-/// into it would have none: a component that does not read its streams
-/// stalls its own input and nobody else's, because this is its own thread.
+/// came with it, and not at all if the answer was to stop. The wait is on
+/// the component and has no limit, as a call into it would have none: a
+/// component that does not read its streams stalls its own input and nobody
+/// else's, because this is its own thread.
+///
+/// A listener whose answer is to capture the pointer has it captured here,
+/// as soon as the answer arrives. Capturing the pointer can change how its
+/// node looks, which asks the window for a frame.
 ///
 /// `enter` and `leave` are written without waiting. Nothing a listener does
 /// with one changes who else hears it.
-async fn deliver(listeners: &Listeners, input: &[Delivery]) {
+async fn deliver(
+    listeners: &Listeners,
+    scene: &Mutex<RetainedScene>,
+    wake: &Mutex<Option<Wake>>,
+    input: &[Delivery],
+) {
     for delivery in input {
         for call in &delivery.calls {
             if !delivery.stops_when_handled {
@@ -350,8 +366,22 @@ async fn deliver(listeners: &Listeners, input: &[Delivery]) {
                 answered: Some(answered),
             };
             // A listener whose stream has gone, or goes before it answers,
-            // did not stop anything.
-            if listeners.offer(call.listener, offered) && answer.await.unwrap_or(false) {
+            // stopped nothing and captures nothing.
+            if !listeners.offer(call.listener, offered) {
+                continue;
+            }
+            let answer = answer.await.unwrap_or_default();
+            if answer.capture {
+                let restyled = {
+                    let mut scene = scene.lock().unwrap();
+                    scene.capture(call.listener);
+                    scene.dirty
+                };
+                if let (true, Some(wake)) = (restyled, wake.lock().unwrap().as_ref()) {
+                    wake();
+                }
+            }
+            if answer.stop_propagation {
                 break;
             }
         }
@@ -412,6 +442,12 @@ impl Scene for GuestScene {
 
     fn woken_by(&mut self, wake: Wake) {
         *self.wake.lock().unwrap() = Some(wake);
+    }
+
+    /// The cursor the tree names for what the pointer is over. The scene
+    /// knows, so nothing is asked of the component.
+    fn cursor(&self) -> Cursor {
+        self.scene.lock().unwrap().cursor()
     }
 
     /// A component owes another frame while its tree is dirty.

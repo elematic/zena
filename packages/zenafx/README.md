@@ -357,6 +357,87 @@ A frame after a scroll solves no layout. The solver's answer stands until the
 component writes the tree or the window changes size, and scrolling and
 hovering do neither, so those frames are a walk of the tree and a paint.
 
+### Dragging
+
+[`examples/zenafx/split/`](../../examples/zenafx/split/) is two panels and a
+divider between them that the pointer drags.
+
+```bash
+./target/release/zena build ./packages/zenafx:build:split   # compiles it to out/split.wasm
+./target/release/zfx --app packages/zenafx/out/split.wasm
+```
+
+The pointer leaves a divider as soon as it moves, so a drag needs pointer
+capture, which a listener asks for on the reply to a press, as
+`setPointerCapture` does in the DOM:
+
+```wit
+resource reply {
+  stop-propagation: func();
+  capture: func();
+}
+```
+
+From that answer until the button comes up, the node the listener is on is the
+target of every move and stays the node the pointer is over, wherever the
+pointer goes. The example's divider stays held, and its cursor stays the one
+for a sideways drag, while the pointer is over a panel or past the window's
+edge.
+
+```zena
+grab(2 as u32, (event) => {
+  this.#held = event.x;
+}),
+whileCaptured(0 as u32, PointerKind.Move, (event) => {
+  this.#moveTo(event.x - this.#held);
+})
+```
+
+The divider, node 2, starts the drag. The split, node 0, hears the moves. A
+listener is told where the pointer is in its own node's box, and the divider's
+box moves with every write, so the moves are heard on the box that stays still.
+
+The second listener's scope is `captured`: it hears only while the pointer is
+captured for a node at or beneath its own. A pointer crossing the panels with
+nothing being dragged reaches no listener. `tests/split.rs` asserts that, and
+that each move of a drag is one event to the component and one write back.
+
+Neither panel goes below 120 wide, and the component works out only the left
+one's limit. The right panel does not shrink below its own width, so the layout
+stops the left one at a width the component never learns: the window's.
+
+`capture` works on the reply to a `down`, and on the reply to a `move` while
+the primary button is down, so a press can become a drag once the pointer has
+moved some way. On the reply to any other event it does nothing.
+
+### Cursors
+
+A node names the cursor to show while the pointer is over it, with one of
+CSS's `cursor` keywords:
+
+```wit
+record node-def {
+  // ...
+  cursor: option<cursor>,
+}
+
+enum cursor { default, pointer, text, grab, grabbing, col-resize, /* and 28 more */ }
+```
+
+`none` leaves it to the node above, as `cursor` inherits in CSS. While the
+pointer is captured, the cursor is the capturing node's.
+
+The platform draws the cursor. The host tells the window which of the
+platform's cursors to show when the node under the pointer changes, so a cursor
+follows the person's settings for size and colour, and no component code runs
+for it. [`examples/zenafx/cursors/`](../../examples/zenafx/cursors/) is a tile
+for each of the 34 cursors:
+
+```bash
+./target/release/zena build ./packages/zenafx:build:cursors   # compiles it to out/cursors.wasm
+./target/release/zfx --app packages/zenafx/out/cursors.wasm
+```
+
 ### What is not here yet
 
 A window shows one component. Embedding one component in another is designed
@@ -372,8 +453,8 @@ three components drawing one card came to 6 solves and 54 cross-component
 numbers are no longer reproducible from this tree.
 
 Keyboard events reach the window but are not routed to the component, and there
-is no focus. A press does not capture the pointer, so the `up` that ends a drag
-goes to whatever the pointer is over by then. A scroll thumb cannot be dragged
+is no focus. A box has no minimum or maximum size of its own, which the split
+example gets from what shrinks and what does not. A scroll thumb cannot be dragged
 or styled, a component cannot read or set how far a box has scrolled, and a
 box's content is cut off at a rectangle, so it shows in the corners of a box
 with rounded ones.

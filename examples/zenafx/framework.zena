@@ -81,8 +81,24 @@ let freshTemplateId = (): u32 => {
   return lastTemplateId;
 };
 
-/** What a widget does with a pointer event. Answers whether it handled it. */
-export type Handler = (event: PointerEvent) => boolean;
+/** What a handler says about the event it was given. */
+export enum Answer {
+  /** It was not for this handler. Whoever is next on the path is offered it. */
+  Pass,
+  /** It is dealt with. Nobody further along the path is offered it. */
+  StopPropagation,
+  /**
+   * It is dealt with, and the pointer is captured: its moves, and the button
+   * coming up, go to the node this handler listens at wherever the pointer is
+   * by then. It is how a drag starts. An answer to a press, or to a move
+   * while the button is down, and the same as `StopPropagation` to anything
+   * else.
+   */
+  Capture,
+}
+
+/** What a widget does with a pointer event. */
+export type Handler = (event: PointerEvent) => Answer;
 
 /**
  * One thing a widget hears: a kind of pointer event, at one node of its
@@ -112,8 +128,48 @@ export class Listener {
 export function on(kind: PointerKind, handler: () => void): Listener {
   return new Listener(kind, (event) => {
     handler();
-    return true;
+    return Answer.StopPropagation;
   });
+}
+
+/**
+ * Hear `kind` at one node of the template, with the event itself: where the
+ * pointer is in that node's box, and which button. The handler has handled the
+ * event when it returns.
+ */
+export function at(position: u32, kind: PointerKind,
+                   handler: (event: PointerEvent) => void): Listener {
+  return new Listener(kind, (event) => {
+    handler(event);
+    return Answer.StopPropagation;
+  }, position);
+}
+
+/**
+ * Hear `kind` at one node of the template, and only while the pointer is
+ * captured for that node or one beneath it: the moves of a drag, and the
+ * button coming up at the end of one. The pointer crossing the node at any
+ * other time is not heard, and so does not wake the component.
+ */
+export function whileCaptured(position: u32, kind: PointerKind,
+                              handler: (event: PointerEvent) => void): Listener {
+  return new Listener(kind, (event) => {
+    handler(event);
+    return Answer.StopPropagation;
+  }, position, Scope.Captured);
+}
+
+/**
+ * Hear a press at one node of the template and capture the pointer for it,
+ * which is how a drag starts. The moves that follow, and the button coming up, are
+ * aimed at that node until then, so a listener at it or above it hears them
+ * wherever the pointer goes.
+ */
+export function grab(position: u32, handler: (event: PointerEvent) => void): Listener {
+  return new Listener(PointerKind.Down, (event) => {
+    handler(event);
+    return Answer.Capture;
+  }, position);
 }
 
 /**
@@ -185,10 +241,13 @@ class Hearing {
  */
 async function pump(events: Stream<Delivery>, hearing: Hearing): Future<void> {
   for await (let delivery in events) {
-    let handled = hearing.handler(delivery.event);
+    let answer = hearing.handler(delivery.event);
     if (let Some {value} = delivery.reply) {
-      if (handled) {
+      if (answer != Answer.Pass) {
         value.stopPropagation();
+      }
+      if (answer == Answer.Capture) {
+        value.capture();
       }
       value.[Disposable.dispose]();
     }

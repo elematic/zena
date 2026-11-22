@@ -64,6 +64,8 @@
       - [State styles](#state-styles)
       - [Scrolling](#scrolling)
       - [Drawing outside a box](#drawing-outside-a-box)
+      - [Pointer capture](#pointer-capture)
+      - [Cursors](#cursors)
     - [Context: values that inherit down the tree](#context-values-that-inherit-down-the-tree)
   - [Host primitives](#host-primitives)
     - [Layout with measurement inside the solve](#layout-with-measurement-inside-the-solve)
@@ -1024,9 +1026,8 @@ own thread, some time after the input that led to them, so the window's thread
 never waits on a component. When a handler changes the tree, the `render` call
 that changes it asks the window for a frame.
 
-Not built: keyboard input and focus, a `wheel` listener, pointer capture, so an
-`up` goes to whatever the pointer is over when the button is released, and a
-budget for a pass of handlers that keep raising events.
+Not built: keyboard input and focus, a `wheel` listener, and a budget for a
+pass of handlers that keep raising events.
 
 #### State styles
 
@@ -1235,6 +1236,135 @@ Not designed: whether an extra box past the end of a scrolling box's content
 adds to how far it scrolls, moving a menu that does not fit to the other side
 of its anchor, and a box drawn larger than it is laid out, as one that grows
 under the pointer is.
+
+#### Pointer capture
+
+A drag needs pointer capture: the pointer leaves a divider the moment it moves,
+and may leave the window before the button comes up. A listener captures the
+pointer on the reply an event came with, as `setPointerCapture` does in the
+DOM:
+
+```wit
+resource reply {
+  stop-propagation: func();
+  capture: func();
+}
+```
+
+From that answer until the primary button comes up, the node the listener is on
+is the target of every `move` and `up`, and stays the node the pointer is over.
+It stays hovered and pressed, nothing else becomes hovered, and a frame that
+moves other nodes under the pointer changes none of that. The release is
+delivered to it and then ends the capture.
+
+`capture` takes effect while the primary button is down: on the reply to a
+`down`, and on the reply to a `move` that follows one. The second is how a
+press becomes a drag only once the pointer has moved some way, so that a press
+and release on a list row is a click and a press and pull is a drag. On the
+reply to an `up` it does nothing, since the button is already up. The method is
+on every reply because one type of reply serves every event a listener answers.
+A `capture` function taking a node, callable at any time, would have to be
+checked against the same condition and would no longer say which event it
+answers.
+
+`examples/zenafx/split/` is two panels and a divider. Its divider captures the
+pointer, and `packages/zenafx/tests/split.rs` drags it past the edge of the
+window.
+
+The answer arrives some time after the press, when the component drops the
+reply, so a move can reach the scene before the pointer is captured. Such a
+move goes to whatever is under the pointer. Nothing is captured if the button
+has come up by the time the answer arrives.
+
+Three things came out of building the example.
+
+- **A drag is heard on the box that stays still.** A listener is told where the
+  pointer is in its own node's box, and the divider's box moves with every
+  write. A position in it is the pointer's distance from where the divider was
+  drawn last, which is wrong by however many moves arrived since that frame.
+  So the divider starts the drag and the split, whose box does not move, hears
+  the moves. Events aimed at a node the pointer is captured for still travel
+  its path, which is what lets the split hear them.
+- **A drag's listeners should hear nothing else.** A `move` listener on the
+  split would be written an event for every move of the pointer across either
+  panel, dragging or not. A third scope, `captured`, hears only while the
+  pointer is captured for a node at or beneath the listener's. In the test the
+  pointer crosses the panels five times with no event written, and each move
+  of a drag is one event and one write.
+- **Limits can come from layout.** The component cannot keep the left panel
+  from growing past the window, because it never learns the window's width.
+  The right panel starts at its minimum width, grows, and does not shrink, so
+  the layout stops the left one. A box has no minimum or maximum of its own
+  yet. Those wait on layout becoming a list of declarations, since `flex`
+  already has eleven fields.
+
+Each move of a drag is an event in and a layout hole out, on the component's
+thread, and a solve. That is the cost the split was built to find. It has not
+been measured against a frame budget. If it shows, the alternative is a drag
+the host runs: the component says that a node's size follows the pointer
+between two limits, and hears the result.
+
+[Understory][understory]'s `understory_responder` builds the same sequence the
+scene does, capture then target then bubble, from hits it is given, and
+routes to a captured node when one is set. Going by its README, it could
+replace the scene's path walk and its capture override, some forty lines, and
+would not replace the scope filter or the list of listeners per node. Its API
+has not been read. Taking it would be a change inside `ui/scene.rs` with no
+interface behind it.
+
+Not built: capturing the pointer for a button other than the primary one,
+releasing a capture before the button comes up, and dragging a scroll thumb.
+
+[understory]: https://github.com/forest-rs/understory
+
+#### Cursors
+
+A node names the cursor to show while the pointer is over it:
+
+```wit
+record node-def {
+  // ...
+  cursor: option<cursor>,
+}
+```
+
+It is a field of the node, beside its layout and appearance, because it is
+part of how the node is styled. `none` leaves the choice to the node above, as
+`cursor` inherits in CSS, and the window shows `default` where no node names
+one. So the host shows the cursor named by the nearest node at or above the one
+the pointer is over, which during a drag is the node the pointer is captured
+for.
+
+`cursor` is an enum of CSS's 34 `cursor` keywords, each meaning what it means
+there. `examples/zenafx/cursors/` is a tile for each.
+
+**The platform draws the cursor.** The host draws none and has no cursor
+images. It tells the window which of the platform's own cursors to show, by
+name, when the node under the pointer changes. Three things follow.
+
+- A cursor is the one the person's system shows everywhere else, at the size,
+  colour and theme they chose, which matters to someone who has made theirs
+  large.
+- The platform moves it with the pointer, in its own compositor. It does not
+  wait for a frame of the window, so it does not lag when a frame is late.
+- No component code runs when the cursor changes. The host knows the node
+  under the pointer and that node's cursor.
+
+The host's part is one function in `ui/surface.rs` that turns each name into
+the window library's cursor of the same name. winit takes its names from CSS
+too, so the list is one to one, and a test holds the two lists together.
+
+What the enum cannot do is name a cursor the platform does not have. That takes
+an image: a component gives pixels and the point in them that is the pointer's
+tip, the host hands them to the platform as a custom cursor (winit's
+`CustomCursor`), and the platform still does the drawing and the moving. With
+that, the set of cursors is open to a component with no change to the host, and
+a design system can ship its own. `cursor` would become a variant of a name or
+an image.
+
+Not built: image cursors, and a cursor among a node's [state
+styles](#state-styles). Until then a cursor that changes with state, such as
+`grab` becoming `grabbing` while pressed, needs a new render.
 
 ### Context: values that inherit down the tree
 
