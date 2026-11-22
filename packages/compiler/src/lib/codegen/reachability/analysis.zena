@@ -5,7 +5,7 @@ import {
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, InlineParamType, InlineRecordType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable, baseType, releaseMemberOf, hasReleaseMember, synthesizedRelease,
+  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, InlineParamType, InlineRecordType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable, baseType, releaseMemberOf, isReleaseMemberName, hasReleaseMember, synthesizedRelease,
   ownershipHandleOf, OwnershipHandle, soleNonNullMember,
 } from '../../types.zena';
 import {
@@ -44,10 +44,36 @@ import {
 } from '../../component-entry.zena';
 import { WellKnown, isWellKnown, wellKnownName } from '../../well-known.zena';
 
+/**
+ * A class member that a dependency record names, and how far its
+ * fan-out over the class's instantiated subclasses has got
+ * (`traverseDependencies`).
+ */
 final class ParsedMethodRef {
   classSymId: SymbolId;
   mName: String;
-  new(this.classSymId, this.mName);
+  /**
+   * Whether fanning out over a subclass again can do what the first
+   * time did not. A synthesized `==`, `hashCode` or release has no node
+   * to queue, so it is reached by key, and the key is noted again until
+   * its function is registered.
+   */
+  retries: boolean;
+  /**
+   * The subclass list this member was last fanned out over from reached
+   * code, and how many of its entries that covered. The same pair for
+   * code that is only visited follows.
+   */
+  var reachedList: GrowableArray<ClassType> | null = null;
+  var reachedCount = 0;
+  var visitedList: GrowableArray<ClassType> | null = null;
+  var visitedCount = 0;
+  new(this.classSymId, this.mName, this.retries);
+}
+
+/** Whether `mName` is a member a class can have without declaring it. */
+function isSynthesizableMember(mName: String) {
+  return mName == "==" || mName == "hashCode" || isReleaseMemberName(mName);
 }
 
 final class ParsedAdaptationRef {
@@ -4851,9 +4877,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           let classIdStr = methStr.sliceBytes(0, dotIdx);
           let mName = methStr.sliceBytes(dotIdx + 1, methStr.length);
           let classId = if (let (true, cid) = parseI32(classIdStr)) cid else -1;
-          parsed = new ParsedMethodRef(classId as SymbolId, mName);
+          parsed = new ParsedMethodRef(classId as SymbolId, mName,
+              isSynthesizableMember(mName));
         } else {
-          parsed = new ParsedMethodRef(noSymbolId, "");
+          parsed = new ParsedMethodRef(noSymbolId, "", false);
         }
         this.parsedClassMethodRefs[methStr] = parsed;
       }
@@ -4900,12 +4927,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             } else {
               cha.findInstantiatedSubclasses(targetClassType)
             };
-            // The field behind an accessor slot's name, `get#x` or `set#x`.
-            let accessedField = if (mName.startsWith("get#") || mName.startsWith("set#")) {
-              mName.sliceBytes(4, mName.length)
-            } else {
-              null
-            };
+            // Whether an earlier traversal of this record, of code
+            // reached as this is, recorded the member below. The record
+            // is by member and by reachability, so once is enough.
+            let recorded = !parsed.retries &&
+                (if (this.currentReachable) parsed.reachedList != null else parsed.visitedList != null);
             // The records are symbol-level, and findInstantiatedSubclasses
             // sees only specializations that exist NOW — a member dep
             // traversed before the receiver's specialization is
@@ -4915,20 +4941,22 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             // OrderedHashMap's size before any OrderedHashMap is
             // instantiated). Record the member against the generic;
             // discovery and instantiation replay it per specialization.
-            let recMds = cha.findImplementingMethods(targetClassType, mName);
-            for (let md in recMds) {
-              let mdNode = md as Node;
-              this.nodeIdToNode[mdNode.id as i32] = mdNode;
-              this.nodeIdToModel[mdNode.id as i32] = this.getNodeModel(mdNode, targetModel);
-              this.recordReachedClassMember(classSymId, mdNode.id as i32,
-                  this.getNodeModel(mdNode, targetModel), this.currentReachable);
-            }
-            for (let recAcc in cha.findImplementingAccessors(targetClassType, mName)) {
-              let accNode = recAcc as Node;
-              this.nodeIdToNode[accNode.id as i32] = accNode;
-              this.nodeIdToModel[accNode.id as i32] = this.getNodeModel(accNode, targetModel);
-              this.recordReachedClassMember(classSymId, accNode.id as i32,
-                  this.getNodeModel(accNode, targetModel), this.currentReachable);
+            if (!recorded) {
+              let recMds = cha.findImplementingMethods(targetClassType, mName);
+              for (let md in recMds) {
+                let mdNode = md as Node;
+                this.nodeIdToNode[mdNode.id as i32] = mdNode;
+                this.nodeIdToModel[mdNode.id as i32] = this.getNodeModel(mdNode, targetModel);
+                this.recordReachedClassMember(classSymId, mdNode.id as i32,
+                    this.getNodeModel(mdNode, targetModel), this.currentReachable);
+              }
+              for (let recAcc in cha.findImplementingAccessors(targetClassType, mName)) {
+                let accNode = recAcc as Node;
+                this.nodeIdToNode[accNode.id as i32] = accNode;
+                this.nodeIdToModel[accNode.id as i32] = this.getNodeModel(accNode, targetModel);
+                this.recordReachedClassMember(classSymId, accNode.id as i32,
+                    this.getNodeModel(accNode, targetModel), this.currentReachable);
+              }
             }
             // A synthesized release has no node to record, so the
             // generic records that it was reached, and noteSpecialization
@@ -4938,7 +4966,41 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 mName == releaseMemberOf(generic)) {
               this.#reachedSyntheticReleases.add(classSymId);
             }
-            for (let subCt in list) {
+            // A body is traversed once for each specialization that
+            // reaches it, and this record with it. What the loop below
+            // queues for a subclass depends on the record and on whether
+            // the code is reached, and queueing it again does nothing,
+            // so each traversal starts where the last one over the same
+            // list stopped. A member that can be synthesized is the
+            // exception: its key is noted again until something
+            // registers the function, so its fan-out is always whole.
+            let listed = list.length;
+            let reached = this.currentReachable;
+            var first = 0;
+            if (!parsed.retries) {
+              if (reached) {
+                if (parsed.reachedList === list) {
+                  first = parsed.reachedCount;
+                }
+                parsed.reachedList = list;
+                parsed.reachedCount = listed;
+              } else {
+                if (parsed.visitedList === list) {
+                  first = parsed.visitedCount;
+                }
+                parsed.visitedList = list;
+                parsed.visitedCount = listed;
+              }
+            }
+            // The field behind an accessor slot's name, `get#x` or `set#x`.
+            let accessedField = if (first < listed &&
+                (mName.startsWith("get#") || mName.startsWith("set#"))) {
+              mName.sliceBytes(4, mName.length)
+            } else {
+              null
+            };
+            for (let at in first..listed) {
+              let subCt = list[at];
               let subModel = this.getClassModel(subCt);
               let mds = cha.findImplementingMethods(subCt, mName);
               for (let md in mds) {
