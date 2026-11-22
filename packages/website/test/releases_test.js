@@ -300,6 +300,19 @@ suite('install.sh standalone installer', () => {
         ZENA_GITHUB_API_URL: `${baseUrl}/api`,
         ZENA_RELEASE_BASE_URL: `${baseUrl}/download`,
       };
+      // Isolate from the caller's shell and installer environment so
+      // install.sh writes into the temporary homeDir instead of a host
+      // ZDOTDIR or skipping profile modification.
+      for (const key of [
+        'ZDOTDIR',
+        'XDG_CONFIG_HOME',
+        'ZENA_GITHUB_REPO',
+        'ZENA_VERSION',
+        'ZENA_PREVIEW',
+        'ZENA_NO_MODIFY_PATH',
+      ]) {
+        delete baseEnv[key];
+      }
 
       await execFileAsync('sh', [INSTALL_SH], {env: baseEnv});
 
