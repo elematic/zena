@@ -6,10 +6,12 @@
  * changes the count above it, the button changes colour while the pointer is
  * over it, and pressing anywhere else on the page sets the count back to zero.
  *
- * Nothing here looks for the pointer. The button says which events its box
- * hears, the host works out what the pointer is over from the tree it already
- * holds, and the component is woken only when one of those events happens.
- * Moving the pointer across the rest of the window costs it nothing.
+ * Nothing here looks for the pointer. The button says that its box hears a
+ * press, and how it looks while the pointer is over it and while it is pressed.
+ * The host works out what the pointer is over from the tree it already holds.
+ * It draws the hovered and pressed looks itself, and wakes the component only
+ * for a press. Moving the pointer anywhere in the window costs the component
+ * nothing.
  *
  * The page and the button both hear a press. A press on the button is offered
  * to the button first, which is nearer the pointer, and the button ends it
@@ -18,8 +20,8 @@
 import { Color, BoxStyle, TextStyle, Flex, Edges, Axis, Justify, Align,
          LengthPercent, LengthAuto } from 'zenafx:ui/style';
 import { NodeDef, AppearanceNothing, AppearanceFill, AppearanceText, TextContent,
-         Binding, BindingTarget, BindingValueContent,
-         BindingValueStyle } from 'zenafx:host/scene';
+         Binding, BindingTarget, BindingValueContent, StateStyle, State,
+         RestyleFill } from 'zenafx:host/scene';
 import { PointerKind } from 'zenafx:host/events';
 import { Template, Rendering, Widget, shows, holds, on, runApp } from '../framework.zena';
 import { some, none } from 'zena:core';
@@ -29,10 +31,12 @@ let ink = new Color(0.10, 0.11, 0.13, 1.0);
 let paper = new Color(1.0, 1.0, 1.0, 1.0);
 let resting = new Color(0.20, 0.38, 0.86, 1.0);
 let hovered = new Color(0.31, 0.49, 0.95, 1.0);
+let pressed = new Color(0.13, 0.27, 0.66, 1.0);
 
 let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
 let restingStyle = new BoxStyle(some(resting), none, 0.0, 10.0, 1.0);
 let hoveredStyle = new BoxStyle(some(hovered), none, 0.0, 10.0, 1.0);
+let pressedStyle = new BoxStyle(some(pressed), none, 0.0, 10.0, 1.0);
 let countStyle = new TextStyle('system-ui', 64.0, 600 as u16, false, ink);
 let labelStyle = new TextStyle('system-ui', 16.0, 600 as u16, false, paper);
 
@@ -74,8 +78,14 @@ class Readout extends Widget {
 /**
  * The button's template: node 0 is its own box and node 1 its label.
  *
- * Two holes. The fill is one because it changes while the pointer is over the
- * button, and the label because two buttons should be able to share this.
+ * One hole, the label, because two buttons should be able to share this.
+ *
+ * The fill is not a hole, though it changes. It changes with the pointer, and
+ * the host is the one that knows where the pointer is, so the template says
+ * what the box looks like hovered and pressed and the host draws whichever
+ * holds. Both name node 0 twice: the box changes, and the box's own state is
+ * the one read, which holds when the pointer is on the label too. `pressed` is
+ * listed second so that it is the one shown when both hold.
  */
 let buttonTemplate = new Template(
   [
@@ -83,49 +93,32 @@ let buttonTemplate = new Template(
     new NodeDef(contentLayout, new AppearanceText(new TextContent('', labelStyle)),
                 0 as u32, 0 as u32, false),
   ],
-  [new Binding(0 as u32, BindingTarget.Style),
-   new Binding(1 as u32, BindingTarget.Content)],
+  [new Binding(1 as u32, BindingTarget.Content)],
+  [new StateStyle(0 as u32, State.Hovered, 0 as u32, new RestyleFill(hoveredStyle)),
+   new StateStyle(0 as u32, State.Pressed, 0 as u32, new RestyleFill(pressedStyle))],
 );
 
 /**
- * A button: a label, what to do when it is pressed, and whether the pointer is
- * over it.
+ * A button: a label, and what to do when it is pressed.
  *
  * It knows nothing about a count. What a press means is its owner's, handed in
- * as a function, so the button never refers to what contains it.
+ * as a function, so the button never refers to what contains it. It has no
+ * state of its own: whether the pointer is over it is the host's to know.
  */
 class Button extends Widget {
   #label: String;
   #pressed: () => void;
-  var #hovered = false;
 
   new(label: String, pressed: () => void) : #label = label, #pressed = pressed, super();
 
   build(): Rendering {
-    let fill = if (this.#hovered) hoveredStyle else restingStyle;
-    // Each of these hears the button's whole subtree. A press on the label is
-    // a press on the button, and the pointer moving from the padding onto the
-    // label has not left it.
-    return shows(buttonTemplate, [
-      new BindingValueStyle(fill),
-      new BindingValueContent(this.#label)
-    ]).hearing([
+    // Hears the button's whole subtree, so a press on the label is a press on
+    // the button.
+    return shows(buttonTemplate, [new BindingValueContent(this.#label)]).hearing([
       on(PointerKind.Down, () => {
         this.#pressed();
-      }),
-      on(PointerKind.Enter, () => {
-        this.#hover(true);
-      }),
-      on(PointerKind.Leave, () => {
-        this.#hover(false);
       })
     ]);
-  }
-
-  /** One hole changes, so one hole is what crosses: the label is left out. */
-  #hover(over: boolean): void {
-    this.#hovered = over;
-    this.refresh();
   }
 }
 

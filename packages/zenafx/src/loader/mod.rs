@@ -210,6 +210,19 @@ impl GuestScene {
     pub fn undelivered(&self) -> u32 {
         self.undelivered.load(Ordering::Relaxed)
     }
+
+    /// Give the component's thread the calls an input or a frame led to.
+    fn hand_over(&self, deliveries: Vec<Delivery>) {
+        if deliveries.is_empty() {
+            return;
+        }
+        self.undelivered.fetch_add(1, Ordering::Relaxed);
+        if self.deliveries.send(deliveries).is_err() {
+            // The component's thread has ended, which it reported when it
+            // did. Nothing will be delivered again.
+            self.undelivered.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// What the component's thread is given besides the component.
@@ -350,15 +363,22 @@ impl Scene for GuestScene {
     ///
     /// Never enters the component: the worker thread drives it, and this reads
     /// the tree the component writes. So a resize costs a solve and a paint.
+    ///
+    /// A frame can find that the tree moved under a pointer that did not. It
+    /// draws what the pointer is over now, and the `enter` and `leave` calls
+    /// that follow from it go to the component's thread as an input's do.
     fn frame(&mut self, frame: FrameEvent) -> Vec<Command> {
         let size = Size {
             width: frame.width as f32,
             height: frame.height as f32,
         };
-        let (scene, text) = (self.scene.clone(), self.text.clone());
-        let mut scene = scene.lock().unwrap();
-        let mut text = text.lock().unwrap();
-        scene.draw(size, &mut text)
+        let (commands, owed) = {
+            let mut scene = self.scene.lock().unwrap();
+            let commands = scene.draw(size, &mut self.text.lock().unwrap());
+            (commands, scene.take_owed())
+        };
+        self.hand_over(owed);
+        commands
     }
 
     fn text(&self) -> Arc<Mutex<TextEngine>> {
@@ -374,20 +394,20 @@ impl Scene for GuestScene {
     ///
     /// Working it out needs only the tree, which is here, so an input that
     /// reaches no listener ends on this thread and the component is never
-    /// woken. Always answers `false`: nothing has changed yet, and a
-    /// listener that changes the tree asks for the frame itself, through the
-    /// [`Wake`] the window gave this scene.
+    /// woken.
+    ///
+    /// Answers whether the input changed how something looks, which it can
+    /// by moving a node into or out of a state a template gave a look for.
+    /// That needs a frame and wakes nobody. A listener that changes the tree
+    /// asks for its frame itself, through the [`Wake`] the window gave this
+    /// scene.
     fn pointer(&mut self, input: PointerInput) -> bool {
-        let deliveries = self.scene.lock().unwrap().pointer(input);
-        if !deliveries.is_empty() {
-            self.undelivered.fetch_add(1, Ordering::Relaxed);
-            if self.deliveries.send(deliveries).is_err() {
-                // The component's thread has ended, which it reported when it
-                // did. Nothing will be delivered again.
-                self.undelivered.fetch_sub(1, Ordering::Relaxed);
-            }
-        }
-        false
+        let (deliveries, restyled) = {
+            let mut scene = self.scene.lock().unwrap();
+            (scene.pointer(input), scene.dirty)
+        };
+        self.hand_over(deliveries);
+        restyled
     }
 
     fn woken_by(&mut self, wake: Wake) {

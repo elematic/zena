@@ -194,7 +194,8 @@ are `#[ignore]`d until a clock can be substituted for `wasi:clocks`; run them wi
 
 [`examples/zenafx/button/`](../../examples/zenafx/button/) is a count and a
 button that adds one to it. The button changes colour while the pointer is over
-it, and a press anywhere else on the page sets the count back to zero.
+it and while it is pressed, and a press anywhere else on the page sets the
+count back to zero.
 
 ```bash
 ./target/release/zena build ./packages/zenafx:build:button   # compiles it to out/button.wasm
@@ -205,15 +206,9 @@ A handler is a function, and a function cannot cross to the host. So a widget
 describes each one: which node of its template hears, and which kind of event.
 
 ```zena
-return shows(buttonTemplate, [...]).hearing([
+return shows(buttonTemplate, [new BindingValueContent(this.#label)]).hearing([
   on(PointerKind.Down, () => {
     this.#pressed();
-  }),
-  on(PointerKind.Enter, () => {
-    this.#hover(true);
-  }),
-  on(PointerKind.Leave, () => {
-    this.#hover(false);
   })
 ]);
 ```
@@ -242,9 +237,8 @@ frame. From those rectangles it finds the node under the pointer, and from the
 listeners it holds it finds which of them an input reaches, before it writes
 anything to the component. An input that reaches none does not wake the
 component.
-`tests/button.rs` moves the pointer across the page and about inside the button,
-and asserts that no event is written until the pointer crosses onto the button
-or presses it.
+`tests/button.rs` moves the pointer across the page, onto the button and about
+inside it, and asserts that no event is written until the button is pressed.
 
 A `down`, `up` or `move` is offered along the path between the root and the node
 under the pointer, to one listener at a time. It comes with a `reply`. The next
@@ -261,6 +255,41 @@ own box.
 The handlers run on the component's thread, after the window's thread has moved
 on. When one changes the tree, the `render` that changes it wakes the window for
 a frame.
+
+### How a node looks under the pointer
+
+The button has no handler for the pointer arriving or leaving, and no field
+saying whether it is hovered. Its template says how its box looks in each case,
+beside its bindings:
+
+```zena
+[new StateStyle(0 as u32, State.Hovered, 0 as u32, new RestyleFill(hoveredStyle)),
+ new StateStyle(0 as u32, State.Pressed, 0 as u32, new RestyleFill(pressedStyle))]
+```
+
+```wit
+record state-style {
+  node: u32,      // the node that changes
+  when: state,    // hovered, pressed
+  of: u32,        // the node whose state is read
+  style: restyle, // a box-style, or a text-style
+}
+```
+
+The host already knows which node the pointer is over, since it is what finds
+it, so it draws whichever look holds. A hover or a press that only changes how
+something looks costs a frame and wakes nobody: `tests/button.rs` takes the
+button from resting to hovered to pressed and back, and the only event written
+to the component is the `down` it listens for.
+
+`node` and `of` are separate because a label can change while the button round
+it is hovered. A state holds for a node when the pointer is over it or anything
+beneath it, so the button stays hovered while the pointer is on its label.
+
+A frame also notices when the tree moved and the pointer did not. If a layout
+change slides a different node under a still pointer, the frame that solves the
+new layout draws that node hovered, and the `enter` and `leave` calls that
+follow from it are delivered afterwards.
 
 ### What is not here yet
 

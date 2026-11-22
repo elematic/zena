@@ -421,11 +421,53 @@ package zenafx:host@0.1.0 {
       value: binding-value,
     }
 
+    /// Something true of a node because of where the pointer is. The host
+    /// works it out, since the host finds what the pointer is over.
+    enum state {
+      /// The node the pointer is over is this node or one beneath it,
+      /// content in its slots included.
+      hovered,
+      /// The primary button went down while the node under the pointer was
+      /// this node or one beneath it, and has not come up since.
+      pressed,
+    }
+
+    /// How a node looks while a state holds. A `fill` is for a box and a
+    /// `text` for a text node, whose content it leaves alone.
+    variant restyle {
+      fill(box-style),
+      text(text-style),
+    }
+
+    /// One node's look while a state holds, in place of the look it has
+    /// otherwise.
+    ///
+    /// `node` is the node that changes and `of` the node whose state is
+    /// read. Both are positions in the template, as in a `binding`. They are
+    /// two fields because they often differ: a button's label changes colour
+    /// while the button is pressed, so `node` is the label and `of` is 0, the
+    /// button's own box.
+    ///
+    /// The host applies these when it draws. A component is not told that
+    /// the pointer came or went, and a state that only changes how something
+    /// looks costs a frame and wakes no component.
+    ///
+    /// When several hold for one node, the last in the template's list is
+    /// the one shown, so `pressed` goes after `hovered`. A hole written to
+    /// the node changes the look it has when no state holds.
+    record state-style {
+      node: u32,
+      when: state,
+      of: u32,
+      style: restyle,
+    }
+
     /// A template, the first time it is used.
     record template-def {
       id: template-id,
       nodes: list<node-def>,
       bindings: list<binding>,
+      states: list<state-style>,
     }
 
     /// A template the host may not have seen.
