@@ -147,6 +147,13 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
             Ok(())
         },
     )?;
+    events.func_wrap(
+        "[method]reply.capture",
+        |mut caller: StoreContextMut<'_, UiHostState>, (reply,): (Resource<HostReply>,)| {
+            caller.data_mut().replies.capture(reply.rep());
+            Ok(())
+        },
+    )?;
 
     let mut text = linker.instance("zenafx:host/text@0.1.0")?;
     text.func_wrap(

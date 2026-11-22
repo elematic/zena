@@ -16,9 +16,10 @@ use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 
 use super::events::PointerInput;
+use super::scene::Cursor;
 use super::paint::Painter;
 use super::text::TextEngine;
 use super::types::{Color, Command, FrameEvent, KeyEvent};
@@ -71,6 +72,12 @@ pub trait Scene {
     /// Returns whether the scene changed and wants another frame.
     fn key(&mut self, _event: KeyEvent) -> bool {
         false
+    }
+
+    /// The cursor to show, given what the pointer is over. Asked after every
+    /// input and every frame, since either can change it.
+    fn cursor(&self) -> Cursor {
+        Cursor::Default
     }
 
     /// Whether the scene has work that needs one more frame. Asked after
@@ -132,6 +139,8 @@ struct Live {
     painter: Painter,
     /// The last pointer position, so a button event can carry one.
     cursor: (f32, f32),
+    /// The cursor the window was last told to show.
+    shown: Cursor,
 }
 
 struct App {
@@ -184,6 +193,7 @@ impl ApplicationHandler for App {
             surface,
             painter: Painter::new(size.width as u16, size.height as u16),
             cursor: (0.0, 0.0),
+            shown: Cursor::Default,
         });
         self.started = Instant::now();
         window.request_redraw();
@@ -346,6 +356,54 @@ impl ApplicationHandler for App {
 
             _ => {}
         }
+
+        let cursor = self.scene.cursor();
+        if cursor != live.shown {
+            live.window.set_cursor(icon(cursor));
+            live.shown = cursor;
+        }
+    }
+}
+
+/// The platform cursor for a cursor. winit names its cursors after CSS's
+/// keywords, as the interface does, so each is the one of the same name.
+/// The platform draws it.
+pub fn icon(cursor: Cursor) -> CursorIcon {
+    match cursor {
+        Cursor::Default => CursorIcon::Default,
+        Cursor::ContextMenu => CursorIcon::ContextMenu,
+        Cursor::Help => CursorIcon::Help,
+        Cursor::Pointer => CursorIcon::Pointer,
+        Cursor::Progress => CursorIcon::Progress,
+        Cursor::Wait => CursorIcon::Wait,
+        Cursor::Cell => CursorIcon::Cell,
+        Cursor::Crosshair => CursorIcon::Crosshair,
+        Cursor::Text => CursorIcon::Text,
+        Cursor::VerticalText => CursorIcon::VerticalText,
+        Cursor::Alias => CursorIcon::Alias,
+        Cursor::Copy => CursorIcon::Copy,
+        Cursor::Move => CursorIcon::Move,
+        Cursor::NoDrop => CursorIcon::NoDrop,
+        Cursor::NotAllowed => CursorIcon::NotAllowed,
+        Cursor::Grab => CursorIcon::Grab,
+        Cursor::Grabbing => CursorIcon::Grabbing,
+        Cursor::EResize => CursorIcon::EResize,
+        Cursor::NResize => CursorIcon::NResize,
+        Cursor::NeResize => CursorIcon::NeResize,
+        Cursor::NwResize => CursorIcon::NwResize,
+        Cursor::SResize => CursorIcon::SResize,
+        Cursor::SeResize => CursorIcon::SeResize,
+        Cursor::SwResize => CursorIcon::SwResize,
+        Cursor::WResize => CursorIcon::WResize,
+        Cursor::EwResize => CursorIcon::EwResize,
+        Cursor::NsResize => CursorIcon::NsResize,
+        Cursor::NeswResize => CursorIcon::NeswResize,
+        Cursor::NwseResize => CursorIcon::NwseResize,
+        Cursor::ColResize => CursorIcon::ColResize,
+        Cursor::RowResize => CursorIcon::RowResize,
+        Cursor::AllScroll => CursorIcon::AllScroll,
+        Cursor::ZoomIn => CursorIcon::ZoomIn,
+        Cursor::ZoomOut => CursorIcon::ZoomOut,
     }
 }
 
@@ -357,5 +415,20 @@ fn button_code(button: MouseButton) -> u8 {
         MouseButton::Back => 3,
         MouseButton::Forward => 4,
         MouseButton::Other(n) => n.min(u8::MAX as u16) as u8,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each cursor is the platform's cursor of the same name. The two sets
+    /// of names are both CSS's, so the names agree once they are written
+    /// the same way.
+    #[test]
+    fn each_cursor_is_the_platform_cursor_of_its_name() {
+        for cursor in Cursor::ALL {
+            assert_eq!(format!("{cursor:?}"), format!("{:?}", icon(cursor)));
+        }
     }
 }

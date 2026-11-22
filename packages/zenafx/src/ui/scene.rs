@@ -69,6 +69,9 @@ pub struct NodeDef {
     /// Whether content goes here instead of interior.
     #[component(name = "is-slot")]
     pub is_slot: bool,
+    /// The cursor to show over this node and over what is beneath it that
+    /// names none. `None` leaves it to the node above.
+    pub cursor: Option<Cursor>,
 }
 
 /// Which property of a node a binding writes.
@@ -154,6 +157,124 @@ pub struct StateStyle {
     pub style: Restyle,
 }
 
+/// What the pointer looks like, by CSS's `cursor` keywords. The window's
+/// library names its cursors after the same keywords, so each of these is
+/// the platform cursor of the same name.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, ComponentType, Lift, Lower)]
+#[component(enum)]
+#[repr(u8)]
+pub enum Cursor {
+    #[default]
+    #[component(name = "default")]
+    Default,
+    #[component(name = "context-menu")]
+    ContextMenu,
+    #[component(name = "help")]
+    Help,
+    #[component(name = "pointer")]
+    Pointer,
+    #[component(name = "progress")]
+    Progress,
+    #[component(name = "wait")]
+    Wait,
+    #[component(name = "cell")]
+    Cell,
+    #[component(name = "crosshair")]
+    Crosshair,
+    #[component(name = "text")]
+    Text,
+    #[component(name = "vertical-text")]
+    VerticalText,
+    #[component(name = "alias")]
+    Alias,
+    #[component(name = "copy")]
+    Copy,
+    #[component(name = "move")]
+    Move,
+    #[component(name = "no-drop")]
+    NoDrop,
+    #[component(name = "not-allowed")]
+    NotAllowed,
+    #[component(name = "grab")]
+    Grab,
+    #[component(name = "grabbing")]
+    Grabbing,
+    #[component(name = "e-resize")]
+    EResize,
+    #[component(name = "n-resize")]
+    NResize,
+    #[component(name = "ne-resize")]
+    NeResize,
+    #[component(name = "nw-resize")]
+    NwResize,
+    #[component(name = "s-resize")]
+    SResize,
+    #[component(name = "se-resize")]
+    SeResize,
+    #[component(name = "sw-resize")]
+    SwResize,
+    #[component(name = "w-resize")]
+    WResize,
+    #[component(name = "ew-resize")]
+    EwResize,
+    #[component(name = "ns-resize")]
+    NsResize,
+    #[component(name = "nesw-resize")]
+    NeswResize,
+    #[component(name = "nwse-resize")]
+    NwseResize,
+    #[component(name = "col-resize")]
+    ColResize,
+    #[component(name = "row-resize")]
+    RowResize,
+    #[component(name = "all-scroll")]
+    AllScroll,
+    #[component(name = "zoom-in")]
+    ZoomIn,
+    #[component(name = "zoom-out")]
+    ZoomOut,
+}
+
+impl Cursor {
+    /// Every cursor, in the order the interface lists them.
+    pub const ALL: [Cursor; 34] = [
+        Cursor::Default,
+        Cursor::ContextMenu,
+        Cursor::Help,
+        Cursor::Pointer,
+        Cursor::Progress,
+        Cursor::Wait,
+        Cursor::Cell,
+        Cursor::Crosshair,
+        Cursor::Text,
+        Cursor::VerticalText,
+        Cursor::Alias,
+        Cursor::Copy,
+        Cursor::Move,
+        Cursor::NoDrop,
+        Cursor::NotAllowed,
+        Cursor::Grab,
+        Cursor::Grabbing,
+        Cursor::EResize,
+        Cursor::NResize,
+        Cursor::NeResize,
+        Cursor::NwResize,
+        Cursor::SResize,
+        Cursor::SeResize,
+        Cursor::SwResize,
+        Cursor::WResize,
+        Cursor::EwResize,
+        Cursor::NsResize,
+        Cursor::NeswResize,
+        Cursor::NwseResize,
+        Cursor::ColResize,
+        Cursor::RowResize,
+        Cursor::AllScroll,
+        Cursor::ZoomIn,
+        Cursor::ZoomOut,
+    ];
+}
+
 /// A template the first time it is used. The id is the guest's.
 #[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
 #[component(record)]
@@ -184,6 +305,7 @@ impl TemplateRef {
 }
 
 /// A registered template: the interior it describes, and where its holes are.
+#[derive(Clone)]
 struct Template {
     nodes: Vec<NodeDef>,
     bindings: Vec<Binding>,
@@ -258,6 +380,9 @@ struct Retained {
     /// its content was expected to fit. Kept so that it is logged when it
     /// starts and not on every frame after.
     spilled: bool,
+    /// The cursor to show over this node, and over what is beneath it that
+    /// names none.
+    cursor: Option<Cursor>,
 }
 
 impl Retained {
@@ -278,6 +403,7 @@ impl Retained {
             shaped_as: None,
             scroll: (0.0, 0.0),
             spilled: false,
+            cursor: None,
         }
     }
 
@@ -314,6 +440,10 @@ pub struct Scene {
     /// The node the pointer was over when the primary button went down,
     /// until the button comes up.
     pressed: Option<u32>,
+    /// The node the pointer is captured for. While it is set, this node is
+    /// the target of every input and the node the pointer is over, whatever
+    /// is drawn under the pointer.
+    captured: Option<u32>,
     /// Where the pointer last was, for a `leave` that arrives with no
     /// position because the pointer left the window.
     pointer: (f32, f32),
@@ -339,6 +469,9 @@ pub struct Scene {
     unsolved: bool,
     /// How many times layout has been solved, for tests of what a frame costs.
     pub solves: u32,
+    /// How many times the component has written the tree, with a `render` or
+    /// a `content`, for tests of what an event costs.
+    pub writes: u32,
     /// The node each listener is on, by the listener's id, so that one can
     /// be removed without a search.
     listening: std::collections::HashMap<u32, u32>,
@@ -413,9 +546,8 @@ impl Scene {
             .and_then(|n| n.interior.as_ref())
             .map(|i| i.template);
         if showing != Some(id) {
-            let (nodes, bindings, states) =
-                (def.nodes.clone(), def.bindings.clone(), def.states.clone());
-            self.build_interior(node, id, &nodes, &bindings, &states, holes, text);
+            let def = def.clone();
+            self.build_interior(node, id, &def, holes, text);
             return;
         }
 
@@ -432,6 +564,7 @@ impl Scene {
     fn changed(&mut self) {
         self.dirty = true;
         self.unsolved = true;
+        self.writes += 1;
     }
 
     /// The nodes hanging in slot `index` of `node`'s interior, made exactly
@@ -488,12 +621,11 @@ impl Scene {
         &mut self,
         node: u32,
         template: u32,
-        defs: &[NodeDef],
-        bindings: &[Binding],
-        states: &[StateStyle],
+        def: &Template,
         holes: &[Hole],
         text: &mut TextEngine,
     ) {
+        let (defs, bindings, states) = (&def.nodes[..], &def.bindings[..], &def.states[..]);
         // Everything under the node goes: a different template shares nothing
         // with the old one, and content sat in the old one's slots.
         let old: Vec<u32> = self.get(node).map(|n| n.children.clone()).unwrap_or_default();
@@ -541,6 +673,7 @@ impl Scene {
                 appearance: def.appearance.clone(),
                 run,
                 is_slot: def.is_slot,
+                cursor: def.cursor,
                 ..Retained::empty()
             }));
         }
@@ -549,6 +682,7 @@ impl Scene {
             held.layout = filled[0].layout;
             held.appearance = filled[0].appearance.clone();
             held.run = run;
+            held.cursor = filled[0].cursor;
         }
 
         for (index, def) in filled.iter().enumerate() {
@@ -842,7 +976,9 @@ impl Scene {
         // The solve may have moved something under a pointer that has not
         // moved, or out from under it. No input will arrive to say so, which
         // makes this the only place it can be noticed.
-        let restyled = self.inside && {
+        // A pointer that a listener keeps stays over that listener's node,
+        // whatever the solve moved.
+        let restyled = self.inside && self.captured.is_none() && {
             let (x, y) = self.pointer;
             self.hover(self.hit(x, y))
         };
@@ -1115,7 +1251,11 @@ impl Scene {
         }
         self.inside = position.is_some();
         let at = self.pointer;
-        let target = position.and_then(|(x, y)| self.hit(x, y));
+        // A captured pointer belongs to the capturing node wherever it goes,
+        // out of the window included: that node is the target, and stays
+        // the node the pointer is over.
+        let under = position.and_then(|(x, y)| self.hit(x, y));
+        let target = self.captured.or(under);
 
         let mut restyled = self.hover(target);
         // The primary button alone presses. A press ends when the button
@@ -1147,8 +1287,42 @@ impl Scene {
             };
             deliveries.push(self.along_path(target, kind, button, at));
         }
+        // The primary button coming up ends the capture, after the node
+        // that had it has heard the `up`. The pointer is then over whatever
+        // is drawn under it, and the nodes it comes onto hear so.
+        if press == Some((0, false)) && self.captured.take().is_some() {
+            self.dirty |= self.hover(under);
+            deliveries.append(&mut self.owed);
+        }
         deliveries.retain(|d| !d.calls.is_empty());
         deliveries
+    }
+
+    /// Capture the pointer for the node `listener` is on, as its answer to
+    /// a `down` or to a `move` asked. Until the primary button comes up,
+    /// that node is the target of every input.
+    ///
+    /// The answer arrives some time after the event it answers. Nothing is
+    /// captured if the button has come up by then, or the listener has gone.
+    pub fn capture(&mut self, listener: u32) {
+        let Some(node) = self.listening.get(&listener).copied() else {
+            return;
+        };
+        if self.pressed.is_none() {
+            return;
+        }
+        self.captured = Some(node);
+        self.dirty |= self.hover(Some(node));
+    }
+
+    /// The cursor to show: the one named by the nearest node at or above the
+    /// one the pointer is over, which while the pointer is captured is the
+    /// node it is captured for.
+    pub fn cursor(&self) -> Cursor {
+        self.path(self.hovered)
+            .into_iter()
+            .find_map(|id| self.get(id).and_then(|n| n.cursor))
+            .unwrap_or_default()
     }
 
     /// Scroll by `dx`, `dy` from `target`: on each axis, the nearest node at
@@ -1235,6 +1409,7 @@ impl Scene {
                 match l.scope {
                     Scope::Subtree => left,
                     Scope::Node => Some(*id) == old,
+                    Scope::Captured => false,
                 }
             });
         }
@@ -1244,6 +1419,7 @@ impl Scene {
                 match l.scope {
                     Scope::Subtree => entered,
                     Scope::Node => Some(*id) == new,
+                    Scope::Captured => false,
                 }
             });
         }
@@ -1258,7 +1434,13 @@ impl Scene {
     /// back up.
     fn along_path(&self, target: u32, kind: PointerKind, button: u8, at: (f32, f32)) -> Delivery {
         let path = self.path(Some(target));
-        let in_scope = |id: u32, l: &Listener| l.scope == Scope::Subtree || id == target;
+        // While the pointer is captured, the target is the capturing node.
+        let captured = self.captured.is_some();
+        let in_scope = |id: u32, l: &Listener| match l.scope {
+            Scope::Subtree => true,
+            Scope::Node => id == target,
+            Scope::Captured => captured,
+        };
         let mut calls = Vec::new();
         for id in path.iter().rev() {
             self.offer(*id, kind, button, at, &mut calls, |l| {
@@ -1329,6 +1511,10 @@ impl Scene {
         }
         if self.path(self.pressed).contains(&gone) {
             self.pressed = above;
+        }
+        // A node that has gone has no pointer captured.
+        if self.path(self.captured).contains(&gone) {
+            self.captured = None;
         }
     }
 
@@ -1541,6 +1727,7 @@ mod tests {
             first_child: 0,
             child_count: 0,
             is_slot: false,
+            cursor: None,
         }
     }
 
@@ -3185,6 +3372,237 @@ mod tests {
             "it had no further to go, so the outer one took it 20 up"
         );
         assert_eq!(turn(&mut scene), vec![-20.0, 20.0]);
+    }
+
+    /// A node that has captured the pointer is the target of what follows,
+    /// wherever the pointer goes. Its listeners hear the moves over the
+    /// other button and the release outside both, the other button's hear
+    /// nothing, and the release ends the capture.
+    #[test]
+    fn a_node_that_captures_the_pointer_hears_it_wherever_it_goes() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_buttons(&mut text);
+        let on = |kind, id| hears(kind, Scope::Subtree, Phase::Bubble, id);
+        scene.listen(root, 1, on(PointerKind::Down, 1));
+        scene.listen(root, 1, on(PointerKind::Move, 2));
+        scene.listen(root, 1, on(PointerKind::Up, 3));
+        scene.listen(root, 2, on(PointerKind::Move, 9));
+
+        assert_eq!(heard(&scene.pointer(pressed(50.0, 30.0))), vec![1]);
+        scene.capture(1);
+
+        let over_the_other = scene.pointer(moved(150.0, 30.0));
+        assert_eq!(heard(&over_the_other), vec![2]);
+        assert_eq!(
+            over_the_other[0].calls[0].event.x, 140.0,
+            "measured from the capturing node's box, which the pointer is outside"
+        );
+        assert!(scene.pointer(PointerInput::Left).is_empty());
+        assert_eq!(heard(&scene.pointer(released(700.0, 500.0))), vec![3]);
+
+        assert_eq!(
+            heard(&scene.pointer(moved(150.0, 30.0))),
+            vec![9],
+            "the capture ended when the button came up"
+        );
+    }
+
+    /// The pointer can be captured from a move as well as from the press,
+    /// for as long as the button is down. That is how a press becomes a drag
+    /// only once the pointer has moved some way.
+    #[test]
+    fn a_move_while_the_button_is_down_can_capture_the_pointer() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_buttons(&mut text);
+        let on = |kind, id| hears(kind, Scope::Subtree, Phase::Bubble, id);
+        scene.listen(root, 1, on(PointerKind::Move, 2));
+        scene.listen(root, 2, on(PointerKind::Move, 9));
+
+        scene.pointer(pressed(50.0, 30.0));
+        assert_eq!(heard(&scene.pointer(moved(60.0, 30.0))), vec![2]);
+        scene.capture(2);
+
+        assert_eq!(
+            heard(&scene.pointer(moved(150.0, 30.0))),
+            vec![2],
+            "over the other button, and still the first one's"
+        );
+    }
+
+    /// The pointer is captured only while the button is down. An answer that
+    /// arrives after the button has come up captures nothing: a listener is
+    /// answered some time after the press it answers.
+    #[test]
+    fn nothing_is_captured_once_the_button_is_up() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_buttons(&mut text);
+        let on = |kind, id| hears(kind, Scope::Subtree, Phase::Bubble, id);
+        scene.listen(root, 1, on(PointerKind::Down, 1));
+        scene.listen(root, 1, on(PointerKind::Move, 2));
+        scene.listen(root, 2, on(PointerKind::Move, 9));
+
+        scene.pointer(pressed(50.0, 30.0));
+        scene.pointer(released(50.0, 30.0));
+        scene.capture(1);
+
+        assert_eq!(heard(&scene.pointer(moved(150.0, 30.0))), vec![9]);
+    }
+
+    /// A `captured` listener hears only while the pointer is captured for
+    /// the target. The panel's hears nothing of the pointer crossing its
+    /// buttons, then every move of a drag one of them started, and nothing
+    /// once it ends.
+    #[test]
+    fn a_captured_listener_hears_a_drag_and_nothing_else() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_buttons(&mut text);
+        scene.listen(
+            root,
+            1,
+            hears(PointerKind::Down, Scope::Subtree, Phase::Bubble, 1),
+        );
+        scene.listen(
+            root,
+            0,
+            hears(PointerKind::Move, Scope::Captured, Phase::Bubble, 2),
+        );
+        scene.listen(
+            root,
+            0,
+            hears(PointerKind::Enter, Scope::Captured, Phase::Bubble, 3),
+        );
+
+        assert!(scene.pointer(moved(50.0, 30.0)).is_empty());
+        assert!(scene.pointer(moved(150.0, 30.0)).is_empty());
+
+        scene.pointer(pressed(50.0, 30.0));
+        scene.capture(1);
+        let dragged = scene.pointer(moved(180.0, 30.0));
+        assert_eq!(heard(&dragged), vec![2]);
+        assert_eq!(
+            dragged[0].calls[0].event.x, 180.0,
+            "measured from the panel, which does not move as the button might"
+        );
+
+        scene.pointer(released(180.0, 30.0));
+        assert!(scene.pointer(moved(60.0, 30.0)).is_empty());
+    }
+
+    /// While a node has the pointer captured it stays hovered and pressed,
+    /// and nothing else becomes hovered, whatever the pointer passes over.
+    /// The release leaves the pointer over what is really under it.
+    #[test]
+    fn a_captured_pointer_stays_over_the_node_that_captured_it() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_styled_buttons(&mut text);
+        scene.listen(
+            root,
+            1,
+            hears(PointerKind::Down, Scope::Subtree, Phase::Bubble, 1),
+        );
+        scene.pointer(pressed(50.0, 30.0));
+        scene.capture(1);
+
+        scene.pointer(moved(150.0, 30.0));
+        assert_eq!(reds(&settled(&mut scene, &mut text)), vec![PRESSED, PLAIN]);
+
+        scene.pointer(released(150.0, 30.0));
+        assert_eq!(reds(&settled(&mut scene, &mut text)), vec![PLAIN, HOVERED]);
+    }
+
+    /// The cursor is the one named by the nearest node at or above the one
+    /// the pointer is over, and the default where none names one. While the
+    /// pointer is captured, the cursor is the capturing node's.
+    #[test]
+    fn the_cursor_follows_what_the_pointer_is_over() {
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        scene.render(
+            root,
+            &fresh(
+                PANEL,
+                vec![
+                    NodeDef {
+                        layout: row(),
+                        first_child: 1,
+                        child_count: 2,
+                        ..blank()
+                    },
+                    NodeDef {
+                        first_child: 3,
+                        child_count: 1,
+                        cursor: Some(Cursor::ColResize),
+                        ..sized(100.0, 40.0)
+                    },
+                    sized(100.0, 40.0),
+                    sized(50.0, 20.0),
+                ],
+                vec![],
+            ),
+            &[],
+            &mut text,
+        );
+        scene.draw(window(), &mut text);
+        scene.listen(
+            root,
+            1,
+            hears(PointerKind::Down, Scope::Subtree, Phase::Bubble, 1),
+        );
+        assert_eq!(
+            scene.cursor(),
+            Cursor::Default,
+            "the pointer is nowhere yet"
+        );
+
+        scene.pointer(moved(70.0, 30.0));
+        assert_eq!(scene.cursor(), Cursor::ColResize);
+        scene.pointer(moved(10.0, 10.0));
+        assert_eq!(
+            scene.cursor(),
+            Cursor::ColResize,
+            "the box inside names none, so the one it is in decides"
+        );
+        scene.pointer(moved(150.0, 30.0));
+        assert_eq!(scene.cursor(), Cursor::Default);
+
+        scene.pointer(pressed(70.0, 30.0));
+        scene.capture(1);
+        scene.pointer(moved(150.0, 30.0));
+        assert_eq!(
+            scene.cursor(),
+            Cursor::ColResize,
+            "the capturing node's, though the pointer is over the other"
+        );
+        scene.pointer(released(150.0, 30.0));
+        assert_eq!(scene.cursor(), Cursor::Default);
+    }
+
+    /// A template's own node can name a cursor, and a different template
+    /// rendered into the node takes the cursor away with the rest.
+    #[test]
+    fn a_widgets_own_box_can_name_a_cursor() {
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        let grabbable = NodeDef {
+            cursor: Some(Cursor::Grab),
+            ..sized(100.0, 40.0)
+        };
+        scene.render(root, &fresh(PANEL, vec![grabbable], vec![]), &[], &mut text);
+        scene.draw(window(), &mut text);
+        scene.pointer(moved(50.0, 20.0));
+        assert_eq!(scene.cursor(), Cursor::Grab);
+
+        scene.render(
+            root,
+            &fresh(OTHER, vec![sized(100.0, 40.0)], vec![]),
+            &[],
+            &mut text,
+        );
+        scene.draw(window(), &mut text);
+        scene.pointer(moved(50.0, 20.0));
+        assert_eq!(scene.cursor(), Cursor::Default);
     }
 }
 

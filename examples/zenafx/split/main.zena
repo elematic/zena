@@ -1,0 +1,133 @@
+/**
+ * Two panels and a divider between them that the pointer drags.
+ *
+ * The divider hears the press and captures the pointer. Every move after that
+ * is aimed at the divider, wherever the pointer has got to, and travels up to
+ * the split, which hears it and writes the left panel's width. The button
+ * coming up ends the capture.
+ *
+ * Pointer capture is what makes that a drag. The pointer leaves the divider
+ * the moment it moves, and may leave the window before the button comes up.
+ * Without capture the divider would stop being the target after one move, and
+ * the panel the pointer crossed would light up as hovered.
+ *
+ * The split hears the moves, and the divider only starts the drag, because of
+ * what a position is measured from. A listener is told where the pointer is in
+ * its own node's box. The divider's box moves with every write, so a position
+ * in it says little. The split's box stays where it is, so a position in it is
+ * where the divider should be.
+ *
+ * The split hears moves only while the pointer is captured. A pointer crossing
+ * the panels when nothing is being dragged is no business of the component's,
+ * and does not wake it.
+ */
+import { Color, BoxStyle, TextStyle, Edges, Axis, Align, LengthPx,
+         Overflow } from 'zenafx:ui/style';
+import { Binding, BindingTarget, BindingValueLayout, StateStyle, State, RestyleFill,
+         Cursor } from 'zenafx:host/scene';
+import { PointerKind } from 'zenafx:host/events';
+import { Rendering, Widget, shows, whileCaptured, grab, runApp } from '../framework.zena';
+import { box, text, full, flexOf, template } from '../widgets/widget.zena';
+import { some, none } from 'zena:core';
+
+let ink = new Color(0.10, 0.11, 0.13, 1.0);
+let leftFill = new Color(0.95, 0.96, 0.99, 1.0);
+let rightFill = new Color(1.0, 1.0, 1.0, 1.0);
+let rule = new Color(0.80, 0.83, 0.89, 1.0);
+let ruleHovered = new Color(0.45, 0.58, 0.95, 1.0);
+let ruleHeld = new Color(0.20, 0.38, 0.86, 1.0);
+
+let leftStyle = new BoxStyle(some(leftFill), none, 0.0, 0.0, 1.0);
+let rightStyle = new BoxStyle(some(rightFill), none, 0.0, 0.0, 1.0);
+let ruleStyle = new BoxStyle(some(rule), none, 0.0, 0.0, 1.0);
+let ruleHoveredStyle = new BoxStyle(some(ruleHovered), none, 0.0, 0.0, 1.0);
+let ruleHeldStyle = new BoxStyle(some(ruleHeld), none, 0.0, 0.0, 1.0);
+let label = new TextStyle('system-ui', 16.0, 500 as u16, false, ink);
+
+let padding = new Edges(20.0, 20.0, 20.0, 20.0);
+
+/** How wide the divider is, and the narrowest either panel gets. */
+let dividerWidth: f32 = 8.0;
+let narrowest: f32 = 120.0;
+
+/**
+ * The left panel's layout at a width.
+ *
+ * It may shrink, which is what stops it at the right panel's minimum: the
+ * right panel will not go below its own width, so when the two do not fit it is
+ * this one that gives way. Its content is cut off, because a panel dragged
+ * narrower than its label should hide the label and not be held open by it.
+ */
+function leftLayout(width: f32) {
+  return flexOf({padding: padding, width: new LengthPx(width), height: full,
+                 overflowX: Overflow.Hidden, overflowY: Overflow.Hidden});
+}
+
+/**
+ * The split's template. Breadth first: 0 the split, 1 the left panel, 2 the
+ * divider, 3 the right panel, 4 and 5 their labels.
+ *
+ * One hole, the left panel's layout, which is the only thing a drag changes.
+ *
+ * The right panel starts at its narrowest, grows into whatever room there is,
+ * and does not shrink. That is its minimum width, and so the left panel's
+ * maximum, with nobody working either out: the window's width never reaches
+ * the component.
+ *
+ * The divider names the cursor for a sideways drag, and looks different under
+ * the pointer and while it is held. It is held for the whole drag, since the
+ * pointer is captured for the divider.
+ */
+let splitTemplate = template(
+  box({axis: Axis.Row, align: Align.Stretch, width: full, height: full}, [
+    box({style: leftStyle, padding: padding, width: new LengthPx(240.0), height: full,
+         overflowX: Overflow.Hidden, overflowY: Overflow.Hidden}, [
+      text('Left', label),
+    ]),
+    box({style: ruleStyle, width: new LengthPx(dividerWidth), height: full, shrink: 0.0,
+         cursor: Cursor.ColResize}),
+    box({style: rightStyle, padding: padding, width: new LengthPx(narrowest), height: full,
+         grow: 1.0, shrink: 0.0, overflowX: Overflow.Hidden, overflowY: Overflow.Hidden}, [
+      text('Right', label),
+    ]),
+  ]),
+  [new Binding(1 as u32, BindingTarget.Layout)],
+  [new StateStyle(2 as u32, State.Hovered, 2 as u32, new RestyleFill(ruleHoveredStyle)),
+   new StateStyle(2 as u32, State.Pressed, 2 as u32, new RestyleFill(ruleHeldStyle))],
+);
+
+/** Two panels, and how wide the left one is. */
+class Split extends Widget {
+  var #left: f32 = 240.0;
+  /**
+   * Where on the divider it was pressed, from the divider's left edge, so that
+   * the divider stays under the pointer where it was taken hold of.
+   */
+  var #held: f32 = 0.0;
+
+  build(): Rendering {
+    return shows(splitTemplate, [new BindingValueLayout(leftLayout(this.#left))]).hearing([
+      // On the divider: a press starts a drag and captures the pointer.
+      grab(2 as u32, (event) => {
+        this.#held = event.x;
+      }),
+      // On the split, while the pointer is captured: a move puts the divider
+      // under the pointer. The position is in the split's box, so it is the
+      // divider's left edge once the place it is held by is taken off.
+      whileCaptured(0 as u32, PointerKind.Move, (event) => {
+        this.#moveTo(event.x - this.#held);
+      })
+    ]);
+  }
+
+  /** One hole changes, the left panel's layout, so one write crosses. */
+  #moveTo(left: f32): void {
+    this.#left = if (left < narrowest) narrowest else left;
+    this.refresh();
+  }
+}
+
+/** The component's entry: build the widget tree and show it. */
+export function main(): void {
+  runApp(new Split());
+}

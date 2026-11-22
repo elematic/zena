@@ -18,8 +18,9 @@
 import { Flex, Edges, Axis, Justify, Align, Length, BoxStyle, TextStyle,
          LengthAuto, LengthPercent, Overflow } from 'zenafx:ui/style';
 import { NodeDef, Appearance, AppearanceNothing, AppearanceFill, AppearanceText,
-         TextContent, Binding, StateStyle } from 'zenafx:host/scene';
+         TextContent, Binding, StateStyle, Cursor } from 'zenafx:host/scene';
 import { Template } from '../framework.zena';
+import { some, none } from 'zena:core';
 
 export let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
 export let full = new LengthPercent(100.0);
@@ -55,10 +56,16 @@ export type BoxOpts = {
   overflowX?: Overflow,
   overflowY?: Overflow,
   style?: BoxStyle,
+  /**
+   * The cursor to show while the pointer is over the box, or over anything in
+   * it that names none of its own. Left out, the box shows the cursor of
+   * whatever it is in.
+   */
+  cursor?: Cursor,
 };
 
 /** Read the options, filling in what was left out. */
-function flexOf(opts: BoxOpts) {
+export function flexOf(opts: BoxOpts) {
   return new Flex(
   opts.axis ?? Axis.Column,
   opts.justify ?? Justify.Start,
@@ -81,20 +88,30 @@ function appearanceOf(opts: BoxOpts): Appearance {
   return new AppearanceNothing();
 }
 
+function cursorOf(opts: BoxOpts): Option<Cursor> {
+  if (let {cursor} = opts) {
+    return some(cursor);
+  }
+  return none;
+}
+
 /** A node of the tree a widget's template describes. */
 export class Box {
   layout: Flex;
   appearance: Appearance;
   children: GrowableArray<Box>;
+  /** The cursor the node names, if it names one. */
+  cursor: Option<Cursor>;
   /** Whether content hangs here. */
   isSlot: boolean;
 
-  new(this.layout, this.appearance, this.children, this.isSlot = false);
+  new(this.layout, this.appearance, this.children, this.cursor, this.isSlot = false);
 }
 
 /** A box. Lays out its children, and draws a panel when given a `style`. */
 export function box(opts: BoxOpts = {}, children: Array<Box> = []): Box {
-  return new Box(flexOf(opts), appearanceOf(opts), GrowableArray.from(children));
+  return new Box(flexOf(opts), appearanceOf(opts), GrowableArray.from(children),
+                 cursorOf(opts));
 }
 
 /**
@@ -106,7 +123,7 @@ export function box(opts: BoxOpts = {}, children: Array<Box> = []): Box {
  * panel of its own, put the slot inside a `box` and style that.
  */
 export function slot(): Box {
-  return new Box(flexOf({}), new AppearanceNothing(), new GrowableArray<Box>(), true);
+  return new Box(flexOf({}), new AppearanceNothing(), new GrowableArray<Box>(), none, true);
 }
 
 /**
@@ -119,7 +136,7 @@ export function slot(): Box {
  */
 export function text(content: String, style: TextStyle, opts: BoxOpts = {}): Box {
   return new Box(flexOf(opts), new AppearanceText(new TextContent(content, style)),
-                 new GrowableArray<Box>());
+                 new GrowableArray<Box>(), cursorOf(opts));
 }
 
 /**
@@ -148,15 +165,15 @@ export function flatten(root: Box): Array<NodeDef> {
   while (n < order.length) {
     let node = order[n];
     nodes.push(new NodeDef(node.layout, node.appearance, firstChildOf[n] as u32,
-                           node.children.length as u32, node.isSlot));
+                           node.children.length as u32, node.isSlot, node.cursor));
     n += 1;
   }
   return nodes;
 }
 
 /**
- * A template: a box tree, where its holes are, and how its nodes look while the
- * pointer is over them or pressing them.
+ * A template: a box tree, where its holes are, and how its nodes look while
+ * the pointer is over them or pressing them.
  */
 export function template(root: Box, bindings: Array<Binding>,
                          states: Array<StateStyle> = []): Template {

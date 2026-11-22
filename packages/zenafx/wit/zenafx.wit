@@ -298,6 +298,12 @@ package zenafx:host@0.1.0 {
       /// When the listening node or any node beneath it is the target,
       /// content in its slots included.
       subtree,
+      /// As `subtree`, and only while the pointer is captured for the
+      /// target. What a drag's `move` and `up` listeners ask for: they hear
+      /// the drag and nothing else, so a pointer crossing the node when
+      /// nothing is being dragged does not wake the component. An `enter` or
+      /// a `leave` is never in this scope.
+      captured,
     }
 
     /// When a listener is offered a `down`, `up` or `move`. `enter` and `leave`
@@ -337,6 +343,22 @@ package zenafx:host@0.1.0 {
       /// offered it. As `stopPropagation` in the DOM, it changes nothing
       /// else about the event.
       stop-propagation: func();
+
+      /// Capture the pointer, as `setPointerCapture` does in the DOM. From
+      /// this answer until the primary button comes up, the target of every
+      /// `move` and `up` is the node this listener is on, wherever the
+      /// pointer goes, and that node stays the one the pointer is over.
+      ///
+      /// What a drag needs: the pointer leaves a divider as soon as it
+      /// moves, and may leave the window before the button comes up.
+      ///
+      /// It takes effect while the primary button is down. That is on the
+      /// reply to a `down`, and on the reply to a `move` that follows one,
+      /// which is how a press becomes a drag only once the pointer has
+      /// moved some way. On any other reply it does nothing: an `up` has
+      /// already released the button. The method is on every reply because
+      /// one type of reply serves every event a listener answers.
+      capture: func();
     }
 
     /// One event, as one listener receives it.
@@ -387,6 +409,57 @@ package zenafx:host@0.1.0 {
       text(text-content),
     }
 
+    /// What the pointer looks like while it is over a node. The names are
+    /// CSS's `cursor` keywords, and each means what it means there.
+    ///
+    /// The platform draws the cursor. The host tells it which of its own
+    /// cursors to show, so a cursor follows the person's settings for size
+    /// and colour, and moves with the pointer whatever the window is busy
+    /// with.
+    enum cursor {
+      /// The platform's ordinary arrow.
+      default,
+      context-menu,
+      help,
+      /// A hand, for something that is pressed to go somewhere.
+      pointer,
+      progress,
+      wait,
+      cell,
+      crosshair,
+      /// An I-beam, over text that can be selected or edited.
+      text,
+      vertical-text,
+      alias,
+      copy,
+      move,
+      no-drop,
+      not-allowed,
+      /// An open hand, over something that can be picked up.
+      grab,
+      /// A closed hand, while it is held.
+      grabbing,
+      e-resize,
+      n-resize,
+      ne-resize,
+      nw-resize,
+      s-resize,
+      se-resize,
+      sw-resize,
+      w-resize,
+      ew-resize,
+      ns-resize,
+      nesw-resize,
+      nwse-resize,
+      /// Arrows left and right, over a divider dragged sideways.
+      col-resize,
+      /// Arrows up and down, over a divider dragged up and down.
+      row-resize,
+      all-scroll,
+      zoom-in,
+      zoom-out,
+    }
+
     /// One node of a template, in a flat list.
     ///
     /// Node 0 describes the node being rendered into — the widget's own box,
@@ -413,6 +486,15 @@ package zenafx:host@0.1.0 {
       /// widget — a widget's node is a box, and the slot it was placed in is
       /// not.
       is-slot: bool,
+      /// The cursor to show while the pointer is over this node, or over
+      /// anything beneath it that names none of its own. `none` leaves it
+      /// to the node above, as `cursor` inherits in CSS, and the window
+      /// shows `default` where no node names one.
+      ///
+      /// While the pointer is captured, the node it is captured for is the
+      /// one the pointer counts as over, so a divider's cursor stays for the
+      /// whole of a drag.
+      cursor: option<cursor>,
     }
 
     /// Which property of a node a hole writes. The set is what the host can
