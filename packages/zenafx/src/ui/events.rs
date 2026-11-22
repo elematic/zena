@@ -150,6 +150,8 @@ pub struct KeyEvent {
     pub code: String,
     pub modifiers: Modifiers,
     pub repeat: bool,
+    /// The text this key press types, when it types any.
+    pub text: Option<String>,
 }
 
 /// A registration for the keyboard: which leg of a key's journey a node

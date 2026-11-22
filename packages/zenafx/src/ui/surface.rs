@@ -291,12 +291,14 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
+                let down = event.state == ElementState::Pressed;
                 let wants = self.scene.key(KeyEvent {
-                    down: event.state == ElementState::Pressed,
+                    down,
                     key: key_name(&event.logical_key),
                     code: code_name(event.physical_key),
                     modifiers: live.modifiers,
                     repeat: event.repeat,
+                    text: typed(down, event.text.as_deref(), live.modifiers),
                 });
                 if wants {
                     live.window.request_redraw();
@@ -395,6 +397,22 @@ pub fn key_name(key: &Key) -> String {
     }
 }
 
+/// The text a key press types, from the text the platform says it produced.
+///
+/// The platform reports text for keys that type none: a carriage return for
+/// `Enter`, a tab, a backspace character, and a control character for a
+/// letter pressed with `Control`. None of those is typing. A letter pressed
+/// with `Control` or `Meta` is a shortcut whatever the platform makes of it.
+pub fn typed(down: bool, produced: Option<&str>, held: Modifiers) -> Option<String> {
+    let produced = produced?;
+    let types = down
+        && !held.control
+        && !held.meta
+        && !produced.is_empty()
+        && !produced.chars().any(char::is_control);
+    types.then(|| produced.to_owned())
+}
+
 /// Which key it is on the keyboard, as the W3C's keyboard events name it:
 /// `KeyA`, `Space`, `Enter`. winit's names are the specification's, but for
 /// the two it calls Super.
@@ -490,5 +508,34 @@ mod tests {
         assert_eq!(code_name(PhysicalKey::Code(KeyCode::KeyA)), "KeyA");
         assert_eq!(code_name(PhysicalKey::Code(KeyCode::Space)), "Space");
         assert_eq!(code_name(PhysicalKey::Code(KeyCode::SuperLeft)), "MetaLeft");
+    }
+
+    /// A key types what the platform says it produced, unless that is a
+    /// control character, the key is coming up, or it is a shortcut.
+    #[test]
+    fn a_key_types_text_only_when_it_is_typing() {
+        let none = Modifiers::default();
+        let with = |control, meta, shift| Modifiers {
+            control,
+            meta,
+            shift,
+            ..Modifiers::default()
+        };
+
+        assert_eq!(typed(true, Some("a"), none), Some("a".to_owned()));
+        assert_eq!(
+            typed(true, Some("É"), with(false, false, true)),
+            Some("É".to_owned())
+        );
+        assert_eq!(typed(true, Some(" "), none), Some(" ".to_owned()));
+
+        assert_eq!(typed(false, Some("a"), none), None, "coming up");
+        assert_eq!(typed(true, None, none), None, "an arrow");
+        assert_eq!(typed(true, Some("\r"), none), None, "Enter");
+        assert_eq!(typed(true, Some("\t"), none), None, "Tab");
+        assert_eq!(typed(true, Some("\u{8}"), none), None, "Backspace");
+        assert_eq!(typed(true, Some("\u{7f}"), none), None, "Delete");
+        assert_eq!(typed(true, Some("a"), with(true, false, false)), None);
+        assert_eq!(typed(true, Some("a"), with(false, true, false)), None);
     }
 }

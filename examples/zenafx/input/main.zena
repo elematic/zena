@@ -1,0 +1,104 @@
+/**
+ * Two text fields and what was typed into them.
+ *
+ * The first field greets whoever is named in it, on every key. The second says
+ * what was sent when Enter is pressed in it. `Tab` moves between the two, and
+ * a press puts the caret where it lands.
+ *
+ * `text-input.zena` is the field and `editing.zena` the editing it does.
+ */
+import { Color, BoxStyle, TextStyle, Justify, Align, LengthPx } from 'zenafx:ui/style';
+import { Binding, BindingTarget, BindingValueContent } from 'zenafx:host/scene';
+import { Rendering, Widget, shows, holds, runApp } from '../framework.zena';
+import { box, slot, text, full, template } from '../widgets/widget.zena';
+import { TextInput } from './text-input.zena';
+import { some, none } from 'zena:core';
+
+let page = new Color(0.97, 0.97, 0.98, 1.0);
+let ink = new Color(0.10, 0.11, 0.13, 1.0);
+let muted = new Color(0.36, 0.39, 0.46, 1.0);
+
+let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
+let labelText = new TextStyle('system-ui', 13.0, 600 as u16, false, muted);
+let lineText = new TextStyle('system-ui', 16.0, 400 as u16, false, ink);
+
+let labelTemplate = template(text('', labelText), [
+  new Binding(0 as u32, BindingTarget.Content),
+]);
+
+let lineTemplate = template(text('', lineText), [
+  new Binding(0 as u32, BindingTarget.Content),
+]);
+
+/** A field's name, above it. */
+class Label extends Widget {
+  #says: String;
+
+  new(says: String) : #says = says, super();
+
+  build(): Rendering {
+    return shows(labelTemplate, [new BindingValueContent(this.#says)]);
+  }
+}
+
+/** A line of text that can be told to say something else. */
+class Line extends Widget {
+  var #says: String;
+
+  new(says: String) : #says = says, super();
+
+  say(says: String): void {
+    this.#says = says;
+    this.refresh();
+  }
+
+  build(): Rendering {
+    return shows(lineTemplate, [new BindingValueContent(this.#says)]);
+  }
+}
+
+/**
+ * The page: its own box, a column 320 wide in the middle of it, and one slot
+ * in the column for everything else. The column stretches what is in it, which
+ * is what gives the fields their width.
+ */
+let pageTemplate = template(
+  box({style: pageStyle, justify: Justify.Center, align: Align.Center,
+       width: full, height: full}, [
+    box({align: Align.Stretch, gap: 8.0, width: new LengthPx(320.0)}, [slot()]),
+  ]),
+  [],
+);
+
+class Page extends Widget {
+  /** Made on the first render. See the same field in `counter/main.zena`. */
+  var #content: Array<Widget> | null = null;
+
+  build(): Rendering {
+    var content = this.#content;
+    if (content == null) {
+      let greeting = new Line('Hello.');
+      let sent = new Line('Nothing sent yet.');
+      let made: Array<Widget> = [
+        new Label('Name'),
+        new TextInput('Your name', (name) => {
+          greeting.say(if (name.isEmpty) 'Hello.' else `Hello, ${name}.`);
+        }, (name) => {}),
+        greeting,
+        new Label('Message'),
+        new TextInput('Enter sends it', (message) => {}, (message) => {
+          sent.say(if (message.isEmpty) 'Nothing to send.' else `Sent: ${message}`);
+        }),
+        sent
+      ];
+      this.#content = made;
+      content = made;
+    }
+    return holds(pageTemplate, [content]);
+  }
+}
+
+/** The component's entry: build the widget tree and show it. */
+export function main(): void {
+  runApp(new Page());
+}

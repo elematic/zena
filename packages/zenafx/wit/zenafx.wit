@@ -406,6 +406,16 @@ package zenafx:host@0.1.0 {
       modifiers: modifiers,
       /// Whether this is the key repeating because it is being held down.
       repeat: bool,
+      /// The text this key press types, when it types any: `a`, `É`, a
+      /// space. `none` for a key coming up, for a key that types nothing,
+      /// and while `control` or `meta` is held, when a letter is a shortcut.
+      ///
+      /// What a text field inserts. `key` is not a substitute: nothing in it
+      /// says whether `Enter` is a name or five characters. The W3C's
+      /// keyboard events have no such field and report typed text in a
+      /// separate `input` event, which is where text from an input method
+      /// would arrive here too. That is not built.
+      text: option<string>,
     }
 
     /// One key event, as one listener receives it.
@@ -551,11 +561,51 @@ package zenafx:host@0.1.0 {
       /// nearest such node at or above the node pressed, and takes it away
       /// when there is none.
       focusable: bool,
+      /// Whether a person edits this node's text. It means something on a
+      /// text node, and such a node inside a node that can have the focus
+      /// makes that node a text field.
+      ///
+      /// A window has one selection, and the host keeps it, as it keeps the
+      /// focus. In a text field the host does everything the pointer does
+      /// to it, with no call to the component:
+      ///
+      /// - A press anywhere in the field puts the caret at the place in the
+      ///   text nearest the pointer, and dragging from there selects.
+      /// - A press with `Shift` held moves the end of the selection to the
+      ///   pointer.
+      /// - A second press in the same place selects the word there, and a
+      ///   third selects all the text.
+      /// - When a field gets the focus and the selection is somewhere else,
+      ///   the caret goes to the end of the field's text.
+      ///
+      /// The host draws the caret and a highlight over what is selected,
+      /// while the field has the focus, and scrolls the nearest box above
+      /// the text that says `hidden` or `scroll` to keep the caret in sight.
+      ///
+      /// The text itself is the component's, in a `content` hole. The
+      /// component edits it when it hears a key: it asks where the selection
+      /// is with `node.selection`, writes the new text, and says where the
+      /// caret now is with `node.select`.
+      editable: bool,
     }
 
     /// Which property of a node a hole writes. The set is what the host can
     /// patch in place without rebuilding the node.
     enum binding-target { content, style, layout }
+
+    /// What is selected in a text node's content, as two places counted in
+    /// UTF-8 bytes from the start. `anchor` is where the selection began and
+    /// `focus` is where it ends, which is where the caret is. The two are
+    /// equal when nothing is selected, and `focus` is before `anchor` in a
+    /// selection made backwards. The names are the DOM's.
+    ///
+    /// A place is always between two characters as a reader sees them. The
+    /// host moves one that is given inside a character to the character's
+    /// edge.
+    record text-selection {
+      anchor: u32,
+      focus: u32,
+    }
 
     /// One hole in a template, named by the interior node it belongs to and
     /// the property it sets. A hole is identified by its index in the
@@ -723,6 +773,23 @@ package zenafx:host@0.1.0 {
       /// dropping the stream removes the listener, and the host removes the
       /// listener and ends the stream when the node goes away.
       listen-keys: func(target: u32, at: phase) -> stream<key-delivery>;
+
+      /// Where the window's selection is in the text node at `target`, a
+      /// position in the template this node shows. `none` when the selection
+      /// is not in that text node, or the node is not text.
+      ///
+      /// What a text field asks when it hears a key, since the pointer may
+      /// have moved the selection since the field last set it. The host is
+      /// the one place the selection is kept, so a component keeps no copy
+      /// to fall out of date.
+      selection: func(target: u32) -> option<text-selection>;
+
+      /// Put the window's selection in the text node at `target`. What a
+      /// text field does after an edit, to put the caret after what was
+      /// typed. The host brings the caret into sight.
+      ///
+      /// A place past the end of the text is moved to the end.
+      select: func(target: u32, to: text-selection);
     }
 
     /// The scene's root. The first `render` on it installs the tree.

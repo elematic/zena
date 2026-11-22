@@ -107,6 +107,7 @@ fn key(app: &mut GuestScene, name: &str, shift: bool) {
             ..Modifiers::default()
         },
         repeat: false,
+        text: None,
     });
     settle(app);
 }

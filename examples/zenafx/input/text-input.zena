@@ -1,0 +1,152 @@
+/**
+ * A one-line text field: what HTML's `<input type="text">` is, with far less
+ * in it.
+ *
+ * The text is here, and so is what each key does to it, in `Editing`. The
+ * selection is the host's. A window has one selection, as it has one focus,
+ * and in a text field the host does everything the pointer does to it: a
+ * press puts the caret where it landed, a drag selects, a second press takes a
+ * word and a third the whole field. The host draws the caret and the
+ * highlight, and scrolls the field to keep the caret in sight. None of that
+ * calls this widget, which has no pointer listener at all.
+ *
+ * What is left for the widget is the keyboard. For each key it asks the host
+ * where the selection is, works out the text and the selection the key leads
+ * to, writes the text and tells the host where the caret now is.
+ *
+ * The template is a box and two text nodes. The box can have the focus, hides
+ * the text that does not fit, and is a row, so its text is laid out on one
+ * line at its full width and never wrapped. Node 1 is the text a person edits,
+ * which it tells the host with `editable`. Node 2 is the placeholder, which
+ * says something only while node 1 is empty.
+ *
+ * Not here: cutting and pasting, undo, text from an input method, and a caret
+ * that blinks.
+ */
+import { Color, BoxStyle, TextStyle, Edges, Axis, Align, Overflow } from 'zenafx:ui/style';
+import { Binding, BindingTarget, BindingValueContent, StateStyle, State, RestyleFill,
+         Cursor } from 'zenafx:host/scene';
+import { KeyEvent } from 'zenafx:host/events';
+import { Rendering, Widget, Template, KeyListener, KeyAnswer } from '../framework.zena';
+import { box, text, flatten } from '../widgets/widget.zena';
+import { Editing } from './editing.zena';
+import { some } from 'zena:core';
+
+let ink = new Color(0.10, 0.11, 0.13, 1.0);
+let faint = new Color(0.56, 0.59, 0.65, 1.0);
+let paper = new Color(1.0, 1.0, 1.0, 1.0);
+let edge = new Color(0.78, 0.81, 0.87, 1.0);
+let hoveredEdge = new Color(0.58, 0.62, 0.70, 1.0);
+let ring = new Color(0.20, 0.38, 0.86, 1.0);
+
+let fieldStyle = new BoxStyle(some(paper), some(edge), 1.0, 6.0, 1.0);
+let hoveredStyle = new BoxStyle(some(paper), some(hoveredEdge), 1.0, 6.0, 1.0);
+/** The field with the focus: a heavier edge in another colour, as a ring. */
+let focusedStyle = new BoxStyle(some(paper), some(ring), 2.0, 6.0, 1.0);
+let valueText = new TextStyle('system-ui', 16.0, 400 as u16, false, ink);
+/** What the field says when it is empty. */
+let placeholderText = new TextStyle('system-ui', 16.0, 400 as u16, false, faint);
+
+/** Where the text a person edits is in the template. */
+let edited: u32 = 1;
+
+/**
+ * Node 0 is the field's box, node 1 the text a person edits and node 2 the
+ * placeholder. Two holes: what each of the two says.
+ *
+ * `shrink: 0.0` keeps the text at its full width when that is more than the
+ * box has, which is what makes the box scroll and not the text wrap. The box
+ * says `hidden`: it scrolls as the host moves it to follow the caret, and
+ * never with the wheel.
+ */
+let inputTemplate = new Template(
+  flatten(box({style: fieldStyle, axis: Axis.Row, align: Align.Center,
+               padding: new Edges(9.0, 12.0, 9.0, 12.0), overflowX: Overflow.Hidden,
+               cursor: Cursor.Text, focusable: true}, [
+    text('', valueText, {shrink: 0.0, editable: true}),
+    text('', placeholderText, {shrink: 0.0}),
+  ])),
+  [new Binding(edited, BindingTarget.Content),
+   new Binding(2 as u32, BindingTarget.Content)],
+  [new StateStyle(0 as u32, State.Hovered, 0 as u32, new RestyleFill(hoveredStyle)),
+   new StateStyle(0 as u32, State.Focused, 0 as u32, new RestyleFill(focusedStyle))],
+);
+
+/** A one-line text field. */
+export class TextInput extends Widget {
+  /** What the field shows, faintly, while it is empty. */
+  #placeholder: String;
+  /** Told the text each time it changes. */
+  #onChange: (text: String) => void;
+  /** Told the text when Enter is pressed. */
+  #onSubmit: (text: String) => void;
+  var #text: String;
+
+  new(placeholder: String, onChange: (text: String) => void,
+      onSubmit: (text: String) => void, value: String = '')
+      : #placeholder = placeholder, #onChange = onChange, #onSubmit = onSubmit,
+        #text = value, super();
+
+  /** The text in the field. */
+  value: String {
+    get {
+      return this.#text;
+    }
+  }
+
+  build(): Rendering {
+    return new Rendering(inputTemplate,
+      [new BindingValueContent(this.#text),
+       new BindingValueContent(if (this.#text.isEmpty) this.#placeholder else '')],
+      [],
+      [],
+      [new KeyListener((event) => this.#key(event))]);
+  }
+
+  /**
+   * The text and the selection as they are now. The selection is the host's,
+   * so it is asked for. When it is somewhere else in the window, a key edits
+   * at the end of the text.
+   */
+  #editing(): Editing {
+    let end = this.#text.utf8.length;
+    return match (this.selectionAt(edited)) {
+      case (true, let anchor, let focus): new Editing(this.#text, anchor, focus)
+      case (false, _, _): new Editing(this.#text, end, end)
+    };
+  }
+
+  #key(event: KeyEvent): KeyAnswer {
+    if (!event.down) {
+      return KeyAnswer.Pass;
+    }
+    if (event.key == 'Enter') {
+      this.#onSubmit(this.#text);
+      return KeyAnswer.Used;
+    }
+    let held = event.modifiers;
+    let before = this.#editing();
+    var next: Editing | null = null;
+    if (let Some {value} = event.text) {
+      next = before.pressed({key: event.key, typed: value, shift: held.shift,
+                             control: held.control, alt: held.alt, meta: held.meta});
+    } else {
+      next = before.pressed({key: event.key, shift: held.shift,
+                             control: held.control, alt: held.alt, meta: held.meta});
+    }
+    // A key the editing has no use for goes on: `Tab` to the host, which
+    // moves the focus with it.
+    if (next == null) {
+      return KeyAnswer.Pass;
+    }
+    // The text first, so that the places the selection is then put at are
+    // places in the text the host has.
+    if (next.text != before.text) {
+      this.#text = next.text;
+      this.refresh();
+      this.#onChange(next.text);
+    }
+    this.select(edited, next.anchor, next.focus);
+    return KeyAnswer.Used;
+  }
+}
