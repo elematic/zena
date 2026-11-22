@@ -15,8 +15,10 @@
   [The root drives the frame](#the-root-drives-the-frame) has it. Pointer events
   reach a component's listeners, driven by `examples/zenafx/button/`, and
   [Implementation status of events](#implementation-status-of-events) says how
-  that differs from the design. Keyboard input, widget-defined events, context,
-  styling, navigation and assets do not exist. The authoring surface in
+  that differs from the design. A template can say how a node looks hovered and
+  pressed, which the host draws without entering the component:
+  [State styles](#state-styles). Keyboard input, widget-defined events, context,
+  style rules, navigation and assets do not exist. The authoring surface in
   [zenafx-widget-authoring.md](./zenafx-widget-authoring.md) does not exist, so a
   widget is written by hand against the protocol.
 - **Date**: 2026-10-02
@@ -59,6 +61,7 @@
       - [Pushed bindings elsewhere](#pushed-bindings-elsewhere)
       - [WIT](#wit)
       - [Implementation status of events](#implementation-status-of-events)
+      - [State styles](#state-styles)
     - [Context: values that inherit down the tree](#context-values-that-inherit-down-the-tree)
   - [Host primitives](#host-primitives)
     - [Layout with measurement inside the solve](#layout-with-measurement-inside-the-solve)
@@ -1022,6 +1025,67 @@ that changes it asks the window for a frame.
 Not built: keyboard input and focus, the scroll wheel, pointer capture, so an
 `up` goes to whatever the pointer is over when the button is released, and a
 budget for a pass of handlers that keep raising events.
+
+#### State styles
+
+A node is **hovered** while the pointer's target is that node or one beneath
+it, and **pressed** from the primary button going down there until it comes up.
+A template says how a node looks while one of these holds, in a `states` list
+beside its `bindings`:
+
+```wit
+record state-style {
+  node: u32,      // the node that changes
+  when: state,    // hovered, pressed
+  of: u32,        // the node whose state is read
+  style: restyle, // fill(box-style), or text(text-style)
+}
+```
+
+The scene applies them when it draws. `examples/zenafx/button/` has a hovered
+and a pressed fill, and `packages/zenafx/tests/button.rs` takes the button
+through both with one event written to the component, the `down` it listens
+for.
+
+A component could derive hover from `enter` and `leave`, and the first version
+of the button did: two listeners, a field, and a hole for the fill. The states
+are resolved where the tree is for four reasons.
+
+- **The scene already has the fact.** It tracks the node under the pointer in
+  order to send `enter` and `leave`. Sending that to a component so that the
+  component can send a style back passes one fact across the boundary twice.
+- **A pointer that has not moved.** A layout change, a scroll or a node
+  appearing can change what is under the pointer with no pointer event. Only
+  the holder of the rectangles can notice, so the scene tests the pointer again
+  after each solve. `a_frame_notices_what_moved_under_a_still_pointer` in
+  `ui/scene.rs` shrinks one button so that the next slides under the pointer.
+- **A slow component.** Handlers run on the component's thread, in order. A
+  component that is busy, or stuck, would freeze its own hover feedback. The
+  scene's is drawn on the window's thread from data.
+- **What comes next.** A transition between two looks, and the cursor's shape,
+  both follow these states and both have to be driven by the frame.
+
+State resolution needs the tree's parent links, its rectangles and its styles,
+so it lives with the tree. That is the host today. If the tree moves to a Zena
+runtime component, as [The scene interface](#the-scene-interface) has it, this
+moves with it. Two costs of that move are specific to the pointer: every
+pointer move would enter a component to be hit-tested, where today a move over
+nodes that hear nothing enters none, and a stuck application would stall the
+runtime component too, since [Serialization across components](#serialization-across-components)
+puts them in one store.
+
+`node` and `of` are separate so that one node can follow another's state: a
+label that changes colour while its button is hovered names itself in `node`
+and position 0 in `of`. Both are positions in one template, so a widget can
+restyle only its own interior. This is the `in-state` fact from
+[Selectors as data](./zenafx-widget-authoring.md#selectors-as-data) with the
+predicate fixed to "this node, or that node of the same template". The rule
+sets designed there would replace the list.
+
+A fill's look is drawn in the frame that finds its state. A text node's look is
+shaped before the solve, because it can change how wide the run is, so a state
+that a frame finds changed is drawn one frame later. A look is the same for
+every instance of a template: no hole writes one yet.
 
 ### Context: values that inherit down the tree
 

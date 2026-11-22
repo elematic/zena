@@ -118,6 +118,42 @@ pub struct Hole {
     pub value: BindingValue,
 }
 
+/// Something true of a node because of where the pointer is.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ComponentType, Lift, Lower)]
+#[component(enum)]
+#[repr(u8)]
+pub enum State {
+    /// The node the pointer is over is this node or one beneath it.
+    #[component(name = "hovered")]
+    Hovered,
+    /// The primary button went down over this node or one beneath it, and
+    /// has not come up since.
+    #[component(name = "pressed")]
+    Pressed,
+}
+
+/// How a node looks while a state holds.
+#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(variant)]
+pub enum Restyle {
+    #[component(name = "fill")]
+    Fill(BoxStyle),
+    #[component(name = "text")]
+    Text(TextStyle),
+}
+
+/// One node's look while a state holds, as a template describes it: `node`
+/// changes, `of` is the node whose state is read, and both are positions in
+/// the template.
+#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
+pub struct StateStyle {
+    pub node: u32,
+    pub when: State,
+    pub of: u32,
+    pub style: Restyle,
+}
+
 /// A template the first time it is used. The id is the guest's.
 #[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
 #[component(record)]
@@ -125,6 +161,7 @@ pub struct TemplateDef {
     pub id: u32,
     pub nodes: Vec<NodeDef>,
     pub bindings: Vec<Binding>,
+    pub states: Vec<StateStyle>,
 }
 
 /// A template the host may not have seen.
@@ -150,6 +187,15 @@ impl TemplateRef {
 struct Template {
     nodes: Vec<NodeDef>,
     bindings: Vec<Binding>,
+    states: Vec<StateStyle>,
+}
+
+/// A [`StateStyle`] on the node it changes, with `of` resolved to the scene
+/// node whose state is read.
+struct Look {
+    when: State,
+    of: u32,
+    style: Restyle,
 }
 
 /// What a node currently shows.
@@ -185,6 +231,16 @@ struct Retained {
     /// What this node hears. Registered by the widget whose interior the node
     /// belongs to, and dropped with that interior.
     listeners: Vec<Listener>,
+    /// The looks this node takes while a state holds, in the template's
+    /// order. The last one whose state holds is the one drawn.
+    looks: Vec<Look>,
+    /// Whether some node's look depends on this node being hovered, and on
+    /// its being pressed. The pointer coming or going here is then worth a
+    /// frame, and anywhere else it is not.
+    watched: [bool; 2],
+    /// The style a text node's run is shaped with when that is one of its
+    /// `looks`. `None` when it is the node's own.
+    shaped_as: Option<TextStyle>,
 }
 
 impl Retained {
@@ -200,6 +256,9 @@ impl Retained {
             interior: None,
             parent: None,
             listeners: Vec::new(),
+            looks: Vec::new(),
+            watched: [false; 2],
+            shaped_as: None,
         }
     }
 
@@ -233,9 +292,17 @@ pub struct Scene {
     /// The node the pointer was over after the last input, which is what the
     /// next input's `enter` and `leave` are worked out against.
     hovered: Option<u32>,
+    /// The node the pointer was over when the primary button went down,
+    /// until the button comes up.
+    pressed: Option<u32>,
     /// Where the pointer last was, for a `leave` that arrives with no
     /// position because the pointer left the window.
     pointer: (f32, f32),
+    /// Whether the pointer is in the window, and so over something.
+    inside: bool,
+    /// `enter` and `leave` calls a frame found it owed: the tree moved under
+    /// a pointer that did not, so no input arrived to deliver them with.
+    owed: Vec<Delivery>,
     /// The node each listener is on, by the listener's id, so that one can
     /// be removed without a search.
     listening: std::collections::HashMap<u32, u32>,
@@ -297,6 +364,7 @@ impl Scene {
             self.templates.entry(def.id).or_insert_with(|| Template {
                 nodes: def.nodes.clone(),
                 bindings: def.bindings.clone(),
+                states: def.states.clone(),
             });
         }
         let id = template.id();
@@ -309,8 +377,9 @@ impl Scene {
             .and_then(|n| n.interior.as_ref())
             .map(|i| i.template);
         if showing != Some(id) {
-            let (nodes, bindings) = (def.nodes.clone(), def.bindings.clone());
-            self.build_interior(node, id, &nodes, &bindings, holes, text);
+            let (nodes, bindings, states) =
+                (def.nodes.clone(), def.bindings.clone(), def.states.clone());
+            self.build_interior(node, id, &nodes, &bindings, &states, holes, text);
             return;
         }
 
@@ -344,7 +413,7 @@ impl Scene {
         let mut children = self.get(slot)?.children.clone();
         while children.len() > count as usize {
             let gone = children.pop().expect("a child to drop");
-            self.stop_hovering(gone);
+            self.forget_pointer_in(gone);
             self.drop_subtree(gone, text);
         }
         while children.len() < count as usize {
@@ -377,6 +446,7 @@ impl Scene {
         template: u32,
         defs: &[NodeDef],
         bindings: &[Binding],
+        states: &[StateStyle],
         holes: &[Hole],
         text: &mut TextEngine,
     ) {
@@ -384,12 +454,12 @@ impl Scene {
         // with the old one, and content sat in the old one's slots.
         let old: Vec<u32> = self.get(node).map(|n| n.children.clone()).unwrap_or_default();
         for child in old {
-            self.stop_hovering(child);
+            self.forget_pointer_in(child);
             self.drop_subtree(child, text);
         }
         if let Some(held) = self.get_mut(node) {
             let gone = held.run.take();
-            // Its listeners go with the rest: they were registered against the
+            // Its listeners and looks go with the rest: they came with the
             // template that is being replaced. Where it hangs does not change.
             let listeners = std::mem::take(&mut held.listeners);
             *held = Retained {
@@ -451,6 +521,30 @@ impl Scene {
                 held.children = children;
             }
         }
+
+        // A state style names two positions in the template. Both are nodes
+        // of this interior now: the one that changes keeps the look, and the
+        // one whose state is read is marked, so that the pointer coming or
+        // going there is known to need a frame.
+        for state in states {
+            let (Some(changes), Some(read)) = (
+                ids.get(state.node as usize).copied(),
+                ids.get(state.of as usize).copied(),
+            ) else {
+                continue;
+            };
+            if let Some(held) = self.get_mut(changes) {
+                held.looks.push(Look {
+                    when: state.when,
+                    of: read,
+                    style: state.style.clone(),
+                });
+            }
+            if let Some(held) = self.get_mut(read) {
+                held.watched[state.when as usize] = true;
+            }
+        }
+
         if let Some(held) = self.get_mut(node) {
             held.interior = Some(Interior {
                 template,
@@ -495,7 +589,12 @@ impl Scene {
             (BindingTarget::Content, BindingValue::Content(content)) => {
                 if let Appearance::Text(text_content) = &mut held.appearance {
                     text_content.content = content.clone();
-                    let style = text_content.style.clone();
+                    // The style the run has now, which is a look's while a
+                    // state holds.
+                    let style = held
+                        .shaped_as
+                        .clone()
+                        .unwrap_or_else(|| text_content.style.clone());
                     // Reshaping under the same id is what keeps the run the
                     // node already has, rather than releasing and allocating.
                     if let Some(run) = held.run {
@@ -510,7 +609,9 @@ impl Scene {
                 if let Appearance::Text(text_content) = &mut held.appearance {
                     text_content.style = style.clone();
                     let content = text_content.content.clone();
-                    if let Some(run) = held.run {
+                    // A run that is showing a look keeps it: this is the
+                    // style for when no state holds.
+                    if let (Some(run), None) = (held.run, &held.shaped_as) {
                         text.update_run(run, &content, style);
                     }
                 }
@@ -547,6 +648,10 @@ impl Scene {
             position_of[*id as usize] = index as u32;
         }
 
+        // Text first, because a look can change how wide a run is and the
+        // solve has to measure the run it is going to draw.
+        self.reshape_for_states(&order, text);
+
         let flat: Vec<FlatNode> = order
             .iter()
             .zip(&children_of)
@@ -577,27 +682,6 @@ impl Scene {
             },
         });
 
-        let mut commands = Vec::new();
-        for (index, id) in order.iter().enumerate() {
-            let rect = rects[index];
-            let node = self.get(*id).expect("a live node");
-            match (&node.appearance, node.run) {
-                (Appearance::Fill(style), _) => commands.push(Command::Quad(Quad {
-                    bounds: rect,
-                    background: style.background,
-                    border_color: style.border_color,
-                    border_width: style.border_width,
-                    corner_radius: style.corner_radius,
-                })),
-                (Appearance::Text(_), Some(run)) => commands.push(Command::Glyphs(Glyphs {
-                    run,
-                    x: rect.x,
-                    y: rect.y,
-                })),
-                _ => {}
-            }
-        }
-
         // Keep where everything went: the pointer is tested against what the
         // last frame showed, which is what the person was pointing at.
         self.rects.clear();
@@ -607,8 +691,116 @@ impl Scene {
         }
         self.painted = order;
 
-        self.dirty = false;
+        // The solve may have moved something under a pointer that has not
+        // moved, or out from under it. No input will arrive to say so, which
+        // makes this the only place it can be noticed.
+        let restyled = self.inside && {
+            let (x, y) = self.pointer;
+            self.hover(self.hit(x, y))
+        };
+
+        let (hovered, pressed) = (self.path(self.hovered), self.path(self.pressed));
+        let mut commands = Vec::new();
+        for (index, id) in self.painted.iter().enumerate() {
+            let rect = rects[index];
+            let node = self.get(*id).expect("a live node");
+            let look = node.looks.iter().rev().find_map(|l| match &l.style {
+                Restyle::Fill(style) if holds(l, &hovered, &pressed) => Some(style),
+                _ => None,
+            });
+            match (look, &node.appearance, node.run) {
+                (Some(style), _, None) | (None, Appearance::Fill(style), _) => {
+                    commands.push(Command::Quad(Quad {
+                        bounds: rect,
+                        background: style.background,
+                        border_color: style.border_color,
+                        border_width: style.border_width,
+                        corner_radius: style.corner_radius,
+                    }))
+                }
+                (_, Appearance::Text(_), Some(run)) => commands.push(Command::Glyphs(Glyphs {
+                    run,
+                    x: rect.x,
+                    y: rect.y,
+                })),
+                _ => {}
+            }
+        }
+
+        // A fill's look is drawn above, in this frame. A text node's is
+        // shaped before the solve, so one that changed just now is a frame
+        // behind and this frame is followed by another.
+        self.dirty = restyled;
         commands
+    }
+
+    /// Shape each text node's run with the look that holds for it, or with
+    /// its own style when none does. Only a node whose look changed since it
+    /// was last shaped costs anything.
+    fn reshape_for_states(&mut self, order: &[u32], text: &mut TextEngine) {
+        let (hovered, pressed) = (self.path(self.hovered), self.path(self.pressed));
+        for id in order {
+            let Some(held) = self.get_mut(*id) else {
+                continue;
+            };
+            let (Some(run), Appearance::Text(own)) = (held.run, &held.appearance) else {
+                continue;
+            };
+            let look = held.looks.iter().rev().find_map(|l| match &l.style {
+                Restyle::Text(style) if holds(l, &hovered, &pressed) => Some(style.clone()),
+                _ => None,
+            });
+            if look != held.shaped_as {
+                text.update_run(run, &own.content, look.as_ref().unwrap_or(&own.style));
+                held.shaped_as = look;
+            }
+        }
+    }
+
+    /// Make `target` the node the pointer is over. Returns whether that
+    /// changes how anything looks.
+    ///
+    /// The `enter` and `leave` calls the change leads to are kept in `owed`
+    /// for whoever delivers them, because a frame can be what finds the
+    /// change and a frame makes no calls.
+    fn hover(&mut self, target: Option<u32>) -> bool {
+        if target == self.hovered {
+            return false;
+        }
+        let crossing = self.crossing(self.hovered, target, self.pointer);
+        self.owed.push(crossing);
+        let restyled = self.watched_between(self.hovered, target, State::Hovered);
+        self.hovered = target;
+        restyled
+    }
+
+    /// Make `target` the node the primary button is down on, or none.
+    /// Returns whether that changes how anything looks.
+    fn press(&mut self, target: Option<u32>) -> bool {
+        if target == self.pressed {
+            return false;
+        }
+        let restyled = self.watched_between(self.pressed, target, State::Pressed);
+        self.pressed = target;
+        restyled
+    }
+
+    /// Whether some look depends on `state` at a node that is on the path
+    /// from one of these targets and not the other, which are the nodes the
+    /// state starts or stops holding for.
+    fn watched_between(&self, old: Option<u32>, new: Option<u32>, state: State) -> bool {
+        let (old, new) = (self.path(old), self.path(new));
+        let watched = |id: &u32| self.get(*id).is_some_and(|n| n.watched[state as usize]);
+        old.iter().filter(|id| !new.contains(id)).any(watched)
+            || new.iter().filter(|id| !old.contains(id)).any(watched)
+    }
+
+    /// The `enter` and `leave` calls frames have found owed since this was
+    /// last asked.
+    pub fn take_owed(&mut self) -> Vec<Delivery> {
+        let mut owed = std::mem::take(&mut self.owed);
+        owed.retain(|d| !d.calls.is_empty());
+        owed
     }
 
     /// Hear `listener`'s kind of event at position `target` of the template
@@ -673,6 +865,9 @@ impl Scene {
     /// Nothing here calls a component. The registrations are the host's, so
     /// which listeners an event reaches is known before anything is entered,
     /// and an input that reaches none returns an empty list.
+    ///
+    /// The input also moves the `hovered` and `pressed` states. When that
+    /// changes how some node looks, `dirty` is set and a frame is owed.
     pub fn pointer(&mut self, input: PointerInput) -> Vec<Delivery> {
         let (position, press) = match input {
             PointerInput::Moved { x, y } => (Some((x, y)), None),
@@ -682,14 +877,21 @@ impl Scene {
         if let Some(at) = position {
             self.pointer = at;
         }
+        self.inside = position.is_some();
         let at = self.pointer;
         let target = position.and_then(|(x, y)| self.hit(x, y));
 
-        let mut deliveries = Vec::new();
-        if target != self.hovered {
-            deliveries.push(self.crossing(self.hovered, target, at));
-            self.hovered = target;
+        let mut restyled = self.hover(target);
+        // The primary button alone presses. A press ends when the button
+        // comes up, wherever the pointer is by then.
+        match press {
+            Some((0, true)) => restyled |= self.press(target),
+            Some((0, false)) => restyled |= self.press(None),
+            _ => {}
         }
+        self.dirty |= restyled;
+
+        let mut deliveries = std::mem::take(&mut self.owed);
         if let (Some(target), Some(_)) = (target, position) {
             let (kind, button) = match press {
                 Some((button, true)) => (PointerKind::Down, button),
@@ -826,13 +1028,17 @@ impl Scene {
             .unwrap_or((0.0, 0.0))
     }
 
-    /// Stop treating anything in `gone`'s subtree as under the pointer, since
-    /// it is about to be dropped and its id reused. What `gone` hung under
-    /// becomes the node the pointer is over, so the next input is compared
-    /// against a node that still exists.
-    fn stop_hovering(&mut self, gone: u32) {
+    /// Stop treating anything in `gone`'s subtree as under the pointer or
+    /// pressed, since it is about to be dropped and its id reused. What
+    /// `gone` hung under takes its place, so the next input, or the next
+    /// frame, is compared against a node that still exists.
+    fn forget_pointer_in(&mut self, gone: u32) {
+        let above = self.get(gone).and_then(|n| n.parent);
         if self.path(self.hovered).contains(&gone) {
-            self.hovered = self.get(gone).and_then(|n| n.parent);
+            self.hovered = above;
+        }
+        if self.path(self.pressed).contains(&gone) {
+            self.pressed = above;
         }
     }
 
@@ -909,6 +1115,17 @@ impl Scene {
     }
 }
 
+/// Whether a look's state holds, given the paths from the node the pointer is
+/// over and from the node the button went down on. A state holds for every
+/// node on its path, which is what makes it true of a button when the pointer
+/// is over the button's label.
+fn holds(look: &Look, hovered: &[u32], pressed: &[u32]) -> bool {
+    match look.when {
+        State::Hovered => hovered.contains(&look.of),
+        State::Pressed => pressed.contains(&look.of),
+    }
+}
+
 /// Unused today; kept so the background a scene draws on has one home.
 pub const PAGE: Color = Color::rgb(1.0, 1.0, 1.0);
 
@@ -975,10 +1192,20 @@ mod tests {
     }
 
     fn fresh(id: u32, nodes: Vec<NodeDef>, bindings: Vec<Binding>) -> TemplateRef {
+        with_states(id, nodes, bindings, vec![])
+    }
+
+    fn with_states(
+        id: u32,
+        nodes: Vec<NodeDef>,
+        bindings: Vec<Binding>,
+        states: Vec<StateStyle>,
+    ) -> TemplateRef {
         TemplateRef::Fresh(TemplateDef {
             id,
             nodes,
             bindings,
+            states,
         })
     }
 
@@ -1794,6 +2021,266 @@ mod tests {
             vec![2],
             "the new node is entered, and was never left"
         );
+    }
+
+    fn released(x: f32, y: f32) -> PointerInput {
+        PointerInput::Button {
+            x,
+            y,
+            button: 0,
+            down: false,
+        }
+    }
+
+    fn filled(r: f32) -> BoxStyle {
+        BoxStyle {
+            background: Some(Color::rgb(r, 0.0, 0.0)),
+            ..BoxStyle::default()
+        }
+    }
+
+    /// The red of each quad's fill, in paint order.
+    fn reds(commands: &[Command]) -> Vec<f32> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::Quad(q) => q.background.map(|c| c.r),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const PLAIN: f32 = 0.1;
+    const HOVERED: f32 = 0.5;
+    const PRESSED: f32 = 0.9;
+
+    fn look(node: u32, when: State, of: u32, style: Restyle) -> StateStyle {
+        StateStyle {
+            node,
+            when,
+            of,
+            style,
+        }
+    }
+
+    /// [`two_buttons`] with a fill on each button, a look for each while it
+    /// is hovered and another while it is pressed, and a hole for the left
+    /// button's layout.
+    fn two_styled_buttons(text: &mut TextEngine) -> (Scene, u32) {
+        let button = || NodeDef {
+            appearance: Appearance::Fill(filled(PLAIN)),
+            ..sized(100.0, 40.0)
+        };
+        let mut scene = Scene::new();
+        let root = scene.root();
+        scene.render(
+            root,
+            &with_states(
+                PANEL,
+                vec![
+                    NodeDef {
+                        layout: Flex {
+                            axis: Axis::Row,
+                            padding: Edges::all(10.0),
+                            ..Flex::default()
+                        },
+                        first_child: 1,
+                        child_count: 2,
+                        ..blank()
+                    },
+                    button(),
+                    button(),
+                ],
+                vec![Binding {
+                    node: 1,
+                    target: BindingTarget::Layout,
+                }],
+                vec![
+                    look(1, State::Hovered, 1, Restyle::Fill(filled(HOVERED))),
+                    look(1, State::Pressed, 1, Restyle::Fill(filled(PRESSED))),
+                    look(2, State::Hovered, 2, Restyle::Fill(filled(HOVERED))),
+                    look(2, State::Pressed, 2, Restyle::Fill(filled(PRESSED))),
+                ],
+            ),
+            &[],
+            text,
+        );
+        scene.draw(window(), text);
+        (scene, root)
+    }
+
+    /// A look is drawn while its state holds and at no other time, with
+    /// nobody called: the template said how the button looks hovered and
+    /// pressed, and the scene knows which of those it is.
+    #[test]
+    fn a_look_is_drawn_while_its_state_holds() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = two_styled_buttons(&mut text);
+        let mut after = |scene: &mut Scene, input| {
+            let deliveries = scene.pointer(input);
+            assert!(deliveries.is_empty(), "nothing listens: {deliveries:?}");
+            assert!(scene.dirty, "{input:?} changed a look and owes a frame");
+            reds(&scene.draw(window(), &mut text))
+        };
+
+        assert_eq!(after(&mut scene, moved(50.0, 30.0)), vec![HOVERED, PLAIN]);
+        assert_eq!(after(&mut scene, pressed(50.0, 30.0)), vec![PRESSED, PLAIN]);
+        assert_eq!(
+            after(&mut scene, moved(150.0, 30.0)),
+            vec![PRESSED, HOVERED],
+            "a press lasts until the button comes up, wherever the pointer goes"
+        );
+        assert_eq!(
+            after(&mut scene, released(150.0, 30.0)),
+            vec![PLAIN, HOVERED]
+        );
+        assert_eq!(after(&mut scene, PointerInput::Left), vec![PLAIN, PLAIN]);
+    }
+
+    /// The pointer moving where no look depends on it owes no frame. The
+    /// panel's padding has no look, and neither does moving about inside one
+    /// button.
+    #[test]
+    fn the_pointer_owes_a_frame_only_where_a_look_depends_on_it() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = two_styled_buttons(&mut text);
+
+        scene.pointer(moved(5.0, 5.0));
+        assert!(!scene.dirty, "the padding looks the same hovered");
+        scene.pointer(moved(50.0, 30.0));
+        assert!(scene.dirty, "the button does not");
+        scene.draw(window(), &mut text);
+        scene.pointer(moved(60.0, 30.0));
+        assert!(!scene.dirty, "it was already hovered");
+        scene.pointer(PointerInput::Button {
+            x: 60.0,
+            y: 30.0,
+            button: 2,
+            down: true,
+        });
+        assert!(!scene.dirty, "only the primary button presses");
+    }
+
+    /// A look can read another node's state. A label takes a look while the
+    /// button it is in is hovered, so it changes when the pointer is on the
+    /// button's padding and not on the label at all.
+    #[test]
+    fn a_look_can_read_the_state_of_another_node() {
+        let quiet = TextStyle::default();
+        let loud = TextStyle {
+            size: quiet.size * 2.0,
+            ..quiet.clone()
+        };
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        scene.render(
+            root,
+            &with_states(
+                DIAL,
+                vec![
+                    NodeDef {
+                        layout: Flex {
+                            padding: Edges::all(10.0),
+                            ..Flex::default()
+                        },
+                        first_child: 1,
+                        child_count: 1,
+                        ..blank()
+                    },
+                    text_node("go"),
+                ],
+                vec![content_binding(1)],
+                vec![look(1, State::Hovered, 0, Restyle::Text(loud.clone()))],
+            ),
+            &[],
+            &mut text,
+        );
+        let run = glyphs(&scene.draw(window(), &mut text))[0].run;
+        let style = |text: &TextEngine| text.get(run).expect("a live run").style().clone();
+        assert_eq!(style(&text), quiet);
+
+        scene.pointer(moved(2.0, 2.0));
+        let hovered = glyphs(&scene.draw(window(), &mut text))[0];
+        assert_eq!(hovered.run, run, "the node is restyled, not rebuilt");
+        assert_eq!(style(&text), loud);
+
+        // A hole written while the look is showing changes what the node
+        // says and leaves how it looks.
+        scene.render(
+            root,
+            &TemplateRef::Known(DIAL),
+            &[content(0, "stop")],
+            &mut text,
+        );
+        scene.draw(window(), &mut text);
+        assert_eq!(text.get(run).expect("a live run").content(), "stop");
+        assert_eq!(style(&text), loud);
+
+        scene.pointer(PointerInput::Left);
+        scene.draw(window(), &mut text);
+        assert_eq!(style(&text), quiet);
+    }
+
+    /// The tree can move under a pointer that does not. The left button
+    /// shrinks to nothing and the right one slides under the pointer, with no
+    /// input to say so: the frame that solves the new layout is what notices,
+    /// draws the right button hovered, and keeps the `leave` and `enter` it
+    /// found owed for whoever delivers them.
+    #[test]
+    fn a_frame_notices_what_moved_under_a_still_pointer() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_styled_buttons(&mut text);
+        scene.listen(
+            root,
+            1,
+            hears(PointerKind::Leave, Scope::Subtree, Phase::Bubble, 1),
+        );
+        scene.listen(
+            root,
+            2,
+            hears(PointerKind::Enter, Scope::Subtree, Phase::Bubble, 2),
+        );
+        scene.pointer(moved(50.0, 30.0));
+        assert_eq!(reds(&scene.draw(window(), &mut text)), vec![HOVERED, PLAIN]);
+        assert!(scene.take_owed().is_empty());
+
+        scene.render(
+            root,
+            &TemplateRef::Known(PANEL),
+            &[Hole {
+                binding: 0,
+                value: BindingValue::Layout(Flex {
+                    width: Length::Px(0.0),
+                    height: Length::Px(40.0),
+                    ..Flex::default()
+                }),
+            }],
+            &mut text,
+        );
+        let drawn = scene.draw(window(), &mut text);
+
+        assert_eq!(reds(&drawn), vec![PLAIN, HOVERED]);
+        assert_eq!(heard(&scene.take_owed()), vec![1, 2]);
+        assert!(
+            scene.dirty,
+            "a look changed in the frame, so one more follows"
+        );
+        scene.draw(window(), &mut text);
+        assert!(!scene.dirty, "and that one finds nothing new");
+    }
+
+    /// A pointer that has left the window is over nothing, so a frame does
+    /// not put it back over whatever is at the place it left from.
+    #[test]
+    fn a_pointer_outside_the_window_is_over_nothing() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = two_styled_buttons(&mut text);
+        scene.pointer(moved(50.0, 30.0));
+        scene.pointer(PointerInput::Left);
+
+        assert_eq!(reds(&scene.draw(window(), &mut text)), vec![PLAIN, PLAIN]);
+        assert!(!scene.dirty);
     }
 
     /// A removed listener hears nothing more, and the others on its node

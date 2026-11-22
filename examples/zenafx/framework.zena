@@ -19,8 +19,9 @@
  * stream, and a loop here reads each stream and calls the handler with what
  * arrives on it.
  */
-import { Node, NodeDef, Binding, BindingValue, Hole, TemplateDef, TemplateRef,
-         TemplateRefKnown, TemplateRefFresh, root, ready } from 'zenafx:host/scene';
+import { Node, NodeDef, Binding, BindingValue, Hole, StateStyle, TemplateDef,
+         TemplateRef, TemplateRefKnown, TemplateRefFresh, root,
+         ready } from 'zenafx:host/scene';
 import { PointerKind, PointerEvent, Delivery, Scope, Phase } from 'zenafx:host/events';
 import { Stream } from 'zena:stream';
 import { Disposable } from 'zena:core';
@@ -41,11 +42,17 @@ export class Template {
   #id: u32;
   #nodes: Array<NodeDef>;
   #bindings: Array<Binding>;
+  /**
+   * How nodes look while the pointer is over something or pressing it. Part
+   * of the template because it is the same for every instance, and because
+   * the host applies it: a widget is not told the pointer came or went.
+   */
+  #states: Array<StateStyle>;
   /** Whether the host has the definition yet. */
   var #sent = false;
 
-  new(nodes: Array<NodeDef>, bindings: Array<Binding>)
-      : #nodes = nodes, #bindings = bindings, #id = freshTemplateId();
+  new(nodes: Array<NodeDef>, bindings: Array<Binding>, states: Array<StateStyle> = [])
+      : #nodes = nodes, #bindings = bindings, #states = states, #id = freshTemplateId();
 
   /**
    * How to name this template in a render: the definition the first time it is
@@ -60,7 +67,8 @@ export class Template {
       return new TemplateRefKnown(this.#id);
     }
     this.#sent = true;
-    return new TemplateRefFresh(new TemplateDef(this.#id, this.#nodes, this.#bindings));
+    return new TemplateRefFresh(
+        new TemplateDef(this.#id, this.#nodes, this.#bindings, this.#states));
   }
 }
 

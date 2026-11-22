@@ -1,16 +1,18 @@
 //! A button that hears the pointer, pressed and hovered with no window.
 //!
 //! `examples/zenafx/button/` is a count, a button that adds one to it, and a
-//! page that sets it back to zero. The button listens on its own box for
-//! `down`, `enter` and `leave`, and the page for `down`. These tests feed the
-//! loader the inputs a window would and look at what the next frame draws.
+//! page that sets it back to zero. The button and the page each listen for
+//! `down`, and the button's template says how its box looks hovered and
+//! pressed. These tests feed the loader the inputs a window would and look at
+//! what the next frame draws.
 //!
 //! What they cover is the path between the two halves that have unit tests of
-//! their own: `ui::scene` works out which listeners an input reaches, and
-//! this checks that each listener's stream carries its events to the handler
-//! the component gave it, that what the handler changes is on the next frame,
-//! that a listener's answer decides whether the next one hears the event, and
-//! that an input reaching no listener does not wake the component.
+//! their own: `ui::scene` works out which listeners an input reaches and which
+//! looks hold, and this checks that each listener's stream carries its events
+//! to the handler the component gave it, that what the handler changes is on
+//! the next frame, that a listener's answer decides whether the next one hears
+//! the event, and that hovering and pressing change the button without waking
+//! the component.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,7 +27,7 @@ use zenafx::ui::types::{Color, Command, FrameEvent, Quad};
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
 
-/// The two fills in `button/main.zena`.
+/// The three fills in `button/main.zena`.
 const RESTING: Color = Color {
     r: 0.20,
     g: 0.38,
@@ -36,6 +38,12 @@ const HOVERED: Color = Color {
     r: 0.31,
     g: 0.49,
     b: 0.95,
+    a: 1.0,
+};
+const PRESSED: Color = Color {
+    r: 0.13,
+    g: 0.27,
+    b: 0.66,
     a: 1.0,
 };
 
@@ -97,11 +105,9 @@ fn count(app: &GuestScene, commands: &[Command]) -> (u32, String) {
 /// listeners.
 ///
 /// The loader hands an input to the component's thread and returns, since a
-/// window does not wait on a component. A test has to. For a press this
-/// waits for the listeners themselves, because each one's answer is what the
-/// component's thread waits for. An `enter` or a `leave` has no answer, so
-/// for those this waits only until the event is written, and
-/// [`fill_becomes`] waits for what the listener does with it.
+/// window does not wait on a component. A test has to. A press waits for the
+/// listeners themselves, because each one's answer is what the component's
+/// thread waits for.
 fn send(app: &mut GuestScene, input: PointerInput) {
     app.pointer(input);
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -125,19 +131,6 @@ fn press(app: &mut GuestScene, (x, y): (f32, f32)) {
             down: true,
         },
     );
-}
-
-/// Draw frames until the button's fill is `wanted`.
-fn fill_becomes(app: &mut GuestScene, wanted: Color, why: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let fill = button_quad(&frame(app)).background;
-        if fill == Some(wanted) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{why}: the fill stayed {fill:?}");
-        std::thread::sleep(Duration::from_millis(1));
-    }
 }
 
 /// A press on the button reaches the handler the button registered, and the
@@ -194,54 +187,76 @@ fn a_press_the_button_stops_does_not_reach_the_page() {
     assert_eq!(app.events_delivered() - before, 1);
 }
 
-/// The button's fill follows the pointer onto it and off again, which is two
-/// listeners each writing one hole.
-#[test]
-fn the_fill_changes_while_the_pointer_is_over_the_button() {
-    let mut app = button();
-    let first = frame(&mut app);
-    assert_eq!(button_quad(&first).background, Some(RESTING));
-
-    move_to(&mut app, on_the_button(&first));
-    fill_becomes(&mut app, HOVERED, "the pointer came onto the button");
-
-    move_to(&mut app, (5.0, 5.0));
-    fill_becomes(&mut app, RESTING, "the pointer moved off the button");
-
-    move_to(&mut app, on_the_button(&first));
-    fill_becomes(&mut app, HOVERED, "the pointer came back");
-    send(&mut app, PointerInput::Left);
-    fill_becomes(&mut app, RESTING, "leaving the window leaves the button");
-}
-
-/// An event is written for each listener an input reaches, and an input that
-/// reaches none wakes nobody.
+/// The button's fill follows the pointer onto it, through a press, and off
+/// again, and the component is not woken for any of it but the press.
 ///
-/// Registrations are the host's, so it knows which nodes hear what before it
-/// writes anything. The pointer crossing the page, and moving about inside
-/// the button once it is there, are both settled without the component.
-/// `main` stays the only call the host ever makes.
+/// The template says how the box looks hovered and pressed, and the host is
+/// the one that knows where the pointer is, so each change is a frame the
+/// input itself asks for. The one event written is the `down` the button
+/// listens for.
 #[test]
-fn an_input_no_listener_hears_does_not_wake_the_component() {
+fn the_fill_follows_the_pointer_without_the_component() {
     let mut app = button();
     let first = frame(&mut app);
     let (x, y) = on_the_button(&first);
+    assert_eq!(button_quad(&first).background, Some(RESTING));
 
-    app.pointer(PointerInput::Moved { x: 5.0, y: 5.0 });
-    app.pointer(PointerInput::Moved { x: 9.0, y: 9.0 });
-    assert_eq!(app.undelivered(), 0, "nothing on the page hears a move");
-    assert_eq!(app.events_delivered(), 0);
-
-    move_to(&mut app, (x, y));
-    assert_eq!(app.events_delivered(), 1, "the button heard `enter`");
-
-    app.pointer(PointerInput::Moved { x: x + 2.0, y });
-    assert_eq!(app.undelivered(), 0, "the button hears no `move`");
-    assert_eq!(app.events_delivered(), 1);
+    assert!(
+        app.pointer(PointerInput::Moved { x, y }),
+        "coming onto the button changes its look, so the input owes a frame"
+    );
+    assert_eq!(button_quad(&frame(&mut app)).background, Some(HOVERED));
+    assert!(
+        !app.pointer(PointerInput::Moved { x: x + 2.0, y }),
+        "moving about inside it changes nothing"
+    );
+    assert_eq!(app.events_delivered(), 0, "hovering is the host's alone");
 
     press(&mut app, (x, y));
-    assert_eq!(app.events_delivered(), 2, "the button heard `down`");
-    assert_eq!(app.guest_entries(), 1, "`main` is the one call");
+    assert_eq!(button_quad(&frame(&mut app)).background, Some(PRESSED));
+    assert_eq!(app.events_delivered(), 1, "the button heard `down`");
+
+    app.pointer(PointerInput::Button {
+        x,
+        y,
+        button: 0,
+        down: false,
+    });
+    assert_eq!(button_quad(&frame(&mut app)).background, Some(HOVERED));
+
+    app.pointer(PointerInput::Moved { x: 5.0, y: 5.0 });
+    assert_eq!(button_quad(&frame(&mut app)).background, Some(RESTING));
+
+    app.pointer(PointerInput::Moved { x, y });
+    app.pointer(PointerInput::Left);
+    assert_eq!(
+        button_quad(&frame(&mut app)).background,
+        Some(RESTING),
+        "leaving the window leaves the button"
+    );
+    assert_eq!(
+        app.events_delivered(),
+        1,
+        "and none of that woke the component"
+    );
+    assert_eq!(
+        app.guest_entries(),
+        1,
+        "`main` is the one call the host makes"
+    );
+}
+
+/// The pointer moving over the page reaches no listener and changes no look,
+/// so it does nothing at all: no event, and no frame.
+#[test]
+fn the_pointer_moving_over_the_page_costs_nothing() {
+    let mut app = button();
+    frame(&mut app);
+
+    assert!(!app.pointer(PointerInput::Moved { x: 5.0, y: 5.0 }));
+    assert!(!app.pointer(PointerInput::Moved { x: 9.0, y: 9.0 }));
+    assert_eq!(app.undelivered(), 0, "nothing on the page hears a move");
+    assert_eq!(app.events_delivered(), 0);
 }
 
 /// A listener that changes the tree asks the window for a frame.
