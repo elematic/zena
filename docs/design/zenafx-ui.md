@@ -2224,3 +2224,7 @@ button then coexist.
 - [zenafx-navigation-and-assets.md](./zenafx-navigation-and-assets.md) —
   how a window names what it shows, and how a component names an image it
   did not compile into itself. Both are unbuilt.
+- [zenafx-libraries-and-examples.md](./zenafx-libraries-and-examples.md) —
+  the Rust libraries to take for input, focus, overlays, text editing and
+  accessibility, and the example programs to write after the milestones
+  above. A proposal.
