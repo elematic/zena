@@ -53,6 +53,7 @@ import {
 } from './github-cache.zena';
 import {RailLayout, StepKind, formatDuration} from 'terminal/layout';
 import {PlanLoadStats, loadOrCollectConfigs} from './plan-cache.zena';
+import {CARGO_CONCURRENCY_GROUP} from './wireit-config.zena';
 import {sha256HexOfString} from 'zena:crypto';
 import {appendShellArgs} from './shell.zena';
 import {stateFromJson, stateToJson} from './state-json.zena';
@@ -401,9 +402,9 @@ function explicitParallelEnv(lookupEnv: (name: String) => String?) {
 
 /**
  * Builds the workspace's `ConcurrencyGroups` tree from built-in defaults
- * (`default`, `cache`, `compile -> default`, `test -> default`), root
- * manifest `"concurrencyGroups"`, CLI `-j` / `ZEBRA_PARALLEL`, and per-group
- * `ZEBRA_GROUP_<NAME>` environment overrides.
+ * (`default`, `cache`, `cargo(1) -> default`, `compile -> default`,
+ * `test -> default`), root manifest `"concurrencyGroups"`, CLI `-j` /
+ * `ZEBRA_PARALLEL`, and per-group `ZEBRA_GROUP_<NAME>` environment overrides.
  */
 async function resolveWorkspaceConcurrencyGroups(
   root: String,
@@ -419,6 +420,10 @@ async function resolveWorkspaceConcurrencyGroups(
     CACHE_CONCURRENCY_GROUP => new ConcurrencyGroupConfig(
       DEFAULT_CACHE_GROUP_LIMIT,
       null,
+    ),
+    CARGO_CONCURRENCY_GROUP => new ConcurrencyGroupConfig(
+      1,
+      DEFAULT_CONCURRENCY_GROUP,
     ),
     COMPILE_CONCURRENCY_GROUP => ConcurrencyGroupConfig.childOf(
       DEFAULT_CONCURRENCY_GROUP,

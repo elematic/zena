@@ -1,0 +1,137 @@
+/**
+ * TOML 1.0 value representation and parse error type.
+ */
+
+/** Raised when input is not valid TOML 1.0. */
+export class TomlParseError extends Error {
+  line: i32;
+  column: i32;
+
+  new(message: String, this.line, this.column)
+      : super(
+          `${message} (line ${i32ToString(line)}, column ${i32ToString(column)})`,
+        );
+}
+
+/** A parsed TOML 1.0 value. */
+export sealed class TomlValue {
+  case TomlString, TomlInt, TomlFloat, TomlBool, TomlDateTime, TomlArray, TomlTable
+}
+
+/** A TOML string value. */
+export final class TomlString(value: String) extends TomlValue
+
+/** A TOML 64-bit signed integer value. */
+export final class TomlInt(value: i64) extends TomlValue
+
+/** A TOML 64-bit floating-point value. */
+export final class TomlFloat(value: f64) extends TomlValue
+
+/** A TOML boolean value. */
+export final class TomlBool(value: boolean) extends TomlValue
+
+/**
+ * A TOML date or time value, preserving its raw RFC 3339 / local text.
+ * `kind` is `'offset-datetime'`, `'local-datetime'`, `'local-date'`, or `'local-time'`.
+ */
+export final class TomlDateTime(raw: String, kind: String) extends TomlValue
+
+/** An ordered TOML array. */
+export final class TomlArray extends TomlValue {
+  #items = new GrowableArray<TomlValue>();
+
+  length: i32 {
+    get { return this.#items.length; }
+  }
+
+  operator [](index: i32): TomlValue {
+    return this.#items[index];
+  }
+
+  push(value: TomlValue): void {
+    this.#items.push(value);
+  }
+
+  items(): Array<TomlValue> {
+    return this.#items;
+  }
+}
+
+/** An insertion-ordered TOML table. */
+export final class TomlTable extends TomlValue {
+  #fields = new Map<String, TomlValue>.ordered();
+
+  size: i32 {
+    get { return this.#fields.size; }
+  }
+
+  has(key: String): boolean {
+    return this.#fields.has(key);
+  }
+
+  operator [](key: String): TomlValue? {
+    if (let (true, value) = this.#fields.get(key)) {
+      return value;
+    }
+    return null;
+  }
+
+  get(key: String): TomlValue? {
+    return this[key];
+  }
+
+  operator []=(key: String, value: TomlValue): void {
+    this.#fields[key] = value;
+  }
+
+  forEach(callback: (key: String, value: TomlValue) => void): void {
+    this.#fields.forEach(callback);
+  }
+
+  keys(): Array<String> {
+    let out = new GrowableArray<String>();
+    this.#fields.forEach((k, _) => {
+      out.push(k);
+    });
+    return out;
+  }
+
+  getString(key: String): String? {
+    let v = this[key];
+    return if (v is TomlString) v.value else null;
+  }
+
+  getInt(key: String): inline (true, i64) | inline (false, _) {
+    let v = this[key];
+    if (v is TomlInt) {
+      return (true, v.value);
+    }
+    return (false, _);
+  }
+
+  getFloat(key: String): inline (true, f64) | inline (false, _) {
+    let v = this[key];
+    if (v is TomlFloat) {
+      return (true, v.value);
+    }
+    return (false, _);
+  }
+
+  getBool(key: String): inline (true, boolean) | inline (false, _) {
+    let v = this[key];
+    if (v is TomlBool) {
+      return (true, v.value);
+    }
+    return (false, _);
+  }
+
+  getTable(key: String): TomlTable? {
+    let v = this[key];
+    return if (v is TomlTable) v else null;
+  }
+
+  getArray(key: String): TomlArray? {
+    let v = this[key];
+    return if (v is TomlArray) v else null;
+  }
+}
