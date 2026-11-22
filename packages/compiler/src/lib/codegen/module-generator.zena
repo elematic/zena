@@ -76,6 +76,42 @@ import {
   defaultImportedStringConstants, targetEmitsComponent, targetUsesJsStrings
 } from '../targets.zena';
 
+/**
+ * Where each run of `size` bytes, one to three, first occurs in a
+ * buffer that only grows: what the string-literal segment asks for
+ * every literal shorter than its four-byte index covers. Scanning the
+ * segment for each of them was 4% of a compile of the CLI module.
+ */
+final class FirstOccurrences {
+  size: i32;
+  #first = new HashMap<i32, i32>();
+  /** Runs that start below this offset are in `#first`. */
+  var #indexed = 0;
+
+  new(this.size);
+
+  /** The first offset of `s`, which is `size` bytes long, or -1. */
+  find(bytes: ByteBuffer, s: String): i32 {
+    let {size} = this;
+    while (this.#indexed + size <= bytes.length) {
+      let at = this.#indexed;
+      var key = 0;
+      for (let j in 0..size) {
+        key = key | (bytes.getByte(at + j) << (8 * j));
+      }
+      if (!this.#first.has(key)) {
+        this.#first[key] = at;
+      }
+      this.#indexed = at + 1;
+    }
+    var wanted = 0;
+    for (let j in 0..size) {
+      wanted = wanted | (s.getByteAt(j) << (8 * j));
+    }
+    return this.#first.get(wanted) ?? -1;
+  }
+}
+
 export final class ModuleGenerator {
   program: Program;
   emitter: WasmEmitter;
@@ -481,6 +517,11 @@ export final class ModuleGenerator {
         // same offset the full scan would have found.
         let accumulatedBytes = new ByteBuffer();
         let windowIndex = new Map<i32, GrowableArray<i32>>();
+        // A literal shorter than a window is looked up by its own bytes.
+        let shortRuns = [
+          new FirstOccurrences(1), new FirstOccurrences(2),
+          new FirstOccurrences(3),
+        ];
         // Window starts below this offset are indexed; it trails the end of
         // the buffer by up to 3 bytes so windows spanning an append
         // boundary are indexed once the bytes after them exist.
@@ -492,20 +533,7 @@ export final class ModuleGenerator {
           if (sLen == 0) {
             foundOffset = 0;
           } else if (sLen < 4) {
-            let accumLen = accumulatedBytes.length;
-            for (var i = 0; i <= accumLen - sLen; i += 1) {
-              var match = true;
-              for (var j = 0; j < sLen; j += 1) {
-                if (accumulatedBytes.getByte(i + j) != s.getByteAt(j)) {
-                  match = false;
-                  break;
-                }
-              }
-              if (match) {
-                foundOffset = i;
-                break;
-              }
-            }
+            foundOffset = shortRuns[sLen - 1].find(accumulatedBytes, s);
           } else {
             let key = s.getByteAt(0) | (s.getByteAt(1) << 8) | (s.getByteAt(2) << 16) | (s.getByteAt(3) << 24);
             if (let (true, positions) = windowIndex.get(key)) {
