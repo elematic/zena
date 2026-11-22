@@ -8,7 +8,7 @@
 
 import {Future} from 'zena:async';
 import {HashSet} from 'zena:collections';
-import {Box, StringBuilder, join} from 'zena:core';
+import {Box, join} from 'zena:core';
 import {hasMagic} from 'zena:glob';
 import {JsonArray, JsonObject, JsonValue} from 'zena:json';
 import {joinWorkspace} from './fs-util.zena';
@@ -21,113 +21,12 @@ import {appendShellArgs} from './shell.zena';
 import {
   ConfigError,
   ScriptConfig,
+  TS_BUILD_RULE_TYPE,
   parseJsonObject,
   stringList,
 } from './wireit-config.zena';
 
-/** Rule `type` identifier for declarative TypeScript (`tsc`) builds. */
-export let TS_BUILD_RULE_TYPE = 'ts:build';
-
-/**
- * Strips trailing commas before `}` or `]` outside strings and comments so
- * JSONC `tsconfig.json` files with trailing commas parse via `zena:json`.
- */
-function stripTrailingCommas(text: String) {
-  let sb = new StringBuilder(text.length);
-  let n = text.length;
-  var i = 0;
-  var inString = false;
-  var inLineComment = false;
-  var inBlockComment = false;
-  while (i < n) {
-    let b = text.getByteAt(i);
-    if (inLineComment) {
-      sb.appendByte(b);
-      if (b == 10) {
-        inLineComment = false;
-      }
-      i += 1;
-      continue;
-    }
-    if (inBlockComment) {
-      sb.appendByte(b);
-      if (b == 42 && i + 1 < n && text.getByteAt(i + 1) == 47) {
-        sb.appendByte(47);
-        inBlockComment = false;
-        i += 2;
-      } else {
-        i += 1;
-      }
-      continue;
-    }
-    if (inString) {
-      sb.appendByte(b);
-      if (b == 92 && i + 1 < n) {
-        sb.appendByte(text.getByteAt(i + 1));
-        i += 2;
-      } else {
-        if (b == 34) {
-          inString = false;
-        }
-        i += 1;
-      }
-      continue;
-    }
-    if (b == 34) {
-      inString = true;
-      sb.appendByte(b);
-      i += 1;
-      continue;
-    }
-    if (b == 47 && i + 1 < n) {
-      let next = text.getByteAt(i + 1);
-      if (next == 47) {
-        inLineComment = true;
-        sb.appendByte(47);
-        sb.appendByte(47);
-        i += 2;
-        continue;
-      }
-      if (next == 42) {
-        inBlockComment = true;
-        sb.appendByte(47);
-        sb.appendByte(42);
-        i += 2;
-        continue;
-      }
-    }
-    if (b == 44) {
-      // Look ahead past whitespace and comments for `}` (125) or `]` (93).
-      var j = i + 1;
-      while (j < n) {
-        let c = text.getByteAt(j);
-        if (c == 32 || c == 9 || c == 10 || c == 13) {
-          j += 1;
-        } else if (c == 47 && j + 1 < n && text.getByteAt(j + 1) == 47) {
-          j += 2;
-          while (j < n && text.getByteAt(j) != 10) {
-            j += 1;
-          }
-        } else if (c == 47 && j + 1 < n && text.getByteAt(j + 1) == 42) {
-          j += 2;
-          while (j + 1 < n && !(text.getByteAt(j) == 42 && text.getByteAt(j + 1) == 47)) {
-            j += 1;
-          }
-          j += 2;
-        } else {
-          break;
-        }
-      }
-      if (j < n && (text.getByteAt(j) == 125 || text.getByteAt(j) == 93)) {
-        i += 1;
-        continue;
-      }
-    }
-    sb.appendByte(b);
-    i += 1;
-  }
-  return sb.toString();
-}
+export {TS_BUILD_RULE_TYPE} from './wireit-config.zena';
 
 function parentDir(wsPath: String) {
   var slash = -1;
@@ -349,7 +248,7 @@ async function loadTsConfigRecursive(
   if (out.seenConfigs.add(wsPath)) {
     out.configFiles.push(wsPath);
   }
-  let obj = parseJsonObject(wsPath, stripTrailingCommas(text));
+  let obj = parseJsonObject(wsPath, text);
   let curDir = parentDir(wsPath);
 
   let rawExtends = obj['extends'];
