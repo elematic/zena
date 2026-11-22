@@ -683,6 +683,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
 
         this.reachedFunctionsSet.add(func);
+        this.#reachedInOrder.push(func);
         func.isReached = true;
 
         // A reached function is a lowered function, and lowering reads
@@ -2539,6 +2540,46 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   /**
+   * `#reachedSlotKeys(false)`, kept from one call to the next: the keys
+   * of the functions reached since the last call are added to the set
+   * the earlier calls built. A slot's owner key is fixed once it is
+   * cached, so a function's key is the same whenever it is asked for,
+   * until `#forgetSlotOwners` empties the cache and this set with it.
+   * `#fillReachedSlots` asks after every drain of the queues, and
+   * building the set over every reached function each time was 2% of a
+   * compile. The caller must not change the set.
+   */
+  #reachedSlotKeysSoFar(): HashSet<String> {
+    let keys = this.#slotKeysSoFar;
+    let reached = this.#reachedInOrder;
+    for (let at in this.#slotKeysCounted..reached.length) {
+      let f = reached[at];
+      let {classType, methodName} = f;
+      if (classType == null || methodName == null || f.isStatic) {
+        continue;
+      }
+      let key = this.#slotOwnerKey(classType, methodName);
+      if (key != null) {
+        keys.add(key);
+      }
+    }
+    this.#slotKeysCounted = reached.length;
+    return keys;
+  }
+
+  /** Empties the slot-owner cache, for when a class's slot list changed. */
+  #forgetSlotOwners(): void {
+    this.#slotOwnerCache.clear();
+    this.#slotKeysSoFar = new Set<String>();
+    this.#slotKeysCounted = 0;
+  }
+
+  /** The reached functions, in the order they were reached. */
+  #reachedInOrder = new Array<WasmFunction>();
+  var #slotKeysSoFar = new Set<String>();
+  var #slotKeysCounted = 0;
+
+  /**
    * Reaches, for every class with a vtable global, the function in
    * each slot whose method is reached somewhere in the slot's
    * hierarchy. A call through a base-typed receiver reaches the base's
@@ -2589,7 +2630,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
     this.#pendingStaticTargets = unresolved;
-    let keys = this.#reachedSlotKeys(false);
+    let keys = this.#reachedSlotKeysSoFar();
     for (let cPair in this.wasm.classInfos) {
       let info = cPair.value;
       let {vtableGlobal} = info;
@@ -3542,7 +3583,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     if (updatedClasses.length == 0) {
       return false;
     }
-    this.#slotOwnerCache.clear();
+    this.#forgetSlotOwners();
     for (let classType in updatedClasses) {
       this.#rebuildClassVTableOrder(classType);
     }
