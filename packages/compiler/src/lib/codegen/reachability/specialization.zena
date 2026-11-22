@@ -64,6 +64,14 @@ export final class Specializer implements SpecializerInterface {
   /** Fields baked erased before their class type existed; see ErasedFieldBake. */
   #erasedFieldBakes = new Array<ErasedFieldBake>();
 
+  /**
+   * The class types `instantiateClassType` has found instantiated, by
+   * `uid`. It is asked about every class a traversal mentions, nearly
+   * always one it has seen, and answering from the type's key means
+   * testing the type for concreteness and erasure and hashing a string.
+   */
+  #instantiatedTypes = new Set<i32>();
+
   new(this.pass);
 
   /**
@@ -267,6 +275,11 @@ export final class Specializer implements SpecializerInterface {
     if (!this.pass.isRtaActive) {
       return;
     }
+    // An instantiated class stays one, so a type seen instantiated
+    // before returns as it would below, without the tests.
+    if (this.#instantiatedTypes.has(classType.uid)) {
+      return;
+    }
     if (!isConcrete(classType) || containsErasedType(classType as Type)) {
       return;
     }
@@ -274,12 +287,14 @@ export final class Specializer implements SpecializerInterface {
     let typeLowerer = this.pass.typeLowerer;
     let cKey = getClassKey(classType) as String;
     if (this.pass.instantiatedSpecializedClasses.has(cKey)) {
+      this.#instantiatedTypes.add(classType.uid);
       return;
     }
     if (this.pass.instantiationClosed) {
       throw new Error("class instantiated after layout began: " + cKey);
     }
     this.pass.instantiatedSpecializedClasses.add(cKey);
+    this.#instantiatedTypes.add(classType.uid);
     cha.registerInstantiatedClass(classType);
     // Values of this specialization exist, whoever first mentioned it:
     // list it, so a member reached on the generic later fans out over
