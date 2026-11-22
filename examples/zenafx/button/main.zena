@@ -1,0 +1,183 @@
+/**
+ * A count, and a button that adds one to it.
+ *
+ * The widgets example installs a tree and the counter example writes to one on
+ * a timer. This one is written to by the person using it: pressing the button
+ * changes the count above it, the button changes colour while the pointer is
+ * over it, and pressing anywhere else on the page sets the count back to zero.
+ *
+ * Nothing here looks for the pointer. The button says which events its box
+ * hears, the host works out what the pointer is over from the tree it already
+ * holds, and the component is woken only when one of those events happens.
+ * Moving the pointer across the rest of the window costs it nothing.
+ *
+ * The page and the button both hear a press. A press on the button is offered
+ * to the button first, which is nearer the pointer, and the button ends it
+ * there, so the page hears only the presses that land beside the button.
+ */
+import { Color, BoxStyle, TextStyle, Flex, Edges, Axis, Justify, Align,
+         LengthPercent, LengthAuto } from 'zenafx:ui/style';
+import { NodeDef, AppearanceNothing, AppearanceFill, AppearanceText, TextContent,
+         Binding, BindingTarget, BindingValueContent,
+         BindingValueStyle } from 'zenafx:host/scene';
+import { PointerKind } from 'zenafx:host/events';
+import { Template, Rendering, Widget, shows, holds, on, runApp } from '../framework.zena';
+import { some, none } from 'zena:core';
+
+let page = new Color(0.98, 0.98, 0.99, 1.0);
+let ink = new Color(0.10, 0.11, 0.13, 1.0);
+let paper = new Color(1.0, 1.0, 1.0, 1.0);
+let resting = new Color(0.20, 0.38, 0.86, 1.0);
+let hovered = new Color(0.31, 0.49, 0.95, 1.0);
+
+let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
+let restingStyle = new BoxStyle(some(resting), none, 0.0, 10.0, 1.0);
+let hoveredStyle = new BoxStyle(some(hovered), none, 0.0, 10.0, 1.0);
+let countStyle = new TextStyle('system-ui', 64.0, 600 as u16, false, ink);
+let labelStyle = new TextStyle('system-ui', 16.0, 600 as u16, false, paper);
+
+let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
+
+/** The page's own box: fills the window and centres a column in it. */
+let pageLayout = new Flex(Axis.Column, Justify.Center, Align.Center, 24.0,
+    noPadding, new LengthPercent(100.0), new LengthPercent(100.0), 0.0, 1.0);
+
+/** The button's own box: as large as its label and the padding round it. */
+let buttonLayout = new Flex(Axis.Column, Justify.Center, Align.Center, 0.0,
+    new Edges(12.0, 24.0, 12.0, 24.0), new LengthAuto(), new LengthAuto(), 0.0, 1.0);
+
+/** A line of text, and the slot: sized by what is in it. */
+let contentLayout = new Flex(Axis.Column, Justify.Start, Align.Start, 0.0,
+    noPadding, new LengthAuto(), new LengthAuto(), 0.0, 1.0);
+
+/** The count: one node, which is the text, and one hole, which is what it says. */
+let readoutTemplate = new Template(
+  [new NodeDef(contentLayout, new AppearanceText(new TextContent('', countStyle)),
+               0 as u32, 0 as u32, false)],
+  [new Binding(0 as u32, BindingTarget.Content)],
+);
+
+/** Shows a number. Told a new one by whoever owns it. */
+class Readout extends Widget {
+  var #count: i32 = 0;
+
+  show(count: i32): void {
+    this.#count = count;
+    this.refresh();
+  }
+
+  build(): Rendering {
+    return shows(readoutTemplate, [new BindingValueContent(`${this.#count}`)]);
+  }
+}
+
+/**
+ * The button's template: node 0 is its own box and node 1 its label.
+ *
+ * Two holes. The fill is one because it changes while the pointer is over the
+ * button, and the label because two buttons should be able to share this.
+ */
+let buttonTemplate = new Template(
+  [
+    new NodeDef(buttonLayout, new AppearanceFill(restingStyle), 1 as u32, 1 as u32, false),
+    new NodeDef(contentLayout, new AppearanceText(new TextContent('', labelStyle)),
+                0 as u32, 0 as u32, false),
+  ],
+  [new Binding(0 as u32, BindingTarget.Style),
+   new Binding(1 as u32, BindingTarget.Content)],
+);
+
+/**
+ * A button: a label, what to do when it is pressed, and whether the pointer is
+ * over it.
+ *
+ * It knows nothing about a count. What a press means is its owner's, handed in
+ * as a function, so the button never refers to what contains it.
+ */
+class Button extends Widget {
+  #label: String;
+  #pressed: () => void;
+  var #hovered = false;
+
+  new(label: String, pressed: () => void) : #label = label, #pressed = pressed, super();
+
+  build(): Rendering {
+    let fill = if (this.#hovered) hoveredStyle else restingStyle;
+    // Each of these hears the button's whole subtree. A press on the label is
+    // a press on the button, and the pointer moving from the padding onto the
+    // label has not left it.
+    return shows(buttonTemplate, [
+      new BindingValueStyle(fill),
+      new BindingValueContent(this.#label)
+    ]).hearing([
+      on(PointerKind.Down, () => {
+        this.#pressed();
+      }),
+      on(PointerKind.Enter, () => {
+        this.#hover(true);
+      }),
+      on(PointerKind.Leave, () => {
+        this.#hover(false);
+      })
+    ]);
+  }
+
+  /** One hole changes, so one hole is what crosses: the label is left out. */
+  #hover(over: boolean): void {
+    this.#hovered = over;
+    this.refresh();
+  }
+}
+
+/** The page's template: its own box, and one slot for what is on it. */
+let pageTemplate = new Template(
+  [
+    new NodeDef(pageLayout, new AppearanceFill(pageStyle), 1 as u32, 1 as u32, false),
+    new NodeDef(contentLayout, new AppearanceNothing(), 0 as u32, 0 as u32, true),
+  ],
+  [],
+);
+
+/**
+ * The page: the count, and the button that changes it.
+ *
+ * The count lives here, above both, which is why neither of them needs to know
+ * about the other. A press tells the readout its new number and nothing is
+ * rendered again but the one text node that shows it.
+ *
+ * The page hears a press anywhere in it, the button included, and sets the
+ * count back to zero. It never hears the button's presses all the same: the
+ * button handles them, and a handled event goes no further up.
+ */
+class Page extends Widget {
+  var #count: i32 = 0;
+  #readout = new Readout();
+  /** Made on the first render. See the same field in `counter/main.zena`. */
+  var #content: Array<Widget> | null = null;
+
+  build(): Rendering {
+    var content = this.#content;
+    if (content == null) {
+      let made: Array<Widget> = [
+        this.#readout,
+        new Button('Add one', () => {
+          this.#count += 1;
+          this.#readout.show(this.#count);
+        })
+      ];
+      this.#content = made;
+      content = made;
+    }
+    return holds(pageTemplate, [content]).hearing([
+      on(PointerKind.Down, () => {
+        this.#count = 0;
+        this.#readout.show(0);
+      })
+    ]);
+  }
+}
+
+/** The component's entry: build the widget tree and show it. */
+export function main(): void {
+  runApp(new Page());
+}

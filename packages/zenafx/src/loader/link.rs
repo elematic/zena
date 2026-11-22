@@ -8,14 +8,17 @@
 
 use anyhow::Result;
 use wasmtime::StoreContextMut;
-use wasmtime::component::{Linker, Resource, ResourceTable, ResourceType};
+use wasmtime::component::{Linker, Resource, ResourceTable, ResourceType, StreamReader};
 use wasmtime_wasi::clocks::{WasiClocksCtx, WasiClocksCtxView, WasiClocksView};
 
 use crate::ui::layout::{measure_text, solve_with};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::listeners::{HostReply, Listeners, Replies};
+use crate::ui::events::{Listener, Phase, PointerKind, Scope};
 use crate::ui::scene::{Hole, Scene, TemplateRef};
+use crate::ui::surface::Wake;
 use crate::ui::text::TextEngine;
 use crate::ui::types::{Content, Measured, Node, Rect, Size, TextStyle};
 
@@ -55,6 +58,14 @@ pub struct UiHostState {
     /// built is worth drawing. The loader waits for it rather than for the
     /// entry call, which for a component that keeps working never returns.
     pub ready: Arc<AtomicBool>,
+    /// How to ask the window for a frame, once there is a window to ask. The
+    /// component writes the tree from its own thread, at a time of its own
+    /// choosing, so a write is what tells the window a frame is owed.
+    pub wake: Arc<Mutex<Option<Wake>>>,
+    /// The host's end of each stream `node.listen-pointer` handed out.
+    pub listeners: Listeners,
+    /// The replies the component holds and has not answered with yet.
+    pub replies: Replies,
     /// `wasi:clocks`, which is what `zena:time`'s `sleep` parks on. A
     /// component that never sleeps still carries it: the interface is in the
     /// linker either way, and an unused import costs nothing.
@@ -80,8 +91,22 @@ impl UiHostState {
             scene: Arc::new(Mutex::new(Scene::new())),
             guest_entries: Arc::new(AtomicU32::new(0)),
             ready: Arc::new(AtomicBool::new(false)),
+            wake: Arc::new(Mutex::new(None)),
+            listeners: Listeners::default(),
+            replies: Replies::default(),
             clocks: WasiClocksCtx::default(),
             table: ResourceTable::new(),
+        }
+    }
+
+    /// What follows from the component having written the tree: the streams
+    /// of listeners whose nodes the write dropped are ended, and the window
+    /// is asked for a frame, if there is a window.
+    fn changed(&self) {
+        let ended = self.scene.lock().unwrap().take_ended();
+        self.listeners.end(&ended);
+        if let Some(wake) = self.wake.lock().unwrap().as_ref() {
+            wake();
         }
     }
 }
@@ -104,6 +129,24 @@ impl Default for UiHostState {
 pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
     linker.instance("zenafx:ui/style@0.1.0")?;
     linker.instance("zenafx:ui/geometry@0.1.0")?;
+
+    let mut events = linker.instance("zenafx:host/events@0.1.0")?;
+    // Dropping a reply is the answer to the event it came with.
+    events.resource(
+        "reply",
+        ResourceType::host::<HostReply>(),
+        |mut store, reply| {
+            store.data_mut().replies.answer(reply);
+            Ok(())
+        },
+    )?;
+    events.func_wrap(
+        "[method]reply.stop-propagation",
+        |mut caller: StoreContextMut<'_, UiHostState>, (reply,): (Resource<HostReply>,)| {
+            caller.data_mut().replies.stop_propagation(reply.rep());
+            Ok(())
+        },
+    )?;
 
     let mut text = linker.instance("zenafx:host/text@0.1.0")?;
     text.func_wrap(
@@ -175,9 +218,11 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
          (node, template, holes): (Resource<HostNode>, TemplateRef, Vec<Hole>)| {
             let data = caller.data_mut();
             let (scene, text) = (data.scene.clone(), data.text.clone());
-            let mut scene = scene.lock().unwrap();
-            let mut text = text.lock().unwrap();
-            scene.render(node.rep(), &template, &holes, &mut text);
+            scene
+                .lock()
+                .unwrap()
+                .render(node.rep(), &template, &holes, &mut text.lock().unwrap());
+            data.changed();
             Ok(())
         },
     )?;
@@ -187,17 +232,52 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
          (node, slot, count): (Resource<HostNode>, u32, u32)| {
             let data = caller.data_mut();
             let (scene, text) = (data.scene.clone(), data.text.clone());
-            let mut scene = scene.lock().unwrap();
-            let mut text = text.lock().unwrap();
+            let children =
+                scene
+                    .lock()
+                    .unwrap()
+                    .content(node.rep(), slot, count, &mut text.lock().unwrap());
+            data.changed();
             // A slot a template never declared is a guest bug, and there is
             // nothing to hand back that would be less wrong than a trap.
-            match scene.content(node.rep(), slot, count, &mut text) {
+            match children {
                 Some(ids) => Ok((ids
                     .into_iter()
                     .map(Resource::<HostNode>::new_own)
                     .collect::<Vec<_>>(),)),
                 None => Err(wasmtime::Error::msg(format!("a node has no slot {slot}"))),
             }
+        },
+    )?;
+    scene.func_wrap(
+        "[method]node.listen-pointer",
+        |mut caller: StoreContextMut<'_, UiHostState>,
+         (node, target, kind, scope, phase): (
+            Resource<HostNode>,
+            u32,
+            PointerKind,
+            Scope,
+            Phase,
+        )| {
+            let data = caller.data_mut();
+            let scene = data.scene.clone();
+            let (id, stream) = data.listeners.open(scene.clone());
+            let listener = Listener {
+                kind,
+                scope,
+                phase,
+                id,
+            };
+            // The same reasoning as a slot that was never declared: a
+            // listener on a node that is not there would never hear anything,
+            // and the guest would not find out why. Dropping `stream` on the
+            // way out takes the listener's channel with it.
+            if !scene.lock().unwrap().listen(node.rep(), target, listener) {
+                return Err(wasmtime::Error::msg(format!(
+                    "a node shows no template with a position {target} to listen at"
+                )));
+            }
+            Ok((StreamReader::new(&mut caller, stream)?,))
         },
     )?;
     scene.func_wrap(

@@ -22,11 +22,14 @@
 
 use wasmtime::component::{ComponentType, Lift, Lower};
 
+use super::events::{
+    Call, Delivery, Listener, Phase, PointerEvent, PointerInput, PointerKind, Scope,
+};
 use super::layout::{measure_text, solve_with};
 use super::text::TextEngine;
 use super::types::{
-    BoxStyle, Color, Command, Content, Flex, Glyphs, Length, Measured, Node as FlatNode, Quad, Size,
-    TextStyle,
+    BoxStyle, Color, Command, Content, Flex, Glyphs, Length, Measured, Node as FlatNode, Quad,
+    Rect, Size, TextStyle,
 };
 
 /// A node of the retained tree, as a component sends it.
@@ -176,6 +179,12 @@ struct Retained {
     /// node with none is one nobody has rendered into yet — a fresh slot's
     /// content, or the root before the first render.
     interior: Option<Interior>,
+    /// The node this one hangs under, slots included, which makes the path
+    /// an event travels the tree's own and not layout's. `None` for the root.
+    parent: Option<u32>,
+    /// What this node hears. Registered by the widget whose interior the node
+    /// belongs to, and dropped with that interior.
+    listeners: Vec<Listener>,
 }
 
 impl Retained {
@@ -189,6 +198,16 @@ impl Retained {
             children: Vec::new(),
             is_slot: false,
             interior: None,
+            parent: None,
+            listeners: Vec::new(),
+        }
+    }
+
+    /// An empty node hanging under `parent`.
+    fn under(parent: u32) -> Self {
+        Self {
+            parent: Some(parent),
+            ..Self::empty()
         }
     }
 }
@@ -204,6 +223,25 @@ pub struct Scene {
     templates: std::collections::HashMap<u32, Template>,
     /// Set when the tree changed, so the window knows a frame is owed.
     pub dirty: bool,
+    /// Where the last solve put each node, indexed by node id. `None` for a
+    /// slot, which has no box, and for a node made since that solve, which
+    /// the pointer cannot be over until a frame has placed it.
+    rects: Vec<Option<Rect>>,
+    /// The nodes the last frame painted, in the order it painted them. A hit
+    /// test reads it backwards, so the node it finds is the one on top.
+    painted: Vec<u32>,
+    /// The node the pointer was over after the last input, which is what the
+    /// next input's `enter` and `leave` are worked out against.
+    hovered: Option<u32>,
+    /// Where the pointer last was, for a `leave` that arrives with no
+    /// position because the pointer left the window.
+    pointer: (f32, f32),
+    /// The node each listener is on, by the listener's id, so that one can
+    /// be removed without a search.
+    listening: std::collections::HashMap<u32, u32>,
+    /// Listeners whose nodes have gone since this was last taken. Whoever
+    /// holds the other end of each one ends it.
+    ended: Vec<u32>,
 }
 
 impl Scene {
@@ -306,10 +344,11 @@ impl Scene {
         let mut children = self.get(slot)?.children.clone();
         while children.len() > count as usize {
             let gone = children.pop().expect("a child to drop");
+            self.stop_hovering(gone);
             self.drop_subtree(gone, text);
         }
         while children.len() < count as usize {
-            children.push(self.alloc(Retained::empty()));
+            children.push(self.alloc(Retained::under(slot)));
         }
         self.get_mut(slot)?.children = children.clone();
         self.dirty = true;
@@ -345,14 +384,22 @@ impl Scene {
         // with the old one, and content sat in the old one's slots.
         let old: Vec<u32> = self.get(node).map(|n| n.children.clone()).unwrap_or_default();
         for child in old {
+            self.stop_hovering(child);
             self.drop_subtree(child, text);
         }
         if let Some(held) = self.get_mut(node) {
             let gone = held.run.take();
-            *held = Retained::empty();
+            // Its listeners go with the rest: they were registered against the
+            // template that is being replaced. Where it hangs does not change.
+            let listeners = std::mem::take(&mut held.listeners);
+            *held = Retained {
+                parent: held.parent,
+                ..Retained::empty()
+            };
             if let Some(run) = gone {
                 text.release_run(run);
             }
+            self.end(&listeners);
         }
         if defs.is_empty() {
             self.dirty = true;
@@ -395,6 +442,11 @@ impl Scene {
                 ..def.first_child as usize + def.child_count as usize)
                 .filter_map(|c| ids.get(c).copied())
                 .collect();
+            for child in &children {
+                if let Some(held) = self.get_mut(*child) {
+                    held.parent = Some(ids[index]);
+                }
+            }
             if let Some(held) = self.get_mut(ids[index]) {
                 held.children = children;
             }
@@ -545,8 +597,243 @@ impl Scene {
                 _ => {}
             }
         }
+
+        // Keep where everything went: the pointer is tested against what the
+        // last frame showed, which is what the person was pointing at.
+        self.rects.clear();
+        self.rects.resize(self.nodes.len(), None);
+        for (index, id) in order.iter().enumerate() {
+            self.rects[*id as usize] = Some(rects[index]);
+        }
+        self.painted = order;
+
         self.dirty = false;
         commands
+    }
+
+    /// Hear `listener`'s kind of event at position `target` of the template
+    /// `node` shows. Position 0 is `node` itself.
+    ///
+    /// Returns whether there was such a position: a node that shows nothing
+    /// yet has none, and a guest naming one has a bug.
+    ///
+    /// The listener lasts until [`Scene::unlisten`] removes it or the node
+    /// it is on goes away, which [`Scene::take_ended`] reports.
+    pub fn listen(&mut self, node: u32, target: u32, listener: Listener) -> bool {
+        let Some(id) = self
+            .get(node)
+            .and_then(|n| n.interior.as_ref())
+            .and_then(|i| i.nodes.get(target as usize).copied())
+        else {
+            return false;
+        };
+        match self.get_mut(id) {
+            Some(held) => {
+                held.listeners.push(listener);
+                self.listening.insert(listener.id, id);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Remove the listener with this id. Nothing happens if it has
+    /// already been removed.
+    pub fn unlisten(&mut self, id: u32) {
+        let Some(node) = self.listening.remove(&id) else {
+            return;
+        };
+        if let Some(held) = self.get_mut(node) {
+            held.listeners.retain(|l| l.id != id);
+        }
+    }
+
+    /// The ids of the listeners that ended, since this was last asked,
+    /// because the node they were on went away.
+    pub fn take_ended(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.ended)
+    }
+
+    /// Record that these listeners' node has gone.
+    fn end(&mut self, listeners: &[Listener]) {
+        for listener in listeners {
+            self.listening.remove(&listener.id);
+            self.ended.push(listener.id);
+        }
+    }
+
+    /// What one pointer input leads to: the listeners to call, in order.
+    ///
+    /// The target is the node the last frame painted on top at that point.
+    /// When it differs from the last input's target, every listener whose
+    /// scope stopped containing the target hears `leave` and every one whose
+    /// scope started to hears `enter`. Then the input's own event travels the
+    /// path between the root and the target.
+    ///
+    /// Nothing here calls a component. The registrations are the host's, so
+    /// which listeners an event reaches is known before anything is entered,
+    /// and an input that reaches none returns an empty list.
+    pub fn pointer(&mut self, input: PointerInput) -> Vec<Delivery> {
+        let (position, press) = match input {
+            PointerInput::Moved { x, y } => (Some((x, y)), None),
+            PointerInput::Button { x, y, button, down } => (Some((x, y)), Some((button, down))),
+            PointerInput::Left => (None, None),
+        };
+        if let Some(at) = position {
+            self.pointer = at;
+        }
+        let at = self.pointer;
+        let target = position.and_then(|(x, y)| self.hit(x, y));
+
+        let mut deliveries = Vec::new();
+        if target != self.hovered {
+            deliveries.push(self.crossing(self.hovered, target, at));
+            self.hovered = target;
+        }
+        if let (Some(target), Some(_)) = (target, position) {
+            let (kind, button) = match press {
+                Some((button, true)) => (PointerKind::Down, button),
+                Some((button, false)) => (PointerKind::Up, button),
+                None => (PointerKind::Move, 0),
+            };
+            deliveries.push(self.along_path(target, kind, button, at));
+        }
+        deliveries.retain(|d| !d.calls.is_empty());
+        deliveries
+    }
+
+    /// The node painted last at a point, which is the one on top there.
+    fn hit(&self, x: f32, y: f32) -> Option<u32> {
+        self.painted.iter().rev().copied().find(|id| {
+            self.rects
+                .get(*id as usize)
+                .copied()
+                .flatten()
+                .is_some_and(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+        })
+    }
+
+    /// `node` and everything it hangs under, nearest first, ending at the root.
+    fn path(&self, node: Option<u32>) -> Vec<u32> {
+        let mut path = Vec::new();
+        let mut next = node;
+        while let Some(id) = next {
+            let Some(held) = self.get(id) else {
+                break;
+            };
+            path.push(id);
+            next = held.parent;
+        }
+        path
+    }
+
+    /// The calls for the target changing from `old` to `new`.
+    ///
+    /// A `subtree` listener hears about its node's subtree gaining or losing
+    /// the target, so moving between two children of a button tells the
+    /// button nothing. A `node` listener hears about its own node becoming or
+    /// ceasing to be the target. Leaves come first, nearest the old target
+    /// first, and then enters, nearest the root first.
+    fn crossing(&self, old: Option<u32>, new: Option<u32>, at: (f32, f32)) -> Delivery {
+        let (old_path, new_path) = (self.path(old), self.path(new));
+        let mut calls = Vec::new();
+        for id in &old_path {
+            let left = !new_path.contains(id);
+            self.offer(*id, PointerKind::Leave, 0, at, &mut calls, |l| {
+                match l.scope {
+                    Scope::Subtree => left,
+                    Scope::Node => Some(*id) == old,
+                }
+            });
+        }
+        for id in new_path.iter().rev() {
+            let entered = !old_path.contains(id);
+            self.offer(*id, PointerKind::Enter, 0, at, &mut calls, |l| {
+                match l.scope {
+                    Scope::Subtree => entered,
+                    Scope::Node => Some(*id) == new,
+                }
+            });
+        }
+        Delivery {
+            calls,
+            stops_when_handled: false,
+        }
+    }
+
+    /// The calls for a `down`, `up` or `move` at `target`: `intercept`
+    /// listeners from the root down to it, then `bubble` listeners from it
+    /// back up.
+    fn along_path(&self, target: u32, kind: PointerKind, button: u8, at: (f32, f32)) -> Delivery {
+        let path = self.path(Some(target));
+        let in_scope = |id: u32, l: &Listener| l.scope == Scope::Subtree || id == target;
+        let mut calls = Vec::new();
+        for id in path.iter().rev() {
+            self.offer(*id, kind, button, at, &mut calls, |l| {
+                l.phase == Phase::Intercept && in_scope(*id, l)
+            });
+        }
+        for id in &path {
+            self.offer(*id, kind, button, at, &mut calls, |l| {
+                l.phase == Phase::Bubble && in_scope(*id, l)
+            });
+        }
+        Delivery {
+            calls,
+            stops_when_handled: true,
+        }
+    }
+
+    /// Add a call for each of `node`'s listeners of this kind that `wanted`
+    /// accepts, with the position measured from `node`'s own box.
+    fn offer(
+        &self,
+        node: u32,
+        kind: PointerKind,
+        button: u8,
+        at: (f32, f32),
+        calls: &mut Vec<Call>,
+        wanted: impl Fn(&Listener) -> bool,
+    ) {
+        let Some(held) = self.get(node) else {
+            return;
+        };
+        let (left, top) = self.origin(node);
+        for listener in held
+            .listeners
+            .iter()
+            .filter(|l| l.kind == kind && wanted(l))
+        {
+            calls.push(Call {
+                listener: listener.id,
+                event: PointerEvent {
+                    kind,
+                    x: at.0 - left,
+                    y: at.1 - top,
+                    button,
+                },
+            });
+        }
+    }
+
+    /// The top left corner of `node`'s box, or of the nearest box it hangs
+    /// under when it has none of its own, as a slot does not.
+    fn origin(&self, node: u32) -> (f32, f32) {
+        self.path(Some(node))
+            .into_iter()
+            .find_map(|id| self.rects.get(id as usize).copied().flatten())
+            .map(|r| (r.x, r.y))
+            .unwrap_or((0.0, 0.0))
+    }
+
+    /// Stop treating anything in `gone`'s subtree as under the pointer, since
+    /// it is about to be dropped and its id reused. What `gone` hung under
+    /// becomes the node the pointer is over, so the next input is compared
+    /// against a node that still exists.
+    fn stop_hovering(&mut self, gone: u32) {
+        if self.path(self.hovered).contains(&gone) {
+            self.hovered = self.get(gone).and_then(|n| n.parent);
+        }
     }
 
     /// A node's children as layout sees them, with slots spliced out.
@@ -574,6 +861,11 @@ impl Scene {
         match self.free.pop() {
             Some(id) => {
                 self.nodes[id as usize] = Some(node);
+                // The id's last holder may have had a box. This node has none
+                // until a frame gives it one.
+                if let Some(rect) = self.rects.get_mut(id as usize) {
+                    *rect = None;
+                }
                 id
             }
             None => {
@@ -599,7 +891,13 @@ impl Scene {
         if let Some(run) = node.run {
             text.release_run(run);
         }
+        // Its box goes with it, so a pointer input that arrives before the
+        // next frame cannot land on a node that is no longer there.
+        if let Some(rect) = self.rects.get_mut(id as usize) {
+            *rect = None;
+        }
         self.free.push(id);
+        self.end(&node.listeners);
         for child in node.children {
             self.drop_subtree(child, text);
         }
@@ -641,7 +939,7 @@ fn apply(node: &mut NodeDef, target: BindingTarget, value: &BindingValue) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::types::{Align, Axis, Justify, Length};
+    use crate::ui::types::{Align, Axis, Edges, Justify, Length};
 
     /// Template ids are the guest's, so these pick their own. Distinct ids are
     /// distinct templates, which is what decides patch against replace.
@@ -1089,6 +1387,479 @@ mod tests {
         );
         let commands = scene.draw(window(), &mut text);
         assert_eq!(commands.len(), 2, "both leaves paint: {commands:?}");
+    }
+
+    const PANEL: u32 = 9;
+
+    /// A box of a fixed size, for a test that needs to know where things are.
+    fn sized(width: f32, height: f32) -> NodeDef {
+        NodeDef {
+            layout: Flex {
+                width: Length::Px(width),
+                height: Length::Px(height),
+                ..Flex::default()
+            },
+            ..blank()
+        }
+    }
+
+    fn hears(kind: PointerKind, scope: Scope, phase: Phase, id: u32) -> Listener {
+        Listener {
+            kind,
+            scope,
+            phase,
+            id,
+        }
+    }
+
+    fn moved(x: f32, y: f32) -> PointerInput {
+        PointerInput::Moved { x, y }
+    }
+
+    fn pressed(x: f32, y: f32) -> PointerInput {
+        PointerInput::Button {
+            x,
+            y,
+            button: 0,
+            down: true,
+        }
+    }
+
+    /// The listener ids of every call, in the order the calls are made.
+    fn heard(deliveries: &[Delivery]) -> Vec<u32> {
+        deliveries
+            .iter()
+            .flat_map(|d| d.calls.iter().map(|c| c.listener))
+            .collect()
+    }
+
+    /// A panel in the window's top left corner holding two buttons side by
+    /// side, each 100 by 40, with 10 of padding round them:
+    ///
+    /// ```text
+    /// template position   0 panel   1 left button   2 right button
+    /// left button         x 10..110, y 10..50
+    /// right button        x 110..210, y 10..50
+    /// ```
+    fn two_buttons(text: &mut TextEngine) -> (Scene, u32) {
+        let mut scene = Scene::new();
+        let root = scene.root();
+        scene.render(
+            root,
+            &fresh(
+                PANEL,
+                vec![
+                    NodeDef {
+                        layout: Flex {
+                            axis: Axis::Row,
+                            padding: Edges::all(10.0),
+                            ..Flex::default()
+                        },
+                        first_child: 1,
+                        child_count: 2,
+                        ..blank()
+                    },
+                    sized(100.0, 40.0),
+                    sized(100.0, 40.0),
+                ],
+                vec![],
+            ),
+            &[],
+            text,
+        );
+        scene.draw(window(), text);
+        (scene, root)
+    }
+
+    /// Nothing is hit before a frame has said where things are, and after
+    /// one the node on top is the target: the button and not the panel
+    /// under it.
+    #[test]
+    fn the_target_is_the_node_painted_on_top() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_buttons(&mut text);
+        let any = PointerKind::Down;
+        assert!(scene.listen(root, 0, hears(any, Scope::Node, Phase::Bubble, 1)));
+        assert!(scene.listen(root, 1, hears(any, Scope::Node, Phase::Bubble, 2)));
+        assert!(scene.listen(root, 2, hears(any, Scope::Node, Phase::Bubble, 3)));
+
+        assert_eq!(heard(&scene.pointer(pressed(50.0, 30.0))), vec![2]);
+        assert_eq!(heard(&scene.pointer(pressed(150.0, 30.0))), vec![3]);
+        assert_eq!(
+            heard(&scene.pointer(pressed(5.0, 5.0))),
+            vec![1],
+            "the padding is the panel's own"
+        );
+        assert!(
+            scene.pointer(pressed(700.0, 500.0)).is_empty(),
+            "the panel is as large as its content, and this is outside it"
+        );
+    }
+
+    /// An input over nodes that hear nothing makes no call at all, which is
+    /// what keeps a pointer crossing the window from entering the component.
+    #[test]
+    fn an_input_nothing_hears_makes_no_delivery() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = two_buttons(&mut text);
+        assert!(scene.pointer(moved(50.0, 30.0)).is_empty());
+        assert!(scene.pointer(pressed(50.0, 30.0)).is_empty());
+        assert!(scene.pointer(PointerInput::Left).is_empty());
+    }
+
+    /// Scope is what lets a container hear its children: a `subtree`
+    /// listener on the panel hears a press on a button, and a `node` listener
+    /// on the panel does not.
+    #[test]
+    fn scope_decides_whether_a_node_hears_what_is_beneath_it() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_buttons(&mut text);
+        scene.listen(
+            root,
+            0,
+            hears(PointerKind::Down, Scope::Subtree, Phase::Bubble, 1),
+        );
+        scene.listen(
+            root,
+            0,
+            hears(PointerKind::Down, Scope::Node, Phase::Bubble, 2),
+        );
+
+        assert_eq!(heard(&scene.pointer(pressed(50.0, 30.0))), vec![1]);
+        assert_eq!(heard(&scene.pointer(pressed(5.0, 5.0))), vec![1, 2]);
+    }
+
+    /// The order along the path: `intercept` listeners from the root down to
+    /// the target, then `bubble` listeners from the target back up. The
+    /// delivery stops at the first listener that handles it.
+    #[test]
+    fn a_press_is_offered_down_the_path_and_then_back_up() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_buttons(&mut text);
+        let down = PointerKind::Down;
+        scene.listen(root, 0, hears(down, Scope::Subtree, Phase::Bubble, 1));
+        scene.listen(root, 1, hears(down, Scope::Subtree, Phase::Bubble, 2));
+        scene.listen(root, 0, hears(down, Scope::Subtree, Phase::Intercept, 3));
+        scene.listen(root, 1, hears(down, Scope::Subtree, Phase::Intercept, 4));
+
+        let deliveries = scene.pointer(pressed(50.0, 30.0));
+        assert_eq!(heard(&deliveries), vec![3, 4, 2, 1]);
+        assert!(deliveries[0].stops_when_handled);
+    }
+
+    /// A listener is told where the pointer is in its own node's box, so the
+    /// same press reads (40, 20) to the button and (50, 30) to the panel.
+    #[test]
+    fn a_position_is_measured_from_the_listening_node() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_buttons(&mut text);
+        let down = PointerKind::Down;
+        scene.listen(root, 1, hears(down, Scope::Subtree, Phase::Bubble, 1));
+        scene.listen(root, 0, hears(down, Scope::Subtree, Phase::Bubble, 2));
+
+        let deliveries = scene.pointer(pressed(50.0, 30.0));
+        let at: Vec<(f32, f32)> = deliveries[0]
+            .calls
+            .iter()
+            .map(|c| (c.event.x, c.event.y))
+            .collect();
+        assert_eq!(at, vec![(40.0, 20.0), (50.0, 30.0)]);
+    }
+
+    /// `enter` and `leave` report a scope gaining and losing the target.
+    /// Moving from one button to the other leaves the first and enters the
+    /// second, and says nothing to the panel, whose subtree the pointer never
+    /// left. Leaving the window leaves everything.
+    #[test]
+    fn enter_and_leave_report_a_scope_gaining_and_losing_the_target() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_buttons(&mut text);
+        let (enter, leave) = (PointerKind::Enter, PointerKind::Leave);
+        scene.listen(root, 0, hears(enter, Scope::Subtree, Phase::Bubble, 10));
+        scene.listen(root, 0, hears(leave, Scope::Subtree, Phase::Bubble, 11));
+        scene.listen(root, 1, hears(enter, Scope::Subtree, Phase::Bubble, 20));
+        scene.listen(root, 1, hears(leave, Scope::Subtree, Phase::Bubble, 21));
+        scene.listen(root, 2, hears(enter, Scope::Subtree, Phase::Bubble, 30));
+        scene.listen(root, 2, hears(leave, Scope::Subtree, Phase::Bubble, 31));
+
+        let into_left = scene.pointer(moved(50.0, 30.0));
+        assert_eq!(
+            heard(&into_left),
+            vec![10, 20],
+            "the panel, then the button in it"
+        );
+        assert!(!into_left[0].stops_when_handled);
+
+        assert!(
+            scene.pointer(moved(60.0, 30.0)).is_empty(),
+            "moving within one node crosses nothing"
+        );
+        assert_eq!(heard(&scene.pointer(moved(150.0, 30.0))), vec![21, 30]);
+        assert_eq!(
+            heard(&scene.pointer(PointerInput::Left)),
+            vec![31, 11],
+            "the button, then the panel it is in"
+        );
+    }
+
+    /// With `node` scope the panel hears the pointer reach and leave its own
+    /// box, which moving onto one of its buttons does.
+    #[test]
+    fn a_node_scope_hears_its_own_box_gaining_and_losing_the_target() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_buttons(&mut text);
+        scene.listen(
+            root,
+            0,
+            hears(PointerKind::Enter, Scope::Node, Phase::Bubble, 1),
+        );
+        scene.listen(
+            root,
+            0,
+            hears(PointerKind::Leave, Scope::Node, Phase::Bubble, 2),
+        );
+
+        assert_eq!(heard(&scene.pointer(moved(5.0, 5.0))), vec![1]);
+        assert_eq!(heard(&scene.pointer(moved(50.0, 30.0))), vec![2]);
+        assert_eq!(heard(&scene.pointer(moved(5.0, 5.0))), vec![1]);
+    }
+
+    /// A parent hears its content through the slot it declared, without
+    /// holding the child: the path an event travels is the tree's, and the
+    /// slot is on it though it has no box.
+    #[test]
+    fn a_listener_on_a_slot_hears_the_content_hanging_in_it() {
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        scene.render(
+            root,
+            &fresh(
+                DIAL,
+                vec![
+                    NodeDef {
+                        layout: Flex {
+                            padding: Edges::all(10.0),
+                            ..Flex::default()
+                        },
+                        first_child: 1,
+                        child_count: 1,
+                        ..blank()
+                    },
+                    NodeDef {
+                        is_slot: true,
+                        ..blank()
+                    },
+                ],
+                vec![],
+            ),
+            &[],
+            &mut text,
+        );
+        let child = scene.content(root, 0, 1, &mut text).expect("one slot")[0];
+        scene.render(
+            child,
+            &fresh(OTHER, vec![sized(100.0, 40.0)], vec![]),
+            &[],
+            &mut text,
+        );
+        scene.draw(window(), &mut text);
+        scene.listen(
+            root,
+            1,
+            hears(PointerKind::Down, Scope::Subtree, Phase::Bubble, 1),
+        );
+
+        let deliveries = scene.pointer(pressed(50.0, 30.0));
+        assert_eq!(heard(&deliveries), vec![1]);
+        let event = deliveries[0].calls[0].event;
+        assert_eq!(
+            (event.x, event.y),
+            (50.0, 30.0),
+            "a slot has no box, so the position is in the box that contains it"
+        );
+    }
+
+    /// Listeners belong to the interior they were registered in. A patch
+    /// keeps them, and a different template drops them with everything else
+    /// the old one had.
+    #[test]
+    fn a_listener_lasts_as_long_as_its_interior() {
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        let button = |id| {
+            fresh(
+                id,
+                vec![
+                    NodeDef {
+                        first_child: 1,
+                        child_count: 1,
+                        ..sized(100.0, 40.0)
+                    },
+                    text_node(""),
+                ],
+                vec![content_binding(1)],
+            )
+        };
+        scene.render(root, &button(DIAL), &[content(0, "one")], &mut text);
+        scene.listen(
+            root,
+            0,
+            hears(PointerKind::Down, Scope::Subtree, Phase::Bubble, 1),
+        );
+        scene.draw(window(), &mut text);
+        assert_eq!(heard(&scene.pointer(pressed(50.0, 20.0))), vec![1]);
+
+        scene.render(
+            root,
+            &TemplateRef::Known(DIAL),
+            &[content(0, "two")],
+            &mut text,
+        );
+        scene.draw(window(), &mut text);
+        assert_eq!(
+            heard(&scene.pointer(pressed(50.0, 20.0))),
+            vec![1],
+            "a patch keeps it"
+        );
+
+        scene.render(root, &button(OTHER), &[content(0, "three")], &mut text);
+        scene.draw(window(), &mut text);
+        assert!(
+            scene.pointer(pressed(50.0, 20.0)).is_empty(),
+            "a different template starts with no listeners"
+        );
+    }
+
+    /// A node dropped while the pointer is over it cannot be left later: its
+    /// id is free to be reused, and a `leave` sent to whatever reuses it would
+    /// be about a node the pointer was never over.
+    #[test]
+    fn a_dropped_node_is_no_longer_under_the_pointer() {
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        scene.render(
+            root,
+            &fresh(
+                DIAL,
+                vec![
+                    NodeDef {
+                        first_child: 1,
+                        child_count: 1,
+                        ..blank()
+                    },
+                    NodeDef {
+                        is_slot: true,
+                        ..blank()
+                    },
+                ],
+                vec![],
+            ),
+            &[],
+            &mut text,
+        );
+        let leaf = fresh(OTHER, vec![sized(100.0, 40.0)], vec![]);
+        let first = scene.content(root, 0, 1, &mut text).expect("one slot")[0];
+        scene.render(first, &leaf, &[], &mut text);
+        scene.draw(window(), &mut text);
+        scene.pointer(moved(50.0, 20.0));
+
+        scene.content(root, 0, 0, &mut text);
+        assert!(
+            scene.pointer(pressed(50.0, 20.0)).is_empty(),
+            "nothing is there until a frame places something"
+        );
+        let second = scene.content(root, 0, 1, &mut text).expect("one slot")[0];
+        assert_eq!(
+            second, first,
+            "the id is reused, which is what makes this matter"
+        );
+        scene.render(second, &leaf, &[], &mut text);
+        scene.listen(
+            second,
+            0,
+            hears(PointerKind::Leave, Scope::Subtree, Phase::Bubble, 1),
+        );
+        scene.listen(
+            second,
+            0,
+            hears(PointerKind::Enter, Scope::Subtree, Phase::Bubble, 2),
+        );
+        scene.draw(window(), &mut text);
+
+        assert_eq!(
+            heard(&scene.pointer(moved(50.0, 20.0))),
+            vec![2],
+            "the new node is entered, and was never left"
+        );
+    }
+
+    /// A removed listener hears nothing more, and the others on its node
+    /// are left as they were. Removing one twice, or one that never was,
+    /// does nothing.
+    #[test]
+    fn a_removed_listener_hears_nothing_more() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = two_buttons(&mut text);
+        let down = PointerKind::Down;
+        scene.listen(root, 1, hears(down, Scope::Subtree, Phase::Bubble, 1));
+        scene.listen(root, 1, hears(down, Scope::Subtree, Phase::Bubble, 2));
+
+        scene.unlisten(1);
+        scene.unlisten(1);
+        scene.unlisten(99);
+
+        assert_eq!(heard(&scene.pointer(pressed(50.0, 30.0))), vec![2]);
+        assert!(scene.take_ended().is_empty(), "nothing ended on its own");
+    }
+
+    /// A listener ends when its node goes away, and the scene says which
+    /// ended so that whoever holds the other end of each can end it too. A
+    /// node goes away when its interior is replaced or its slot shrinks. A
+    /// listener on the node a template is rendered into goes with that
+    /// template, though the node stays.
+    #[test]
+    fn the_scene_reports_the_listeners_whose_nodes_went_away() {
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        let page = |id| {
+            fresh(
+                id,
+                vec![
+                    NodeDef {
+                        first_child: 1,
+                        child_count: 1,
+                        ..blank()
+                    },
+                    NodeDef {
+                        is_slot: true,
+                        ..blank()
+                    },
+                ],
+                vec![],
+            )
+        };
+        let any = |id| hears(PointerKind::Down, Scope::Subtree, Phase::Bubble, id);
+        scene.render(root, &page(DIAL), &[], &mut text);
+        scene.listen(root, 0, any(1));
+        let children = scene.content(root, 0, 2, &mut text).expect("one slot");
+        for (child, id) in children.iter().zip([2, 3]) {
+            scene.render(*child, &just_text(OTHER, "x"), &[], &mut text);
+            scene.listen(*child, 0, any(id));
+        }
+        assert!(scene.take_ended().is_empty());
+
+        scene.content(root, 0, 1, &mut text);
+        assert_eq!(scene.take_ended(), vec![3], "the second child went");
+        assert!(scene.take_ended().is_empty(), "and is reported once");
+
+        scene.render(root, &page(PANEL), &[], &mut text);
+        let mut ended = scene.take_ended();
+        ended.sort();
+        assert_eq!(ended, vec![1, 2], "the page's own, and its other child's");
     }
 }
 

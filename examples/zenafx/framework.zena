@@ -13,9 +13,17 @@
  *
  * The diff is here rather than in the host because every value crossing `render`
  * is marshalled: a value that compared equal is never encoded at all.
+ *
+ * A widget's handlers stay here too. A function cannot cross to the host, so
+ * the host is told which node hears which kind of event and hands back a
+ * stream, and a loop here reads each stream and calls the handler with what
+ * arrives on it.
  */
 import { Node, NodeDef, Binding, BindingValue, Hole, TemplateDef, TemplateRef,
          TemplateRefKnown, TemplateRefFresh, root, ready } from 'zenafx:host/scene';
+import { PointerKind, PointerEvent, Delivery, Scope, Phase } from 'zenafx:host/events';
+import { Stream } from 'zena:stream';
+import { Disposable } from 'zena:core';
 
 /**
  * A widget's interior, described once.
@@ -65,32 +73,118 @@ let freshTemplateId = (): u32 => {
   return lastTemplateId;
 };
 
+/** What a widget does with a pointer event. Answers whether it handled it. */
+export type Handler = (event: PointerEvent) => boolean;
+
 /**
- * What a widget shows: which template, the value for each of its holes, and the
- * widgets to hang in each of its slots.
+ * One thing a widget hears: a kind of pointer event, at one node of its
+ * template, and what to do about it.
+ *
+ * `position` is the node's index in the template, as in a `Binding`, and 0 is
+ * the widget's own box. `scope` says whether the node hears events aimed at
+ * what is beneath it, and `phase` whether it is offered a press before or after
+ * the node the press landed on.
+ */
+export class Listener {
+  kind: PointerKind;
+  handler: Handler;
+  position: u32;
+  scope: Scope;
+  phase: Phase;
+
+  new(this.kind, this.handler, this.position = 0, this.scope = Scope.Subtree,
+      this.phase = Phase.Bubble);
+}
+
+/**
+ * Hear `kind` anywhere in the widget, the way a button hears a press on its
+ * label. The handler has handled the event when it returns, so nothing further
+ * up is offered it.
+ */
+export function on(kind: PointerKind, handler: () => void): Listener {
+  return new Listener(kind, (event) => {
+    handler();
+    return true;
+  });
+}
+
+/**
+ * What a widget shows: which template, the value for each of its holes, the
+ * widgets to hang in each of its slots, and what it hears.
  *
  * `content` is indexed by slot, in the order the template declares them. A slot
  * a rendering says nothing about keeps whatever is already in it.
+ *
+ * `listeners` are matched by their place in the list from one render to the
+ * next, as `values` are. For one template the list keeps its length and each
+ * place keeps its kind, node, scope and phase. Only the handler at a place may
+ * change, and that costs no call: the listener's stream stays, and the loop
+ * reading it calls whichever handler is there now.
  */
 export class Rendering {
   template: Template;
   values: Array<BindingValue>;
   content: Array<Array<Widget>>;
+  listeners: Array<Listener>;
 
-  new(this.template, this.values, this.content);
+  new(this.template, this.values, this.content, this.listeners);
+
+  /** The same rendering, hearing `listeners`. */
+  hearing(listeners: Array<Listener>): Rendering {
+    return new Rendering(this.template, this.values, this.content, listeners);
+  }
 }
 
 let noValues: Array<BindingValue> = [];
 let noContent: Array<Array<Widget>> = [];
+let noListeners: Array<Listener> = [];
 
 /** A widget with holes to fill and no content. */
 export function shows(template: Template, values: Array<BindingValue>): Rendering {
-  return new Rendering(template, values, noContent);
+  return new Rendering(template, values, noContent, noListeners);
 }
 
 /** A widget that is pure structure: content in its slots and no holes at all. */
 export function holds(template: Template, content: Array<Array<Widget>>): Rendering {
-  return new Rendering(template, noValues, content);
+  return new Rendering(template, noValues, content, noListeners);
+}
+
+/**
+ * The handler one listener's events go to.
+ *
+ * Kept apart from the stream so that a render can put a new handler here and
+ * leave the stream, and the loop reading it, as they are.
+ */
+class Hearing {
+  var handler: Handler;
+
+  new(this.handler);
+}
+
+/**
+ * Read one listener's events until there are no more, calling its handler with
+ * each.
+ *
+ * Nothing ends this from here. The host ends the stream when the node the
+ * listener is on goes away, which is when the widget's interior is replaced or
+ * its parent stops showing it, and the loop finishes with it. So a widget keeps
+ * no record of its listeners to clean up.
+ *
+ * A `down`, `up` or `move` comes with a reply. The host offers the event to the
+ * next listener on its path only when the reply is dropped, so it is dropped
+ * here as soon as the handler has returned, after `stopPropagation` if the
+ * handler handled the event.
+ */
+async function pump(events: Stream<Delivery>, hearing: Hearing): Future<void> {
+  for await (let delivery in events) {
+    let handled = hearing.handler(delivery.event);
+    if (let Some {value} = delivery.reply) {
+      if (handled) {
+        value.stopPropagation();
+      }
+      value.[Disposable.dispose]();
+    }
+  }
 }
 
 /** What a widget last hung in one slot: the widgets, and the nodes they got. */
@@ -125,6 +219,11 @@ export abstract class Widget {
   var #sent: Array<BindingValue> = noValues;
   /** What it last hung in each slot, so an unchanged slot is left alone. */
   var #hung = new GrowableArray<Hung>();
+  /**
+   * Where each listener of the template now showing finds its handler, in the
+   * order the rendering lists them.
+   */
+  var #listening = new GrowableArray<Hearing>();
 
   /**
    * What to show: the template, its hole values, and the content for its slots.
@@ -146,6 +245,37 @@ export abstract class Widget {
     this.#showing = null;
     this.#sent = noValues;
     this.#hung = new GrowableArray<Hung>();
+    this.#listening = new GrowableArray<Hearing>();
+  }
+
+  /**
+   * Make the handlers `listeners` names the ones this widget's events reach.
+   *
+   * After a rebuild the host has none of this widget's listeners: they went
+   * with the interior they were on, and their streams ended. So each one
+   * listens again, and a loop is started on its stream. Otherwise the streams
+   * are still being read, and the handler each loop calls is replaced without
+   * a call to the host.
+   */
+  #hear(node: Node, listeners: Array<Listener>, rebuilt: boolean): void {
+    if (rebuilt) {
+      this.#listening = new GrowableArray<Hearing>();
+      for (let listener in listeners) {
+        let hearing = new Hearing(listener.handler);
+        this.#listening.push(hearing);
+        pump(node.listenPointer(listener.position, listener.kind, listener.scope,
+                                listener.phase),
+             hearing);
+      }
+      return;
+    }
+    var place = 0;
+    for (let listener in listeners) {
+      if (place < this.#listening.length) {
+        this.#listening[place].handler = listener.handler;
+      }
+      place += 1;
+    }
   }
 
   /**
@@ -188,6 +318,7 @@ export abstract class Widget {
       this.#hung = new GrowableArray<Hung>();
     }
 
+    this.#hear(node, shown.listeners, rebuilt);
     this.#hang(node, shown.content, rebuilt);
   }
 

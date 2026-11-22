@@ -116,7 +116,11 @@ fn run_for(app: &mut GuestScene, how_long: Duration) -> Vec<Command> {
 fn the_first_frame_draws_both_instances() {
     let mut app = counter();
     let commands = app.frame(frame_at(0.0));
-    assert_eq!(quads(&commands).len(), 3, "page and two dials: {commands:?}");
+    assert_eq!(
+        quads(&commands).len(),
+        3,
+        "page and two dials: {commands:?}"
+    );
     assert_eq!(
         runs(&commands).len(),
         4,
@@ -137,15 +141,44 @@ fn the_entry_is_called_once() {
     assert_eq!(app.guest_entries(), 1, "a frame does not call `main` again");
 }
 
-/// A counter with a sleep armed leaves its task running, so the host knows it
-/// owes another frame without being told what changed.
+/// A counter with a sleep armed owes no frame while it waits.
+///
+/// Its task is still running, and that alone asks for nothing: the write a
+/// counter makes when its period comes due is what asks for a frame. A window
+/// that redrew for as long as a component ran would redraw without pause for
+/// any component with a timer armed.
 #[test]
-fn a_counting_component_owes_another_frame() {
+fn a_counting_component_owes_no_frame_while_it_waits() {
     let mut app = counter();
     app.frame(frame_at(0.0));
     assert!(
-        app.wants_another_frame(),
-        "a counter is always waiting on its next period"
+        !app.wants_another_frame(),
+        "nothing changed since the frame that was just drawn"
+    );
+}
+
+/// A counter asks the window for a frame when it advances, and at no other
+/// time: two periods of the fast counter are two writes, where a window
+/// drawing flat out for a second would have drawn sixty frames.
+#[test]
+#[ignore = "waits out real sleeps; needs a substitutable clock"]
+fn a_counter_asks_for_a_frame_when_it_advances() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let mut app = counter();
+    app.frame(frame_at(0.0));
+    let asked = Arc::new(AtomicU32::new(0));
+    let count = asked.clone();
+    app.woken_by(Arc::new(move || {
+        count.fetch_add(1, Ordering::Relaxed);
+    }));
+
+    std::thread::sleep(2 * FAST + Duration::from_millis(200));
+    let asked = asked.load(Ordering::Relaxed);
+    assert!(
+        (2..=4).contains(&asked),
+        "two fast periods, and perhaps the slow one: asked {asked} times"
     );
 }
 

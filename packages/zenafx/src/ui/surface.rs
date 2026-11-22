@@ -18,9 +18,14 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
+use super::events::PointerInput;
 use super::paint::Painter;
 use super::text::TextEngine;
-use super::types::{Color, Command, FrameEvent, KeyEvent, PointerEvent};
+use super::types::{Color, Command, FrameEvent, KeyEvent};
+
+/// Asks the window for a frame. Callable from any thread, any number of
+/// times: requests made before the next frame become one frame.
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// What the window shows.
 ///
@@ -47,9 +52,17 @@ pub trait Scene {
     }
 
     /// Returns whether the scene changed and wants another frame.
-    fn pointer(&mut self, _event: PointerEvent) -> bool {
+    fn pointer(&mut self, _input: PointerInput) -> bool {
         false
     }
+
+    /// Take the means to ask for a frame from outside the window's thread.
+    ///
+    /// Called once, before the first frame. A scene that only changes in
+    /// answer to the calls above has no use for it. A scene whose content is
+    /// written from another thread calls it when that content changes, since
+    /// the window is otherwise asleep until its next input.
+    fn woken_by(&mut self, _wake: Wake) {}
 
     /// Returns whether the scene changed and wants another frame.
     fn key(&mut self, _event: KeyEvent) -> bool {
@@ -86,9 +99,18 @@ impl Default for WindowConfig {
 ///
 /// This takes over the calling thread, and on macOS must be called from the
 /// main one.
-pub fn run(config: WindowConfig, scene: impl Scene + 'static) -> Result<()> {
+pub fn run(config: WindowConfig, mut scene: impl Scene + 'static) -> Result<()> {
     let event_loop = EventLoop::new().context("failed to create the winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);
+
+    // A wake is a user event, which is what brings a loop under
+    // `ControlFlow::Wait` round when no input has arrived. The loop has gone
+    // once the window closes, and a wake sent after that has nothing to do.
+    let proxy = event_loop.create_proxy();
+    scene.woken_by(Arc::new(move || {
+        let _ = proxy.send_event(());
+    }));
+
     let mut app = App {
         config,
         scene: Box::new(scene),
@@ -163,6 +185,13 @@ impl ApplicationHandler for App {
         window.request_redraw();
     }
 
+    /// A [`Wake`]: the scene changed on another thread and is owed a frame.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        if let Some(live) = self.window.as_ref() {
+            live.window.request_redraw();
+        }
+    }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -186,19 +215,23 @@ impl ApplicationHandler for App {
 
             WindowEvent::CursorMoved { position, .. } => {
                 live.cursor = (position.x as f32, position.y as f32);
-                let wants = self.scene.pointer(PointerEvent {
+                let wants = self.scene.pointer(PointerInput::Moved {
                     x: live.cursor.0,
                     y: live.cursor.1,
-                    button: 0,
-                    down: false,
                 });
                 if wants {
                     live.window.request_redraw();
                 }
             }
 
+            WindowEvent::CursorLeft { .. } => {
+                if self.scene.pointer(PointerInput::Left) {
+                    live.window.request_redraw();
+                }
+            }
+
             WindowEvent::MouseInput { state, button, .. } => {
-                let wants = self.scene.pointer(PointerEvent {
+                let wants = self.scene.pointer(PointerInput::Button {
                     x: live.cursor.0,
                     y: live.cursor.1,
                     button: button_code(button),

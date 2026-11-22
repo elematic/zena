@@ -4,6 +4,9 @@
 //! [`layout`] solves flexbox with those measurements inside the solve,
 //! [`paint`] rasterizes a display list, and [`surface`] owns the window and
 //! decides when a frame happens. [`types`] holds the records they exchange.
+//! [`scene`] is the retained tree a component writes and a frame draws from,
+//! and [`events`] is what the pointer did and which of the tree's nodes hear
+//! about it.
 //!
 //! Nothing here knows about WebAssembly. The loader binds these to a guest's
 //! imports; until it exists, [`demo`] drives them directly, which is how the
@@ -12,6 +15,7 @@
 //! Designed under "Host primitives" in `docs/design/zenafx-ui.md`.
 
 pub mod demo;
+pub mod events;
 pub mod layout;
 pub mod paint;
 pub mod scene;
