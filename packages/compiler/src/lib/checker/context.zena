@@ -543,6 +543,8 @@ export final class CheckerContext {
    */
   #everNarrowedSymbols = new Set<i32>();
   #everNarrowedPaths = new Set<String>();
+  /** The symbols whose own path, with no member, is in `#everNarrowedPaths`. */
+  #everNarrowedRoots = new Set<i32>();
   #everAssignedSymbols = new Set<i32>();
 
   /**
@@ -3326,6 +3328,11 @@ export final class CheckerContext {
     }
     for (let pkey in ns.paths.keys()) {
       this.#everNarrowedPaths.add(pkey);
+      // A path with no member in it is a binding's own
+      // (getMemberPathKey of an identifier).
+      if (!pkey.contains(".")) {
+        this.#everNarrowedRoots.add(pathRootSymbolId(pkey) as i32);
+      }
     }
     this.#currentFlow = node;
   }
@@ -3348,16 +3355,19 @@ export final class CheckerContext {
    */
   flowTypeOfBinding(si: Symbol, declared: Type): Type {
     let id = si.id as i32;
-    let pathKey = "s" + i32ToString(id);
+    // Nearly every reference comes here and leaves on the next test, so
+    // it asks by symbol id: the binding's path key is a string, built
+    // only for a walk.
     let narrowed = this.#everNarrowedSymbols.has(id) ||
-      this.#everNarrowedPaths.has(pathKey);
+      this.#everNarrowedRoots.has(id);
     let assigned = si.isMutable && this.#everAssignedSymbols.has(id) &&
       declared is UnionT;
     if (!narrowed && !assigned) { return declared; }
     this.#walkCycleMin = 2147483647;
     this.#walkBudget = 100000;
-    let subject = new FlowSubject(si.id, pathKey, si.id, id, declared);
-    let r = this.#walkFlowType(this.#currentFlow, subject, new Array<i32>());
+    this.#walkJoins = 0;
+    let subject = new FlowSubject(si.id, "s" + i32ToString(id), si.id, id, declared);
+    let r = this.#walkFlowType(this.#currentFlow, subject);
     if (r == null) { return declared; }
     // A narrowing can only narrow. A join can manufacture something
     // wider — a statically-false `x == null` arm narrows a
@@ -3381,6 +3391,12 @@ export final class CheckerContext {
    * cycles reach an ancestor is provisional and is not.
    */
   var #walkCycleMin: i32 = 2147483647;
+
+  /**
+   * How many joins the current walk is evaluating: the depth a join
+   * takes as its `walkDepth` when the walk reaches it.
+   */
+  var #walkJoins: i32 = 0;
 
   /**
    * Per-query step budget: a safety net against walk pathologies. With
@@ -3483,9 +3499,10 @@ export final class CheckerContext {
     if (!this.#everNarrowedPaths.has(path)) { return null; }
     this.#walkCycleMin = 2147483647;
     this.#walkBudget = 100000;
+    this.#walkJoins = 0;
     let subject = new FlowSubject(noSymbolId, path, pathRootSymbolId(path),
         this.#pathMemoId(path), this.#pathVeto);
-    let r = this.#walkFlowType(this.#currentFlow, subject, new Array<i32>());
+    let r = this.#walkFlowType(this.#currentFlow, subject);
     if (r == null) { return null; }
     // Identity via uid: Type equality is structural, and any ErrorType
     // would otherwise look like the veto marker.
@@ -3506,11 +3523,7 @@ export final class CheckerContext {
    * join. Join results computed without touching an in-progress cycle
    * are memoized for the duration of one query.
    */
-  #walkFlowType(
-    from: FlowNode,
-    s: FlowSubject,
-    inProgress: GrowableArray<i32>
-  ): Type | null {
+  #walkFlowType(from: FlowNode, s: FlowSubject): Type | null {
     var n = from;
     while (true) {
       if (this.#walkBudget <= 0) {
@@ -3571,9 +3584,9 @@ export final class CheckerContext {
           if (let (true, cm) = this.#flowTypeMemo.get(crossKey)) { return cm; }
           let outerMin = this.#walkCycleMin;
           this.#walkCycleMin = 2147483647;
-          let sub = this.#walkFlowType(enc, s, inProgress);
+          let sub = this.#walkFlowType(enc, s);
           let myMin = this.#walkCycleMin;
-          if (sub != null && myMin >= inProgress.length) {
+          if (sub != null && myMin >= this.#walkJoins) {
             this.#flowTypeMemo[crossKey] = sub;
             this.#flowTypeMemoLog.push(crossKey);
           }
@@ -3589,18 +3602,14 @@ export final class CheckerContext {
           let memoKey = this.#flowMemoKey(join.id, s);
           if (let (true, m) = this.#flowTypeMemo.get(memoKey)) { return m; }
           if (let (true, tm) = this.#taintedMemo.get(memoKey)) { return tm; }
-          var pi = 0;
-          var cycled = false;
-          while (pi < inProgress.length) {
-            if (inProgress[pi] == join.id) {
-              if (pi < this.#walkCycleMin) { this.#walkCycleMin = pi; }
-              cycled = true;
-            }
-            pi += 1;
+          let evaluatingAt = join.walkDepth;
+          if (evaluatingAt >= 0) {
+            if (evaluatingAt < this.#walkCycleMin) { this.#walkCycleMin = evaluatingAt; }
+            return null;
           }
-          if (cycled) { return null; }
-          let depth = inProgress.length;
-          inProgress.push(join.id);
+          let depth = this.#walkJoins;
+          this.#walkJoins = depth + 1;
+          join.walkDepth = depth;
           // Lowlink accounting: cycles seen under THIS join, kept apart
           // from what the siblings already saw.
           let outerMin = this.#walkCycleMin;
@@ -3613,7 +3622,7 @@ export final class CheckerContext {
           var results: Array<Type> | null = null;
           var unnarrowed = false;
           for (let a in join.antecedents) {
-            let r = this.#walkFlowType(a, s, inProgress);
+            let r = this.#walkFlowType(a, s);
             if (r == null) {
               // A cycle contribution: skipped.
             } else if (r.uid == s.fallback.uid) {
@@ -3635,7 +3644,8 @@ export final class CheckerContext {
             }
           }
           let myMin = this.#walkCycleMin;
-          inProgress.pop();
+          this.#walkJoins = depth;
+          join.walkDepth = -1;
           // Anything provisional that depended on this join dies with
           // its evaluation.
           this.#purgeTaintedFrom(depth);
