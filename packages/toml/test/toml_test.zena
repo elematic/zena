@@ -1,0 +1,177 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isNotNull, isNull, isTrue, throws} from 'zena:assert';
+import {
+  TomlDateTime,
+  TomlFloat,
+  TomlInt,
+  TomlString,
+  TomlTable,
+  parseToml,
+} from 'zena-lang:toml';
+
+export let tests = suite('zena-lang:toml', () => {
+  test('parses Cargo.toml workspace, dependencies, array-of-tables, and cfg targets', () => {
+    let doc = parseToml(`
+# Workspace manifest
+[workspace]
+members = [
+  "packages/workspace-hack",
+  "packages/runtime-wasmtime",
+  "packages/cli",
+]
+resolver = "2"
+
+[package]
+name = "zenafx"
+version = "0.0.2-preview.1"
+publish = false
+
+[[bin]]
+name = "zfx"
+path = "src/main.rs"
+
+[[bin]]
+name = "zfx-helper"
+path = "src/helper.rs"
+
+[dependencies]
+zena-runtime = { path = "../runtime-wasmtime" }
+wasmtime = { workspace = true, features = ["cache", "p3"] }
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+local-unix = { path = "../unix-support" }
+`);
+
+    let ws = doc.getTable('workspace');
+    isNotNull(ws);
+    if (ws != null) {
+      let members = ws.getArray('members');
+      isNotNull(members);
+      if (members != null) {
+        equal(members.length, 3);
+        let m0 = members[0];
+        isTrue(m0 is TomlString && m0.value == 'packages/workspace-hack');
+      }
+      equal(ws.getString('resolver'), '2');
+    }
+
+    let pkg = doc.getTable('package');
+    isNotNull(pkg);
+    if (pkg != null) {
+      equal(pkg.getString('name'), 'zenafx');
+      if (let (true, pub) = pkg.getBool('publish')) {
+        isFalse(pub);
+      } else {
+        throws(() => { throw new Error('expected bool'); });
+      }
+    }
+
+    let bins = doc.getArray('bin');
+    isNotNull(bins);
+    if (bins != null) {
+      equal(bins.length, 2);
+      let b0 = bins[0];
+      if (b0 is TomlTable) {
+        equal(b0.getString('name'), 'zfx');
+        equal(b0.getString('path'), 'src/main.rs');
+      } else {
+        throws(() => { throw new Error('expected table'); });
+      }
+      let b1 = bins[1];
+      if (b1 is TomlTable) {
+        equal(b1.getString('name'), 'zfx-helper');
+      } else {
+        throws(() => { throw new Error('expected table'); });
+      }
+    }
+
+    let deps = doc.getTable('dependencies');
+    isNotNull(deps);
+    if (deps != null) {
+      equal(deps.getTable('zena-runtime')?.getString('path'), '../runtime-wasmtime');
+      equal(deps.getString('serde_json'), '1');
+    }
+
+    let unixDeps = doc.getTable('target')?.getTable('cfg(unix)')?.getTable('dependencies');
+    isNotNull(unixDeps);
+    if (unixDeps != null) {
+      equal(unixDeps.getString('libc'), '0.2');
+      equal(unixDeps.getTable('local-unix')?.getString('path'), '../unix-support');
+    }
+  });
+
+  test('parses strings, escapes, multiline strings, dotted keys, numbers, booleans, and datetimes', () => {
+    let doc = parseToml(`
+title = "hello\\n\\t\\"world\\" \\u0041"
+lit = 'C:\\Users\\dev'
+multi = """
+line1
+line2 \\
+  joined"""
+multilit = '''
+raw \\n text'''
+a.b.c = 42
+hex = 0xdead_beef
+oct = 0o755
+bin = 0b1101_0110
+neg = -1_000
+flt = 3.1415
+sci = 1.5e2
+flag = true
+date = 2026-11-21
+dt = 2026-11-21T12:30:00Z
+local_dt = 2026-11-21 12:30:00
+time = 07:32:00
+inline_nested = { x.y = 7, arr = [1, 2] }
+`);
+
+    equal(doc.getString('title'), 'hello\n\t"world" A');
+    equal(doc.getString('lit'), 'C:\\Users\\dev');
+    equal(doc.getString('multi'), 'line1\nline2 joined');
+    equal(doc.getString('multilit'), 'raw \\n text');
+
+    let ab = doc.getTable('a')?.getTable('b');
+    isNotNull(ab);
+    if (ab != null) {
+      if (let (true, v) = ab.getInt('c')) {
+        equal(v, 42 as i64);
+      } else {
+        throws(() => { throw new Error('expected int 42'); });
+      }
+    }
+    if (let (true, v) = doc.getInt('hex')) { equal(v, 3735928559 as i64); }
+    if (let (true, v) = doc.getInt('oct')) { equal(v, 493 as i64); }
+    if (let (true, v) = doc.getInt('bin')) { equal(v, 214 as i64); }
+    if (let (true, v) = doc.getInt('neg')) { equal(v, -1000 as i64); }
+    if (let (true, f) = doc.getFloat('sci')) { equal(f, 150.0); }
+    if (let (true, b) = doc.getBool('flag')) { isTrue(b); }
+
+    let d = doc['date'];
+    isTrue(d is TomlDateTime && d.kind == 'local-date' && d.raw == '2026-11-21');
+    let dt = doc['dt'];
+    isTrue(dt is TomlDateTime && dt.kind == 'offset-datetime');
+    let ldt = doc['local_dt'];
+    isTrue(ldt is TomlDateTime && ldt.kind == 'local-datetime');
+    let tm = doc['time'];
+    isTrue(tm is TomlDateTime && tm.kind == 'local-time');
+
+    let nested = doc.getTable('inline_nested')?.getTable('x');
+    isNotNull(nested);
+    if (nested != null) {
+      if (let (true, v) = nested.getInt('y')) { equal(v, 7 as i64); }
+    }
+    isNull(doc.getString('missing'));
+  });
+
+  test('rejects invalid TOML syntax and duplicate keys or tables', () => {
+    throws(() => { parseToml('a = 1\na = 2\n'); });
+    throws(() => { parseToml('[a]\nx = 1\n[a]\ny = 2\n'); });
+    throws(() => { parseToml('a = { x = 1 }\n[a]\ny = 2\n'); });
+    throws(() => { parseToml('a = "unterminated\n'); });
+    throws(() => { parseToml('a = 01\n'); });
+    throws(() => { parseToml('[unclosed\n'); });
+    throws(() => { parseToml('= 1\n'); });
+  });
+});

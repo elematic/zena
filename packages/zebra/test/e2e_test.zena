@@ -1928,4 +1928,91 @@ export let tests = suite('zebra end to end', () => {
     isTrue(r4.result.allSucceeded, formatBuildReport(r4, true));
     isTrue(sourceOf(r4.result, 'packages/ui:build') == StepSource.Ran);
   });
+
+  test('rust:build tracks transitive Cargo path deps, caches outputs, and serializes on built-in cargo group', async () => {
+    let root = `/tmp/zebra-rust-rule-e2e-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    // Hermetic fake `cargo` in node_modules/.bin/cargo that records concurrency
+    // and writes the expected binary under ../../target/release/<pkg>.
+    await write(
+      root,
+      'node_modules/.bin/cargo',
+      '#!/bin/sh\n' +
+      'set -e\n' +
+      'pkg=""\n' +
+      'while [ "$#" -gt 0 ]; do\n' +
+      '  if [ "$1" = "-p" ]; then shift; pkg="$1"; fi\n' +
+      '  shift\n' +
+      'done\n' +
+      'mkdir -p ../../target/release ../../traces\n' +
+      'printf "ENTER %s\\n" "$pkg" >> ../../traces/cargo.log\n' +
+      'sleep 0.12\n' +
+      'cat ../rt/src/lib.rs src/main.rs > "../../target/release/$pkg"\n' +
+      'printf "EXIT %s\\n" "$pkg" >> ../../traces/cargo.log\n',
+    );
+    let chmodRes = await runWith(['chmod', '+x', 'node_modules/.bin/cargo'], {cwd: root});
+    isTrue(chmodRes.succeeded(), chmodRes.stderr);
+
+    await write(root, 'Cargo.toml', '[workspace]\nmembers = ["crates/rt", "crates/a", "crates/b"]\n');
+    await write(root, 'Cargo.lock', 'version = 3\n');
+    await write(
+      root,
+      'zebra.json',
+      '{"locks": [], "scripts": {"all": {"dependencies": ["./crates/a:build", "./crates/b:build"]}}}\n',
+    );
+    await write(root, 'crates/rt/Cargo.toml', '[package]\nname = "rt"\nversion = "0.1.0"\n');
+    await write(root, 'crates/rt/src/lib.rs', 'rt-v1\n');
+    for (let name in ['a', 'b']) {
+      await write(
+        root,
+        `crates/${name}/Cargo.toml`,
+        `[package]\nname = "${name}"\nversion = "0.1.0"\n[dependencies]\nrt = { path = "../rt" }\n`,
+      );
+      await write(root, `crates/${name}/src/main.rs`, `bin-${name}\n`);
+      await write(
+        root,
+        `crates/${name}/zebra.json`,
+        '{"locks": [], "scripts": {"build": {"type": "rust:build"}}}\n',
+      );
+    }
+
+    let entry = new ScriptRef('', 'all');
+    let r1 = await buildTarget(root, entry, {parallelism: 2});
+    isTrue(r1.result.allSucceeded, formatBuildReport(r1, true));
+    isTrue(sourceOf(r1.result, 'crates/a:build') == StepSource.Ran);
+    isTrue(sourceOf(r1.result, 'crates/b:build') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'target/release/a')), 'rt-v1\nbin-a\n');
+    equal(await readFile(withRoot(root, 'target/release/b')), 'rt-v1\nbin-b\n');
+
+    // Built-in cargo(1) -> default(2) serialized the two concurrent rust:build steps.
+    let trace = await readFile(withRoot(root, 'traces/cargo.log'));
+    var cur = 0;
+    var maxCur = 0;
+    for (let line in trace.split('\n')) {
+      if (line.startsWith('ENTER ')) {
+        cur += 1;
+      } else if (line.startsWith('EXIT ')) {
+        cur -= 1;
+      }
+      if (cur > maxCur) {
+        maxCur = cur;
+      }
+    }
+    equal(maxCur, 1, `built-in cargo group should serialize cargo builds:\n${trace}`);
+
+    // Warm run skips cargo completely (solves #1296).
+    let r2 = await buildTarget(root, entry, {parallelism: 2});
+    isTrue(r2.result.allSucceeded, formatBuildReport(r2, true));
+    isTrue(sourceOf(r2.result, 'crates/a:build') == StepSource.Fresh);
+    isTrue(sourceOf(r2.result, 'crates/b:build') == StepSource.Fresh);
+
+    // Editing transitive path dependency crates/rt/src/lib.rs rebuilds both crates!
+    await write(root, 'crates/rt/src/lib.rs', 'rt-v2\n');
+    let r3 = await buildTarget(root, entry, {parallelism: 2});
+    isTrue(r3.result.allSucceeded, formatBuildReport(r3, true));
+    isTrue(sourceOf(r3.result, 'crates/a:build') == StepSource.Ran);
+    isTrue(sourceOf(r3.result, 'crates/b:build') == StepSource.Ran);
+    equal(await readFile(withRoot(root, 'target/release/a')), 'rt-v2\nbin-a\n');
+    equal(await readFile(withRoot(root, 'target/release/b')), 'rt-v2\nbin-b\n');
+  });
 });

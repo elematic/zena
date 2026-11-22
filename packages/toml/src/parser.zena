@@ -1,0 +1,958 @@
+/**
+ * TOML 1.0 parser.
+ *
+ * Parses standard tables (`[a.b]`), arrays of tables (`[[a.b]]`), dotted keys,
+ * bare/basic/literal keys, basic and literal single/multi-line strings,
+ * integers (decimal, hex, octal, binary with `_` separators), floats
+ * (including `inf` and `nan`), booleans, RFC 3339 / local dates and times,
+ * arrays, inline tables, and `#` comments.
+ */
+
+import {HashSet} from 'zena:collections';
+import {StringBuilder} from 'zena:core';
+import {
+  TomlArray,
+  TomlBool,
+  TomlDateTime,
+  TomlFloat,
+  TomlInt,
+  TomlParseError,
+  TomlString,
+  TomlTable,
+  TomlValue,
+} from './value.zena';
+
+let MAX_DEPTH = 256;
+
+function isBareKeyByte(b: i32) {
+  return (b >= 65 && b <= 90) ||
+    (b >= 97 && b <= 122) ||
+    (b >= 48 && b <= 57) ||
+    b == 95 ||
+    b == 45;
+}
+
+function isDigit(b: i32) {
+  return b >= 48 && b <= 57;
+}
+
+function hexValue(b: i32) {
+  if (b >= 48 && b <= 57) {
+    return b - 48;
+  }
+  if (b >= 65 && b <= 70) {
+    return b - 55;
+  }
+  if (b >= 97 && b <= 102) {
+    return b - 87;
+  }
+  return -1;
+}
+
+function appendUtf8CodePoint(sb: StringBuilder, cp: i32) {
+  if (cp < 0x80) {
+    sb.appendByte(cp);
+  } else if (cp < 0x800) {
+    sb.appendByte(0xC0 | (cp >> 6));
+    sb.appendByte(0x80 | (cp & 0x3F));
+  } else if (cp < 0x10000) {
+    sb.appendByte(0xE0 | (cp >> 12));
+    sb.appendByte(0x80 | ((cp >> 6) & 0x3F));
+    sb.appendByte(0x80 | (cp & 0x3F));
+  } else {
+    sb.appendByte(0xF0 | (cp >> 18));
+    sb.appendByte(0x80 | ((cp >> 12) & 0x3F));
+    sb.appendByte(0x80 | ((cp >> 6) & 0x3F));
+    sb.appendByte(0x80 | (cp & 0x3F));
+  }
+}
+
+function isDelimiter(b: i32) {
+  return b < 0 || b == 32 || b == 9 || b == 10 || b == 13 ||
+    b == 35 || b == 44 || b == 93 || b == 125;
+}
+
+function pow10(exp: i32) {
+  var result = 1.0;
+  var base = 10.0;
+  var e = if (exp < 0) 0 - exp else exp;
+  while (e > 0) {
+    if ((e & 1) == 1) {
+      result = result * base;
+    }
+    base = base * base;
+    e = e >> 1;
+  }
+  return if (exp < 0) 1.0 / result else result;
+}
+
+class TomlParser {
+  #input: String;
+  var #pos = 0;
+  var #line = 1;
+  var #col = 1;
+  var #depth = 0;
+  // Tracks explicitly defined `[table]` paths and inline-table paths so
+  // redefining them raises a TomlParseError per TOML 1.0.
+  #explicitTables = new HashSet<String>();
+  #frozenTables = new HashSet<String>();
+  #dottedTables = new HashSet<String>();
+
+  new(input: String) : #input = input;
+
+  #atEnd(): boolean {
+    return this.#pos >= this.#input.length;
+  }
+
+  #peek(offset: i32 = 0): i32 {
+    let idx = this.#pos + offset;
+    if (idx < 0 || idx >= this.#input.length) {
+      return -1;
+    }
+    return this.#input.getByteAt(idx);
+  }
+
+  #advance(): i32 {
+    let b = this.#input.getByteAt(this.#pos);
+    this.#pos += 1;
+    if (b == 10) {
+      this.#line += 1;
+      this.#col = 1;
+    } else {
+      this.#col += 1;
+    }
+    return b;
+  }
+
+  #error(message: String): never {
+    throw new TomlParseError(message, this.#line, this.#col);
+  }
+
+  #skipSpaces(): void {
+    while (!this.#atEnd()) {
+      let b = this.#peek();
+      if (b == 32 || b == 9) {
+        this.#advance();
+      } else {
+        break;
+      }
+    }
+  }
+
+  #skipComment(): void {
+    if (this.#peek() == 35) {
+      while (!this.#atEnd()) {
+        let b = this.#peek();
+        if (b == 10 || b == 13) {
+          break;
+        }
+        this.#advance();
+      }
+    }
+  }
+
+  #skipNewline(): boolean {
+    let b = this.#peek();
+    if (b == 13 && this.#peek(1) == 10) {
+      this.#advance();
+      this.#advance();
+      return true;
+    }
+    if (b == 10) {
+      this.#advance();
+      return true;
+    }
+    return false;
+  }
+
+  #skipWhitespaceAndComments(): void {
+    while (!this.#atEnd()) {
+      let b = this.#peek();
+      if (b == 32 || b == 9 || b == 10 || b == 13) {
+        this.#advance();
+      } else if (b == 35) {
+        this.#skipComment();
+      } else {
+        break;
+      }
+    }
+  }
+
+  #expectLineEnd(): void {
+    this.#skipSpaces();
+    this.#skipComment();
+    if (this.#atEnd()) {
+      return;
+    }
+    if (!this.#skipNewline()) {
+      this.#error('expected newline or end of file');
+    }
+  }
+
+  parse(): TomlTable {
+    let root = new TomlTable();
+    var current = root;
+    var currentPath = '';
+
+    while (true) {
+      this.#skipWhitespaceAndComments();
+      if (this.#atEnd()) {
+        break;
+      }
+      if (this.#peek() == 91) {
+        if (this.#peek(1) == 91) {
+          let (nextTable, nextPath) = this.#parseArrayOfTablesHeader(root);
+          current = nextTable;
+          currentPath = nextPath;
+        } else {
+          let (nextTable, nextPath) = this.#parseTableHeader(root);
+          current = nextTable;
+          currentPath = nextPath;
+        }
+      } else {
+        this.#parseKeyValue(current, currentPath);
+        this.#expectLineEnd();
+      }
+    }
+    return root;
+  }
+
+  #parseTableHeader(root: TomlTable): inline (TomlTable, String) {
+    this.#advance(); // '['
+    let keys = this.#parseDottedKey();
+    this.#skipSpaces();
+    if (this.#peek() != 93) {
+      this.#error('expected "]" to close table header');
+    }
+    this.#advance();
+    this.#expectLineEnd();
+
+    var cur = root;
+    var curPath = '';
+    for (var i = 0; i < keys.length; i += 1) {
+      let key = keys[i];
+      let isLast = i + 1 == keys.length;
+      let path = `${curPath}\0${key}`;
+      let existing = cur[key];
+      if (existing == null) {
+        let next = new TomlTable();
+        cur[key] = next;
+        cur = next;
+        curPath = path;
+      } else if (existing is TomlTable) {
+        if (this.#frozenTables.has(path)) {
+          this.#error(`cannot modify inline table "${key}"`);
+        }
+        if (isLast && (this.#explicitTables.has(path) || this.#dottedTables.has(path))) {
+          this.#error(`duplicate table "${key}"`);
+        }
+        cur = existing;
+        curPath = path;
+      } else if (existing is TomlArray) {
+        if (isLast) {
+          this.#error(`cannot redefine array "${key}" as a table`);
+        }
+        if (existing.length == 0) {
+          this.#error(`cannot index empty array "${key}"`);
+        }
+        let last = existing[existing.length - 1];
+        if (!(last is TomlTable)) {
+          this.#error(`cannot traverse non-table array "${key}"`);
+        }
+        cur = last;
+        curPath = `${path}#${i32ToString(existing.length - 1)}`;
+      } else {
+        this.#error(`cannot redefine key "${key}" as a table`);
+      }
+      if (isLast) {
+        this.#explicitTables.add(curPath);
+      }
+    }
+    return (cur, curPath);
+  }
+
+  #parseArrayOfTablesHeader(root: TomlTable): inline (TomlTable, String) {
+    this.#advance(); // '['
+    this.#advance(); // '['
+    let keys = this.#parseDottedKey();
+    this.#skipSpaces();
+    if (this.#peek() != 93 || this.#peek(1) != 93) {
+      this.#error('expected "]]" to close array of tables header');
+    }
+    this.#advance();
+    this.#advance();
+    this.#expectLineEnd();
+
+    var cur = root;
+    var curPath = '';
+    for (var i = 0; i < keys.length; i += 1) {
+      let key = keys[i];
+      let isLast = i + 1 == keys.length;
+      let path = `${curPath}\0${key}`;
+      let existing = cur[key];
+      if (!isLast) {
+        if (existing == null) {
+          let next = new TomlTable();
+          cur[key] = next;
+          cur = next;
+          curPath = path;
+        } else if (existing is TomlTable) {
+          if (this.#frozenTables.has(path)) {
+            this.#error(`cannot modify inline table "${key}"`);
+          }
+          cur = existing;
+          curPath = path;
+        } else if (existing is TomlArray) {
+          if (existing.length == 0) {
+            this.#error(`cannot index empty array "${key}"`);
+          }
+          let last = existing[existing.length - 1];
+          if (!(last is TomlTable)) {
+            this.#error(`cannot traverse non-table array "${key}"`);
+          }
+          cur = last;
+          curPath = `${path}#${i32ToString(existing.length - 1)}`;
+        } else {
+          this.#error(`cannot redefine key "${key}" as a table`);
+        }
+      } else {
+        var arr: TomlArray | null = null;
+        if (existing == null) {
+          let created = new TomlArray();
+          cur[key] = created;
+          arr = created;
+        } else if (existing is TomlArray) {
+          if (this.#frozenTables.has(path)) {
+            this.#error(`cannot append to static array "${key}"`);
+          }
+          arr = existing;
+        } else {
+          this.#error(`cannot redefine "${key}" as an array of tables`);
+        }
+        let targetArr = arr;
+        let elem = new TomlTable();
+        let elemPath = `${path}#${i32ToString(targetArr.length)}`;
+        targetArr.push(elem);
+        cur = elem;
+        curPath = elemPath;
+      }
+    }
+    return (cur, curPath);
+  }
+
+  #parseKeyValue(table: TomlTable, tablePath: String): void {
+    let keys = this.#parseDottedKey();
+    this.#skipSpaces();
+    if (this.#peek() != 61) {
+      this.#error('expected "=" after key');
+    }
+    this.#advance();
+    this.#skipSpaces();
+    let value = this.#parseValue();
+
+    var cur = table;
+    var curPath = tablePath;
+    for (var i = 0; i < keys.length - 1; i += 1) {
+      let key = keys[i];
+      let path = `${curPath}\0${key}`;
+      let existing = cur[key];
+      if (existing == null) {
+        let next = new TomlTable();
+        this.#dottedTables.add(path);
+        cur[key] = next;
+        cur = next;
+        curPath = path;
+      } else if (existing is TomlTable) {
+        if (this.#frozenTables.has(path)) {
+          this.#error(`cannot modify inline table "${key}"`);
+        }
+        cur = existing;
+        curPath = path;
+      } else {
+        this.#error(`cannot use non-table key "${key}" in dotted key`);
+      }
+    }
+    let lastKey = keys[keys.length - 1];
+    let lastPath = `${curPath}\0${lastKey}`;
+    if (cur.has(lastKey)) {
+      this.#error(`duplicate key "${lastKey}"`);
+    }
+    if (value is TomlTable || value is TomlArray) {
+      this.#frozenTables.add(lastPath);
+    }
+    cur[lastKey] = value;
+  }
+
+  #parseDottedKey(): Array<String> {
+    let parts = new GrowableArray<String>();
+    while (true) {
+      this.#skipSpaces();
+      parts.push(this.#parseKeyPart());
+      this.#skipSpaces();
+      if (this.#peek() == 46) {
+        this.#advance();
+      } else {
+        break;
+      }
+    }
+    return parts;
+  }
+
+  #parseKeyPart(): String {
+    let b = this.#peek();
+    if (b == 34) {
+      if (this.#peek(1) == 34 && this.#peek(2) == 34) {
+        this.#error('multi-line strings are not allowed as keys');
+      }
+      return this.#parseBasicString();
+    }
+    if (b == 39) {
+      if (this.#peek(1) == 39 && this.#peek(2) == 39) {
+        this.#error('multi-line strings are not allowed as keys');
+      }
+      return this.#parseLiteralString();
+    }
+    let start = this.#pos;
+    while (!this.#atEnd() && isBareKeyByte(this.#peek())) {
+      this.#advance();
+    }
+    if (this.#pos == start) {
+      this.#error('expected key');
+    }
+    return this.#input.sliceBytes(start, this.#pos);
+  }
+
+  #parseValue(): TomlValue {
+    let b = this.#peek();
+    if (b < 0) {
+      this.#error('unexpected end of input while parsing value');
+    }
+    if (b == 34) {
+      if (this.#peek(1) == 34 && this.#peek(2) == 34) {
+        return new TomlString(this.#parseMultilineBasicString());
+      }
+      return new TomlString(this.#parseBasicString());
+    }
+    if (b == 39) {
+      if (this.#peek(1) == 39 && this.#peek(2) == 39) {
+        return new TomlString(this.#parseMultilineLiteralString());
+      }
+      return new TomlString(this.#parseLiteralString());
+    }
+    if (b == 91) {
+      return this.#parseArray();
+    }
+    if (b == 123) {
+      return this.#parseInlineTable();
+    }
+    return this.#parseBareValue();
+  }
+
+  #parseBasicString(): String {
+    this.#advance(); // '"'
+    let sb = new StringBuilder();
+    while (!this.#atEnd()) {
+      let b = this.#advance();
+      if (b == 34) {
+        return sb.toString();
+      }
+      if (b == 10 || b == 13) {
+        this.#error('unterminated basic string');
+      }
+      if (b == 92) {
+        this.#parseEscape(sb);
+      } else {
+        sb.appendByte(b);
+      }
+    }
+    this.#error('unterminated basic string');
+  }
+
+  #parseMultilineBasicString(): String {
+    this.#advance();
+    this.#advance();
+    this.#advance();
+    // Trim a newline immediately following the opening delimiter.
+    this.#skipNewline();
+    let sb = new StringBuilder();
+    while (!this.#atEnd()) {
+      if (this.#peek() == 34 && this.#peek(1) == 34 && this.#peek(2) == 34) {
+        this.#advance();
+        this.#advance();
+        this.#advance();
+        // Up to two extra quotes immediately before the closing delimiter are content.
+        var extraQuotes = 0;
+        while (this.#peek() == 34 && extraQuotes < 2) {
+          this.#advance();
+          sb.appendByte(34);
+          extraQuotes += 1;
+        }
+        return sb.toString();
+      }
+      let b = this.#advance();
+      if (b == 92) {
+        // Line-ending backslash trims whitespace and newlines.
+        var look = 0;
+        while (this.#peek(look) == 32 || this.#peek(look) == 9) {
+          look += 1;
+        }
+        if (this.#peek(look) == 10 || this.#peek(look) == 13) {
+          while (!this.#atEnd()) {
+            let c = this.#peek();
+            if (c == 32 || c == 9 || c == 10 || c == 13) {
+              this.#advance();
+            } else {
+              break;
+            }
+          }
+        } else {
+          this.#parseEscape(sb);
+        }
+      } else {
+        sb.appendByte(b);
+      }
+    }
+    this.#error('unterminated multi-line basic string');
+  }
+
+  #parseEscape(sb: StringBuilder): void {
+    if (this.#atEnd()) {
+      this.#error('unterminated escape sequence');
+    }
+    let esc = this.#advance();
+    if (esc == 98) {
+      sb.appendByte(8);
+    } else if (esc == 116) {
+      sb.appendByte(9);
+    } else if (esc == 110) {
+      sb.appendByte(10);
+    } else if (esc == 102) {
+      sb.appendByte(12);
+    } else if (esc == 114) {
+      sb.appendByte(13);
+    } else if (esc == 34) {
+      sb.appendByte(34);
+    } else if (esc == 92) {
+      sb.appendByte(92);
+    } else if (esc == 117 || esc == 85) {
+      let digits = if (esc == 117) 4 else 8;
+      var cp = 0;
+      for (var i = 0; i < digits; i += 1) {
+        if (this.#atEnd()) {
+          this.#error('unterminated unicode escape');
+        }
+        let hv = hexValue(this.#advance());
+        if (hv < 0) {
+          this.#error('invalid hex digit in unicode escape');
+        }
+        cp = (cp << 4) | hv;
+      }
+      if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+        this.#error('invalid unicode scalar value');
+      }
+      appendUtf8CodePoint(sb, cp);
+    } else {
+      this.#error('invalid escape character');
+    }
+  }
+
+  #parseLiteralString(): String {
+    this.#advance(); // '\''
+    let start = this.#pos;
+    while (!this.#atEnd()) {
+      let b = this.#advance();
+      if (b == 39) {
+        return this.#input.sliceBytes(start, this.#pos - 1);
+      }
+      if (b == 10 || b == 13) {
+        this.#error('unterminated literal string');
+      }
+    }
+    this.#error('unterminated literal string');
+  }
+
+  #parseMultilineLiteralString(): String {
+    this.#advance();
+    this.#advance();
+    this.#advance();
+    this.#skipNewline();
+    let sb = new StringBuilder();
+    while (!this.#atEnd()) {
+      if (this.#peek() == 39 && this.#peek(1) == 39 && this.#peek(2) == 39) {
+        this.#advance();
+        this.#advance();
+        this.#advance();
+        var extra = 0;
+        while (this.#peek() == 39 && extra < 2) {
+          this.#advance();
+          sb.appendByte(39);
+          extra += 1;
+        }
+        return sb.toString();
+      }
+      sb.appendByte(this.#advance());
+    }
+    this.#error('unterminated multi-line literal string');
+  }
+
+  #parseArray(): TomlArray {
+    if (this.#depth >= MAX_DEPTH) {
+      this.#error('nesting depth limit exceeded');
+    }
+    this.#depth += 1;
+    this.#advance(); // '['
+    let arr = new TomlArray();
+    while (true) {
+      this.#skipWhitespaceAndComments();
+      if (this.#peek() == 93) {
+        this.#advance();
+        this.#depth -= 1;
+        return arr;
+      }
+      arr.push(this.#parseValue());
+      this.#skipWhitespaceAndComments();
+      let next = this.#peek();
+      if (next == 44) {
+        this.#advance();
+      } else if (next == 93) {
+        this.#advance();
+        this.#depth -= 1;
+        return arr;
+      } else {
+        this.#error('expected "," or "]" in array');
+      }
+    }
+  }
+
+  #parseInlineTable(): TomlTable {
+    if (this.#depth >= MAX_DEPTH) {
+      this.#error('nesting depth limit exceeded');
+    }
+    this.#depth += 1;
+    this.#advance(); // '{'
+    let table = new TomlTable();
+    let inlinePath = `<inline@${i32ToString(this.#pos)}>`;
+    this.#skipSpaces();
+    if (this.#peek() == 125) {
+      this.#advance();
+      this.#depth -= 1;
+      return table;
+    }
+    while (true) {
+      this.#skipSpaces();
+      this.#parseKeyValue(table, inlinePath);
+      this.#skipSpaces();
+      let next = this.#peek();
+      if (next == 44) {
+        this.#advance();
+      } else if (next == 125) {
+        this.#advance();
+        this.#depth -= 1;
+        return table;
+      } else {
+        this.#error('expected "," or "}" in inline table');
+      }
+    }
+  }
+
+  #parseBareValue(): TomlValue {
+    let start = this.#pos;
+    // RFC 3339 datetimes may contain a single space separating date and time.
+    while (!isDelimiter(this.#peek())) {
+      this.#advance();
+    }
+    var token = this.#input.sliceBytes(start, this.#pos);
+    // Handle `YYYY-MM-DD HH:MM:SS...` space-separated datetime.
+    if (
+      token.length == 10 &&
+      token.getByteAt(4) == 45 &&
+      token.getByteAt(7) == 45 &&
+      this.#peek() == 32 &&
+      isDigit(this.#peek(1)) &&
+      isDigit(this.#peek(2)) &&
+      this.#peek(3) == 58
+    ) {
+      this.#advance();
+      while (!isDelimiter(this.#peek())) {
+        this.#advance();
+      }
+      token = this.#input.sliceBytes(start, this.#pos);
+    }
+
+    if (token == '') {
+      this.#error('expected value');
+    }
+    if (token == 'true') {
+      return new TomlBool(true);
+    }
+    if (token == 'false') {
+      return new TomlBool(false);
+    }
+    if (token == 'inf' || token == '+inf') {
+      return new TomlFloat(1.0 / 0.0);
+    }
+    if (token == '-inf') {
+      return new TomlFloat(-1.0 / 0.0);
+    }
+    if (token == 'nan' || token == '+nan' || token == '-nan') {
+      return new TomlFloat(0.0 / 0.0);
+    }
+
+    let dt = tryParseDateTime(token);
+    if (dt != null) {
+      return dt;
+    }
+
+    let num = tryParseNumber(token);
+    if (num != null) {
+      return num;
+    }
+
+    this.#error(`invalid TOML value "${token}"`);
+  }
+}
+
+function tryParseDateTime(token: String): TomlDateTime? {
+  // Local time: HH:MM:SS(.frac)?
+  if (
+    token.length >= 8 &&
+    isDigit(token.getByteAt(0)) &&
+    isDigit(token.getByteAt(1)) &&
+    token.getByteAt(2) == 58 &&
+    isDigit(token.getByteAt(3)) &&
+    isDigit(token.getByteAt(4)) &&
+    token.getByteAt(5) == 58
+  ) {
+    return new TomlDateTime(token, 'local-time');
+  }
+  // Date or datetime: YYYY-MM-DD...
+  if (
+    token.length >= 10 &&
+    isDigit(token.getByteAt(0)) &&
+    isDigit(token.getByteAt(1)) &&
+    isDigit(token.getByteAt(2)) &&
+    isDigit(token.getByteAt(3)) &&
+    token.getByteAt(4) == 45 &&
+    isDigit(token.getByteAt(5)) &&
+    isDigit(token.getByteAt(6)) &&
+    token.getByteAt(7) == 45 &&
+    isDigit(token.getByteAt(8)) &&
+    isDigit(token.getByteAt(9))
+  ) {
+    if (token.length == 10) {
+      return new TomlDateTime(token, 'local-date');
+    }
+    let sep = token.getByteAt(10);
+    if (sep == 84 || sep == 116 || sep == 32) {
+      let timePart = token.sliceBytes(11, token.length);
+      let hasOffset = timePart.endsWith('Z') ||
+        timePart.endsWith('z') ||
+        timePart.contains('+') ||
+        timePart.contains('-');
+      return new TomlDateTime(
+        token,
+        if (hasOffset) 'offset-datetime' else 'local-datetime',
+      );
+    }
+  }
+  return null;
+}
+
+function tryParseRadixInt(digits: String, radix: i64): TomlInt? {
+  if (digits.length == 0 || digits.startsWith('_') || digits.endsWith('_')) {
+    return null;
+  }
+  var acc = 0 as i64;
+  var prevUnderscore = false;
+  var count = 0;
+  for (var i = 0; i < digits.length; i += 1) {
+    let b = digits.getByteAt(i);
+    if (b == 95) {
+      if (prevUnderscore) {
+        return null;
+      }
+      prevUnderscore = true;
+      continue;
+    }
+    prevUnderscore = false;
+    let hv = hexValue(b);
+    if (hv < 0 || (hv as i64) >= radix) {
+      return null;
+    }
+    acc = acc * radix + (hv as i64);
+    count += 1;
+  }
+  return if (count > 0) new TomlInt(acc) else null;
+}
+
+function tryParseNumber(token: String): TomlValue? {
+  if (token.startsWith('0x')) {
+    return tryParseRadixInt(token.sliceBytes(2, token.length), 16 as i64);
+  }
+  if (token.startsWith('0o')) {
+    return tryParseRadixInt(token.sliceBytes(2, token.length), 8 as i64);
+  }
+  if (token.startsWith('0b')) {
+    return tryParseRadixInt(token.sliceBytes(2, token.length), 2 as i64);
+  }
+
+  var i = 0;
+  var negative = false;
+  let first = token.getByteAt(0);
+  if (first == 45) {
+    negative = true;
+    i = 1;
+  } else if (first == 43) {
+    i = 1;
+  }
+  if (i >= token.length) {
+    return null;
+  }
+
+  let isFloat = token.contains('.') || token.contains('e') || token.contains('E');
+  if (!isFloat) {
+    // Leading zeros are disallowed on decimal integers except plain `0`.
+    if (token.getByteAt(i) == 48 && i + 1 < token.length) {
+      return null;
+    }
+    if (token.getByteAt(i) == 95 || token.getByteAt(token.length - 1) == 95) {
+      return null;
+    }
+    var acc = 0 as i64;
+    var prevUnderscore = false;
+    var digits = 0;
+    while (i < token.length) {
+      let b = token.getByteAt(i);
+      if (b == 95) {
+        if (prevUnderscore) {
+          return null;
+        }
+        prevUnderscore = true;
+      } else if (isDigit(b)) {
+        prevUnderscore = false;
+        acc = acc * (10 as i64) + ((b - 48) as i64);
+        digits += 1;
+      } else {
+        return null;
+      }
+      i += 1;
+    }
+    if (digits == 0) {
+      return null;
+    }
+    return new TomlInt(if (negative) (0 as i64) - acc else acc);
+  }
+
+  // Float parsing: integer part [ '.' frac part ] [ ('e'|'E') ['+'|'-'] exp ].
+  if (token.getByteAt(i) == 95) {
+    return null;
+  }
+  var intPart = 0.0;
+  var intDigits = 0;
+  var prevUnderscore = false;
+  let intStart = i;
+  while (i < token.length) {
+    let b = token.getByteAt(i);
+    if (b == 95) {
+      if (prevUnderscore || intDigits == 0) {
+        return null;
+      }
+      prevUnderscore = true;
+      i += 1;
+    } else if (isDigit(b)) {
+      prevUnderscore = false;
+      intPart = intPart * 10.0 + ((b - 48) as f64);
+      intDigits += 1;
+      i += 1;
+    } else {
+      break;
+    }
+  }
+  if (intDigits == 0 || prevUnderscore) {
+    return null;
+  }
+  if (intDigits > 1 && token.getByteAt(intStart) == 48) {
+    return null;
+  }
+
+  var fracPart = 0.0;
+  var fracScale = 0.1;
+  if (i < token.length && token.getByteAt(i) == 46) {
+    i += 1;
+    var fracDigits = 0;
+    prevUnderscore = false;
+    while (i < token.length) {
+      let b = token.getByteAt(i);
+      if (b == 95) {
+        if (prevUnderscore || fracDigits == 0) {
+          return null;
+        }
+        prevUnderscore = true;
+        i += 1;
+      } else if (isDigit(b)) {
+        prevUnderscore = false;
+        fracPart = fracPart + ((b - 48) as f64) * fracScale;
+        fracScale = fracScale * 0.1;
+        fracDigits += 1;
+        i += 1;
+      } else {
+        break;
+      }
+    }
+    if (fracDigits == 0 || prevUnderscore) {
+      return null;
+    }
+  }
+
+  var expVal = 0;
+  if (i < token.length && (token.getByteAt(i) == 101 || token.getByteAt(i) == 69)) {
+    i += 1;
+    var expNeg = false;
+    if (i < token.length && token.getByteAt(i) == 45) {
+      expNeg = true;
+      i += 1;
+    } else if (i < token.length && token.getByteAt(i) == 43) {
+      i += 1;
+    }
+    var expDigits = 0;
+    prevUnderscore = false;
+    while (i < token.length) {
+      let b = token.getByteAt(i);
+      if (b == 95) {
+        if (prevUnderscore || expDigits == 0) {
+          return null;
+        }
+        prevUnderscore = true;
+        i += 1;
+      } else if (isDigit(b)) {
+        prevUnderscore = false;
+        expVal = expVal * 10 + (b - 48);
+        expDigits += 1;
+        i += 1;
+      } else {
+        break;
+      }
+    }
+    if (expDigits == 0 || prevUnderscore) {
+      return null;
+    }
+    if (expNeg) {
+      expVal = 0 - expVal;
+    }
+  }
+
+  if (i != token.length) {
+    return null;
+  }
+  var value = (intPart + fracPart) * pow10(expVal);
+  if (negative) {
+    value = 0.0 - value;
+  }
+  return new TomlFloat(value);
+}
+
+/** Parses a TOML 1.0 document into its root `TomlTable`. */
+export function parseToml(input: String): TomlTable {
+  let parser = new TomlParser(input);
+  return parser.parse();
+}

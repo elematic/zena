@@ -1,0 +1,581 @@
+/**
+ * Declarative `"type": "rust:build"` rule: reads `Cargo.toml` (plus any
+ * enclosing Cargo workspace `Cargo.toml` and transitive `path` dependency
+ * `Cargo.toml` manifests through `RuleResolveContext.readFile` so Zebra's
+ * plan cache and `--watch` mode track every manifest automatically) and
+ * derives `command`, `files`, `output`, `clean`, and `concurrencyGroup`.
+ */
+
+import {Future} from 'zena:async';
+import {HashSet} from 'zena:collections';
+import {Box, StringBuilder, join} from 'zena:core';
+import {JsonObject} from 'zena:json';
+import {
+  TomlArray,
+  TomlBool,
+  TomlString,
+  TomlTable,
+  parseToml,
+} from 'toml';
+import {joinWorkspace} from './fs-util.zena';
+import {
+  RuleResolveContext,
+  RuleResolver,
+  parseCommonRuleFields,
+} from './rules.zena';
+import {appendShellArgs} from './shell.zena';
+import {
+  CARGO_CONCURRENCY_GROUP,
+  ConfigError,
+  RUST_BUILD_RULE_TYPE,
+  ScriptConfig,
+  stringList,
+} from './wireit-config.zena';
+
+export {CARGO_CONCURRENCY_GROUP, RUST_BUILD_RULE_TYPE} from './wireit-config.zena';
+
+function parentDir(wsPath: String) {
+  var slash = -1;
+  for (var i = 0; i < wsPath.length; i += 1) {
+    if (wsPath.getByteAt(i) == 47) {
+      slash = i;
+    }
+  }
+  return if (slash < 0) '' else wsPath.sliceBytes(0, slash);
+}
+
+function stripTrailingSlashes(raw: String) {
+  var out = raw;
+  while (out.length > 1 && out.endsWith('/')) {
+    out = out.sliceBytes(0, out.length - 1);
+  }
+  return out;
+}
+
+/** Converts a workspace-relative path to a path relative to `packageDir`. */
+function relativeFromPackage(packageDir: String, wsPath: String) {
+  if (packageDir == '') {
+    return if (wsPath == '') '.' else wsPath;
+  }
+  if (wsPath == packageDir) {
+    return '.';
+  }
+  let prefix = `${packageDir}/`;
+  if (wsPath.startsWith(prefix)) {
+    return wsPath.sliceBytes(prefix.length, wsPath.length);
+  }
+  let fromParts = packageDir.split('/');
+  let toParts: Array<String> = if (wsPath == '')
+    new Array<String>()
+  else
+    wsPath.split('/');
+  var common = 0;
+  while (
+    common < fromParts.length &&
+    common < toParts.length &&
+    fromParts[common] == toParts[common]
+  ) {
+    common += 1;
+  }
+  let out = new GrowableArray<String>();
+  for (var i = common; i < fromParts.length; i += 1) {
+    if (fromParts[i] != '') {
+      out.push('..');
+    }
+  }
+  for (var i = common; i < toParts.length; i += 1) {
+    if (toParts[i] != '') {
+      out.push(toParts[i]);
+    }
+  }
+  return if (out.length == 0) '.' else join(out, '/');
+}
+
+function addUnique(items: GrowableArray<String>, seen: HashSet<String>, value: String) {
+  if (seen.add(value)) {
+    items.push(value);
+  }
+}
+
+function replaceHyphensWithUnderscores(name: String) {
+  let sb = new StringBuilder(name.length);
+  for (var i = 0; i < name.length; i += 1) {
+    let b = name.getByteAt(i);
+    sb.appendByte(if (b == 45) 95 else b);
+  }
+  return sb.toString();
+}
+
+function parseCargoToml(wsPath: String, text: String) {
+  return try {
+    parseToml(text)
+  } catch (e) {
+    throw new ConfigError(`${wsPath}: ${e.message}`)
+  };
+}
+
+/** Collects `path` dependencies from a Cargo `[dependencies]`-shaped table. */
+function collectPathDepsFromSection(
+  section: TomlTable?,
+  crateDir: String,
+  wsRootDir: String,
+  wsDeps: TomlTable?,
+  outDirs: GrowableArray<String>,
+) {
+  if (section == null) {
+    return;
+  }
+  section.forEach((depName, depVal) => {
+    if (!(depVal is TomlTable)) {
+      return;
+    }
+    let directPath = depVal.getString('path');
+    if (directPath != null) {
+      let depDir = joinWorkspace(crateDir, stripTrailingSlashes(directPath));
+      if (!depDir.startsWith('..')) {
+        outDirs.push(depDir);
+      }
+      return;
+    }
+    if (let (true, isWs) = depVal.getBool('workspace')) {
+      if (isWs && wsDeps != null) {
+        let wsEntry = wsDeps.getTable(depName);
+        let wsPath = wsEntry?.getString('path');
+        if (wsPath != null) {
+          let depDir = joinWorkspace(wsRootDir, stripTrailingSlashes(wsPath));
+          if (!depDir.startsWith('..')) {
+            outDirs.push(depDir);
+          }
+        }
+      }
+    }
+  });
+}
+
+function collectCratePathDeps(
+  manifest: TomlTable,
+  crateDir: String,
+  wsRootDir: String,
+  wsDeps: TomlTable?,
+) {
+  let outDirs = new GrowableArray<String>();
+  collectPathDepsFromSection(manifest.getTable('dependencies'), crateDir, wsRootDir, wsDeps, outDirs);
+  collectPathDepsFromSection(manifest.getTable('build-dependencies'), crateDir, wsRootDir, wsDeps, outDirs);
+  let targetTable = manifest.getTable('target');
+  if (targetTable != null) {
+    targetTable.forEach((_, cfgVal) => {
+      if (cfgVal is TomlTable) {
+        collectPathDepsFromSection(cfgVal.getTable('dependencies'), crateDir, wsRootDir, wsDeps, outDirs);
+        collectPathDepsFromSection(cfgVal.getTable('build-dependencies'), crateDir, wsRootDir, wsDeps, outDirs);
+      }
+    });
+  }
+  return outDirs;
+}
+
+function addCrateSourceFiles(
+  packageDir: String,
+  crateDir: String,
+  manifest: TomlTable,
+  files: GrowableArray<String>,
+  seen: HashSet<String>,
+) {
+  let cargoRel = relativeFromPackage(packageDir, joinWorkspace(crateDir, 'Cargo.toml'));
+  addUnique(files, seen, cargoRel);
+
+  let srcGlob = relativeFromPackage(packageDir, joinWorkspace(crateDir, 'src/**/*.rs'));
+  addUnique(files, seen, srcGlob);
+
+  // Track `build.rs` (or a custom `package.build` path) unless `build = false`.
+  let pkg = manifest.getTable('package');
+  let rawBuild = pkg?.get('build');
+  if (rawBuild is TomlBool && !rawBuild.value) {
+    // Explicitly disabled build script.
+  } else if (rawBuild is TomlString && rawBuild.value != '') {
+    addUnique(
+      files,
+      seen,
+      relativeFromPackage(packageDir, joinWorkspace(crateDir, rawBuild.value)),
+    );
+  } else {
+    addUnique(
+      files,
+      seen,
+      relativeFromPackage(packageDir, joinWorkspace(crateDir, 'build.rs')),
+    );
+  }
+
+  let lib = manifest.getTable('lib');
+  let libPath = lib?.getString('path');
+  if (libPath != null && libPath != '') {
+    addUnique(
+      files,
+      seen,
+      relativeFromPackage(packageDir, joinWorkspace(crateDir, libPath)),
+    );
+  }
+
+  let bins = manifest.getArray('bin');
+  if (bins != null) {
+    for (let item in bins.items()) {
+      if (item is TomlTable) {
+        let binPath = item.getString('path');
+        if (binPath != null && binPath != '') {
+          addUnique(
+            files,
+            seen,
+            relativeFromPackage(packageDir, joinWorkspace(crateDir, binPath)),
+          );
+        }
+      }
+    }
+  }
+}
+
+class CargoWorkspaceInfo {
+  rootDir: String;
+  manifest: TomlTable?;
+  isMultiCrate: boolean;
+
+  new(this.rootDir, this.manifest, this.isMultiCrate);
+}
+
+/**
+ * Walks upward from `crateDir` to find the enclosing Cargo `[workspace]`
+ * root, if any. A crate whose own `Cargo.toml` declares `[workspace]` is
+ * standalone and stops immediately.
+ */
+async function findCargoWorkspace(
+  crateDir: String,
+  crateManifest: TomlTable,
+  readFile: (path: String) => Future<String?>,
+): Future<CargoWorkspaceInfo> {
+  if (crateManifest.getTable('workspace') != null) {
+    return new CargoWorkspaceInfo(crateDir, crateManifest, false);
+  }
+  var cur = crateDir;
+  while (cur != '') {
+    cur = parentDir(cur);
+    let candidatePath = joinWorkspace(cur, 'Cargo.toml');
+    let text = await readFile(candidatePath);
+    if (text != null) {
+      let parsed = parseCargoToml(candidatePath, text);
+      if (parsed.getTable('workspace') != null) {
+        return new CargoWorkspaceInfo(cur, parsed, true);
+      }
+    }
+  }
+  return new CargoWorkspaceInfo(crateDir, null, false);
+}
+
+function libHasCrateType(lib: TomlTable, expected: String) {
+  let raw = lib.getArray('crate-type');
+  if (raw == null) {
+    return false;
+  }
+  for (let item in raw.items()) {
+    if (item is TomlString && item.value == expected) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Resolver for `"type": "rust:build"` Cargo build steps.
+ *
+ * Reads `Cargo.toml` (or `"manifest": "<path>"`), locates the enclosing Cargo
+ * workspace, recursively follows transitive `path` dependencies, and derives
+ * `files`, `output`, `clean: "false"`, `concurrencyGroup: "cargo"`, and the
+ * `cargo build` command.
+ */
+export class RustBuildRuleResolver implements RuleResolver {
+  ruleType: String {
+    get { return RUST_BUILD_RULE_TYPE; }
+  }
+
+  async resolve(entry: JsonObject, ctx: RuleResolveContext): Future<ScriptConfig> {
+    let common = parseCommonRuleFields(
+      entry,
+      ctx,
+      [
+        'manifest',
+        'package',
+        'profile',
+        'target',
+        'targetDir',
+        'features',
+        'noDefaultFeatures',
+        'allFeatures',
+        'bins',
+        'output',
+        'args',
+      ],
+      RUST_BUILD_RULE_TYPE,
+    );
+    let where = `script "${ctx.where}"`;
+
+    let rawManifest = entry['manifest'];
+    let manifestRel = if (rawManifest != null) {
+      if (!(rawManifest is String) || rawManifest == '') {
+        throw new ConfigError(`${where}: "manifest" must be a non-empty string`);
+      }
+      rawManifest
+    } else {
+      'Cargo.toml'
+    };
+
+    let rawPkg = entry['package'];
+    let pkgOverride = if (rawPkg != null) {
+      if (!(rawPkg is String) || rawPkg == '') {
+        throw new ConfigError(`${where}: "package" must be a non-empty string`);
+      }
+      rawPkg
+    } else {
+      null
+    };
+
+    let rawProfile = entry['profile'];
+    let profile = if (rawProfile != null) {
+      if (!(rawProfile is String) || rawProfile == '') {
+        throw new ConfigError(`${where}: "profile" must be a non-empty string`);
+      }
+      rawProfile
+    } else {
+      'release'
+    };
+
+    let rawTarget = entry['target'];
+    let targetTriple = if (rawTarget != null) {
+      if (!(rawTarget is String) || rawTarget == '') {
+        throw new ConfigError(`${where}: "target" must be a non-empty string`);
+      }
+      rawTarget
+    } else {
+      null
+    };
+
+    let rawTargetDir = entry['targetDir'];
+    let targetDirRel = if (rawTargetDir != null) {
+      if (!(rawTargetDir is String) || rawTargetDir == '') {
+        throw new ConfigError(`${where}: "targetDir" must be a non-empty string`);
+      }
+      stripTrailingSlashes(rawTargetDir)
+    } else {
+      null
+    };
+
+    let features = stringList(entry['features'], `${where}: features`);
+    let bins = stringList(entry['bins'], `${where}: bins`);
+    let extraArgs = stringList(entry['args'], `${where}: args`);
+
+    var noDefaultFeatures = false;
+    let rawNoDef = entry['noDefaultFeatures'];
+    if (rawNoDef != null) {
+      if (!(rawNoDef is Box<boolean>)) {
+        throw new ConfigError(`${where}: "noDefaultFeatures" must be a boolean`);
+      }
+      noDefaultFeatures = rawNoDef.value;
+    }
+
+    var allFeatures = false;
+    let rawAllFeat = entry['allFeatures'];
+    if (rawAllFeat != null) {
+      if (!(rawAllFeat is Box<boolean>)) {
+        throw new ConfigError(`${where}: "allFeatures" must be a boolean`);
+      }
+      allFeatures = rawAllFeat.value;
+    }
+
+    let hasExplicitOutput = entry['output'] != null;
+    let explicitOutput = stringList(entry['output'], `${where}: output`);
+    let hasExplicitClean = entry['clean'] != null;
+
+    let wsManifest = joinWorkspace(ctx.ref.packageDir, manifestRel);
+    if (wsManifest.startsWith('..')) {
+      throw new ConfigError(`${where}: manifest "${manifestRel}" escapes the workspace`);
+    }
+    let manifestText = await ctx.readFile(wsManifest);
+    if (manifestText == null) {
+      throw new ConfigError(`${where}: Cargo manifest "${wsManifest}" not found`);
+    }
+    let crateManifest = parseCargoToml(wsManifest, manifestText);
+    let crateDir = parentDir(wsManifest);
+
+    let pkgTable = crateManifest.getTable('package');
+    let pkgName = pkgOverride ?? pkgTable?.getString('name');
+    if (pkgName == null || pkgName == '') {
+      throw new ConfigError(
+        `${where}: "${wsManifest}" has no [package].name and "package" was not specified`,
+      );
+    }
+
+    let cargoWs = await findCargoWorkspace(crateDir, crateManifest, ctx.readFile);
+    let wsDeps = cargoWs.manifest?.getTable('workspace')?.getTable('dependencies');
+
+    // Track workspace Cargo.toml (if distinct) and Cargo.lock.
+    if (cargoWs.rootDir != crateDir) {
+      addUnique(
+        common.files,
+        common.seenFiles,
+        relativeFromPackage(ctx.ref.packageDir, joinWorkspace(cargoWs.rootDir, 'Cargo.toml')),
+      );
+    }
+    addUnique(
+      common.files,
+      common.seenFiles,
+      relativeFromPackage(ctx.ref.packageDir, joinWorkspace(cargoWs.rootDir, 'Cargo.lock')),
+    );
+
+    // Traverse this crate and all transitive path dependencies.
+    let visitedCrates = new HashSet<String>();
+    visitedCrates.add(crateDir);
+    addCrateSourceFiles(
+      ctx.ref.packageDir,
+      crateDir,
+      crateManifest,
+      common.files,
+      common.seenFiles,
+    );
+    let pendingDirs = collectCratePathDeps(crateManifest, crateDir, cargoWs.rootDir, wsDeps);
+    var nextIdx = 0;
+    while (nextIdx < pendingDirs.length) {
+      let depDir = pendingDirs[nextIdx];
+      nextIdx += 1;
+      if (!visitedCrates.add(depDir)) {
+        continue;
+      }
+      let depManifestPath = joinWorkspace(depDir, 'Cargo.toml');
+      let depText = await ctx.readFile(depManifestPath);
+      if (depText == null) {
+        throw new ConfigError(
+          `${where}: path dependency manifest "${depManifestPath}" not found`,
+        );
+      }
+      let depManifest = parseCargoToml(depManifestPath, depText);
+      addCrateSourceFiles(
+        ctx.ref.packageDir,
+        depDir,
+        depManifest,
+        common.files,
+        common.seenFiles,
+      );
+      for (let childDir in collectCratePathDeps(depManifest, depDir, cargoWs.rootDir, wsDeps)) {
+        if (!visitedCrates.has(childDir)) {
+          pendingDirs.push(childDir);
+        }
+      }
+    }
+
+    // Derive output artifact paths.
+    let targetBasePkg = targetDirRel ??
+      relativeFromPackage(ctx.ref.packageDir, joinWorkspace(cargoWs.rootDir, 'target'));
+    let profileDir = if (profile == 'dev') 'debug' else profile;
+    let artifactDir = if (targetTriple != null)
+      `${targetBasePkg}/${targetTriple}/${profileDir}`
+    else
+      `${targetBasePkg}/${profileDir}`;
+
+    let outputs = new GrowableArray<String>();
+    let seenOutputs = new HashSet<String>();
+    if (hasExplicitOutput) {
+      for (let item in explicitOutput) {
+        addUnique(outputs, seenOutputs, item);
+      }
+    } else if (bins.length > 0) {
+      for (let binName in bins) {
+        addUnique(outputs, seenOutputs, `${artifactDir}/${binName}`);
+      }
+    } else {
+      let binArray = crateManifest.getArray('bin');
+      let libTable = crateManifest.getTable('lib');
+      if (binArray != null && binArray.length > 0) {
+        for (let item in binArray.items()) {
+          if (item is TomlTable) {
+            let name = item.getString('name');
+            if (name != null && name != '') {
+              addUnique(outputs, seenOutputs, `${artifactDir}/${name}`);
+            }
+          }
+        }
+      } else if (libTable != null && libHasCrateType(libTable, 'cdylib')) {
+        let rawLibName = libTable.getString('name') ?? pkgName;
+        let libStem = replaceHyphensWithUnderscores(rawLibName);
+        if (targetTriple != null && targetTriple.startsWith('wasm32')) {
+          addUnique(outputs, seenOutputs, `${artifactDir}/${libStem}.wasm`);
+        } else {
+          throw new ConfigError(
+            `${where}: cdylib crate "${pkgName}" for non-wasm target requires explicit "output"`,
+          );
+        }
+      } else {
+        addUnique(outputs, seenOutputs, `${artifactDir}/${pkgName}`);
+      }
+    }
+
+    // Build the `cargo build` command line.
+    let cmdArgs = new GrowableArray<String>();
+    cmdArgs.push('build');
+    if (profile == 'release') {
+      cmdArgs.push('--release');
+    } else if (profile != 'dev') {
+      cmdArgs.push('--profile');
+      cmdArgs.push(profile);
+    }
+    if (manifestRel != 'Cargo.toml') {
+      cmdArgs.push('--manifest-path');
+      cmdArgs.push(manifestRel);
+    } else if (cargoWs.isMultiCrate) {
+      cmdArgs.push('-p');
+      cmdArgs.push(pkgName);
+    }
+    if (targetTriple != null) {
+      cmdArgs.push('--target');
+      cmdArgs.push(targetTriple);
+    }
+    if (targetDirRel != null) {
+      cmdArgs.push('--target-dir');
+      cmdArgs.push(targetDirRel);
+    }
+    if (noDefaultFeatures) {
+      cmdArgs.push('--no-default-features');
+    }
+    if (allFeatures) {
+      cmdArgs.push('--all-features');
+    }
+    if (features.length > 0) {
+      cmdArgs.push('--features');
+      cmdArgs.push(join(features, ','));
+    }
+    for (let binName in bins) {
+      cmdArgs.push('--bin');
+      cmdArgs.push(binName);
+    }
+    for (let arg in extraArgs) {
+      cmdArgs.push(arg);
+    }
+    let command = appendShellArgs('cargo', cmdArgs);
+
+    let clean = if (hasExplicitClean) common.clean else 'false';
+    let group = common.concurrencyGroup ?? CARGO_CONCURRENCY_GROUP;
+
+    return new ScriptConfig(
+      ctx.ref,
+      true,
+      command,
+      common.files,
+      outputs,
+      true,
+      true,
+      common.dependencies,
+      clean,
+      null,
+      common.env,
+      common.locks,
+      common.cacheEnabled,
+      false,
+      null,
+      group,
+    );
+  }
+}

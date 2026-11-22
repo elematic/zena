@@ -1,0 +1,227 @@
+import {Future} from 'zena:async';
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue, rejects} from 'zena:assert';
+import {writeFile} from 'zena:fs';
+import {monotonic} from 'zena:time';
+import {ensureDir, ensureParentDir, withRoot} from 'zebra/fs-util';
+import {PlanLoadStats, loadOrCollectConfigs} from 'zebra/plan-cache';
+import {CARGO_CONCURRENCY_GROUP} from 'zebra/rust-rule';
+import {ScriptRef} from 'zebra/wireit-config';
+import {ZebraWorkspace} from 'zebra/zebra-config';
+
+function hasStr(items: Array<String>, target: String) {
+  for (let item in items) {
+    if (item == target) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function writeText(root: String, rel: String, content: String): Future<void> {
+  let full = withRoot(root, rel);
+  await ensureParentDir(full);
+  await writeFile(full, content);
+}
+
+export let tests = suite('rust:build declarative rule', () => {
+  test('derives workspace Cargo.toml, Cargo.lock, transitive path deps, output, and cargo group', async () => {
+    let files = {
+      'Cargo.toml' => `
+[workspace]
+members = ["packages/workspace-hack", "packages/runtime-wasmtime", "packages/cli", "packages/zenafx"]
+resolver = "2"
+`,
+      'packages/workspace-hack/Cargo.toml' => `
+[package]
+name = "workspace-hack"
+version = "0.1.0"
+build = false
+`,
+      'packages/runtime-wasmtime/Cargo.toml' => `
+[package]
+name = "zena-runtime"
+version = "0.1.0"
+
+[dependencies]
+workspace-hack = { path = "../workspace-hack" }
+`,
+      'packages/cli/Cargo.toml' => `
+[package]
+name = "zena"
+version = "0.1.0"
+
+[dependencies]
+zena-runtime = { path = "../runtime-wasmtime" }
+workspace-hack = { path = "../workspace-hack" }
+`,
+      'packages/cli/zena-package.json' => `{
+        "name": "cli",
+        "scripts": {
+          "build:host": {
+            "type": "rust:build",
+            "files": ["../stdlib/zena/host-wit/*.wit"]
+          },
+          "build:standalone": {
+            "type": "rust:build",
+            "features": ["bundled"],
+            "targetDir": "../../target/standalone"
+          }
+        }
+      }`,
+      'packages/zenafx/Cargo.toml' => `
+[package]
+name = "zenafx"
+version = "0.1.0"
+
+[[bin]]
+name = "zfx"
+path = "src/main.rs"
+
+[dependencies]
+zena-runtime = { path = "../runtime-wasmtime" }
+`,
+      'packages/zenafx/zebra.json' => `{
+        "scripts": {
+          "build": {"type": "rust:build"}
+        }
+      }`,
+    };
+    let ws = new ZebraWorkspace(async (path): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    let cli = await ws.scriptConfig(new ScriptRef('packages/cli', 'build:host'));
+    equal(cli.command, 'cargo build --release -p zena');
+    equal(cli.clean, 'false');
+    equal(cli.concurrencyGroup, CARGO_CONCURRENCY_GROUP);
+    equal(cli.output.length, 1);
+    equal(cli.output[0], '../../target/release/zena');
+    isTrue(hasStr(cli.files, '../../Cargo.toml'));
+    isTrue(hasStr(cli.files, '../../Cargo.lock'));
+    isTrue(hasStr(cli.files, 'Cargo.toml'));
+    isTrue(hasStr(cli.files, 'src/**/*.rs'));
+    isTrue(hasStr(cli.files, 'build.rs'));
+    isTrue(hasStr(cli.files, '../runtime-wasmtime/Cargo.toml'));
+    isTrue(hasStr(cli.files, '../runtime-wasmtime/src/**/*.rs'));
+    isTrue(hasStr(cli.files, '../workspace-hack/Cargo.toml'));
+    isFalse(hasStr(cli.files, '../workspace-hack/build.rs'));
+    isTrue(hasStr(cli.files, '../stdlib/zena/host-wit/*.wit'));
+
+    let standalone = await ws.scriptConfig(new ScriptRef('packages/cli', 'build:standalone'));
+    equal(
+      standalone.command,
+      'cargo build --release -p zena --target-dir ../../target/standalone --features bundled',
+    );
+    equal(standalone.output.length, 1);
+    equal(standalone.output[0], '../../target/standalone/release/zena');
+
+    let zfx = await ws.scriptConfig(new ScriptRef('packages/zenafx', 'build'));
+    equal(zfx.command, 'cargo build --release -p zenafx');
+    equal(zfx.output.length, 1);
+    equal(zfx.output[0], '../../target/release/zfx');
+  });
+
+  test('handles standalone wasm32 cdylib crate with custom manifest path', async () => {
+    let files = {
+      'Cargo.toml' => `[workspace]\nmembers = ["packages/cli"]\n`,
+      'packages/wasm-web-ui/zebra.json' => `{
+        "scripts": {
+          "build:rust-example": {
+            "type": "rust:build",
+            "manifest": "examples/rust/Cargo.toml",
+            "target": "wasm32-unknown-unknown",
+            "args": ["--quiet"]
+          }
+        }
+      }`,
+      'packages/wasm-web-ui/examples/rust/Cargo.toml' => `
+[package]
+name = "wasm-web-ui-example"
+version = "0.0.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+`,
+    };
+    let ws = new ZebraWorkspace(async (path): Future<String?> => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+
+    let cfg = await ws.scriptConfig(
+      new ScriptRef('packages/wasm-web-ui', 'build:rust-example'),
+    );
+    equal(
+      cfg.command,
+      'cargo build --release --manifest-path examples/rust/Cargo.toml --target wasm32-unknown-unknown --quiet',
+    );
+    equal(cfg.output.length, 1);
+    equal(
+      cfg.output[0],
+      'examples/rust/target/wasm32-unknown-unknown/release/wasm_web_ui_example.wasm',
+    );
+    isTrue(hasStr(cfg.files, 'examples/rust/Cargo.toml'));
+    isTrue(hasStr(cfg.files, 'examples/rust/Cargo.lock'));
+    isTrue(hasStr(cfg.files, 'examples/rust/src/**/*.rs'));
+    // Standalone [workspace] must NOT pull in the repo's root Cargo.toml.
+    isFalse(hasStr(cfg.files, '../../Cargo.toml'));
+  });
+
+  test('plan-cache tracks transitive path-dep Cargo.toml and invalidates on edits', async () => {
+    let root = `/tmp/zebra-rust-rule-plan-${i64ToString(monotonic() as i64)}`;
+    await ensureDir(root);
+    await writeText(root, 'Cargo.toml', '[workspace]\nmembers = ["crates/a", "crates/b"]\n');
+    await writeText(
+      root,
+      'crates/a/Cargo.toml',
+      '[package]\nname = "a"\nversion = "0.1.0"\n[dependencies]\nb = { path = "../b" }\n',
+    );
+    await writeText(
+      root,
+      'crates/b/Cargo.toml',
+      '[package]\nname = "b"\nversion = "0.1.0"\n',
+    );
+    await writeText(
+      root,
+      'crates/a/zebra.json',
+      '{"scripts": {"build": {"type": "rust:build"}}}\n',
+    );
+
+    let entry = new ScriptRef('crates/a', 'build');
+    let s1 = new PlanLoadStats();
+    let c1 = await loadOrCollectConfigs(root, entry, null, s1);
+    isFalse(s1.fromSnapshot);
+    equal(c1[0].output[0], '../../target/release/a');
+
+    let s2 = new PlanLoadStats();
+    await loadOrCollectConfigs(root, entry, null, s2);
+    isTrue(s2.fromSnapshot);
+
+    // Editing transitive path dependency crates/b/Cargo.toml invalidates the plan snapshot!
+    await writeText(
+      root,
+      'crates/b/Cargo.toml',
+      '[package]\nname = "b"\nversion = "0.2.0"\n',
+    );
+    let s3 = new PlanLoadStats();
+    await loadOrCollectConfigs(root, entry, null, s3);
+    isFalse(s3.fromSnapshot);
+  });
+
+  test('rejects missing Cargo.toml and invalid options', async () => {
+    let wsMissing = new ZebraWorkspace(async (path): Future<String?> =>
+      if (path == 'zebra.json') `{"scripts": {"build": {"type": "rust:build"}}}` else null,
+    );
+    await rejects(async () => {
+      await wsMissing.scriptConfig(new ScriptRef('', 'build'));
+    });
+  });
+});
