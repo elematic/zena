@@ -17,8 +17,11 @@
   [Implementation status of events](#implementation-status-of-events) says how
   that differs from the design. A template can say how a node looks hovered and
   pressed, which the host draws without entering the component:
-  [State styles](#state-styles). Keyboard input, widget-defined events, context,
-  style rules, navigation and assets do not exist. The authoring surface in
+  [State styles](#state-styles). Keys reach the listeners of the node that has
+  the focus, and the host moves the focus:
+  [The keyboard and the focus](#the-keyboard-and-the-focus). Text input,
+  widget-defined events, context, style rules, navigation and assets do not
+  exist. The authoring surface in
   [zenafx-widget-authoring.md](./zenafx-widget-authoring.md) does not exist, so a
   widget is written by hand against the protocol.
 - **Date**: 2026-10-02
@@ -66,6 +69,7 @@
       - [Drawing outside a box](#drawing-outside-a-box)
       - [Pointer capture](#pointer-capture)
       - [Cursors](#cursors)
+      - [The keyboard and the focus](#the-keyboard-and-the-focus)
     - [Context: values that inherit down the tree](#context-values-that-inherit-down-the-tree)
   - [Host primitives](#host-primitives)
     - [Layout with measurement inside the solve](#layout-with-measurement-inside-the-solve)
@@ -1026,8 +1030,11 @@ own thread, some time after the input that led to them, so the window's thread
 never waits on a component. When a handler changes the tree, the `render` call
 that changes it asks the window for a frame.
 
-Not built: keyboard input and focus, a `wheel` listener, and a budget for a
-pass of handlers that keep raising events.
+Keys arrive the same way, on a stream per listener, and
+[The keyboard and the focus](#the-keyboard-and-the-focus) describes them.
+
+Not built: a `wheel` listener, and a budget for a pass of handlers that keep
+raising events.
 
 #### State styles
 
@@ -1039,7 +1046,7 @@ beside its `bindings`:
 ```wit
 record state-style {
   node: u32,      // the node that changes
-  when: state,    // hovered, pressed
+  when: state,    // hovered, pressed, focused
   of: u32,        // the node whose state is read
   style: restyle, // fill(box-style), or text(text-style)
 }
@@ -1314,6 +1321,141 @@ interface behind it.
 
 Not built: capturing the pointer for a button other than the primary one,
 releasing a capture before the button comes up, and dragging a scroll thumb.
+
+#### The keyboard and the focus
+
+One node in a window has the **focus**, or none does, and the keyboard goes to
+it. Which node has it is state of the same kind as which node the pointer is
+over, and the scene keeps it for the same reasons. A node says whether it can
+have the focus, as its `cursor` is a field of the node, and a template says how
+a node looks while it does:
+
+```wit
+record node-def {
+  // ...
+  focusable: bool,
+}
+
+enum state { hovered, pressed, focused }
+```
+
+A node is `focused` while the node with the focus is that node or one beneath
+it, as it is `hovered` while the pointer is, so a box can show a ring for a
+node inside it.
+
+The scene moves the focus on two inputs.
+
+- **`Tab`** moves it to the next node that can have it, and `Shift` with `Tab`
+  to the one before, going round at the ends. The order is the tree's: a node,
+  then what is beneath it, then its next sibling, with content where its slot
+  is. A template cannot give another order.
+- **A press** of the primary button gives it to the nearest node that can have
+  it at or above the node pressed, and takes it from every node when there is
+  none.
+
+`examples/zenafx/disclosure/` is two summaries that can have the focus. Its
+template says so and gives the focused look, and `Tab` moves a ring between
+them with nothing written to the component, as hovering the button changes its
+fill with nothing written.
+
+A component hears keys on a stream of their own:
+
+```wit
+resource node {
+  listen-keys: func(target: u32, at: phase) -> stream<key-delivery>;
+}
+
+record key-event {
+  down: bool,
+  key: string,
+  code: string,
+  modifiers: modifiers,
+  repeat: bool,
+}
+
+record key-delivery { event: key-event, reply: reply }
+```
+
+A key travels the path a press does, with the node that has the focus as its
+target: `intercept` listeners from the root down to it, then `bubble` listeners
+from it back up. A listener therefore hears the keys pressed while the focus is
+at its node or beneath it. With no node focused the target is the root, so a
+listener there hears every key the window is given, which is where a shortcut
+for the whole window goes. Each listener is offered the key in turn and answers
+on the reply, as for a `down`.
+
+Five decisions are in that interface.
+
+- **A stream of keys is separate from a stream of pointer events.**
+  `listen-pointer` could have been one `listen` that takes two more kinds,
+  `key-down` and `key-up`. A pointer event
+  carries a position measured from the listener's node, and a key has none, so
+  one record for both would have fields that mean nothing for half its events.
+  The alternative that keeps one method is a `variant` event. That costs every
+  pointer listener a discriminant to test, and a key listener differs in another
+  way too: it takes no `scope`, since a key's target is always the node with
+  the focus.
+- **One stream carries every key, down and up.** A listener is not added for
+  one key. The handler compares `key` and passes on what it does not want,
+  so each key pressed while the focus is in a widget is an event to each key
+  listener on the path. The disclosure has two listeners on each summary, one
+  for `Enter` and one for a space, and `tests/disclosure.rs` counts two events
+  for a `Tab` it passes on. Registering for a list of keys would let the scene
+  skip the component for the others. That waits on a measurement of typing
+  into a text field, which is the case with many keys.
+- **Keys are named as the W3C names them.** `key` is what a key means on the
+  user's layout with the modifiers held (`a`, `A`, a space, `Enter`,
+  `ArrowDown`), and `code` is which key it is on the keyboard (`KeyA`,
+  `Space`). These are the strings of the UI Events specification, which winit
+  already uses, so the window passes its names on with two exceptions written
+  out in `ui/surface.rs`. An `enum` in WIT would be checked by the compiler,
+  and would need a case for each of a few hundred names and a new version of
+  the interface for each new one.
+- **What the host does with a key comes after the listeners.** `Tab` moves the
+  focus unless a listener called `prevent-default` on the key's reply. An
+  editor that indents with `Tab` calls it, and the focus stays where it is.
+  `prevent-default` and `stop-propagation` are separate methods, as they are
+  in the DOM: stopping propagation keeps later listeners from hearing the key
+  and the focus still moves, and preventing the default leaves the later
+  listeners their turn. `loader/mod.rs` has a test for each. The cost of
+  acting afterwards is that the move waits for the
+  component: answers arrive on the component's thread, so a component that is
+  busy, and has a key listener on the path, delays its own `Tab`. A key that
+  reaches no listener is acted on at once, on the window's thread. Acting
+  first and telling the component afterwards would never wait, and would leave
+  a widget no way to keep `Tab`. There is no time limit on an answer yet, which
+  is the budget [Open questions](#open-questions) asks for.
+- **A press moves the focus before its listeners hear it.** A listener cannot
+  keep a press from moving the focus, as a DOM handler can by cancelling
+  `mousedown`. A toolbar button that should leave the focus in the editor it
+  acts on needs that, and it is not built.
+
+The focus is on a node, which is not what
+[The scene interface](#the-scene-interface) proposes: there the focus is on a
+resource the component creates and a node points at, so that it outlives the
+node. Here it lasts as long as the node's interior does. Writing a hole keeps
+it, and so does rendering the node again with the template it has. Rendering
+it with another template, or removing it, drops the focus to no node.
+`key_listeners_and_the_focus_go_with_their_node` in `ui/scene.rs` has both
+cases. That is enough for a button and too little for a text field in a list
+that reorders, which is when the resource becomes worth building.
+
+Not built:
+
+- **Moving the focus from a component.** A menu that moves the focus between
+  its items with the arrow keys hears the arrows and has no way to say where
+  the focus goes. Neither can a dialog take the focus when it opens or give it
+  back when it closes. This is the next thing the keyboard needs.
+- **Keeping the focus within part of the tree**, which a dialog needs while it
+  is open.
+- **Bringing the focused node into view.** A node can get the focus while it
+  is scrolled out of sight, and stays there.
+- **A ring only for the keyboard.** A press gives a node the focused look as
+  `Tab` does, where a browser shows a ring only after a key.
+- **Text.** A key event is a key. Composed input, an input method's candidate
+  text and a selection are a text field's, and there is none.
+- **The window's own focus.** The focused look stays while another window is
+  in front.
 
 [understory]: https://github.com/forest-rs/understory
 

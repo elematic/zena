@@ -43,13 +43,13 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
 
-use crate::ui::events::{Delivery, PointerInput};
+use crate::ui::events::{Delivery, KeyDefault, KeyDelivery, KeyEvent, PointerInput};
 use crate::ui::scene::{Cursor, Scene as RetainedScene};
 use crate::ui::surface::{Scene, Wake};
 use crate::ui::text::TextEngine;
 use crate::ui::types::{Color, Command, FrameEvent, Size};
 use link::{UiHostState, add_host_to_linker};
-use listeners::{Listeners, Offered};
+use listeners::{Heard, Listeners, Offered};
 
 /// The interface a component exports to hand over what it draws.
 const APP: &str = "zenafx:host/app@0.1.0";
@@ -92,7 +92,7 @@ pub struct GuestScene {
     /// answer, which this thread must not do. Dropping it asks the worker to
     /// stop, and the component's task is dropped with the store on the way
     /// out.
-    deliveries: UnboundedSender<Vec<Delivery>>,
+    deliveries: UnboundedSender<Input>,
     /// Inputs handed to the worker that have not been through all of their
     /// listeners yet.
     undelivered: Arc<AtomicU32>,
@@ -129,7 +129,7 @@ impl GuestScene {
         // `failed` carries a trap back to this thread. Dropping the sending
         // end of `deliveries` is how dropping the scene ends the worker.
         let (failed_tx, failed_rx) = mpsc::channel::<anyhow::Error>();
-        let (deliveries_tx, deliveries_rx) = unbounded_channel::<Vec<Delivery>>();
+        let (deliveries_tx, deliveries_rx) = unbounded_channel::<Input>();
 
         let engine = engine.clone();
         let display = path.display().to_string();
@@ -219,11 +219,15 @@ impl GuestScene {
 
     /// Give the component's thread the calls an input or a frame led to.
     fn hand_over(&self, deliveries: Vec<Delivery>) {
-        if deliveries.is_empty() {
-            return;
+        if !deliveries.is_empty() {
+            self.send(Input::Pointer(deliveries));
         }
+    }
+
+    /// Give the component's thread something to deliver.
+    fn send(&self, input: Input) {
         self.undelivered.fetch_add(1, Ordering::Relaxed);
-        if self.deliveries.send(deliveries).is_err() {
+        if self.deliveries.send(input).is_err() {
             // The component's thread has ended, which it reported when it
             // did. Nothing will be delivered again.
             self.undelivered.fetch_sub(1, Ordering::Relaxed);
@@ -235,7 +239,7 @@ impl GuestScene {
 struct Worker {
     /// What to call the component in a message.
     display: String,
-    deliveries: UnboundedReceiver<Vec<Delivery>>,
+    deliveries: UnboundedReceiver<Input>,
     undelivered: Arc<AtomicU32>,
 }
 
@@ -309,7 +313,12 @@ fn run_component(
                 // listeners before it left it.
                 let inputs = async {
                     while let Some(input) = deliveries.recv().await {
-                        deliver(&listeners, &scene, &wake, &input).await;
+                        match input {
+                            Input::Pointer(input) => {
+                                deliver(&listeners, &scene, &wake, &input).await
+                            }
+                            Input::Key(key) => deliver_key(&listeners, &scene, &wake, key).await,
+                        }
                         undelivered.fetch_sub(1, Ordering::Relaxed);
                     }
                 };
@@ -354,7 +363,7 @@ async fn deliver(
                 listeners.offer(
                     call.listener,
                     Offered {
-                        event: call.event,
+                        event: Heard::Pointer(call.event),
                         answered: None,
                     },
                 );
@@ -362,7 +371,7 @@ async fn deliver(
             }
             let (answered, answer) = tokio::sync::oneshot::channel();
             let offered = Offered {
-                event: call.event,
+                event: Heard::Pointer(call.event),
                 answered: Some(answered),
             };
             // A listener whose stream has gone, or goes before it answers,
@@ -386,6 +395,68 @@ async fn deliver(
             }
         }
     }
+}
+
+/// Offer a key to the listeners it reaches, one at a time, and then do what
+/// the scene does with the key, unless a listener called `prevent-default`.
+///
+/// `Tab` moves the focus, and it is done here and not when the key arrives
+/// because a listener may want the key for itself: an editor that indents
+/// with `Tab` prevents the default, and the focus stays where it is.
+///
+/// Stopping propagation and preventing the default are separate answers, as
+/// they are in the DOM. A listener that stops propagation keeps later
+/// listeners from hearing the key, and the focus still moves.
+async fn deliver_key(
+    listeners: &Listeners,
+    scene: &Mutex<RetainedScene>,
+    wake: &Mutex<Option<Wake>>,
+    key: KeyDelivery,
+) {
+    let mut prevented = false;
+    for listener in &key.listeners {
+        let (answered, answer) = tokio::sync::oneshot::channel();
+        let offered = Offered {
+            event: Heard::Key(key.event.clone()),
+            answered: Some(answered),
+        };
+        if !listeners.offer(*listener, offered) {
+            continue;
+        }
+        let answer = answer.await.unwrap_or_default();
+        prevented |= answer.prevent_default;
+        if answer.stop_propagation {
+            break;
+        }
+    }
+    if prevented {
+        return;
+    }
+    if act_on(&key.event, &mut scene.lock().unwrap()) {
+        if let Some(wake) = wake.lock().unwrap().as_ref() {
+            wake();
+        }
+    }
+}
+
+/// Do what the scene does with a key whose default no listener prevented.
+/// Returns whether a frame is owed for it.
+fn act_on(key: &KeyEvent, scene: &mut RetainedScene) -> bool {
+    match key.default_action() {
+        KeyDefault::None => false,
+        KeyDefault::MoveFocus { backwards } => {
+            scene.move_focus(backwards);
+            scene.dirty
+        }
+    }
+}
+
+/// What the window's thread hands the component's thread to deliver.
+enum Input {
+    /// What a pointer input, or a frame, found for the pointer's listeners.
+    Pointer(Vec<Delivery>),
+    /// A key, and the listeners it reaches.
+    Key(KeyDelivery),
 }
 
 impl Scene for GuestScene {
@@ -440,6 +511,24 @@ impl Scene for GuestScene {
         restyled
     }
 
+    /// Work out which listeners a key reaches and hand them to the
+    /// component's thread, which does what the scene does with the key
+    /// afterwards unless one of them prevented it.
+    ///
+    /// A key that reaches no listener is acted on here, and the answer says
+    /// whether that owes a frame: `Tab` moves the focus in a component that
+    /// listens for no keys at all without waking it.
+    fn key(&mut self, event: KeyEvent) -> bool {
+        let mut scene = self.scene.lock().unwrap();
+        let delivery = scene.key(event);
+        if delivery.listeners.is_empty() {
+            return act_on(&delivery.event, &mut scene);
+        }
+        drop(scene);
+        self.send(Input::Key(delivery));
+        false
+    }
+
     fn woken_by(&mut self, wake: Wake) {
         *self.wake.lock().unwrap() = Some(wake);
     }
@@ -459,5 +548,124 @@ impl Scene for GuestScene {
     /// an idle window without pause.
     fn wants_another_frame(&self) -> bool {
         self.scene.lock().unwrap().dirty
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU32;
+
+    use super::*;
+    use crate::ui::events::Modifiers;
+    use crate::ui::scene::{Appearance, NodeDef, TemplateDef, TemplateRef};
+    use crate::ui::types::Flex;
+    use listeners::{Answer, KeyDeliveryRecord};
+
+    /// A scene of one node, which can have the focus and has not got it.
+    fn focusable_scene() -> Arc<Mutex<RetainedScene>> {
+        let mut text = TextEngine::new();
+        let mut scene = RetainedScene::new();
+        let root = scene.root();
+        scene.render(
+            root,
+            &TemplateRef::Fresh(TemplateDef {
+                id: 1,
+                nodes: vec![NodeDef {
+                    layout: Flex::default(),
+                    appearance: Appearance::Nothing,
+                    first_child: 0,
+                    child_count: 0,
+                    is_slot: false,
+                    cursor: None,
+                    focusable: true,
+                }],
+                bindings: vec![],
+                states: vec![],
+            }),
+            &[],
+            &mut text,
+        );
+        Arc::new(Mutex::new(scene))
+    }
+
+    /// Deliver `Tab` to one key listener for each of `answers`, in that
+    /// order, each giving its answer to every key it is offered. Returns
+    /// whether the focus moved, and how many keys each listener was offered.
+    fn tab_answered_with(answers: &[Answer]) -> (bool, Vec<u32>) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime");
+        runtime.block_on(async {
+            let scene = focusable_scene();
+            let listeners = Listeners::default();
+            let mut ids = Vec::new();
+            let mut heard = Vec::new();
+            for answer in answers.iter().copied() {
+                let (id, mut stream) = listeners.open::<KeyDeliveryRecord>(scene.clone());
+                let count = Arc::new(AtomicU32::new(0));
+                ids.push(id);
+                heard.push(count.clone());
+                // What a component does: read the stream, and answer.
+                tokio::spawn(async move {
+                    while let Some(offered) = stream.next_offered().await {
+                        count.fetch_add(1, Ordering::Relaxed);
+                        if let Some(answered) = offered.answered {
+                            let _ = answered.send(answer);
+                        }
+                    }
+                });
+            }
+            let tab = KeyEvent {
+                down: true,
+                key: "Tab".to_owned(),
+                code: "Tab".to_owned(),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            };
+            let key = KeyDelivery {
+                event: tab,
+                listeners: ids,
+            };
+            deliver_key(&listeners, &scene, &Mutex::new(None), key).await;
+            let moved = scene.lock().unwrap().has_focus();
+            let heard = heard.iter().map(|n| n.load(Ordering::Relaxed)).collect();
+            (moved, heard)
+        })
+    }
+
+    /// Listeners that pass a key on are each offered it, and the host then
+    /// does what it does with the key.
+    #[test]
+    fn a_key_every_listener_passes_on_is_acted_on() {
+        let pass = Answer::default();
+        assert_eq!(tab_answered_with(&[pass, pass]), (true, vec![1, 1]));
+    }
+
+    /// Stopping propagation keeps the key from later listeners and changes
+    /// nothing else: the focus still moves.
+    #[test]
+    fn stopping_propagation_does_not_prevent_the_default() {
+        let stop = Answer {
+            stop_propagation: true,
+            ..Answer::default()
+        };
+        assert_eq!(
+            tab_answered_with(&[stop, Answer::default()]),
+            (true, vec![1, 0])
+        );
+    }
+
+    /// Preventing the default keeps the focus where it is, and later
+    /// listeners are still offered the key.
+    #[test]
+    fn preventing_the_default_does_not_stop_propagation() {
+        let prevent = Answer {
+            prevent_default: true,
+            ..Answer::default()
+        };
+        assert_eq!(
+            tab_answered_with(&[prevent, Answer::default()]),
+            (false, vec![1, 1])
+        );
     }
 }

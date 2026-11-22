@@ -15,8 +15,8 @@ use crate::ui::layout::{measure_text, solve_with};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use super::listeners::{HostReply, Listeners, Replies};
-use crate::ui::events::{Listener, Phase, PointerKind, Scope};
+use super::listeners::{DeliveryRecord, HostReply, KeyDeliveryRecord, Listeners, Replies};
+use crate::ui::events::{KeyListener, Listener, Phase, PointerKind, Scope};
 use crate::ui::scene::{Hole, Scene, TemplateRef};
 use crate::ui::surface::Wake;
 use crate::ui::text::TextEngine;
@@ -148,6 +148,13 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         },
     )?;
     events.func_wrap(
+        "[method]reply.prevent-default",
+        |mut caller: StoreContextMut<'_, UiHostState>, (reply,): (Resource<HostReply>,)| {
+            caller.data_mut().replies.prevent_default(reply.rep());
+            Ok(())
+        },
+    )?;
+    events.func_wrap(
         "[method]reply.capture",
         |mut caller: StoreContextMut<'_, UiHostState>, (reply,): (Resource<HostReply>,)| {
             caller.data_mut().replies.capture(reply.rep());
@@ -268,7 +275,7 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         )| {
             let data = caller.data_mut();
             let scene = data.scene.clone();
-            let (id, stream) = data.listeners.open(scene.clone());
+            let (id, stream) = data.listeners.open::<DeliveryRecord>(scene.clone());
             let listener = Listener {
                 kind,
                 scope,
@@ -280,6 +287,26 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
             // and the guest would not find out why. Dropping `stream` on the
             // way out takes the listener's channel with it.
             if !scene.lock().unwrap().listen(node.rep(), target, listener) {
+                return Err(wasmtime::Error::msg(format!(
+                    "a node shows no template with a position {target} to listen at"
+                )));
+            }
+            Ok((StreamReader::new(&mut caller, stream)?,))
+        },
+    )?;
+    scene.func_wrap(
+        "[method]node.listen-keys",
+        |mut caller: StoreContextMut<'_, UiHostState>,
+         (node, target, phase): (Resource<HostNode>, u32, Phase)| {
+            let data = caller.data_mut();
+            let scene = data.scene.clone();
+            let (id, stream) = data.listeners.open::<KeyDeliveryRecord>(scene.clone());
+            let listener = KeyListener { phase, id };
+            if !scene
+                .lock()
+                .unwrap()
+                .listen_keys(node.rep(), target, listener)
+            {
                 return Err(wasmtime::Error::msg(format!(
                     "a node shows no template with a position {target} to listen at"
                 )));

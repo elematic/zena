@@ -16,6 +16,7 @@
 //! handler for this one has run, so it says nothing about the handler.
 
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -28,7 +29,7 @@ use wasmtime::component::{
 };
 
 use super::link::UiHostState;
-use crate::ui::events::PointerEvent;
+use crate::ui::events::{KeyEvent, PointerEvent};
 use crate::ui::scene::Scene;
 
 /// What a `reply` handle names. Its representation is a key into
@@ -40,20 +41,65 @@ pub struct HostReply;
 pub struct Answer {
     /// No listener after this one is offered the event.
     pub stop_propagation: bool,
+    /// The host does not do what it otherwise does with the event.
+    pub prevent_default: bool,
     /// The pointer is captured for the listener's node until the button
     /// comes up.
     pub capture: bool,
 }
 
+/// What a listener can be offered: something the pointer did, or a key.
+pub enum Heard {
+    Pointer(PointerEvent),
+    Key(KeyEvent),
+}
+
 /// One event on its way to one listener.
 pub struct Offered {
-    pub event: PointerEvent,
+    pub event: Heard,
     /// Where the listener's answer goes. `None` for an event nothing can
     /// stop, which then carries no reply.
     pub answered: Option<oneshot::Sender<Answer>>,
 }
 
-/// `delivery` in `zenafx:host/events`: what a listener's stream carries.
+/// What one kind of listener's stream carries: the record the component
+/// reads for each event.
+pub trait Carried: ComponentType + Lift + Lower + Send + Sync + Sized + 'static {
+    /// The record for an event and the reply that goes with it. `None` when
+    /// the event is not the kind this stream carries, which a listener is
+    /// never offered: the scene keeps pointer and keyboard listeners apart.
+    fn carry(event: Heard, reply: Option<Resource<HostReply>>) -> Option<Self>;
+}
+
+/// `key-delivery` in `zenafx:host/events`: what a keyboard listener's stream
+/// carries. A key always has a reply, since a key always travels a path.
+#[derive(ComponentType, Lift, Lower)]
+#[component(record)]
+pub struct KeyDeliveryRecord {
+    event: KeyEvent,
+    reply: Resource<HostReply>,
+}
+
+impl Carried for KeyDeliveryRecord {
+    fn carry(event: Heard, reply: Option<Resource<HostReply>>) -> Option<Self> {
+        match (event, reply) {
+            (Heard::Key(event), Some(reply)) => Some(Self { event, reply }),
+            _ => None,
+        }
+    }
+}
+
+impl Carried for DeliveryRecord {
+    fn carry(event: Heard, reply: Option<Resource<HostReply>>) -> Option<Self> {
+        match event {
+            Heard::Pointer(event) => Some(Self { event, reply }),
+            Heard::Key(_) => None,
+        }
+    }
+}
+
+/// `delivery` in `zenafx:host/events`: what a pointer listener's stream
+/// carries.
 #[derive(ComponentType, Lift, Lower)]
 #[component(record)]
 pub struct DeliveryRecord {
@@ -98,6 +144,14 @@ impl Replies {
         }
     }
 
+    /// `reply.prevent-default`: the answer, once given, is that the host
+    /// leaves the event alone when its listeners have all answered.
+    pub fn prevent_default(&mut self, reply: u32) {
+        if let Some(waiting) = self.waiting.get_mut(&reply) {
+            waiting.answer.prevent_default = true;
+        }
+    }
+
     /// `reply.capture`: the answer, once given, is that the listener keeps
     /// the pointer.
     pub fn capture(&mut self, reply: u32) {
@@ -134,7 +188,7 @@ impl Listeners {
     ///
     /// `scene` is where the stream removes the listener from when the
     /// component drops it.
-    pub fn open(&self, scene: Arc<Mutex<Scene>>) -> (u32, ListenerStream) {
+    pub fn open<R: Carried>(&self, scene: Arc<Mutex<Scene>>) -> (u32, ListenerStream<R>) {
         let id = self.last.fetch_add(1, Ordering::Relaxed) + 1;
         let (sender, events) = mpsc::unbounded_channel();
         self.streams.lock().unwrap().insert(id, sender);
@@ -143,6 +197,7 @@ impl Listeners {
             events,
             scene,
             listeners: self.clone(),
+            carries: PhantomData,
         };
         (id, stream)
     }
@@ -175,17 +230,27 @@ impl Listeners {
     }
 }
 
-/// The host's end of one listener's stream.
-pub struct ListenerStream {
+/// The host's end of one listener's stream, carrying `R` for each event.
+pub struct ListenerStream<R> {
     id: u32,
     events: mpsc::UnboundedReceiver<Offered>,
     scene: Arc<Mutex<Scene>>,
     listeners: Listeners,
+    carries: PhantomData<fn() -> R>,
 }
 
-impl StreamProducer<UiHostState> for ListenerStream {
-    type Item = DeliveryRecord;
-    type Buffer = Option<DeliveryRecord>;
+#[cfg(test)]
+impl<R> ListenerStream<R> {
+    /// The next event written to this listener's stream, for a test that
+    /// stands in for the component reading it.
+    pub async fn next_offered(&mut self) -> Option<Offered> {
+        self.events.recv().await
+    }
+}
+
+impl<R: Carried> StreamProducer<UiHostState> for ListenerStream<R> {
+    type Item = R;
+    type Buffer = Option<R>;
 
     fn poll_produce<'a>(
         mut self: Pin<&mut Self>,
@@ -194,26 +259,35 @@ impl StreamProducer<UiHostState> for ListenerStream {
         mut destination: Destination<'a, Self::Item, Self::Buffer>,
         finish: bool,
     ) -> Poll<wasmtime::Result<StreamResult>> {
-        match self.events.poll_recv(cx) {
-            Poll::Pending if finish => Poll::Ready(Ok(StreamResult::Cancelled)),
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Some(offered)) => {
-                let reply = offered
-                    .answered
-                    .map(|answered| store.data_mut().replies.open(answered));
-                destination.set_buffer(Some(DeliveryRecord {
-                    event: offered.event,
-                    reply: reply.map(Resource::new_own),
-                }));
-                Poll::Ready(Ok(StreamResult::Completed))
+        loop {
+            match self.events.poll_recv(cx) {
+                Poll::Pending if finish => return Poll::Ready(Ok(StreamResult::Cancelled)),
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Some(offered)) => {
+                    let replies = &mut store.data_mut().replies;
+                    let reply = offered.answered.map(|answered| replies.open(answered));
+                    match R::carry(offered.event, reply.map(Resource::new_own)) {
+                        Some(record) => {
+                            destination.set_buffer(Some(record));
+                            return Poll::Ready(Ok(StreamResult::Completed));
+                        }
+                        // Not this stream's kind of event. Nobody will read
+                        // it, so whoever waits on its answer is answered now.
+                        None => {
+                            if let Some(reply) = reply {
+                                replies.answer(reply);
+                            }
+                        }
+                    }
+                }
+                // The node went away and `Listeners::end` dropped the sender.
+                Poll::Ready(None) => return Poll::Ready(Ok(StreamResult::Dropped)),
             }
-            // The node went away and `Listeners::end` dropped the sender.
-            Poll::Ready(None) => Poll::Ready(Ok(StreamResult::Dropped)),
         }
     }
 }
 
-impl Drop for ListenerStream {
+impl<R> Drop for ListenerStream<R> {
     /// The component dropped the stream, or the store is going away. Either
     /// way nothing reads this listener's events any more.
     fn drop(&mut self) {
