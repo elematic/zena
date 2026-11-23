@@ -67,10 +67,10 @@ widget in the tree. Or it could stay a **reference**: a real node that owns a
 region, which is the web's.
 
 ZenaFX is the second, and parts of the existing design only work that way.
-[Viewports](./zenafx-ui.md#the-viewport-is-the-capability-nodes-are-ids-inside-it)
-has each component build into its own region.
+[Interior and content](./zenafx-ui.md#interior-and-content) has each widget
+render into the one node it was handed.
 [Context](./zenafx-ui.md#context-values-that-inherit-down-the-tree) says the
-runtime holds the whole tree "including nodes belonging to other components".
+host holds the whole tree "including nodes belonging to other components".
 [The scene protocol](./zenafx-ui.md#the-scene-protocol) writes values in place,
 where expansion would re-derive a subtree to find out what changed.
 
@@ -413,7 +413,7 @@ a copy goes stale whenever the original changes.
 Copying is avoidable, and neither purity nor immutability is the reason. Widgets
 are not pure — `build` is a method on an object with private state. What makes a
 mirror current is that **it is not a copy**: it references one scene subtree,
-which the runtime resolves when it solves and paints, so a mutation is visible
+which the host resolves when it solves and paints, so a mutation is visible
 everywhere with no propagation step.
 
 ### Two fits, because the cases differ
@@ -533,7 +533,7 @@ dropped into a card should look like it is in a card without knowing what a card
 is. Shadow DOM draws both lines in the same places.
 
 Both are stated about an **edge**, which is what makes them free: a slot is a node
-whose children are owned by someone else, the runtime already keeps an owner per
+whose children are owned by someone else, the host already keeps an owner per
 node, and comparing a node's owner with its parent's is the whole test. Nothing
 declares itself a boundary. It holds between a parent widget and a child widget in
 one component as well, since ownership is per widget — so the encapsulation
@@ -551,7 +551,7 @@ synchronous guest calls on the frame path, and
 what it costs when it happens anyway, at one call per layout query rather than one
 per node per property.
 
-So the guest ships a predicate and the runtime evaluates it. Generality then has
+So the guest ships a predicate and the host evaluates it. Generality then has
 to come from the predicate language rather than from arbitrary code, which means
 an algebra with composition.
 
@@ -568,8 +568,8 @@ classes are for: `Text` within `Card` is expressible with nothing named, cannot 
 misspelled, and is how a widget author already thinks. Instantiation records it
 per node range, so it costs nothing.
 
-**State** — hovered, focused, pressed, disabled. A closed set the runtime owns,
-because the runtime does hit testing.
+**State** — hovered, focused, pressed, disabled. A closed set the host owns,
+because the host does hit testing.
 
 **Position** — first, last, nth among siblings, depth.
 
