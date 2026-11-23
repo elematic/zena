@@ -43,6 +43,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
 
+use crate::ui::clipboard::{Clipboard, Memory};
 use crate::ui::events::{Delivery, KeyDefault, KeyDelivery, KeyEvent, PointerInput};
 use crate::ui::scene::{Cursor, Scene as RetainedScene};
 use crate::ui::surface::{Scene, Wake};
@@ -102,6 +103,9 @@ pub struct GuestScene {
     /// Shared with the host functions, which call it when the component
     /// writes the tree.
     wake: Arc<Mutex<Option<Wake>>>,
+    /// Where copied text goes and pasted text comes from. Only this thread
+    /// uses it, and no component is handed it.
+    clipboard: Box<dyn Clipboard>,
 }
 
 impl GuestScene {
@@ -182,7 +186,34 @@ impl GuestScene {
             undelivered,
             listeners,
             wake,
+            clipboard: Box::new(Memory::default()),
         })
+    }
+
+    /// Give one key to the listeners it reaches, or act on it here if it
+    /// reaches none. Returns whether a frame is owed.
+    fn dispatch(&self, event: KeyEvent) -> bool {
+        let mut scene = self.scene.lock().unwrap();
+        scene.notice(&event);
+        let delivery = scene.key(event);
+        if delivery.listeners.is_empty() {
+            return act_on(&delivery.event, &mut scene);
+        }
+        drop(scene);
+        self.send(Input::Key(delivery));
+        false
+    }
+
+    /// Copy to and paste from `clipboard` from now on. A scene starts with
+    /// a clipboard of its own, which is right for one with no window. The
+    /// program that opens a window gives it the platform's.
+    pub fn use_clipboard(&mut self, clipboard: Box<dyn Clipboard>) {
+        self.clipboard = clipboard;
+    }
+
+    /// The clipboard this scene copies to and pastes from.
+    pub fn clipboard(&mut self) -> &mut dyn Clipboard {
+        self.clipboard.as_mut()
     }
 
     /// Every call into the component since this scene was created. `main` is
@@ -384,6 +415,10 @@ async fn deliver(
                 let restyled = {
                     let mut scene = scene.lock().unwrap();
                     scene.capture(call.listener);
+                    // A listener that captures the pointer is starting a drag
+                    // of its own. The press began a selection before any
+                    // listener had answered, so that is put back.
+                    scene.cancel_selecting();
                     scene.dirty
                 };
                 if let (true, Some(wake)) = (restyled, wake.lock().unwrap().as_ref()) {
@@ -446,6 +481,10 @@ fn act_on(key: &KeyEvent, scene: &mut RetainedScene) -> bool {
         KeyDefault::None => false,
         KeyDefault::MoveFocus { backwards } => {
             scene.move_focus(backwards);
+            scene.dirty
+        }
+        KeyDefault::SelectAll => {
+            scene.select_all_text();
             scene.dirty
         }
     }
@@ -522,16 +561,41 @@ impl Scene for GuestScene {
     /// A key that reaches no listener is acted on here, and the answer says
     /// whether that owes a frame: `Tab` moves the focus in a component that
     /// listens for no keys at all without waking it.
+    ///
+    /// The clipboard's three shortcuts are the host's, and are done here
+    /// before any listener hears the key:
+    ///
+    /// - Control or Meta with `c` copies what is selected, wherever it is.
+    /// - With `x` it copies too. Removing what was cut is left to the text
+    ///   field that hears the key, since the text is the field's.
+    /// - With `v`, the key is followed by a second one named `Paste` whose
+    ///   `text` is what is on the clipboard. A text field inserts a key's
+    ///   text whatever the key, so a field needs nothing more to be pasted
+    ///   into, and no component is ever handed the clipboard.
     fn key(&mut self, event: KeyEvent) -> bool {
-        let mut scene = self.scene.lock().unwrap();
-        scene.notice(&event);
-        let delivery = scene.key(event);
-        if delivery.listeners.is_empty() {
-            return act_on(&delivery.event, &mut scene);
+        let copies = event.is_shortcut('c') || event.is_shortcut('x');
+        let pasted = match event.is_shortcut('v') {
+            true => self.clipboard.read(),
+            false => None,
+        };
+        if copies {
+            let selected = self.scene.lock().unwrap().selected_text();
+            if let Some(selected) = selected {
+                self.clipboard.write(&selected);
+            }
         }
-        drop(scene);
-        self.send(Input::Key(delivery));
-        false
+        let mut owed = self.dispatch(event);
+        if let Some(text) = pasted {
+            owed |= self.dispatch(KeyEvent {
+                down: true,
+                key: "Paste".to_owned(),
+                code: String::new(),
+                modifiers: Default::default(),
+                repeat: false,
+                text: Some(text),
+            });
+        }
+        owed
     }
 
     fn woken_by(&mut self, wake: Wake) {
@@ -584,6 +648,7 @@ mod tests {
                     cursor: None,
                     focusable: true,
                     editable: false,
+                    unselectable: false,
                 }],
                 bindings: vec![],
                 states: vec![],

@@ -197,7 +197,14 @@ fn main() -> Result<()> {
             anyhow::bail!("File not found: {app}");
         }
         let engine = zenafx::loader::engine(cli.debug)?;
-        let scene = zenafx::loader::GuestScene::load(&engine, path)?;
+        let mut scene = zenafx::loader::GuestScene::load(&engine, path)?;
+        // A window copies to and pastes from the platform's clipboard. Where
+        // there is none to reach, the scene keeps the one it started with,
+        // and copying and pasting work within the window.
+        match zenafx::ui::clipboard::System::new() {
+            Ok(clipboard) => scene.use_clipboard(Box::new(clipboard)),
+            Err(e) => log::warn!("no platform clipboard: {e}"),
+        }
         return zenafx::ui::surface::run(
             zenafx::ui::surface::WindowConfig {
                 title: "ZenaFX".to_owned(),

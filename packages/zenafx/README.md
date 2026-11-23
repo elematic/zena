@@ -573,6 +573,52 @@ first is empty.
 drags and presses twice in it. It checks the caret, the highlight and the
 text drawn, and that the pointer selecting writes no event to the component.
 
+### Selecting text, and the clipboard
+
+[`examples/zenafx/selection/`](../../examples/zenafx/selection/) is a page of
+text, a button and a text field.
+
+```bash
+./target/release/zena build ./packages/zenafx:build:selection   # compiles it to out/selection.wasm
+./target/release/zfx --app packages/zenafx/out/selection.wasm
+```
+
+Any text in a window can be selected, as on a web page, and the component that
+drew it does nothing for that and is told nothing:
+
+- A press on text and a drag select from the one place to the other, through
+  whatever text is between them in the order of the tree.
+- A second press selects a word, and a third the whole of a text node.
+- Control or Meta with `a` selects all of it.
+- Control or Meta with `c` copies what is selected to the platform's
+  clipboard, with a line break between one text node and the next.
+
+A node says when its text is left out, as `user-select: none` does in CSS:
+
+```wit
+record node-def {
+  // ...
+  unselectable: bool,
+}
+```
+
+Text at such a node, or beneath it, is not selected by a drag over it
+or by selecting everything, and a press on it leaves the selection as it was.
+The example's button leaves its label out, so pressing the button keeps what
+was selected.
+
+A text field uses the same selection and the same clipboard. Control with `x`
+copies what is selected, and the field that hears the key deletes it.
+Control with `v` is followed by a second key, named `Paste`, whose `text` is
+what is on the clipboard. A field inserts a key's text whatever the key, so it
+is pasted into with no code for pasting. No component is handed the
+clipboard.
+
+`tests/selection.rs` drags over the built example's text, copies it, and
+pastes into and cuts from its field, with a clipboard of its own in place of
+the platform's. It counts no event written to the component for the drag or
+the copy.
+
 ### What is not here yet
 
 A window shows one component. Embedding one component in another is designed
@@ -587,8 +633,9 @@ three components drawing one card came to 6 solves and 54 cross-component
 `measure` calls per frame, against 0 and 0 for the retained tree. Those
 numbers are no longer reproducible from this tree.
 
-A text field has no clipboard, no undo, no text from an input method, and a
-caret that does not blink. A component cannot move the focus itself, and a node that gets
+A text field has no undo, no text from an input method, and a caret that does
+not blink. A component cannot put text of its own on the clipboard or change
+what a copy takes. A component cannot move the focus itself, and a node that gets
 the focus while it is scrolled out of sight stays there. A box has no minimum
 or maximum size of its own, which the split
 example gets from what shrinks and what does not. A scroll thumb cannot be dragged

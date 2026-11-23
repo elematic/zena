@@ -177,19 +177,40 @@ pub enum KeyDefault {
     None,
     /// Move the focus to the next node that can have it, or the one before.
     MoveFocus { backwards: bool },
+    /// Select all the text in the window that can be selected.
+    SelectAll,
 }
 
 impl KeyEvent {
-    /// What the scene does with this key unless a listener stops it. `Tab`
-    /// going down moves the focus, and back with `Shift`. With another
+    /// What the scene does with this key unless a listener prevents it.
+    ///
+    /// `Tab` going down moves the focus, and back with `Shift`. With another
     /// modifier it is some other shortcut, such as the platform's window
-    /// switcher, and moves nothing.
+    /// switcher, and moves nothing. Control or Meta with `a` selects all the
+    /// window's text, which a text field prevents by selecting its own.
     pub fn default_action(&self) -> KeyDefault {
         let m = self.modifiers;
-        if self.down && self.key == "Tab" && !m.control && !m.alt && !m.meta {
+        if !self.down {
+            KeyDefault::None
+        } else if self.key == "Tab" && !m.control && !m.alt && !m.meta {
             KeyDefault::MoveFocus { backwards: m.shift }
+        } else if self.is_shortcut('a') {
+            KeyDefault::SelectAll
         } else {
             KeyDefault::None
         }
+    }
+
+    /// Whether this is `letter` going down with Control or Meta held and not
+    /// Alt: the shape of the shortcuts for the clipboard and for selecting
+    /// everything, on every platform. The letter is given in lower case.
+    pub fn is_shortcut(&self, letter: char) -> bool {
+        let m = self.modifiers;
+        let mut typed = self.key.chars();
+        let is_letter = typed
+            .next()
+            .is_some_and(|c| c.to_ascii_lowercase() == letter)
+            && typed.next().is_none();
+        self.down && (m.control || m.meta) && !m.alt && is_letter
     }
 }

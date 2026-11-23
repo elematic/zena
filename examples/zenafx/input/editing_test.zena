@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue} from 'zena:assert';
-import {Editing, Step, editing} from './editing.zena';
+import {Editing, Step, editing, oneLine} from './editing.zena';
 
 /** An editing's text with `|` at the caret, or `[` and `]` round a selection. */
 function shown(e: Editing) {
@@ -129,6 +129,29 @@ export let tests = suite('the editing a text field does', () => {
     equal(press(e, 'Backspace', false, true), 'one |o');
     equal(press(e, 'Delete', false, false), 'one tw|');
     equal(press(e, 'a', false, true), '[one two]');
+  });
+
+  test('Control with x deletes what is selected', () => {
+    let selected = at('hello', 1).movedTo(4, true);
+    let cut = selected.pressed({key: 'x', control: true});
+    isTrue(cut != null);
+    if (cut != null) {
+      equal(shown(cut), 'h|o');
+    }
+  });
+
+  test('pasted text is the text of a key, and is inserted', () => {
+    let pasted = at('ad', 1).pressed({key: 'Paste', typed: 'bc'});
+    isTrue(pasted != null);
+    if (pasted != null) {
+      equal(shown(pasted), 'abc|d');
+    }
+  });
+
+  test('text for a one-line field has its line breaks made spaces', () => {
+    equal(oneLine('one\ntwo\r\nthree\rfour'), 'one two three four');
+    equal(oneLine('plain'), 'plain');
+    equal(oneLine(''), '');
   });
 
   test('Meta with an arrow goes to the end', () => {

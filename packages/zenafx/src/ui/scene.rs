@@ -77,6 +77,9 @@ pub struct NodeDef {
     pub focusable: bool,
     /// Whether a person edits this node's text.
     pub editable: bool,
+    /// Whether the pointer cannot select this node's text, nor the text of
+    /// anything beneath it.
+    pub unselectable: bool,
 }
 
 /// Which property of a node a binding writes.
@@ -330,6 +333,15 @@ struct Template {
     states: Vec<StateStyle>,
 }
 
+/// What a press that is being dragged selects in.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Selecting {
+    /// A text field, by its text node: the selection stays in it.
+    Field(u32),
+    /// The window's other text, from one node to another.
+    Window,
+}
+
 /// A place in the window's text: a text node, and how many UTF-8 bytes into
 /// its content.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -441,6 +453,9 @@ struct Retained {
     /// Whether this is a text node whose text a person edits. A caret is
     /// drawn in one, and a selection begun in one stays in it.
     editable: bool,
+    /// Whether text here, and beneath here, is left out of what the pointer
+    /// can select.
+    unselectable: bool,
 }
 
 impl Retained {
@@ -465,6 +480,7 @@ impl Retained {
             spilled: false,
             cursor: None,
             editable: false,
+            unselectable: false,
         }
     }
 
@@ -552,9 +568,13 @@ pub struct Scene {
     /// focus: the pointer changes it with no component called, and a text
     /// field asks for it and sets it.
     selection: Option<Selected>,
-    /// The text node a selection is being dragged out in: from the primary
-    /// button going down on text until it comes up.
-    selecting: Option<u32>,
+    /// What a selection is being dragged out in: from the primary button
+    /// going down until it comes up.
+    selecting: Option<Selecting>,
+    /// What was selected before the press that is now down, kept until the
+    /// button comes up. A listener that turns out to want the press for
+    /// itself, by keeping the pointer, puts the selection back.
+    selected_before: Option<Option<Selected>>,
     /// The last press of the primary button, for counting presses.
     pressed_last: Option<Press>,
     /// Whether `Shift` is held, which a press reads: the scene sees every
@@ -764,6 +784,7 @@ impl Scene {
                 focusable: def.focusable,
                 // Only text can be edited.
                 editable: def.editable && run.is_some(),
+                unselectable: def.unselectable,
                 ..Retained::empty()
             }));
         }
@@ -775,6 +796,7 @@ impl Scene {
             held.cursor = filled[0].cursor;
             held.focusable = filled[0].focusable;
             held.editable = filled[0].editable && run.is_some();
+            held.unselectable = filled[0].unselectable;
         }
 
         for (index, def) in filled.iter().enumerate() {
@@ -898,7 +920,11 @@ impl Scene {
         // New text under the selection leaves the selection's places where
         // they were, held within the text, and the caret may have moved out
         // of sight with it.
-        if rewrote && self.selection.is_some_and(|s| s.focus.node == id) {
+        if rewrote
+            && self
+                .selection
+                .is_some_and(|s| s.focus.node == id || s.anchor.node == id)
+        {
             self.keep_selection_in_text();
             self.reveal = true;
         }
@@ -955,16 +981,164 @@ impl Scene {
         true
     }
 
-    /// What of the selection is in the text node `node`: the two places it
-    /// runs between there, and where the caret is if the selection ends in
-    /// this node. `None` when none of the selection is in it.
-    fn selected_in(&self, node: u32) -> Option<(u32, u32, Option<u32>)> {
-        let selected = self.selection?;
-        (selected.anchor.node == node && selected.focus.node == node).then_some((
-            selected.anchor.index,
-            selected.focus.index,
-            Some(selected.focus.index),
-        ))
+    /// Whether the pointer can select the text of `node`: it is text, no
+    /// person edits it, and nothing at or above it says its text is left
+    /// out.
+    fn is_selectable_text(&self, node: u32) -> bool {
+        self.get(node)
+            .is_some_and(|n| n.run.is_some() && !n.editable)
+            && !self.is_left_out(node)
+    }
+
+    /// Whether `node` or a node above it says the text there cannot be
+    /// selected.
+    fn is_left_out(&self, node: u32) -> bool {
+        self.path(Some(node))
+            .iter()
+            .any(|id| self.get(*id).is_some_and(|n| n.unselectable))
+    }
+
+    /// The text the pointer can select, in the order it comes in the tree: a
+    /// node before what is beneath it, and that before its next sibling. A
+    /// selection from one node to another takes in what is between them in
+    /// this order, which is the order a reader meets it in.
+    fn text_order(&self) -> Vec<u32> {
+        let mut order = Vec::new();
+        let mut ahead: Vec<u32> = self.root.into_iter().collect();
+        while let Some(id) = ahead.pop() {
+            let Some(held) = self.get(id) else {
+                continue;
+            };
+            // Nothing beneath a node that leaves its text out is selectable.
+            if held.unselectable {
+                continue;
+            }
+            if held.run.is_some() && !held.editable {
+                order.push(id);
+            }
+            ahead.extend(held.children.iter().rev());
+        }
+        order
+    }
+
+    /// What of the selection is in each text node it touches: the two places
+    /// it runs between there, from the earlier to the later, and where the
+    /// caret is if the selection is in one node.
+    ///
+    /// A selection in one node is that node's alone. One from a node to
+    /// another has the rest of the first, the start of the last, and all of
+    /// every text between them.
+    fn selected_ranges(&self) -> Vec<(u32, u32, u32, Option<u32>)> {
+        let Some(Selected { anchor, focus }) = self.selection else {
+            return Vec::new();
+        };
+        if anchor.node == focus.node {
+            let (from, to) = (anchor.index.min(focus.index), anchor.index.max(focus.index));
+            return vec![(anchor.node, from, to, Some(focus.index))];
+        }
+        let order = self.text_order();
+        let at = |place: Place| order.iter().position(|id| *id == place.node);
+        let (Some(a), Some(f)) = (at(anchor), at(focus)) else {
+            return Vec::new();
+        };
+        let ((first, start), (last, end)) = if a < f {
+            ((a, anchor.index), (f, focus.index))
+        } else {
+            ((f, focus.index), (a, anchor.index))
+        };
+        (first..=last)
+            .map(|position| {
+                let node = order[position];
+                let from = if position == first { start } else { 0 };
+                let to = if position == last {
+                    end
+                } else {
+                    self.length_of(node)
+                };
+                (node, from, to, None)
+            })
+            .collect()
+    }
+
+    /// The text that is selected, for the clipboard: what is selected in
+    /// each node, in the order of the tree, with a line break between one
+    /// node's text and the next. `None` when nothing is, or only a caret.
+    pub fn selected_text(&self) -> Option<String> {
+        let parts: Vec<&str> = self
+            .selected_ranges()
+            .into_iter()
+            .filter_map(|(node, from, to, _)| match &self.get(node)?.appearance {
+                Appearance::Text(shown) => shown.content.get(from as usize..to as usize),
+                _ => None,
+            })
+            .collect();
+        let text = parts.join("\n");
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Select all the text the pointer could select. What Control or Meta
+    /// with `a` does when no text field has taken the key for itself.
+    /// Returns whether that changed the selection.
+    pub fn select_all_text(&mut self) -> bool {
+        let order = self.text_order();
+        let (Some(first), Some(last)) = (order.first().copied(), order.last().copied()) else {
+            return false;
+        };
+        self.set_selection(Some(Selected {
+            anchor: Place {
+                node: first,
+                index: 0,
+            },
+            focus: Place {
+                node: last,
+                index: self.length_of(last),
+            },
+        }))
+    }
+
+    /// Put the selection back as it was before the press that is now down,
+    /// and stop selecting with it. For a press that a listener turned out to
+    /// want for itself: one that captures the pointer is starting a drag of
+    /// its own, and the text under it should not be selected by the same
+    /// gesture.
+    pub fn cancel_selecting(&mut self) {
+        if let Some(before) = self.selected_before.take() {
+            self.selecting = None;
+            self.set_selection(before);
+        }
+    }
+
+    /// The place in selectable text nearest a point in the window: in the
+    /// text under the point if there is any, and otherwise in the text
+    /// nearest it, looking up and down before sideways. A drag between two
+    /// paragraphs, or past the end of the last, still has somewhere to end.
+    fn nearest_place(&self, x: f32, y: f32, text: &TextEngine) -> Option<Place> {
+        let apart = |from: f32, start: f32, extent: f32| {
+            if from < start {
+                start - from
+            } else if from > start + extent {
+                from - start - extent
+            } else {
+                0.0
+            }
+        };
+        let nearest = self
+            .painted
+            .iter()
+            .copied()
+            .filter(|id| self.is_selectable_text(*id))
+            .filter_map(|id| {
+                let rect = self.rects.get(id as usize).copied().flatten()?;
+                // Text a box cuts off entirely is not there to select.
+                let clip = self.clips.get(id as usize).copied().flatten();
+                if clip.is_some_and(|clip| !overlaps(clip, rect)) {
+                    return None;
+                }
+                let away = (apart(y, rect.y, rect.height), apart(x, rect.x, rect.width));
+                Some((id, away))
+            })
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))?;
+        self.place_at(nearest.0, x, y, text)
     }
 
     /// The node at position `target` of the template `node` shows.
@@ -1055,14 +1229,19 @@ impl Scene {
     /// place in text is found from the shaped run, which the scene does not
     /// hold. Returns whether a frame is owed.
     ///
-    /// No component is called. In a text field:
+    /// No component is called.
     ///
-    /// - A press puts the caret at the place nearest the pointer, and
-    ///   dragging from there moves the selection's other end.
+    /// - A press puts the selection at the place nearest the pointer, and
+    ///   dragging from there moves its other end. In a text field that
+    ///   shows as a caret, and the drag stays in the field. In other text
+    ///   it shows once something is selected, and the drag goes from one
+    ///   text node to another.
     /// - A press with `Shift` held moves the end of the selection that is
     ///   already there.
-    /// - A second press in the same place selects the word there, and a
-    ///   third all the field's text.
+    /// - A second press in the same place selects the word there. A third
+    ///   selects all the text of the field, or of the text node.
+    /// - A press on something whose text is left out of selecting changes
+    ///   nothing, so pressing a button keeps what was selected.
     pub fn select_with(&mut self, input: PointerInput, text: &TextEngine) -> bool {
         match input {
             PointerInput::Button {
@@ -1072,18 +1251,42 @@ impl Scene {
                 down: true,
             } => {
                 let count = self.count_press(x, y);
-                let Some(field) = self.field_at(self.pressed) else {
-                    self.selecting = None;
-                    return false;
+                self.selecting = None;
+                self.selected_before = Some(self.selection);
+                // The text the press is in: a field's, or else whatever
+                // selectable text is nearest. A press on a field's padding
+                // is in the field, and a press on a box is nearest some
+                // text, unless the box leaves its text out.
+                let field = self.field_at(self.pressed);
+                let at = match (field, self.pressed) {
+                    (Some(field), _) => self.place_at(field, x, y, text),
+                    (None, Some(target)) if self.is_left_out(target) => return false,
+                    (None, _) => self.nearest_place(x, y, text),
                 };
-                let Some(at) = self.place_at(field, x, y, text) else {
-                    return false;
+                let Some(at) = at else {
+                    // No text to select in, so nothing is selected.
+                    return self.set_selection(None);
                 };
-                let run = self.get(field).and_then(|n| n.run);
-                let begun = self.selection.filter(|s| s.focus.node == field);
+                let run = self.get(at.node).and_then(|n| n.run);
+                let ends = |start: u32, end: u32| Selected {
+                    anchor: Place {
+                        node: at.node,
+                        index: start,
+                    },
+                    focus: Place {
+                        node: at.node,
+                        index: end,
+                    },
+                };
+                // `Shift` keeps where the selection began, when it began in
+                // the same kind of text: a selection does not run from a
+                // field into the text round it.
+                let begun = self.selection.filter(|s| match field {
+                    Some(field) => s.anchor.node == field,
+                    None => self.is_selectable_text(s.anchor.node),
+                });
                 let to = match (count, run) {
                     (1, _) => Selected {
-                        // `Shift` keeps where the selection began.
                         anchor: match begun {
                             Some(begun) if self.shift => begun.anchor,
                             _ => at,
@@ -1092,31 +1295,16 @@ impl Scene {
                     },
                     (2, Some(run)) => {
                         let (start, end) = text.word_at(run, at.index);
-                        Selected {
-                            anchor: Place {
-                                node: field,
-                                index: start,
-                            },
-                            focus: Place {
-                                node: field,
-                                index: end,
-                            },
-                        }
+                        ends(start, end)
                     }
-                    _ => Selected {
-                        anchor: Place {
-                            node: field,
-                            index: 0,
-                        },
-                        focus: Place {
-                            node: field,
-                            index: self.length_of(field),
-                        },
-                    },
+                    _ => ends(0, self.length_of(at.node)),
                 };
-                // Only a first press is dragged from: a word or a field
+                // Only a first press is dragged from: a word or a whole text
                 // selected by pressing again stays as it is.
-                self.selecting = (count == 1).then_some(field);
+                self.selecting = (count == 1).then_some(match field {
+                    Some(field) => Selecting::Field(field),
+                    None => Selecting::Window,
+                });
                 self.set_selection(Some(to))
             }
             PointerInput::Button {
@@ -1125,13 +1313,18 @@ impl Scene {
                 ..
             } => {
                 self.selecting = None;
+                self.selected_before = None;
                 false
             }
             PointerInput::Moved { x, y } => {
-                let (Some(field), Some(selected)) = (self.selecting, self.selection) else {
+                let (Some(selecting), Some(selected)) = (self.selecting, self.selection) else {
                     return false;
                 };
-                let Some(focus) = self.place_at(field, x, y, text) else {
+                let focus = match selecting {
+                    Selecting::Field(field) => self.place_at(field, x, y, text),
+                    Selecting::Window => self.nearest_place(x, y, text),
+                };
+                let Some(focus) = focus else {
                     return false;
                 };
                 self.set_selection(Some(Selected { focus, ..selected }))
@@ -1430,6 +1623,9 @@ impl Scene {
         };
 
         let holding = self.holding();
+        // What of the selection each text node has, worked out once: a
+        // selection from one node to another takes in the text between.
+        let selected = self.selected_ranges();
         let mut commands = Vec::new();
         // The clip the commands being added are inside. Nodes are painted
         // level by level, so one node's subtree is not a run of commands and
@@ -1475,8 +1671,10 @@ impl Scene {
                     // caret too, over the glyphs and in the colour the text
                     // is drawn in, and both show only while the keyboard
                     // goes to that text.
-                    let selected = self
-                        .selected_in(*id)
+                    let selected = selected
+                        .iter()
+                        .find(|(text_node, ..)| text_node == id)
+                        .map(|(_, from, to, caret)| (*from, *to, *caret))
                         .filter(|_| !node.editable || self.is_at_or_beneath(*id, self.focused));
                     if let Some((from, to, _)) = selected {
                         let covered = text.selection(run, from, to);
@@ -2151,10 +2349,11 @@ impl Scene {
         {
             self.selection = None;
         }
-        if self
-            .selecting
-            .is_some_and(|node| self.is_at_or_beneath(node, Some(gone)))
-        {
+        let dragged_in_it = match self.selecting {
+            Some(Selecting::Field(field)) => self.is_at_or_beneath(field, Some(gone)),
+            _ => false,
+        };
+        if dragged_in_it {
             self.selecting = None;
         }
     }
@@ -2423,6 +2622,7 @@ mod tests {
             cursor: None,
             focusable: false,
             editable: false,
+            unselectable: false,
         }
     }
 
@@ -4814,5 +5014,181 @@ mod tests {
         assert_eq!(glyphs(&wheeled)[0].x, INSET, "the wheel moved nothing");
     }
 
+    const PAGE_OF_TEXT: u32 = 31;
+
+    /// A page in the window's top left corner: two lines of text one above
+    /// the other, and under them a box whose text is left out of selecting,
+    /// as a button's is. The lines are drawn in that order.
+    fn a_page_of_text(text: &mut TextEngine) -> (Scene, u32) {
+        let mut scene = Scene::new();
+        let root = scene.root();
+        let nodes = vec![
+            NodeDef {
+                first_child: 1,
+                child_count: 3,
+                ..blank()
+            },
+            text_node("first paragraph"),
+            text_node("second one"),
+            NodeDef {
+                first_child: 4,
+                child_count: 1,
+                unselectable: true,
+                ..blank()
+            },
+            text_node("a button"),
+        ];
+        scene.render(root, &fresh(PAGE_OF_TEXT, nodes, vec![]), &[], text);
+        scene.draw(window(), text);
+        (scene, root)
+    }
+
+    /// Where in the window the `line`th text drawn has its `index`th byte,
+    /// on the line's middle.
+    fn in_line(scene: &mut Scene, line: usize, index: u32, text: &mut TextEngine) -> (f32, f32) {
+        let shown = glyphs(&scene.draw(window(), text))[line];
+        let caret = text.caret(shown.run, index, 0.0).expect("a run");
+        (
+            shown.x + caret.x + 1.0,
+            shown.y + caret.y + caret.height / 2.0,
+        )
+    }
+
+    /// The highlights a frame draws.
+    fn highlights(commands: &[Command]) -> Vec<Rect> {
+        quads(commands)
+            .into_iter()
+            .filter(|q| q.background == Some(SELECTION))
+            .map(|q| q.bounds)
+            .collect()
+    }
+
+    /// A press on text and a drag to other text selects from the one place
+    /// to the other, whichever way the drag went: the rest of the first
+    /// text and the start of the last. Each has its highlight, there is no
+    /// caret, and nothing needs the focus.
+    #[test]
+    fn a_drag_selects_from_one_text_to_another() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_page_of_text(&mut text);
+        let (ax, ay) = in_line(&mut scene, 0, 6, &mut text);
+        let (bx, by) = in_line(&mut scene, 1, 6, &mut text);
+
+        point(&mut scene, pressed(ax, ay), &text);
+        assert_eq!(scene.selected_text(), None, "a press alone selects nothing");
+        point(&mut scene, moved(bx, by), &text);
+        assert_eq!(scene.selected_text().as_deref(), Some("paragraph\nsecond"));
+
+        let commands = scene.draw(window(), &mut text);
+        assert_eq!(highlights(&commands).len(), 2, "one in each text");
+        assert_eq!(quads(&commands).len(), 2, "and no caret");
+
+        point(&mut scene, released(bx, by), &text);
+        point(&mut scene, pressed(bx, by), &text);
+        point(&mut scene, moved(ax, ay), &text);
+        assert_eq!(
+            scene.selected_text().as_deref(),
+            Some("paragraph\nsecond"),
+            "dragged the other way"
+        );
+    }
+
+    /// A drag that ends away from any text ends at the text nearest it: past
+    /// the last line is the end of the last line.
+    #[test]
+    fn a_drag_past_the_text_ends_at_the_nearest_text() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_page_of_text(&mut text);
+        let (ax, ay) = in_line(&mut scene, 0, 0, &mut text);
+        point(&mut scene, pressed(ax, ay), &text);
+
+        point(&mut scene, moved(700.0, 500.0), &text);
+
+        assert_eq!(
+            scene.selected_text().as_deref(),
+            Some("first paragraph\nsecond one"),
+            "the text in the box under them is left out"
+        );
+    }
+
+    /// A second press on a word selects it, and a third the whole of the
+    /// text it is in.
+    #[test]
+    fn pressing_text_again_selects_a_word_and_then_its_text() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_page_of_text(&mut text);
+        let (x, y) = in_line(&mut scene, 0, 8, &mut text);
+        let press = |scene: &mut Scene, text: &TextEngine| {
+            point(scene, pressed(x, y), text);
+            point(scene, released(x, y), text);
+        };
+
+        press(&mut scene, &text);
+        press(&mut scene, &text);
+        assert_eq!(scene.selected_text().as_deref(), Some("paragraph"));
+        press(&mut scene, &text);
+        assert_eq!(scene.selected_text().as_deref(), Some("first paragraph"));
+    }
+
+    /// Text that is left out of selecting is not selected by a drag over it
+    /// or by selecting everything, and a press on it leaves what was
+    /// selected as it was, as a press on a button should.
+    #[test]
+    fn text_that_is_left_out_is_not_selected() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_page_of_text(&mut text);
+        let (x, y) = in_line(&mut scene, 2, 3, &mut text);
+
+        assert!(scene.select_all_text());
+        assert_eq!(
+            scene.selected_text().as_deref(),
+            Some("first paragraph\nsecond one")
+        );
+
+        point(&mut scene, pressed(x, y), &text);
+        point(&mut scene, moved(x + 30.0, y), &text);
+        point(&mut scene, released(x + 30.0, y), &text);
+        assert_eq!(
+            scene.selected_text().as_deref(),
+            Some("first paragraph\nsecond one"),
+            "pressing the button changed nothing"
+        );
+    }
+
+    /// A listener that captures the pointer is dragging something of its own,
+    /// so the selection its press began is put back as it was.
+    #[test]
+    fn keeping_the_pointer_puts_the_selection_back() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_page_of_text(&mut text);
+        scene.select_all_text();
+        let (x, y) = in_line(&mut scene, 0, 3, &mut text);
+
+        point(&mut scene, pressed(x, y), &text);
+        assert_eq!(scene.selected_text(), None, "the press began a new one");
+        scene.cancel_selecting();
+        assert_eq!(
+            scene.selected_text().as_deref(),
+            Some("first paragraph\nsecond one")
+        );
+        point(&mut scene, moved(x + 40.0, y), &text);
+        assert_eq!(
+            scene.selected_text().as_deref(),
+            Some("first paragraph\nsecond one"),
+            "and the drag selects nothing"
+        );
+    }
+
+    /// A field's text is not part of what a drag over the window's text
+    /// selects, and a selection in a field is copied as any other is.
+    #[test]
+    fn a_field_keeps_its_selection_to_itself() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_field(&mut text, "hello");
+
+        assert!(!scene.select_all_text(), "there is no other text");
+        select(&mut scene, root, 1, 4);
+        assert_eq!(scene.selected_text().as_deref(), Some("ell"));
+    }
 }
 

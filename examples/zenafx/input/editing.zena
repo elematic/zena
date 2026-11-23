@@ -13,7 +13,7 @@
  * them: stepping moves by a whole grapheme, so a caret never lands inside an
  * accented letter or an emoji.
  */
-import { StringIndex } from 'zena:core';
+import { StringBuilder, StringIndex } from 'zena:core';
 import { isUnicodeWhitespace } from 'zena:string';
 
 /** How far a caret moves, or how much a deletion takes. */
@@ -217,14 +217,22 @@ export class Editing(text: String, anchor: i32, focus: i32) {
    * The arrows move by a character, by a word with Control or Alt held, and
    * to the end with Meta held. `Home` and `End` go to the ends. Shift extends
    * the selection with any of them. Backspace and Delete take a character, or
-   * a word with Control or Alt. Control or Meta with `a` selects everything.
-   * Any other key that types text inserts it.
+   * a word with Control or Alt. Control or Meta with `a` selects everything,
+   * and with `x` deletes what is selected. Any other key that types text
+   * inserts it, which is also how pasted text arrives: as the text of a key
+   * named `Paste`.
    */
   pressed(pressed: Key): Editing | null {
     let {key, shift = false, control = false, alt = false, meta = false} = pressed;
     let step = if (meta) Step.Line else if (control || alt) Step.Word else Step.Character;
     if ((control || meta) && (key == 'a' || key == 'A')) {
       return this.selectedAll();
+    }
+    // Cutting takes the selection out of the text. Putting it on the
+    // clipboard is the host's doing, which copies what is selected when it
+    // sees the key and before the field does.
+    if ((control || meta) && (key == 'x' || key == 'X')) {
+      return this.inserted('');
     }
     if (let {typed} = pressed) {
       return this.inserted(typed);
@@ -247,6 +255,24 @@ export class Editing(text: String, anchor: i32, focus: i32) {
     let caret = from + with.utf8.length;
     return new Editing(`${head}${with}${tail}`, caret, caret);
   }
+}
+
+/**
+ * `text` on one line: each line break in it becomes a space. What a one-line
+ * field does to text before inserting it, since pasted text can have any
+ * number of lines.
+ */
+export function oneLine(text: String): String {
+  let out = new StringBuilder();
+  for (let character in text) {
+    // A carriage return and a line feed together are one character.
+    if (character == '\n' || character == '\r' || character == '\r\n') {
+      out.append(' ');
+    } else {
+      out.append(character);
+    }
+  }
+  return out.toString();
 }
 
 /** A text with the caret at its end, which is how a field starts. */
