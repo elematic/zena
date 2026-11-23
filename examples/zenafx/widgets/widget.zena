@@ -73,6 +73,12 @@ export type BoxOpts = {
    * a selection in the text, and the pointer moves both with no handler.
    */
   editable?: boolean,
+  /**
+   * Whether the pointer cannot select the box's text, nor the text of
+   * anything in it. All other text can be selected, with no handler. A
+   * button leaves its label out.
+   */
+  unselectable?: boolean,
 };
 
 /** Read the options, filling in what was left out. */
@@ -117,18 +123,20 @@ export class Box {
   focusable: boolean;
   /** Whether a person edits the node's text. */
   editable: boolean;
+  /** Whether the pointer cannot select the text here and beneath. */
+  unselectable: boolean;
   /** Whether content hangs here. */
   isSlot: boolean;
 
   new(this.layout, this.appearance, this.children, this.cursor, this.focusable = false,
-      this.editable = false, this.isSlot = false);
+      this.editable = false, this.unselectable = false, this.isSlot = false);
 }
 
 /** A box. Lays out its children, and draws a panel when given a `style`. */
 export function box(opts: BoxOpts = {}, children: Array<Box> = []): Box {
-  let {focusable = false} = opts;
+  let {focusable = false, unselectable = false} = opts;
   return new Box(flexOf(opts), appearanceOf(opts), GrowableArray.from(children),
-                 cursorOf(opts), focusable);
+                 cursorOf(opts), focusable, false, unselectable);
 }
 
 /**
@@ -141,7 +149,7 @@ export function box(opts: BoxOpts = {}, children: Array<Box> = []): Box {
  */
 export function slot(): Box {
   return new Box(flexOf({}), new AppearanceNothing(), new GrowableArray<Box>(), none,
-                 false, false, true);
+                 false, false, false, true);
 }
 
 /**
@@ -153,9 +161,10 @@ export function slot(): Box {
  * in the template they share.
  */
 export function text(content: String, style: TextStyle, opts: BoxOpts = {}): Box {
-  let {focusable = false, editable = false} = opts;
+  let {focusable = false, editable = false, unselectable = false} = opts;
   return new Box(flexOf(opts), new AppearanceText(new TextContent(content, style)),
-                 new GrowableArray<Box>(), cursorOf(opts), focusable, editable);
+                 new GrowableArray<Box>(), cursorOf(opts), focusable, editable,
+                 unselectable);
 }
 
 /**
@@ -185,7 +194,7 @@ export function flatten(root: Box): Array<NodeDef> {
     let node = order[n];
     nodes.push(new NodeDef(node.layout, node.appearance, firstChildOf[n] as u32,
                            node.children.length as u32, node.isSlot, node.cursor,
-                           node.focusable, node.editable));
+                           node.focusable, node.editable, node.unselectable));
     n += 1;
   }
   return nodes;

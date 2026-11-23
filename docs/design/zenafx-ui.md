@@ -72,6 +72,7 @@
       - [Cursors](#cursors)
       - [The keyboard and the focus](#the-keyboard-and-the-focus)
       - [Text fields](#text-fields)
+      - [Selecting text and the clipboard](#selecting-text-and-the-clipboard)
     - [Context: values that inherit down the tree](#context-values-that-inherit-down-the-tree)
   - [Host primitives](#host-primitives)
     - [Layout with measurement inside the solve](#layout-with-measurement-inside-the-solve)
@@ -1504,10 +1505,6 @@ doing either.
 
 Not built:
 
-- **The clipboard.** Copy, cut and paste need the platform's clipboard, which
-  the window library does not provide.
-- **Selecting text that is not in a field.** The selection is one for the
-  whole window, and only editable text can hold it so far.
 - **Text from an input method**, and with it the candidate text an input
   method shows while composing, and telling the platform where the caret is.
 - **Dragging by words** after a second press.
@@ -1515,6 +1512,92 @@ Not built:
 - **Undo**, which is the component's to add.
 - **More than one line.** The caret is kept in sight on both axes and a place
   is found in wrapped text, but the editing has no up or down.
+
+#### Selecting text and the clipboard
+
+Any text in a window can be selected and copied, as on a web page. The
+component that drew it does nothing for that and is told nothing.
+`examples/zenafx/selection/` is a page of text with no code about either.
+
+This is what the host holding the tree gives for nothing. The scene has every
+text and where it was drawn, so the pointer can select across widgets, and
+across components once there is more than one, without any of them learning
+what the others say. A toolkit that hands the host pixels or a display list
+each frame has to build selection in every widget that wants it, which is why
+text in most native applications cannot be selected.
+
+The selection is the one a text field uses: one for the window, kept by the
+scene, with a place in a text node at each end.
+
+- **A press and a drag** select from the place nearest where the press landed
+  to the place nearest the pointer. A selection from one text node to another
+  takes in the rest of the first, the start of the last and all of every text
+  node between them, in the order the nodes come in the tree. That is the
+  order a reader meets them in for text laid out in a column, and may not be
+  for columns side by side.
+- **A pointer away from any text** is nearest some text: the text above or
+  below it before the text beside it. A drag that ends between two paragraphs
+  or past the last still ends somewhere.
+- **A second press** selects a word and a third the whole text node.
+- **Control or Meta with `a`** selects all of it, unless a listener prevents
+  that, which a text field does by selecting its own text.
+- **A highlight** shows what is selected. There is no caret outside a text
+  field, and a selection in ordinary text shows whether or not anything has
+  the focus.
+
+A node that says `unselectable` has its text left out, with the text of
+everything beneath it, as `user-select: none` does in CSS. Text left out is not
+selected by a drag over it or by selecting everything, and a press on it
+leaves the selection as it was. A button leaves its label out, so pressing it
+keeps what was selected. A text field's text is left out of a selection made
+in the text round it, and the other way round: a selection is in one field or
+in ordinary text.
+
+A press begins a selection at once, before any listener on its path has
+answered. If a listener then captures the pointer, it is dragging something of
+its own, and the selection is put back as it was before the press.
+
+The clipboard is the host's, and no component is handed it.
+
+- **Copy.** Control or Meta with `c` puts what is selected on the clipboard,
+  with a line break between one text node's text and the next. It is done
+  when the key goes down, before any listener hears the key.
+- **Cut.** Control or Meta with `x` copies in the same way. Taking the text
+  out is the field's to do, since the text is the field's: the field hears the
+  key after the copy and deletes what is selected.
+- **Paste.** Control or Meta with `v` is followed by a second key, named
+  `Paste`, whose `text` is the text on the clipboard. A field inserts a key's
+  `text` whatever the key, so it is pasted into with no code for pasting.
+  `Paste` is one of the W3C's key names, for the key some keyboards have.
+
+A window uses the platform's clipboard, through the `arboard` crate. A scene
+with no window, which is what a test has, has one of its own.
+
+Three alternatives were considered.
+
+- **A clipboard interface for components**, with a read and a write. A
+  component could then read what the person last copied anywhere, at any
+  time. The web gates that behind a permission. Here a component gets pasted
+  text only when the person pastes into it, and needs no permission.
+- **Copying as something a listener can prevent**, as a `copy` event is on
+  the web, where a page can put its own text on the clipboard in place of the
+  selection. It needs the copy to wait for the component, and a way for the
+  component to supply the text. It is the natural next step and is not built.
+- **Selecting off unless a template asks for it**, as native toolkits have
+  it. Most text would then not be selectable, which is the state of things
+  this is meant to end.
+
+Not built:
+
+- **A component's own copy**: text put on the clipboard that is not what is
+  selected, such as a table copied as rows of tab-separated cells.
+- **Anything but text** on the clipboard.
+- **Scrolling while a drag is past the edge** of a scrolling box. The box
+  scrolls to keep the selection's end in sight, and stops when the pointer
+  does.
+- **A context menu**, which is where copy and paste are found without a
+  keyboard.
+- **A look for the highlight** that a template chooses.
 
 [understory]: https://github.com/forest-rs/understory
 

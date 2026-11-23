@@ -14,6 +14,7 @@
 //!
 //! Designed under "Host primitives" in `docs/design/zenafx-ui.md`.
 
+pub mod clipboard;
 pub mod demo;
 pub mod events;
 pub mod layout;

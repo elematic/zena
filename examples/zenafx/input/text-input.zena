@@ -20,8 +20,12 @@
  * which it tells the host with `editable`. Node 2 is the placeholder, which
  * says something only while node 1 is empty.
  *
- * Not here: cutting and pasting, undo, text from an input method, and a caret
- * that blinks.
+ * The clipboard is the host's too. It copies what is selected when Control
+ * with `c` or `x` goes down, so cutting is deleting the selection here. Pasted
+ * text arrives as the text of a key named `Paste`, and is inserted as typed
+ * text is.
+ *
+ * Not here: undo, text from an input method, and a caret that blinks.
  */
 import { Color, BoxStyle, TextStyle, Edges, Axis, Align, Overflow } from 'zenafx:ui/style';
 import { Binding, BindingTarget, BindingValueContent, StateStyle, State, RestyleFill,
@@ -29,7 +33,7 @@ import { Binding, BindingTarget, BindingValueContent, StateStyle, State, Restyle
 import { KeyEvent } from 'zenafx:host/events';
 import { Rendering, Widget, Template, KeyListener, KeyAnswer } from '../framework.zena';
 import { box, text, flatten } from '../widgets/widget.zena';
-import { Editing } from './editing.zena';
+import { Editing, oneLine } from './editing.zena';
 import { some } from 'zena:core';
 
 let ink = new Color(0.10, 0.11, 0.13, 1.0);
@@ -64,7 +68,8 @@ let inputTemplate = new Template(
                padding: new Edges(9.0, 12.0, 9.0, 12.0), overflowX: Overflow.Hidden,
                cursor: Cursor.Text, focusable: true}, [
     text('', valueText, {shrink: 0.0, editable: true}),
-    text('', placeholderText, {shrink: 0.0}),
+    // The placeholder is a hint and not text to select or copy.
+    text('', placeholderText, {shrink: 0.0, unselectable: true}),
   ])),
   [new Binding(edited, BindingTarget.Content),
    new Binding(2 as u32, BindingTarget.Content)],
@@ -128,7 +133,9 @@ export class TextInput extends Widget {
     let before = this.#editing();
     var next: Editing | null = null;
     if (let Some {value} = event.text) {
-      next = before.pressed({key: event.key, typed: value, shift: held.shift,
+      // Typed text is a character. Pasted text arrives the same way and can
+      // be many lines, which a field of one line puts on one.
+      next = before.pressed({key: event.key, typed: oneLine(value), shift: held.shift,
                              control: held.control, alt: held.alt, meta: held.meta});
     } else {
       next = before.pressed({key: event.key, shift: held.shift,
