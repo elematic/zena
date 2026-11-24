@@ -1790,6 +1790,10 @@ a label calls `update-run`, which reshapes in place and keeps the id.
 This is what keeps the per-frame display list small: a glyph run in the display
 list is an id and a position, not a string and a font.
 
+A text node is one string in one style. [zenafx-text-flow.md](./zenafx-text-flow.md)
+proposes text in several styles: a node whose children are laid out together
+as one piece of text.
+
 ### Paint
 
 The painter takes a display list and draws it. The commands are rounded quads,
