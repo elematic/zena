@@ -11,18 +11,33 @@
 use parley::fontique::Blob;
 use parley::{
     Affinity, Alignment, AlignmentOptions, BoundingBox, Cursor, FontContext, FontFamily, FontStyle,
-    FontWeight, GenericFamily, Layout, LayoutContext, Selection, StyleProperty,
+    FontWeight, GenericFamily, Layout, LayoutContext, LineHeight, Selection, StyleProperty,
 };
 
-use super::types::{Measured, Rect, TextStyle};
+use super::types::{Color, Flow, Measured, Rect, TextAlign, TextStyle};
 
-/// A registered run: the source text, the style it was shaped under, and the
-/// parley layout, broken at whatever width it was last measured or painted
-/// at.
+/// One stretch of a run's content, in one style.
+struct Part {
+    /// Where the stretch starts in the run's content, in UTF-8 bytes. It ends
+    /// where the next one starts.
+    start: usize,
+    style: TextStyle,
+}
+
+/// A registered run: the source text, the styles it was shaped under, and
+/// the parley layout, broken at whatever width it was last measured or
+/// painted at.
+///
+/// A run has one part for a text node by itself, and one for each text node
+/// of a flow container, whose texts are joined and laid out as one.
 pub struct Run {
     content: String,
-    style: TextStyle,
-    layout: Layout<()>,
+    /// At least one, in the order of the content.
+    parts: Vec<Part>,
+    flow: Flow,
+    /// Each glyph is marked with the part it belongs to, which is how the
+    /// painter knows its colour.
+    layout: Layout<u32>,
     /// The `max_advance` the layout currently reflects. `None` means it was
     /// broken unconstrained.
     broken_at: Option<f32>,
@@ -33,11 +48,19 @@ impl Run {
         &self.content
     }
 
+    /// The style of the run's first part, which is its only one for a text
+    /// node by itself.
     pub fn style(&self) -> &TextStyle {
-        &self.style
+        &self.parts[0].style
     }
 
-    pub fn layout(&self) -> &Layout<()> {
+    /// The colour of the glyphs marked with `part`.
+    pub fn color_of(&self, part: u32) -> Color {
+        let part = (part as usize).min(self.parts.len() - 1);
+        self.parts[part].style.color
+    }
+
+    pub fn layout(&self) -> &Layout<u32> {
         &self.layout
     }
 }
@@ -48,7 +71,7 @@ impl Run {
 /// collection, and building it is the expensive part.
 pub struct TextEngine {
     font_cx: FontContext,
-    layout_cx: LayoutContext<()>,
+    layout_cx: LayoutContext<u32>,
     /// Slot `i` holds run id `i as u32`. Released slots hold `None` and are
     /// reused, so ids stay small and dense.
     runs: Vec<Option<Run>>,
@@ -113,7 +136,8 @@ impl TextEngine {
                     &mut self.font_cx,
                     &mut self.layout_cx,
                     &slot.content,
-                    &slot.style,
+                    &slot.parts,
+                    &slot.flow,
                     self.scale,
                 );
                 slot.broken_at = Some(f32::NAN);
@@ -128,8 +152,14 @@ impl TextEngine {
         if scale != self.scale {
             self.scale = scale;
             for slot in self.runs.iter_mut().flatten() {
-                slot.layout =
-                    shape(&mut self.font_cx, &mut self.layout_cx, &slot.content, &slot.style, scale);
+                slot.layout = shape(
+                    &mut self.font_cx,
+                    &mut self.layout_cx,
+                    &slot.content,
+                    &slot.parts,
+                    &slot.flow,
+                    scale,
+                );
                 slot.broken_at = Some(f32::NAN);
             }
         }
@@ -142,20 +172,20 @@ impl TextEngine {
     /// Shape `content` under `style` and keep it. The id is valid until
     /// [`TextEngine::release_run`].
     pub fn register_run(&mut self, content: &str, style: &TextStyle) -> u32 {
-        let run = Run {
-            content: content.to_owned(),
-            style: style.clone(),
-            layout: shape(
-                &mut self.font_cx,
-                &mut self.layout_cx,
-                content,
-                style,
-                self.scale,
-            ),
-            // No break has been applied yet; NaN never equals a requested
-            // width, so the first measure always breaks.
-            broken_at: Some(f32::NAN),
-        };
+        self.register_parts(&[(content, style)], &Flow::default())
+    }
+
+    /// Shape several texts as one, each in its own style, and keep the
+    /// result: the texts of a flow container, in the order they are read.
+    /// `parts` has at least one text. The id is valid until
+    /// [`TextEngine::release_run`].
+    ///
+    /// The texts are joined with nothing between them. Lines are broken
+    /// across the whole, so a part can start on one line and end on the
+    /// next, and a word that is half in one part and half in another is one
+    /// word.
+    pub fn register_parts(&mut self, parts: &[(&str, &TextStyle)], flow: &Flow) -> u32 {
+        let run = self.shaped(parts, flow);
         match self.free.pop() {
             Some(id) => {
                 self.runs[id as usize] = Some(run);
@@ -170,18 +200,50 @@ impl TextEngine {
 
     /// Reshape a run in place, keeping its id.
     pub fn update_run(&mut self, id: u32, content: &str, style: &TextStyle) {
+        self.update_parts(id, &[(content, style)], &Flow::default());
+    }
+
+    /// Reshape a run of several texts in place, keeping its id.
+    pub fn update_parts(&mut self, id: u32, parts: &[(&str, &TextStyle)], flow: &Flow) {
+        let run = self.shaped(parts, flow);
+        if let Some(slot) = self.runs.get_mut(id as usize).and_then(Option::as_mut) {
+            *slot = run;
+        }
+    }
+
+    /// Join `parts` and shape them. The result is not yet broken into lines.
+    fn shaped(&mut self, parts: &[(&str, &TextStyle)], flow: &Flow) -> Run {
+        let mut content = String::new();
+        let mut starts = Vec::with_capacity(parts.len().max(1));
+        for (text, style) in parts {
+            starts.push(Part {
+                start: content.len(),
+                style: (*style).clone(),
+            });
+            content.push_str(text);
+        }
+        if starts.is_empty() {
+            starts.push(Part {
+                start: 0,
+                style: TextStyle::default(),
+            });
+        }
         let layout = shape(
             &mut self.font_cx,
             &mut self.layout_cx,
-            content,
-            style,
+            &content,
+            &starts,
+            flow,
             self.scale,
         );
-        if let Some(slot) = self.runs.get_mut(id as usize).and_then(Option::as_mut) {
-            slot.content = content.to_owned();
-            slot.style = style.clone();
-            slot.layout = layout;
-            slot.broken_at = Some(f32::NAN);
+        Run {
+            content,
+            parts: starts,
+            flow: *flow,
+            layout,
+            // No break has been applied yet; NaN never equals a requested
+            // width, so the first measure always breaks.
+            broken_at: Some(f32::NAN),
         }
     }
 
@@ -294,7 +356,7 @@ impl TextEngine {
 }
 
 /// A place a caret can be, at or next to a UTF-8 offset.
-fn cursor(layout: &Layout<()>, index: u32) -> Cursor {
+fn cursor(layout: &Layout<u32>, index: u32) -> Cursor {
     Cursor::from_byte_index(layout, index as usize, Affinity::Downstream)
 }
 
@@ -318,11 +380,17 @@ fn break_at(run: &mut Run, available_width: Option<f32>) {
         return;
     }
     run.layout.break_all_lines(available_width);
-    run.layout.align(Alignment::Start, AlignmentOptions::default());
+    let align = match run.flow.align {
+        TextAlign::Start => Alignment::Start,
+        TextAlign::Center => Alignment::Center,
+        TextAlign::End => Alignment::End,
+        TextAlign::Justify => Alignment::Justify,
+    };
+    run.layout.align(align, AlignmentOptions::default());
     run.broken_at = available_width;
 }
 
-fn measured_of(layout: &Layout<()>) -> Measured {
+fn measured_of(layout: &Layout<u32>) -> Measured {
     Measured {
         width: layout.width(),
         height: layout.height(),
@@ -330,23 +398,41 @@ fn measured_of(layout: &Layout<()>) -> Measured {
     }
 }
 
-/// Build a parley layout for one run. The result is unbroken; a caller
-/// breaks it at the width it cares about.
+/// Build a parley layout for one run, each part in its own style. The result
+/// is unbroken; a caller breaks it at the width it cares about.
 fn shape(
     font_cx: &mut FontContext,
-    layout_cx: &mut LayoutContext<()>,
+    layout_cx: &mut LayoutContext<u32>,
     content: &str,
-    style: &TextStyle,
+    parts: &[Part],
+    flow: &Flow,
     scale: f32,
-) -> Layout<()> {
+) -> Layout<u32> {
     let mut builder = layout_cx.ranged_builder(font_cx, content, scale, true);
-    builder.push_default(StyleProperty::FontFamily(font_family(&style.family)));
-    builder.push_default(StyleProperty::FontSize(style.size));
-    builder.push_default(StyleProperty::FontWeight(FontWeight::new(
-        style.weight as f32,
-    )));
-    if style.italic {
-        builder.push_default(StyleProperty::FontStyle(FontStyle::Italic));
+    if let Some(height) = flow.line_height {
+        builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
+            height,
+        )));
+    }
+    for (index, part) in parts.iter().enumerate() {
+        let end = parts
+            .get(index + 1)
+            .map_or(content.len(), |next| next.start);
+        let range = part.start..end;
+        let style = &part.style;
+        builder.push(StyleProperty::Brush(index as u32), range.clone());
+        builder.push(
+            StyleProperty::FontFamily(font_family(&style.family)),
+            range.clone(),
+        );
+        builder.push(StyleProperty::FontSize(style.size), range.clone());
+        builder.push(
+            StyleProperty::FontWeight(FontWeight::new(style.weight as f32)),
+            range.clone(),
+        );
+        if style.italic {
+            builder.push(StyleProperty::FontStyle(FontStyle::Italic), range);
+        }
     }
     builder.build(content)
 }
@@ -566,5 +652,77 @@ mod tests {
         let caret = text.caret(empty, 0, 2.0).expect("a run");
         assert!((caret.height - full.height).abs() <= 3.0, "{caret:?}");
         assert_eq!(text.index_at(empty, 40.0, 5.0), 0);
+    }
+
+    /// Several texts shaped as one are one run. Its content is the texts
+    /// joined, a part in a larger size makes it wider than the same words in
+    /// one size, and its lines break across the parts.
+    #[test]
+    fn parts_are_shaped_and_broken_as_one() {
+        let mut text = TextEngine::new();
+        let plain = TextStyle::default();
+        let large = TextStyle {
+            size: plain.size * 1.5,
+            ..TextStyle::default()
+        };
+        let parts = [
+            ("The quick ", &plain),
+            ("brown fox jumps", &large),
+            (" over the lazy dog", &plain),
+        ];
+        let flow = Flow::default();
+
+        let id = text.register_parts(&parts, &flow);
+        let same_words = text.register_run("The quick brown fox jumps over the lazy dog", &plain);
+
+        let run = text.get(id).expect("a run");
+        assert_eq!(run.content(), "The quick brown fox jumps over the lazy dog");
+        let (one, other) = (
+            text.measure_run(id, None),
+            text.measure_run(same_words, None),
+        );
+        assert!(one.width > other.width, "{one:?} against {other:?}");
+        let narrow = text.measure_run(id, Some(one.width / 3.0));
+        assert!(narrow.height > one.height * 2.0, "{narrow:?}");
+    }
+
+    /// A centred flow starts a short line in from the edge of the width it
+    /// was broken at, and one that starts at the start does not.
+    #[test]
+    fn a_centred_run_starts_its_line_in_from_the_edge() {
+        let mut text = TextEngine::new();
+        let style = TextStyle::default();
+        let centred = Flow {
+            align: TextAlign::Center,
+            ..Flow::default()
+        };
+        let at_start = text.register_parts(&[("short", &style)], &Flow::default());
+        let in_middle = text.register_parts(&[("short", &style)], &centred);
+        let width = text.measure_run(at_start, None).width;
+        text.measure_run(at_start, Some(400.0));
+        text.measure_run(in_middle, Some(400.0));
+
+        let start = |id| text.caret(id, 0, 0.0).expect("a run").x;
+        assert_eq!(start(at_start), 0.0);
+        assert!((start(in_middle) - (400.0 - width) / 2.0).abs() < 1.0);
+    }
+
+    /// A line height is a multiple of the text size, so twice the size's
+    /// worth makes a line about that tall.
+    #[test]
+    fn a_line_height_sets_how_far_apart_lines_are() {
+        let mut text = TextEngine::new();
+        let style = TextStyle {
+            size: 20.0,
+            ..TextStyle::default()
+        };
+        let tall = Flow {
+            line_height: Some(2.0),
+            ..Flow::default()
+        };
+        let id = text.register_parts(&[("one line", &style)], &tall);
+
+        let measured = text.measure_run(id, None);
+        assert!((measured.height - 40.0).abs() < 1.0, "{measured:?}");
     }
 }

@@ -627,7 +627,7 @@ mod tests {
     use super::*;
     use crate::ui::events::Modifiers;
     use crate::ui::scene::{Appearance, NodeDef, TemplateDef, TemplateRef};
-    use crate::ui::types::Flex;
+    use crate::ui::types::{Layout, OwnBox};
     use listeners::{Answer, KeyDeliveryRecord};
 
     /// A scene of one node, which can have the focus and has not got it.
@@ -640,7 +640,8 @@ mod tests {
             &TemplateRef::Fresh(TemplateDef {
                 id: 1,
                 nodes: vec![NodeDef {
-                    layout: Flex::default(),
+                    own_box: OwnBox::default(),
+                    layout: Layout::default(),
                     appearance: Appearance::Nothing,
                     first_child: 0,
                     child_count: 0,

@@ -163,6 +163,37 @@ impl Edges {
     }
 }
 
+/// Where the lines of a flow container sit across its width.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(enum))]
+#[repr(u8)]
+pub enum TextAlign {
+    /// The side a line of the text's own direction starts at.
+    #[default]
+    #[cfg_attr(feature = "wasmtime", component(name = "start"))]
+    Start,
+    #[cfg_attr(feature = "wasmtime", component(name = "center"))]
+    Center,
+    #[cfg_attr(feature = "wasmtime", component(name = "end"))]
+    End,
+    /// Every line but the last is spread to the full width.
+    #[cfg_attr(feature = "wasmtime", component(name = "justify"))]
+    Justify,
+}
+
+/// Children as text in lines.
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct Flow {
+    pub align: TextAlign,
+    /// The distance from one line to the next, as a multiple of the text
+    /// size. `None` is what each font asks for.
+    #[cfg_attr(feature = "wasmtime", component(name = "line-height"))]
+    pub line_height: Option<f32>,
+}
+
 /// What becomes of content that does not fit in a box, on one axis.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
@@ -183,8 +214,41 @@ pub enum Overflow {
     Scroll,
 }
 
-/// Geometry, and what becomes of content that does not fit. Nothing in a
-/// style affects measurement.
+/// A node's own box: its size, the room inside its edge, and what becomes of
+/// content that does not fit. `box` in the interface, which is a keyword
+/// here. Nothing in a style affects measurement.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct OwnBox {
+    pub width: Length,
+    pub height: Length,
+    pub grow: f32,
+    pub shrink: f32,
+    pub padding: Edges,
+    #[cfg_attr(feature = "wasmtime", component(name = "overflow-x"))]
+    pub overflow_x: Overflow,
+    #[cfg_attr(feature = "wasmtime", component(name = "overflow-y"))]
+    pub overflow_y: Overflow,
+}
+
+impl Default for OwnBox {
+    fn default() -> Self {
+        Self {
+            width: Length::Auto,
+            height: Length::Auto,
+            grow: 0.0,
+            // CSS's default, and taffy's: a flex item may shrink below its
+            // basis before it overflows.
+            shrink: 1.0,
+            padding: Edges::default(),
+            overflow_x: Overflow::Clip,
+            overflow_y: Overflow::Clip,
+        }
+    }
+}
+
+/// Children as items in a row or a column.
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
 #[cfg_attr(feature = "wasmtime", component(record))]
@@ -195,15 +259,6 @@ pub struct Flex {
     #[cfg_attr(feature = "wasmtime", component(name = "align-items"))]
     pub align_items: Align,
     pub gap: f32,
-    pub padding: Edges,
-    pub width: Length,
-    pub height: Length,
-    pub grow: f32,
-    pub shrink: f32,
-    #[cfg_attr(feature = "wasmtime", component(name = "overflow-x"))]
-    pub overflow_x: Overflow,
-    #[cfg_attr(feature = "wasmtime", component(name = "overflow-y"))]
-    pub overflow_y: Overflow,
 }
 
 impl Default for Flex {
@@ -213,16 +268,41 @@ impl Default for Flex {
             justify_content: Justify::Start,
             align_items: Align::Start,
             gap: 0.0,
-            padding: Edges::default(),
-            width: Length::Auto,
-            height: Length::Auto,
-            grow: 0.0,
-            // CSS's default, and taffy's: a flex item may shrink below its
-            // basis before it overflows.
-            shrink: 1.0,
-            overflow_x: Overflow::Clip,
-            overflow_y: Overflow::Clip,
         }
+    }
+}
+
+/// How a node lays out its children.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(variant))]
+pub enum Layout {
+    #[cfg_attr(feature = "wasmtime", component(name = "flex"))]
+    Flex(Flex),
+    /// As text in lines: the node is a flow container.
+    #[cfg_attr(feature = "wasmtime", component(name = "flow"))]
+    Flow(Flow),
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self::Flex(Flex::default())
+    }
+}
+
+impl Layout {
+    /// How the node sets its children as text, if it is a flow container.
+    pub fn flow(&self) -> Option<Flow> {
+        match self {
+            Self::Flow(flow) => Some(*flow),
+            Self::Flex(_) => None,
+        }
+    }
+
+    /// Whether `other` lays children out the way this does: both by flex,
+    /// or both as text.
+    pub fn is_kind_of(&self, other: &Layout) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 }
 
@@ -270,14 +350,14 @@ pub struct MeasureRequest {
     pub available_height: Available,
 }
 
-/// What a leaf holds.
+/// What a node holds.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
 #[cfg_attr(feature = "wasmtime", component(variant))]
 pub enum Content {
-    /// Sized by its own style and its children.
+    /// Sized by its own box and by its children, which it lays out by flex.
     #[cfg_attr(feature = "wasmtime", component(name = "box"))]
-    Box,
+    Box(Flex),
     /// A run registered with the text engine.
     #[cfg_attr(feature = "wasmtime", component(name = "text"))]
     Text(u32),
@@ -289,7 +369,8 @@ pub enum Content {
 #[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
 #[cfg_attr(feature = "wasmtime", component(record))]
 pub struct Node {
-    pub layout: Flex,
+    #[cfg_attr(feature = "wasmtime", component(name = "box"))]
+    pub own_box: OwnBox,
     pub content: Content,
     #[cfg_attr(feature = "wasmtime", component(name = "first-child"))]
     pub first_child: u32,

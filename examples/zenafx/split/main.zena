@@ -23,11 +23,11 @@
  */
 import { Color, BoxStyle, TextStyle, Edges, Axis, Align, LengthPx,
          Overflow } from 'zenafx:ui/style';
-import { Binding, BindingTarget, BindingValueLayout, StateStyle, State, RestyleFill,
+import { Binding, BindingTarget, BindingValueBox, StateStyle, State, RestyleFill,
          Cursor } from 'zenafx:host/scene';
 import { PointerKind } from 'zenafx:host/events';
 import { Rendering, Widget, shows, whileCaptured, grab, runApp } from '../framework.zena';
-import { box, text, full, flexOf, template } from '../widgets/widget.zena';
+import { box, text, full, boxOf, template } from '../widgets/widget.zena';
 import { some, none } from 'zena:core';
 
 let ink = new Color(0.10, 0.11, 0.13, 1.0);
@@ -51,23 +51,23 @@ let dividerWidth: f32 = 8.0;
 let narrowest: f32 = 120.0;
 
 /**
- * The left panel's layout at a width.
+ * The left panel's own box at a width.
  *
  * It may shrink, which is what stops it at the right panel's minimum: the
  * right panel will not go below its own width, so when the two do not fit it is
  * this one that gives way. Its content is cut off, because a panel dragged
  * narrower than its label should hide the label and not be held open by it.
  */
-function leftLayout(width: f32) {
-  return flexOf({padding: padding, width: new LengthPx(width), height: full,
-                 overflowX: Overflow.Hidden, overflowY: Overflow.Hidden});
+function leftBox(width: f32) {
+  return boxOf({padding: padding, width: new LengthPx(width), height: full,
+                overflowX: Overflow.Hidden, overflowY: Overflow.Hidden});
 }
 
 /**
  * The split's template. Breadth first: 0 the split, 1 the left panel, 2 the
  * divider, 3 the right panel, 4 and 5 their labels.
  *
- * One hole, the left panel's layout, which is the only thing a drag changes.
+ * One hole, the left panel's own box, which is the only thing a drag changes.
  *
  * The right panel starts at its narrowest, grows into whatever room there is,
  * and does not shrink. That is its minimum width, and so the left panel's
@@ -91,7 +91,7 @@ let splitTemplate = template(
       text('Right', label),
     ]),
   ]),
-  [new Binding(1 as u32, BindingTarget.Layout)],
+  [new Binding(1 as u32, BindingTarget.Box)],
   [new StateStyle(2 as u32, State.Hovered, 2 as u32, new RestyleFill(ruleHoveredStyle)),
    new StateStyle(2 as u32, State.Pressed, 2 as u32, new RestyleFill(ruleHeldStyle))],
 );
@@ -106,7 +106,7 @@ class Split extends Widget {
   var #held: f32 = 0.0;
 
   build(): Rendering {
-    return shows(splitTemplate, [new BindingValueLayout(leftLayout(this.#left))]).hearing([
+    return shows(splitTemplate, [new BindingValueBox(leftBox(this.#left))]).hearing([
       // On the divider: a press starts a drag and captures the pointer.
       grab(2 as u32, (event) => {
         this.#held = event.x;

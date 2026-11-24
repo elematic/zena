@@ -10,7 +10,7 @@ const textDecoder = new TextDecoder('utf-8');
 const textEncoder = new TextEncoder();
 
 // Canonical ABI struct sizes (bytes)
-export const CABI_NODE_DEF_SIZE = 124;
+export const CABI_NODE_DEF_SIZE = 132;
 export const CABI_BINDING_SIZE = 8;
 export const CABI_STATE_STYLE_SIZE = 68;
 export const CABI_HOLE_SIZE = 60;
@@ -159,22 +159,39 @@ const copyLength = (view, offset, out) => {
   }
 };
 
-const copyFlex = (view, offset, out) => {
-  out.u8(view.getUint8(offset)); // axis
-  out.u8(view.getUint8(offset + 1)); // justify-content
-  out.u8(view.getUint8(offset + 2)); // align-items
-  out.f32(view.getFloat32(offset + 4, true)); // gap
-  // edges: top, right, bottom, left
-  out.f32(view.getFloat32(offset + 8, true));
-  out.f32(view.getFloat32(offset + 12, true));
-  out.f32(view.getFloat32(offset + 16, true));
-  out.f32(view.getFloat32(offset + 20, true));
-  copyLength(view, offset + 24, out); // width: 24..32
-  copyLength(view, offset + 32, out); // height: 32..40
-  out.f32(view.getFloat32(offset + 40, true)); // grow
-  out.f32(view.getFloat32(offset + 44, true)); // shrink
-  out.u8(view.getUint8(offset + 48)); // overflow-x
-  out.u8(view.getUint8(offset + 49)); // overflow-y
+// box: 44 bytes
+const copyBox = (view, offset, out) => {
+  copyLength(view, offset, out); // width: 0..8
+  copyLength(view, offset + 8, out); // height: 8..16
+  out.f32(view.getFloat32(offset + 16, true)); // grow
+  out.f32(view.getFloat32(offset + 20, true)); // shrink
+  // padding: top, right, bottom, left
+  out.f32(view.getFloat32(offset + 24, true));
+  out.f32(view.getFloat32(offset + 28, true));
+  out.f32(view.getFloat32(offset + 32, true));
+  out.f32(view.getFloat32(offset + 36, true));
+  out.u8(view.getUint8(offset + 40)); // overflow-x
+  out.u8(view.getUint8(offset + 41)); // overflow-y
+};
+
+// layout: variant { flex(flex), flow(flow) }, 16 bytes: tag @ 0, case @ 4
+const copyLayout = (view, offset, out) => {
+  const tag = view.getUint8(offset);
+  out.u8(tag);
+  if (tag === 0) {
+    out.u8(view.getUint8(offset + 4)); // axis
+    out.u8(view.getUint8(offset + 5)); // justify-content
+    out.u8(view.getUint8(offset + 6)); // align-items
+    out.f32(view.getFloat32(offset + 8, true)); // gap
+  } else if (tag === 1) {
+    out.u8(view.getUint8(offset + 4)); // align
+    // line-height: option<f32> (tag @ 8, value @ 12)
+    const hasLineHeight = view.getUint8(offset + 8) !== 0;
+    out.u8(hasLineHeight ? 1 : 0);
+    if (hasLineHeight) {
+      out.f32(view.getFloat32(offset + 12, true));
+    }
+  }
 };
 
 const copyAppearance = (memBytes, view, offset, out) => {
@@ -190,20 +207,21 @@ const copyAppearance = (memBytes, view, offset, out) => {
 };
 
 const copyNodeDef = (memBytes, view, offset, out) => {
-  copyFlex(view, offset, out); // 0..52
-  copyAppearance(memBytes, view, offset + 52, out); // 52..108
-  out.u32(view.getUint32(offset + 108, true)); // first-child
-  out.u32(view.getUint32(offset + 112, true)); // child-count
-  out.u8(view.getUint8(offset + 116) ? 1 : 0); // is-slot
-  // cursor: option<cursor> (tag @ 117, value @ 118)
-  const hasCursor = view.getUint8(offset + 117) !== 0;
+  copyBox(view, offset, out); // 0..44
+  copyLayout(view, offset + 44, out); // 44..60
+  copyAppearance(memBytes, view, offset + 60, out); // 60..116
+  out.u32(view.getUint32(offset + 116, true)); // first-child
+  out.u32(view.getUint32(offset + 120, true)); // child-count
+  out.u8(view.getUint8(offset + 124) ? 1 : 0); // is-slot
+  // cursor: option<cursor> (tag @ 125, value @ 126)
+  const hasCursor = view.getUint8(offset + 125) !== 0;
   out.u8(hasCursor ? 1 : 0);
   if (hasCursor) {
-    out.u8(view.getUint8(offset + 118));
+    out.u8(view.getUint8(offset + 126));
   }
-  out.u8(view.getUint8(offset + 119) ? 1 : 0); // focusable
-  out.u8(view.getUint8(offset + 120) ? 1 : 0); // editable
-  out.u8(view.getUint8(offset + 121) ? 1 : 0); // unselectable
+  out.u8(view.getUint8(offset + 127) ? 1 : 0); // focusable
+  out.u8(view.getUint8(offset + 128) ? 1 : 0); // editable
+  out.u8(view.getUint8(offset + 129) ? 1 : 0); // unselectable
 };
 
 const copyBinding = (view, offset, out) => {
@@ -235,7 +253,9 @@ const copyHole = (memBytes, view, offset, out) => {
   } else if (tag === 2) {
     copyTextStyle(memBytes, view, offset + 8, out);
   } else if (tag === 3) {
-    copyFlex(view, offset + 8, out);
+    copyBox(view, offset + 8, out);
+  } else if (tag === 4) {
+    copyLayout(view, offset + 8, out);
   }
 };
 

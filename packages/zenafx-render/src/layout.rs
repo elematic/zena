@@ -16,7 +16,7 @@ use taffy::{
 use super::text::TextEngine;
 use super::types::{
     Align, Available, Axis, Content, Flex, Justify, Length, Measured, MeasureRequest, Node,
-    Overflow, Rect, Size,
+    Overflow, OwnBox, Rect, Size,
 };
 
 /// Solve one tree. The result is parallel to `nodes`, and each rect is in the
@@ -100,7 +100,11 @@ pub fn place_with(
     // end means every child exists by the time its parent is created.
     for i in (0..nodes.len()).rev() {
         let node = &nodes[i];
-        let style = taffy_style(&node.layout);
+        let flex = match &node.content {
+            Content::Box(flex) => Some(flex),
+            Content::Text(_) => None,
+        };
+        let style = taffy_style(&node.own_box, flex);
         let children: Vec<NodeId> = (node.first_child as usize
             ..node.first_child as usize + node.child_count as usize)
             .filter_map(|c| ids.get(c).copied().flatten())
@@ -124,16 +128,16 @@ pub fn place_with(
         },
         |inputs, _node_id, context, style| {
             // `context` is None for a container; only leaves are measured.
-            let content = context.map(|c| c.clone()).unwrap_or(Content::Box);
+            let content = context.map(|c| c.clone());
             compute_leaf_layout(inputs, style, |_, _| 0.0, |known, space| {
-                if matches!(content, Content::Box) {
+                let Some(content @ Content::Text(_)) = &content else {
                     // A childless box has no content of its own; its size
                     // comes from its style, which `compute_leaf_layout` has
                     // already applied.
                     return taffy::Size::ZERO;
-                }
+                };
                 let m = measure(
-                    &content,
+                    content,
                     MeasureRequest {
                         known_width: known.width,
                         known_height: known.height,
@@ -210,9 +214,32 @@ fn absolutize(
     }
 }
 
-fn taffy_style(flex: &Flex) -> Style {
-    Style {
+/// A node's own box as a taffy style, with how it arranges its children
+/// when it has any. A text leaf has no `flex`, and nothing for one to
+/// arrange.
+fn taffy_style(own_box: &OwnBox, flex: Option<&Flex>) -> Style {
+    let style = Style {
         display: Display::Flex,
+        padding: taffy::Rect {
+            top: LengthPercentage::length(own_box.padding.top),
+            right: LengthPercentage::length(own_box.padding.right),
+            bottom: LengthPercentage::length(own_box.padding.bottom),
+            left: LengthPercentage::length(own_box.padding.left),
+        },
+        size: taffy::Size {
+            width: dimension(own_box.width),
+            height: dimension(own_box.height),
+        },
+        flex_grow: own_box.grow,
+        flex_shrink: own_box.shrink,
+        overflow: taffy::Point {
+            x: overflow(own_box.overflow_x),
+            y: overflow(own_box.overflow_y),
+        },
+        ..Style::DEFAULT
+    };
+    let Some(flex) = flex else { return style };
+    Style {
         flex_direction: match flex.axis {
             Axis::Row => FlexDirection::Row,
             Axis::Column => FlexDirection::Column,
@@ -233,23 +260,7 @@ fn taffy_style(flex: &Flex) -> Style {
             width: LengthPercentage::length(flex.gap),
             height: LengthPercentage::length(flex.gap),
         },
-        padding: taffy::Rect {
-            top: LengthPercentage::length(flex.padding.top),
-            right: LengthPercentage::length(flex.padding.right),
-            bottom: LengthPercentage::length(flex.padding.bottom),
-            left: LengthPercentage::length(flex.padding.left),
-        },
-        size: taffy::Size {
-            width: dimension(flex.width),
-            height: dimension(flex.height),
-        },
-        flex_grow: flex.grow,
-        flex_shrink: flex.shrink,
-        overflow: taffy::Point {
-            x: overflow(flex.overflow_x),
-            y: overflow(flex.overflow_y),
-        },
-        ..Style::DEFAULT
+        ..style
     }
 }
 
@@ -287,10 +298,16 @@ mod tests {
     use super::*;
     use crate::types::{Edges, TextStyle};
 
-    fn boxed(layout: Flex, first_child: u32, child_count: u32) -> Node {
+    /// A column with its items at the start, as a node is when nothing
+    /// says otherwise.
+    fn boxed(own_box: OwnBox, first_child: u32, child_count: u32) -> Node {
+        arranged(own_box, Flex::default(), first_child, child_count)
+    }
+
+    fn arranged(own_box: OwnBox, flex: Flex, first_child: u32, child_count: u32) -> Node {
         Node {
-            layout,
-            content: Content::Box,
+            own_box,
+            content: Content::Box(flex),
             first_child,
             child_count,
         }
@@ -298,7 +315,7 @@ mod tests {
 
     fn leaf(run: u32) -> Node {
         Node {
-            layout: Flex::default(),
+            own_box: OwnBox::default(),
             content: Content::Text(run),
             first_child: 0,
             child_count: 0,
@@ -312,12 +329,15 @@ mod tests {
         let mut text = TextEngine::new();
         let run = text.register_run("Hello, world", &TextStyle::default());
         let nodes = vec![
-            boxed(
+            arranged(
+                OwnBox {
+                    width: Length::Percent(100.0),
+                    height: Length::Percent(100.0),
+                    ..OwnBox::default()
+                },
                 Flex {
                     justify_content: Justify::Center,
                     align_items: Align::Center,
-                    width: Length::Percent(100.0),
-                    height: Length::Percent(100.0),
                     ..Flex::default()
                 },
                 1,
@@ -354,11 +374,14 @@ mod tests {
             &TextStyle::default(),
         );
         let nodes = vec![
-            boxed(
-                Flex {
-                    align_items: Align::Stretch,
+            arranged(
+                OwnBox {
                     width: Length::Percent(100.0),
                     height: Length::Percent(100.0),
+                    ..OwnBox::default()
+                },
+                Flex {
+                    align_items: Align::Stretch,
                     ..Flex::default()
                 },
                 1,
@@ -395,31 +418,34 @@ mod tests {
     fn a_row_lays_children_out_left_to_right_with_a_gap() {
         let mut text = TextEngine::new();
         let nodes = vec![
-            boxed(
+            arranged(
+                OwnBox {
+                    width: Length::Px(300.0),
+                    height: Length::Px(100.0),
+                    ..OwnBox::default()
+                },
                 Flex {
                     axis: Axis::Row,
                     gap: 10.0,
-                    width: Length::Px(300.0),
-                    height: Length::Px(100.0),
                     ..Flex::default()
                 },
                 1,
                 2,
             ),
             boxed(
-                Flex {
+                OwnBox {
                     width: Length::Px(40.0),
                     height: Length::Px(20.0),
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
                 0,
                 0,
             ),
             boxed(
-                Flex {
+                OwnBox {
                     width: Length::Px(60.0),
                     height: Length::Px(20.0),
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
                 0,
                 0,
@@ -444,30 +470,30 @@ mod tests {
         let mut text = TextEngine::new();
         let nodes = vec![
             boxed(
-                Flex {
+                OwnBox {
                     padding: Edges::all(16.0),
                     width: Length::Px(200.0),
                     height: Length::Px(200.0),
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
                 1,
                 1,
             ),
             boxed(
-                Flex {
+                OwnBox {
                     padding: Edges::all(8.0),
                     width: Length::Px(100.0),
                     height: Length::Px(100.0),
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
                 2,
                 1,
             ),
             boxed(
-                Flex {
+                OwnBox {
                     width: Length::Px(10.0),
                     height: Length::Px(10.0),
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
                 0,
                 0,
@@ -503,11 +529,10 @@ mod tests {
         let run = text.register_run(long, &TextStyle::default());
         let fixed = vec![
             boxed(
-                Flex {
-                    align_items: Align::Start,
+                OwnBox {
                     width: Length::Px(160.0),
                     height: Length::Percent(100.0),
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
                 1,
                 1,
@@ -533,10 +558,10 @@ mod tests {
         let mut text = TextEngine::new();
         let run = text.register_run(long, &TextStyle::default());
         let hugging = vec![
-            boxed(
+            arranged(
+                OwnBox::default(),
                 Flex {
                     axis: Axis::Row,
-                    align_items: Align::Start,
                     ..Flex::default()
                 },
                 1,
@@ -581,27 +606,27 @@ mod tests {
         let tree = |overflow_y| {
             vec![
                 boxed(
-                    Flex {
+                    OwnBox {
                         height: Length::Px(100.0),
-                        ..Flex::default()
+                        ..OwnBox::default()
                     },
                     1,
                     1,
                 ),
                 boxed(
-                    Flex {
+                    OwnBox {
                         overflow_y,
-                        ..Flex::default()
+                        ..OwnBox::default()
                     },
                     2,
                     1,
                 ),
                 boxed(
-                    Flex {
+                    OwnBox {
                         width: Length::Px(50.0),
                         height: Length::Px(300.0),
                         shrink: 0.0,
-                        ..Flex::default()
+                        ..OwnBox::default()
                     },
                     0,
                     0,
@@ -635,29 +660,29 @@ mod tests {
     fn what_a_box_cuts_off_does_not_scroll_the_box_above() {
         let tree = vec![
             boxed(
-                Flex {
+                OwnBox {
                     height: Length::Px(100.0),
                     overflow_y: Overflow::Scroll,
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
                 1,
                 1,
             ),
             boxed(
-                Flex {
+                OwnBox {
                     height: Length::Px(50.0),
                     shrink: 0.0,
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
                 2,
                 1,
             ),
             boxed(
-                Flex {
+                OwnBox {
                     width: Length::Px(50.0),
                     height: Length::Px(300.0),
                     shrink: 0.0,
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
                 0,
                 0,

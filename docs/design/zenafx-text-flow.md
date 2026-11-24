@@ -2,8 +2,10 @@
 
 ## Status
 
-Proposal. None of it is built. Today a text node is one string in one style,
-as [Text today](#text-today) describes.
+Proposal, with its first step built: a flow container whose text children
+are laid out as one piece of text, each in its own style.
+[Build order](#build-order) says what that step leaves out. Spans and boxes
+in a line are not built.
 
 It asks for four decisions:
 
@@ -59,7 +61,7 @@ text.
 A node's appearance is nothing, a fill or text. Text is one string and one
 `text-style`: a family, a size, a weight, italic or not, and a colour.
 
-- The host's text engine, `packages/zenafx/src/ui/text.rs`, shapes each text
+- The host's text engine, `packages/zenafx-render/src/text.rs`, shapes each text
   node's string by itself and keeps the result until the node goes away.
 - A text node is a flex item. The flex layout asks the engine how wide and how
   tall the text is at a width, and the engine breaks its lines at that width.
@@ -67,9 +69,13 @@ A node's appearance is nothing, a fill or text. Text is one string and one
 - The window's selection is two places, each a text node and a count of bytes
   into its string. It can begin in one text node and end in another.
 
-So a paragraph with one bold word is three text nodes today. Each is shaped
-and broken by itself and placed as a box, which is right only while the three
-fit on one line.
+So a paragraph with one bold word, written as three text nodes in a row, is
+three boxes. Each is shaped and broken by itself, which is right only while
+the three fit on one line.
+
+A node can also be a flow container, by the `flow` case of `layout` in its
+`node-def`. The engine then shapes the strings of its text children as one
+run, and the rest of this document builds on that.
 
 ## Two layouts
 
@@ -85,6 +91,21 @@ Which one is a property of the node, in the sense of
 that say how a node arranges what is in it. A custom layout from
 [Window components](./zenafx-styles.md#window-components) would be a third
 value of the same property.
+
+In the interface the property is `layout` in `node-def`, a variant with a
+case for each layout. A case holds what that layout needs and nothing else,
+so a flow container has no `gap` to set and a row has no `line-height`.
+
+```wit
+variant layout {
+  flex(flex),   // axis, justify-content, align-items, gap
+  flow(flow),   // align, line-height
+}
+```
+
+What every node has whichever way it lays out its children is in a second
+record, `box`: its width and height, how it grows and shrinks, its padding,
+and what becomes of content that does not fit.
 
 A flow container has a few properties of its own.
 
@@ -215,11 +236,11 @@ layout.
   span's background is drawn under its rectangles.
 - **The node under the pointer.** The layout gives the place in the string
   nearest the pointer, and the place gives the run and the spans round it.
-- **The selection.** A place stays a text run and a count of bytes into its
-  string, so nothing a component sees changes. The host turns it into a place
-  in the container's string to draw the caret and the highlight. A second
-  press selects a word by the container's string, so a word that is half bold
-  is still one word.
+- **The selection.** To the selection a flow container is one text, and a
+  place in it is a count of bytes into the joined string. A second press
+  selects a word by that string, so a word that is half bold is still one
+  word. A component is told where the selection is only in a text field, whose
+  text is one run, so nothing a component sees changes.
 - **Copying.** Text from two runs of one container is joined with nothing
   between. A line feed goes between two containers.
 
@@ -271,15 +292,24 @@ layout.
 
 Each step works without the next.
 
-1. **Flow containers with several runs.** One text layout for the runs of a
-   container, glyphs painted in each run's colour, and the selection and the
-   node under the pointer found through the container. A paragraph with bold
-   and coloured words renders after this step.
+1. **Flow containers with several runs.** Built. One text layout for the text
+   children of a container, glyphs painted in each child's colour, and the
+   selection found through the container. `examples/zenafx/richtext/` is
+   paragraphs with bold, coloured and larger words. A node is a flow container
+   when the `layout` in its `node-def` is the `flow` case, which also gives
+   the alignment of its lines and their height. A hole can write a node's
+   layout, in the case the node already has.
+
+   What this step leaves out: a text child is not a node the pointer can be
+   over, so it has no hovered look, no listener and no cursor of its own. It
+   cannot be left out of selecting by itself. A child that is not text is not
+   shown. `text-indent` is not built.
+
 2. **Spans.** Nodes with a rectangle for each line: state, listeners, a
    cursor and a background. A link works after this step.
 3. **Boxes in a line.** This needs the host to lay out a subtree while it
    builds a text layout, which the simple interface to the layout library in
-   `packages/zenafx/src/ui/layout.rs` does not allow. The lower-level
+   `packages/zenafx-render/src/layout.rs` does not allow. The lower-level
    interface that [A custom algorithm](./zenafx-styles.md#a-custom-algorithm)
    needs allows it.
 
@@ -299,6 +329,7 @@ each run says its own style.
 - **A flex item that lines up with text beside it.** A label and a text field
   in a row want their first lines of text on one baseline, which is flex's
   baseline alignment and not built.
-- **How flow is written before layout is a list of declarations.** A node's
-  layout is the `flex` record today. Whether flow is a second record beside it
-  for the time being, or waits for properties, is undecided.
+- **Faces a font does not have.** A bold or italic run looks no different
+  where the font found for it has no such face, since the painter draws the
+  face it is given. The layout library says when a face should be made bolder
+  or slanted to stand in for one, and the painter does not yet do it.

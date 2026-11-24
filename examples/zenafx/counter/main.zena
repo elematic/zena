@@ -14,8 +14,8 @@
  * refresh rate has nothing to do with either, and ZenaFX needs no timer
  * interface of its own.
  */
-import { Color, BoxStyle, TextStyle, Flex, Edges, Axis, Justify, Align,
-         LengthPercent, LengthAuto, Overflow } from 'zenafx:ui/style';
+import { Color, BoxStyle, TextStyle, Box, Flex, LayoutFlex, Edges, Axis, Justify,
+         Align, LengthPercent, LengthAuto, Overflow } from 'zenafx:ui/style';
 import { NodeDef, AppearanceNothing, AppearanceFill, AppearanceText, TextContent,
          Binding, BindingTarget, BindingValueContent } from 'zenafx:host/scene';
 import { Template, Rendering, Widget, shows, holds, runApp } from '../framework.zena';
@@ -41,19 +41,22 @@ let dialPadding = new Edges(14.0, 28.0, 18.0, 28.0);
  * A column rather than a row, because two large numbers side by side read as
  * one number with twice the digits.
  */
-let pageLayout = new Flex(Axis.Column, Justify.Center, Align.Center, 20.0,
-    noPadding, new LengthPercent(100.0), new LengthPercent(100.0), 0.0, 1.0,
-    Overflow.Clip, Overflow.Clip);
+let pageBox = new Box(new LengthPercent(100.0), new LengthPercent(100.0), 0.0, 1.0,
+    noPadding, Overflow.Clip, Overflow.Clip);
+let pageLayout = new LayoutFlex(
+    new Flex(Axis.Column, Justify.Center, Align.Center, 20.0));
 
 /** A dial's own box: a panel sized around its label and digits. */
-let dialLayout = new Flex(Axis.Column, Justify.Center, Align.Center, 2.0,
-    dialPadding, new LengthAuto(), new LengthAuto(), 0.0, 1.0,
+let dialBox = new Box(new LengthAuto(), new LengthAuto(), 0.0, 1.0, dialPadding,
     Overflow.Clip, Overflow.Clip);
+let dialLayout = new LayoutFlex(
+    new Flex(Axis.Column, Justify.Center, Align.Center, 2.0));
 
 /** A line of text, and the slot: sized by what is in it. */
-let contentLayout = new Flex(Axis.Column, Justify.Start, Align.Start, 0.0,
-    noPadding, new LengthAuto(), new LengthAuto(), 0.0, 1.0,
+let contentBox = new Box(new LengthAuto(), new LengthAuto(), 0.0, 1.0, noPadding,
     Overflow.Clip, Overflow.Clip);
+let contentLayout = new LayoutFlex(
+    new Flex(Axis.Column, Justify.Start, Align.Start, 0.0));
 
 /**
  * A counter's template.
@@ -69,11 +72,11 @@ let contentLayout = new Flex(Axis.Column, Justify.Start, Align.Start, 0.0,
  */
 let dialTemplate = new Template(
   [
-    new NodeDef(dialLayout, new AppearanceFill(dialStyle), 1 as u32, 2 as u32,
+    new NodeDef(dialBox, dialLayout, new AppearanceFill(dialStyle), 1 as u32, 2 as u32,
                 false, none, false, false, false),
-    new NodeDef(contentLayout, new AppearanceText(new TextContent('', labelStyle)),
+    new NodeDef(contentBox, contentLayout, new AppearanceText(new TextContent('', labelStyle)),
                 0 as u32, 0 as u32, false, none, false, false, false),
-    new NodeDef(contentLayout, new AppearanceText(new TextContent('', digitStyle)),
+    new NodeDef(contentBox, contentLayout, new AppearanceText(new TextContent('', digitStyle)),
                 0 as u32, 0 as u32, false, none, false, false, false),
   ],
   [new Binding(1 as u32, BindingTarget.Content),
@@ -141,9 +144,9 @@ class Counter extends Widget {
  */
 let pageTemplate = new Template(
   [
-    new NodeDef(pageLayout, new AppearanceFill(pageStyle), 1 as u32, 1 as u32,
+    new NodeDef(pageBox, pageLayout, new AppearanceFill(pageStyle), 1 as u32, 1 as u32,
                 false, none, false, false, false),
-    new NodeDef(contentLayout, new AppearanceNothing(), 0 as u32, 0 as u32,
+    new NodeDef(contentBox, contentLayout, new AppearanceNothing(), 0 as u32, 0 as u32,
                 true, none, false, false, false),
   ],
   [],

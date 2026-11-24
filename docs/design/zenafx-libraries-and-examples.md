@@ -268,7 +268,7 @@ Two panels and a divider the pointer drags.
 - **Adds:** pointer capture, so the drag continues when the pointer leaves the
   divider; a cursor style; minimum and maximum sizes.
 - **Finds out:** what a layout change per pointer move costs when the
-  component is in the loop. Each move is one event in and one layout hole out.
+  component is in the loop. Each move is one event in and one `box` hole out.
 - **Asserts:** one component entry and one hole write per move; the solve
   after it touches only the two panels.
 

@@ -15,8 +15,9 @@
  * docs/design/zenafx-widget-authoring.md puts the hole where its value is
  * written and leaves the numbering to the compiler.
  */
-import { Flex, Edges, Axis, Justify, Align, Length, BoxStyle, TextStyle,
-         LengthAuto, LengthPercent, Overflow } from 'zenafx:ui/style';
+import { Box as OwnBox, Flex, Flow, Layout, LayoutFlex, LayoutFlow, TextAlign, Edges,
+         Axis, Justify, Align, Length, BoxStyle, TextStyle, LengthAuto, LengthPercent,
+         Overflow } from 'zenafx:ui/style';
 import { NodeDef, Appearance, AppearanceNothing, AppearanceFill, AppearanceText,
          TextContent, Binding, StateStyle, Cursor } from 'zenafx:host/scene';
 import { Template } from '../framework.zena';
@@ -26,17 +27,14 @@ export let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
 export let full = new LengthPercent(100.0);
 
 /**
- * How a box lays out and how it looks.
+ * What every node takes: its own box, and how it answers the pointer and the
+ * keyboard.
  *
- * Every field is optional and the defaults are the common case: a column,
- * packed to the start, sized by its content, drawing nothing. A call site names
- * what it cares about and nothing else.
+ * Every field is optional and the defaults are the common case: sized by its
+ * content, with no padding. A call site names what it cares about and nothing
+ * else.
  */
-export type BoxOpts = {
-  axis?: Axis,
-  justify?: Justify,
-  align?: Align,
-  gap?: f32,
+export type NodeOpts = {
   padding?: Edges,
   width?: Length,
   height?: Length,
@@ -55,57 +53,93 @@ export type BoxOpts = {
    */
   overflowX?: Overflow,
   overflowY?: Overflow,
-  style?: BoxStyle,
   /**
-   * The cursor to show while the pointer is over the box, or over anything in
-   * it that names none of its own. Left out, the box shows the cursor of
+   * The cursor to show while the pointer is over the node, or over anything
+   * in it that names none of its own. Left out, the node shows the cursor of
    * whatever it is in.
    */
   cursor?: Cursor,
   /**
-   * Whether the box can have the focus: `Tab` stops at it, a press on it
+   * Whether the node can have the focus: `Tab` stops at it, a press on it
    * gives it the focus, and the keyboard goes to it while it has it.
    */
   focusable?: boolean,
   /**
-   * Whether a person edits the text. For a `text` inside a box that can have
-   * the focus, which makes that box a text field: the host keeps a caret and
-   * a selection in the text, and the pointer moves both with no handler.
-   */
-  editable?: boolean,
-  /**
-   * Whether the pointer cannot select the box's text, nor the text of
+   * Whether the pointer cannot select the node's text, nor the text of
    * anything in it. All other text can be selected, with no handler. A
    * button leaves its label out.
    */
   unselectable?: boolean,
 };
 
-/** Read the options, filling in what was left out. */
-export function flexOf(opts: BoxOpts) {
-  return new Flex(
-  opts.axis ?? Axis.Column,
-  opts.justify ?? Justify.Start,
-  opts.align ?? Align.Start,
-  opts.gap ?? 0.0,
-  opts.padding ?? noPadding,
-  opts.width ?? new LengthAuto(),
-  opts.height ?? new LengthAuto(),
-  opts.grow ?? 0.0,
-  opts.shrink ?? 1.0,
-  opts.overflowX ?? Overflow.Clip,
-  opts.overflowY ?? Overflow.Clip,
-);
+/**
+ * A `box`: a node that lays out its children as items in a column or a row.
+ * A column packed to the start unless it says otherwise.
+ */
+export type BoxOpts = {
+  ...NodeOpts,
+  axis?: Axis,
+  justify?: Justify,
+  align?: Align,
+  gap?: f32,
+  style?: BoxStyle,
+};
+
+/** A `flow`: a node that lays out its children as text in lines. */
+export type FlowOpts = {
+  ...NodeOpts,
+  /** Where the lines sit across the width. */
+  textAlign?: TextAlign,
+  /**
+   * The distance from one line to the next, as a multiple of the text size.
+   * Left out, it is what each font asks for.
+   */
+  lineHeight?: f32,
+  style?: BoxStyle,
+};
+
+/** A `text`. */
+export type TextOpts = {
+  ...NodeOpts,
+  /**
+   * Whether a person edits the text. For a `text` inside a box that can have
+   * the focus, which makes that box a text field: the host keeps a caret and
+   * a selection in the text, and the pointer moves both with no handler.
+   */
+  editable?: boolean,
+};
+
+/** A node's own box, with what the options left out filled in. */
+export function boxOf(opts: NodeOpts): OwnBox {
+  return new OwnBox(
+    opts.width ?? new LengthAuto(),
+    opts.height ?? new LengthAuto(),
+    opts.grow ?? 0.0,
+    opts.shrink ?? 1.0,
+    opts.padding ?? noPadding,
+    opts.overflowX ?? Overflow.Clip,
+    opts.overflowY ?? Overflow.Clip,
+  );
 }
 
-function appearanceOf(opts: BoxOpts): Appearance {
-  if (let {style} = opts) {
-    return new AppearanceFill(style);
+/** How a `box` arranges its children, with what the options left out filled in. */
+export function flexOf(opts: BoxOpts): Flex {
+  return new Flex(
+    opts.axis ?? Axis.Column,
+    opts.justify ?? Justify.Start,
+    opts.align ?? Align.Start,
+    opts.gap ?? 0.0,
+  );
+}
+
+function fillOf(style: Option<BoxStyle>): Appearance {
+  if (let Some {value} = style) {
+    return new AppearanceFill(value);
   }
   return new AppearanceNothing();
 }
 
-function cursorOf(opts: BoxOpts): Option<Cursor> {
+function cursorOf(opts: NodeOpts): Option<Cursor> {
   if (let {cursor} = opts) {
     return some(cursor);
   }
@@ -114,7 +148,10 @@ function cursorOf(opts: BoxOpts): Option<Cursor> {
 
 /** A node of the tree a widget's template describes. */
 export class Box {
-  layout: Flex;
+  /** The node's own box: its size, padding and overflow. */
+  ownBox: OwnBox;
+  /** How the node lays out its children: as items, or as text in lines. */
+  layout: Layout;
   appearance: Appearance;
   children: GrowableArray<Box>;
   /** The cursor the node names, if it names one. */
@@ -128,15 +165,50 @@ export class Box {
   /** Whether content hangs here. */
   isSlot: boolean;
 
-  new(this.layout, this.appearance, this.children, this.cursor, this.focusable = false,
-      this.editable = false, this.unselectable = false, this.isSlot = false);
+  new(this.ownBox, this.layout, this.appearance, this.children, this.cursor,
+      this.focusable = false, this.editable = false, this.unselectable = false,
+      this.isSlot = false);
+}
+
+/** A node with no children has nothing to lay out. */
+function noLayout(): Layout {
+  return new LayoutFlex(flexOf({}));
+}
+
+/**
+ * A flow container: its `text` children are laid out together as one piece of
+ * text, each in its own style. Lines are broken across all of them, so a word
+ * in bold in the middle of a sentence is a `text` of its own and the sentence
+ * still wraps as one.
+ *
+ * It is a box in every other way: it takes a width, padding and a `style`.
+ */
+export function flow(opts: FlowOpts = {}, children: Array<Box> = []): Box {
+  let {focusable = false, unselectable = false} = opts;
+  let align = opts.textAlign ?? TextAlign.Start;
+  var lineHeight: Option<f32> = none;
+  if (let {lineHeight as height} = opts) {
+    lineHeight = some(height);
+  }
+  var style: Option<BoxStyle> = none;
+  if (let {style as fill} = opts) {
+    style = some(fill);
+  }
+  return new Box(boxOf(opts), new LayoutFlow(new Flow(align, lineHeight)), fillOf(style),
+                 GrowableArray.from(children), cursorOf(opts), focusable, false,
+                 unselectable);
 }
 
 /** A box. Lays out its children, and draws a panel when given a `style`. */
 export function box(opts: BoxOpts = {}, children: Array<Box> = []): Box {
   let {focusable = false, unselectable = false} = opts;
-  return new Box(flexOf(opts), appearanceOf(opts), GrowableArray.from(children),
-                 cursorOf(opts), focusable, false, unselectable);
+  var style: Option<BoxStyle> = none;
+  if (let {style as fill} = opts) {
+    style = some(fill);
+  }
+  return new Box(boxOf(opts), new LayoutFlex(flexOf(opts)), fillOf(style),
+                 GrowableArray.from(children), cursorOf(opts), focusable, false,
+                 unselectable);
 }
 
 /**
@@ -148,8 +220,8 @@ export function box(opts: BoxOpts = {}, children: Array<Box> = []): Box {
  * panel of its own, put the slot inside a `box` and style that.
  */
 export function slot(): Box {
-  return new Box(flexOf({}), new AppearanceNothing(), new GrowableArray<Box>(), none,
-                 false, false, false, true);
+  return new Box(boxOf({}), noLayout(), new AppearanceNothing(), new GrowableArray<Box>(),
+                 none, false, false, false, true);
 }
 
 /**
@@ -160,9 +232,10 @@ export function slot(): Box {
  * it: what differs between two instances of a widget belongs in a hole and not
  * in the template they share.
  */
-export function text(content: String, style: TextStyle, opts: BoxOpts = {}): Box {
+export function text(content: String, style: TextStyle, opts: TextOpts = {}): Box {
   let {focusable = false, editable = false, unselectable = false} = opts;
-  return new Box(flexOf(opts), new AppearanceText(new TextContent(content, style)),
+  return new Box(boxOf(opts), noLayout(),
+                 new AppearanceText(new TextContent(content, style)),
                  new GrowableArray<Box>(), cursorOf(opts), focusable, editable,
                  unselectable);
 }
@@ -192,9 +265,10 @@ export function flatten(root: Box): Array<NodeDef> {
   var n = 0;
   while (n < order.length) {
     let node = order[n];
-    nodes.push(new NodeDef(node.layout, node.appearance, firstChildOf[n] as u32,
-                           node.children.length as u32, node.isSlot, node.cursor,
-                           node.focusable, node.editable, node.unselectable));
+    nodes.push(new NodeDef(node.ownBox, node.layout, node.appearance,
+                           firstChildOf[n] as u32, node.children.length as u32,
+                           node.isSlot, node.cursor, node.focusable, node.editable,
+                           node.unselectable));
     n += 1;
   }
   return nodes;

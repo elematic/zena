@@ -123,10 +123,11 @@ Four provisions of that syntax carry the weight here:
 - **A positional argument carries leaf content.** `Text this.#title` is the
   whole text node. `text(content, style)` exists in the prototype because a
   constructor call cannot take an argument that way.
-- **Properties are named, so defaulting is ordinary record behaviour.** A `flex`
-  has nine fields and a call site usually sets two. `flexOf` in
-  `examples/zenafx/widgets/widget.zena` exists only to fill in the rest, and
-  presence-optional fields ([record-presence.md](./record-presence.md)) retire it.
+- **Properties are named, so defaulting is ordinary record behaviour.** A node's
+  `box` and `flex` have eleven fields between them and a call site usually sets
+  two. `boxOf` and `flexOf` in `examples/zenafx/widgets/widget.zena` exist only to
+  fill in the rest, and presence-optional fields
+  ([record-presence.md](./record-presence.md)) retire them.
 
 A node type is an ordinary Zena class. `Box`, `Slot` and `Card` are identifiers in
 scope, nothing marks a type as usable in a node literal, and the type checker

@@ -619,6 +619,74 @@ pastes into and cuts from its field, with a clipboard of its own in place of
 the platform's. It counts no event written to the component for the drag or
 the copy.
 
+### Text in more than one style
+
+[`examples/zenafx/richtext/`](../../examples/zenafx/richtext/) is a card of
+paragraphs in which words are bold, in another colour or in a larger size.
+
+```bash
+./target/release/zena build ./packages/zenafx:build:richtext   # compiles it to out/richtext.wasm
+./target/release/zfx --app packages/zenafx/out/richtext.wasm
+```
+
+A paragraph is a flow container: a node whose text children the host lays out
+together as one piece of text. A node says how it lays out its children in
+`layout`, which is one of two cases, each with its own fields. Its size,
+padding and overflow are in `box`, whichever case it is.
+
+```wit
+record node-def {
+  box: box,          // width, height, grow, shrink, padding, overflow
+  layout: layout,
+  // ...
+}
+
+variant layout {
+  flex(flex),        // children as items in a row or a column
+  flow(flow),        // children as text in lines
+}
+
+record flex {
+  axis: axis,
+  justify-content: justify,
+  align-items: align,
+  gap: f32,
+}
+
+record flow {
+  align: text-align,           // start, center, end or justify
+  line-height: option<f32>,    // a multiple of the text size
+}
+```
+
+Each text child keeps its own style, and its string is still written through
+a hole. The host joins the strings in order, shapes them as one and breaks
+lines across the whole, so a phrase in another colour can start on one line
+and finish on the next. The container is a box in every other way: it has a
+width, padding and a fill, and its parent places it.
+
+```zena
+flow({lineHeight: 1.5}, [
+  text('Text in a flow container is ', plain),
+  text('one piece of text', bold),
+  text('. A phrase can be ', plain),
+  text('in another colour', coloured),
+])
+```
+
+To the selection a flow container is one text. A second press on a word that
+is half in one child and half in the next selects the word, and what is copied
+from a paragraph has nothing between its parts.
+
+This is the first step of
+[zenafx-text-flow.md](../../docs/design/zenafx-text-flow.md). A text child
+cannot yet be hovered, listened to or left out of selecting by itself, and a
+child that is not text is not shown. `tests/richtext.rs` checks the example's
+paragraphs with no window.
+
+Whether a bold or italic word looks different depends on the fonts installed.
+The host asks for the weight and the style, and draws the face it is given.
+
 ### What is not here yet
 
 A window shows one component. Embedding one component in another is designed

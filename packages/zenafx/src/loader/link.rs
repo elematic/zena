@@ -359,7 +359,7 @@ fn solve_tree(
     let mut text = engine.lock().unwrap();
     solve_with(nodes, available, |content, query| match content {
         Content::Text(run) => measure_text(&mut text, *run, query),
-        Content::Box => Measured {
+        Content::Box(_) => Measured {
             width: 0.0,
             height: 0.0,
             baseline: 0.0,

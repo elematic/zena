@@ -6,7 +6,8 @@ use zenafx_render::scene::{
     StateStyle, TemplateDef, TemplateRef, TextContent,
 };
 use zenafx_render::types::{
-    Align, Axis, BoxStyle, Color, Edges, Flex, Justify, Length, Overflow, TextStyle,
+    Align, Axis, BoxStyle, Color, Edges, Flex, Flow, Justify, Layout, Length, Overflow, OwnBox,
+    TextAlign, TextStyle,
 };
 
 pub struct Reader<'a> {
@@ -140,14 +141,46 @@ impl<'a> Reader<'a> {
             justify_content,
             align_items,
             gap: self.f32()?,
-            padding: self.edges()?,
+        })
+    }
+
+    /// A node's own box, `box` in the interface.
+    pub fn own_box(&mut self) -> Option<OwnBox> {
+        Some(OwnBox {
             width: self.length()?,
             height: self.length()?,
             grow: self.f32()?,
             shrink: self.f32()?,
+            padding: self.edges()?,
             overflow_x: self.overflow()?,
             overflow_y: self.overflow()?,
         })
+    }
+
+    /// The alignment of a flow container's lines, then a byte that says
+    /// whether it gives a line height, then the height.
+    pub fn flow(&mut self) -> Option<Flow> {
+        let align = match self.u8()? {
+            0 => TextAlign::Start,
+            1 => TextAlign::Center,
+            2 => TextAlign::End,
+            3 => TextAlign::Justify,
+            _ => return None,
+        };
+        let line_height = match self.u8()? {
+            0 => None,
+            _ => Some(self.f32()?),
+        };
+        Some(Flow { align, line_height })
+    }
+
+    /// A byte that says which kind of layout, then that layout.
+    pub fn layout(&mut self) -> Option<Layout> {
+        match self.u8()? {
+            0 => Some(Layout::Flex(self.flex()?)),
+            1 => Some(Layout::Flow(self.flow()?)),
+            _ => None,
+        }
     }
 
     pub fn appearance(&mut self) -> Option<Appearance> {
@@ -171,7 +204,8 @@ impl<'a> Reader<'a> {
 
     pub fn node_def(&mut self) -> Option<NodeDef> {
         Some(NodeDef {
-            layout: self.flex()?,
+            own_box: self.own_box()?,
+            layout: self.layout()?,
             appearance: self.appearance()?,
             first_child: self.u32()?,
             child_count: self.u32()?,
@@ -188,7 +222,8 @@ impl<'a> Reader<'a> {
         let target = match self.u8()? {
             0 => BindingTarget::Content,
             1 => BindingTarget::Style,
-            2 => BindingTarget::Layout,
+            2 => BindingTarget::Box,
+            3 => BindingTarget::Layout,
             _ => return None,
         };
         Some(Binding { node, target })
@@ -253,7 +288,8 @@ impl<'a> Reader<'a> {
             0 => BindingValue::Content(self.string()?),
             1 => BindingValue::Style(self.box_style()?),
             2 => BindingValue::TextStyle(self.text_style()?),
-            3 => BindingValue::Layout(self.flex()?),
+            3 => BindingValue::Box(self.own_box()?),
+            4 => BindingValue::Layout(self.layout()?),
             _ => return None,
         };
         Some(Hole { binding, value })

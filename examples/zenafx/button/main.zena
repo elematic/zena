@@ -17,8 +17,8 @@
  * to the button first, which is nearer the pointer, and the button ends it
  * there, so the page hears only the presses that land beside the button.
  */
-import { Color, BoxStyle, TextStyle, Flex, Edges, Axis, Justify, Align,
-         LengthPercent, LengthAuto, Overflow } from 'zenafx:ui/style';
+import { Color, BoxStyle, TextStyle, Box, Flex, LayoutFlex, Edges, Axis, Justify,
+         Align, LengthPercent, LengthAuto, Overflow } from 'zenafx:ui/style';
 import { NodeDef, AppearanceNothing, AppearanceFill, AppearanceText, TextContent,
          Binding, BindingTarget, BindingValueContent, StateStyle, State,
          RestyleFill } from 'zenafx:host/scene';
@@ -43,23 +43,26 @@ let labelStyle = new TextStyle('system-ui', 16.0, 600 as u16, false, paper);
 let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
 
 /** The page's own box: fills the window and centres a column in it. */
-let pageLayout = new Flex(Axis.Column, Justify.Center, Align.Center, 24.0,
-    noPadding, new LengthPercent(100.0), new LengthPercent(100.0), 0.0, 1.0,
-    Overflow.Clip, Overflow.Clip);
+let pageBox = new Box(new LengthPercent(100.0), new LengthPercent(100.0), 0.0, 1.0,
+    noPadding, Overflow.Clip, Overflow.Clip);
+let pageLayout = new LayoutFlex(
+    new Flex(Axis.Column, Justify.Center, Align.Center, 24.0));
 
 /** The button's own box: as large as its label and the padding round it. */
-let buttonLayout = new Flex(Axis.Column, Justify.Center, Align.Center, 0.0,
-    new Edges(12.0, 24.0, 12.0, 24.0), new LengthAuto(), new LengthAuto(), 0.0, 1.0,
-    Overflow.Clip, Overflow.Clip);
+let buttonBox = new Box(new LengthAuto(), new LengthAuto(), 0.0, 1.0,
+    new Edges(12.0, 24.0, 12.0, 24.0), Overflow.Clip, Overflow.Clip);
+let buttonLayout = new LayoutFlex(
+    new Flex(Axis.Column, Justify.Center, Align.Center, 0.0));
 
 /** A line of text, and the slot: sized by what is in it. */
-let contentLayout = new Flex(Axis.Column, Justify.Start, Align.Start, 0.0,
-    noPadding, new LengthAuto(), new LengthAuto(), 0.0, 1.0,
+let contentBox = new Box(new LengthAuto(), new LengthAuto(), 0.0, 1.0, noPadding,
     Overflow.Clip, Overflow.Clip);
+let contentLayout = new LayoutFlex(
+    new Flex(Axis.Column, Justify.Start, Align.Start, 0.0));
 
 /** The count: one node, which is the text, and one hole, which is what it says. */
 let readoutTemplate = new Template(
-  [new NodeDef(contentLayout, new AppearanceText(new TextContent('', countStyle)),
+  [new NodeDef(contentBox, contentLayout, new AppearanceText(new TextContent('', countStyle)),
                0 as u32, 0 as u32, false, none, false, false, false)],
   [new Binding(0 as u32, BindingTarget.Content)],
 );
@@ -92,9 +95,9 @@ class Readout extends Widget {
  */
 let buttonTemplate = new Template(
   [
-    new NodeDef(buttonLayout, new AppearanceFill(restingStyle), 1 as u32, 1 as u32,
+    new NodeDef(buttonBox, buttonLayout, new AppearanceFill(restingStyle), 1 as u32, 1 as u32,
                 false, none, false, false, false),
-    new NodeDef(contentLayout, new AppearanceText(new TextContent('', labelStyle)),
+    new NodeDef(contentBox, contentLayout, new AppearanceText(new TextContent('', labelStyle)),
                 0 as u32, 0 as u32, false, none, false, false, false),
   ],
   [new Binding(1 as u32, BindingTarget.Content)],
@@ -129,9 +132,9 @@ class Button extends Widget {
 /** The page's template: its own box, and one slot for what is on it. */
 let pageTemplate = new Template(
   [
-    new NodeDef(pageLayout, new AppearanceFill(pageStyle), 1 as u32, 1 as u32,
+    new NodeDef(pageBox, pageLayout, new AppearanceFill(pageStyle), 1 as u32, 1 as u32,
                 false, none, false, false, false),
-    new NodeDef(contentLayout, new AppearanceNothing(), 0 as u32, 0 as u32,
+    new NodeDef(contentBox, contentLayout, new AppearanceNothing(), 0 as u32, 0 as u32,
                 true, none, false, false, false),
   ],
   [],

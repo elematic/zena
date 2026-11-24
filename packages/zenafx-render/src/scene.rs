@@ -30,8 +30,8 @@ use super::events::{
 use super::layout::{Placed, measure_text, place_with};
 use super::text::TextEngine;
 use super::types::{
-    BoxStyle, Color, Command, Content, Flex, Glyphs, Length, Measured, Node as FlatNode, Overflow,
-    Quad, Rect, Size, TextStyle,
+    BoxStyle, Color, Command, Content, Flex, Glyphs, Layout, Length, Measured, Node as FlatNode,
+    Overflow, OwnBox, Quad, Rect, Size, TextStyle,
 };
 
 /// A node of the retained tree, as a component sends it.
@@ -65,7 +65,13 @@ pub enum Appearance {
 #[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
 #[cfg_attr(feature = "wasmtime", component(record))]
 pub struct NodeDef {
-    pub layout: Flex,
+    /// The node's own box, which its parent's layout places.
+    #[cfg_attr(feature = "wasmtime", component(name = "box"))]
+    pub own_box: OwnBox,
+    /// How the node lays out its children. With `Layout::Flow` it is a flow
+    /// container: its text children are joined and laid out as one piece
+    /// of text.
+    pub layout: Layout,
     pub appearance: Appearance,
     #[cfg_attr(feature = "wasmtime", component(name = "first-child"))]
     pub first_child: u32,
@@ -96,6 +102,8 @@ pub enum BindingTarget {
     Content,
     #[cfg_attr(feature = "wasmtime", component(name = "style"))]
     Style,
+    #[cfg_attr(feature = "wasmtime", component(name = "box"))]
+    Box,
     #[cfg_attr(feature = "wasmtime", component(name = "layout"))]
     Layout,
 }
@@ -132,8 +140,10 @@ pub enum BindingValue {
     Style(BoxStyle),
     #[cfg_attr(feature = "wasmtime", component(name = "text-style"))]
     TextStyle(TextStyle),
+    #[cfg_attr(feature = "wasmtime", component(name = "box"))]
+    Box(OwnBox),
     #[cfg_attr(feature = "wasmtime", component(name = "layout"))]
-    Layout(Flex),
+    Layout(Layout),
 }
 
 /// One hole and what to put in it.
@@ -437,7 +447,11 @@ struct Interior {
 /// A node as the host keeps it: the component's description, plus the run
 /// the host shaped for it and the children it resolved.
 struct Retained {
-    layout: Flex,
+    own_box: OwnBox,
+    /// How the node lays out its children. With `Layout::Flow` it is a flow
+    /// container: its `run` is then the texts of its text children shaped
+    /// as one, and those children have no run of their own.
+    layout: Layout,
     appearance: Appearance,
     /// The shaped run for a text node, owned by this node and released when
     /// it is replaced.
@@ -488,6 +502,8 @@ struct Retained {
     /// Whether text here, and beneath here, is left out of what the pointer
     /// can select.
     unselectable: bool,
+    /// A flow container's text: its text children's contents, joined.
+    joined: String,
 }
 
 impl Retained {
@@ -495,7 +511,8 @@ impl Retained {
     /// what a slot's content is before its widget renders.
     fn empty() -> Self {
         Self {
-            layout: Flex::default(),
+            own_box: OwnBox::default(),
+            layout: Layout::default(),
             appearance: Appearance::Nothing,
             run: None,
             children: Vec::new(),
@@ -513,6 +530,7 @@ impl Retained {
             cursor: None,
             editable: false,
             unselectable: false,
+            joined: String::new(),
         }
     }
 
@@ -635,10 +653,10 @@ impl Scene {
             Some(id) => id,
             None => {
                 let id = self.alloc(Retained {
-                    layout: Flex {
+                    own_box: OwnBox {
                         width: Length::Percent(100.0),
                         height: Length::Percent(100.0),
-                        ..Flex::default()
+                        ..OwnBox::default()
                     },
                     ..Retained::empty()
                 });
@@ -802,19 +820,30 @@ impl Scene {
             }
         }
 
+        // A text node in a flow container is shaped as part of the
+        // container's text and has no run of its own.
+        let mut in_flow = vec![false; filled.len()];
+        for def in filled.iter().filter(|def| def.layout.flow().is_some()) {
+            let (first, count) = (def.first_child as usize, def.child_count as usize);
+            for child in in_flow.iter_mut().skip(first).take(count) {
+                *child = true;
+            }
+        }
+
         // Index 0 is the node itself, which is what makes a widget one box
         // rather than a box inside a box.
         let mut ids = vec![node];
-        for def in &filled[1..] {
-            let run = self.shape(def, text);
+        for (def, part) in filled.iter().zip(&in_flow).skip(1) {
+            let run = if *part { None } else { self.shape(def, text) };
             ids.push(self.alloc(Retained {
+                own_box: def.own_box,
                 layout: def.layout,
                 appearance: def.appearance.clone(),
                 run,
                 is_slot: def.is_slot,
                 cursor: def.cursor,
                 focusable: def.focusable,
-                // Only text can be edited.
+                // Only text can be edited, and only a text node by itself.
                 editable: def.editable && run.is_some(),
                 unselectable: def.unselectable,
                 ..Retained::empty()
@@ -822,6 +851,7 @@ impl Scene {
         }
         let run = self.shape(&filled[0], text);
         if let Some(held) = self.get_mut(node) {
+            held.own_box = filled[0].own_box;
             held.layout = filled[0].layout;
             held.appearance = filled[0].appearance.clone();
             held.run = run;
@@ -843,6 +873,13 @@ impl Scene {
             }
             if let Some(held) = self.get_mut(ids[index]) {
                 held.children = children;
+            }
+        }
+        // A flow container's text is its children's, so it is shaped once
+        // they are in place.
+        for (index, def) in filled.iter().enumerate() {
+            if def.layout.flow().is_some() {
+                self.reflow(ids[index], text);
             }
         }
 
@@ -887,6 +924,64 @@ impl Scene {
         }
     }
 
+    /// Shape a flow container's text again from its text children: their
+    /// contents joined in order, each in its own style. A container with no
+    /// text children has no run.
+    fn reflow(&mut self, container: u32, text: &mut TextEngine) {
+        let Some(held) = self.get(container) else {
+            return;
+        };
+        let Some(flow) = held.layout.flow() else {
+            return;
+        };
+        let parts: Vec<&TextContent> = held
+            .children
+            .iter()
+            .filter_map(|child| match &self.get(*child)?.appearance {
+                Appearance::Text(shown) => Some(shown),
+                _ => None,
+            })
+            .collect();
+        let styled: Vec<(&str, &TextStyle)> = parts
+            .iter()
+            .map(|part| (part.content.as_str(), &part.style))
+            .collect();
+        let joined: String = parts.iter().map(|part| part.content.as_str()).collect();
+        let run = match (held.run, styled.is_empty()) {
+            (Some(run), false) => {
+                text.update_parts(run, &styled, &flow);
+                Some(run)
+            }
+            (Some(run), true) => {
+                text.release_run(run);
+                None
+            }
+            (None, false) => Some(text.register_parts(&styled, &flow)),
+            (None, true) => None,
+        };
+        if let Some(held) = self.get_mut(container) {
+            held.run = run;
+            held.joined = joined;
+        }
+    }
+
+    /// The flow container `node` is a text child of, if it is one.
+    fn flow_above(&self, node: u32) -> Option<u32> {
+        let parent = self.get(node)?.parent?;
+        self.get(parent)?.layout.flow().map(|_| parent)
+    }
+
+    /// The text a node holds: a text node's content, or the joined text of a
+    /// flow container.
+    fn content_of(&self, node: u32) -> Option<&str> {
+        let held = self.get(node)?;
+        match &held.appearance {
+            Appearance::Text(shown) => Some(&shown.content),
+            _ if held.layout.flow().is_some() => Some(&held.joined),
+            _ => None,
+        }
+    }
+
     /// Write one hole into a node that already shows the right template.
     fn write_hole(
         &mut self,
@@ -910,8 +1005,11 @@ impl Scene {
             return;
         };
         // Whether the write changed a text, which may be the one the caret
-        // is in.
+        // is in, or the style a text is in.
         let mut rewrote = false;
+        let mut restyled = false;
+        // Whether the write changed how a flow container sets its lines.
+        let mut realigned = false;
         match (target, &hole.value) {
             (BindingTarget::Content, BindingValue::Content(content)) => {
                 if let Appearance::Text(text_content) = &mut held.appearance {
@@ -935,6 +1033,7 @@ impl Scene {
             }
             (BindingTarget::Style, BindingValue::TextStyle(style)) => {
                 if let Appearance::Text(text_content) = &mut held.appearance {
+                    restyled = true;
                     text_content.style = style.clone();
                     let content = text_content.content.clone();
                     // A run that is showing a look keeps it: this is the
@@ -944,10 +1043,34 @@ impl Scene {
                     }
                 }
             }
-            (BindingTarget::Layout, BindingValue::Layout(layout)) => {
+            (BindingTarget::Box, BindingValue::Box(own_box)) => {
+                held.own_box = *own_box;
+            }
+            // Whether a node's children are items or text is the
+            // template's, so a hole writes a layout of the kind the node
+            // has and one of the other kind is not applied.
+            (BindingTarget::Layout, BindingValue::Layout(layout))
+                if held.layout.is_kind_of(layout) =>
+            {
                 held.layout = *layout;
+                realigned = layout.flow().is_some();
             }
             _ => {}
+        }
+        // A text node in a flow container is part of the container's text,
+        // which is shaped again as a whole. A selection in that text is in
+        // the container.
+        let id = match self.flow_above(id) {
+            Some(container) if rewrote || restyled => {
+                self.reflow(container, text);
+                container
+            }
+            _ => id,
+        };
+        // The alignment of a flow container's lines and their height are
+        // in how its text is shaped.
+        if realigned {
+            self.reflow(id, text);
         }
         // New text under the selection leaves the selection's places where
         // they were, held within the text, and the caret may have moved out
@@ -980,10 +1103,7 @@ impl Scene {
     /// How many UTF-8 bytes of text a node shows. 0 for a node that is not
     /// text.
     fn length_of(&self, node: u32) -> u32 {
-        match self.get(node).map(|n| &n.appearance) {
-            Some(Appearance::Text(shown)) => shown.content.len() as u32,
-            _ => 0,
-        }
+        self.content_of(node).map_or(0, |text| text.len() as u32)
     }
 
     /// Hold the selection's two places within the text they are in, after
@@ -1099,9 +1219,8 @@ impl Scene {
         let parts: Vec<&str> = self
             .selected_ranges()
             .into_iter()
-            .filter_map(|(node, from, to, _)| match &self.get(node)?.appearance {
-                Appearance::Text(shown) => shown.content.get(from as usize..to as usize),
-                _ => None,
+            .filter_map(|(node, from, to, _)| {
+                self.content_of(node)?.get(from as usize..to as usize)
             })
             .collect();
         let text = parts.join("\n");
@@ -1251,7 +1370,7 @@ impl Scene {
     fn place_at(&self, node: u32, x: f32, y: f32, text: &TextEngine) -> Option<Place> {
         let held = self.get(node)?;
         let (left, top) = self.origin(node);
-        let padding = held.layout.padding;
+        let padding = held.own_box.padding;
         let index = text.index_at(held.run?, x - left - padding.left, y - top - padding.top);
         Some(Place { node, index })
     }
@@ -1429,7 +1548,7 @@ impl Scene {
         let Some(caret) = text.caret(run, at.index, CARET_WIDTH) else {
             return;
         };
-        let inset = held.layout.padding;
+        let inset = held.own_box.padding;
         let (left, top) = (own.x + inset.left + caret.x, own.y + inset.top + caret.y);
         let (right, bottom) = (left + caret.width, top + caret.height);
 
@@ -1447,8 +1566,8 @@ impl Scene {
             let Some(frame) = solved(id) else {
                 continue;
             };
-            let padding = outer.layout.padding;
-            if !across && outer.layout.overflow_x != Overflow::Clip {
+            let padding = outer.own_box.padding;
+            if !across && outer.own_box.overflow_x != Overflow::Clip {
                 let (start, extent) = (
                     frame.x + padding.left,
                     frame.width - padding.left - padding.right,
@@ -1456,7 +1575,7 @@ impl Scene {
                 outer.scroll.0 = shown(outer.scroll.0, left, right, start, extent);
                 across = true;
             }
-            if !down && outer.layout.overflow_y != Overflow::Clip {
+            if !down && outer.own_box.overflow_y != Overflow::Clip {
                 let (start, extent) = (
                     frame.y + padding.top,
                     frame.height - padding.top - padding.bottom,
@@ -1516,10 +1635,13 @@ impl Scene {
                         .map(|c| position_of[*c as usize])
                         .unwrap_or(0);
                     FlatNode {
-                        layout: node.layout,
-                        content: match node.run {
-                            Some(run) => Content::Text(run),
-                            None => Content::Box,
+                        own_box: node.own_box,
+                        content: match (node.run, node.layout) {
+                            (Some(run), _) => Content::Text(run),
+                            (None, Layout::Flex(flex)) => Content::Box(flex),
+                            // A flow container with no text in it: a box
+                            // with nothing to arrange.
+                            (None, Layout::Flow(_)) => Content::Box(Flex::default()),
                         },
                         first_child: first,
                         child_count: children.len() as u32,
@@ -1588,7 +1710,7 @@ impl Scene {
                 .iter()
                 .any(|child| !contains(solved, placed[position_of[*child as usize] as usize].rect));
             let held = self.get_mut(*id).expect("a live node");
-            let (over_x, over_y) = (held.layout.overflow_x, held.layout.overflow_y);
+            let (over_x, over_y) = (held.own_box.overflow_x, held.own_box.overflow_y);
             let expects_more = over_x != Overflow::Clip || over_y != Overflow::Clip;
             if spills && !expects_more && !held.spilled {
                 log::warn!(
@@ -1689,22 +1811,29 @@ impl Scene {
                 _ => None,
             });
             let mut drawn: Vec<Command> = Vec::new();
-            match (look, &node.appearance, node.run) {
-                (Some(style), _, None) | (None, Appearance::Fill(style), _) => {
-                    drawn.push(Command::Quad(Quad {
-                        bounds: rect,
-                        background: style.background,
-                        border_color: style.border_color,
-                        border_width: style.border_width,
-                        corner_radius: style.corner_radius,
-                    }));
-                }
-                (_, Appearance::Text(own), Some(run)) => {
+            // A box's fill, in the look that holds for it. A flow container
+            // can have one, behind its text.
+            let fill = match (look, &node.appearance) {
+                (Some(style), Appearance::Fill(_) | Appearance::Nothing) => Some(style),
+                (None, Appearance::Fill(style)) => Some(style),
+                _ => None,
+            };
+            if let Some(style) = fill {
+                drawn.push(Command::Quad(Quad {
+                    bounds: rect,
+                    background: style.background,
+                    border_color: style.border_color,
+                    border_width: style.border_width,
+                    corner_radius: style.corner_radius,
+                }));
+            }
+            match node.run {
+                Some(run) => {
                     // A text node's padding is inside its box, so its text
                     // starts that far in.
                     let (x, y) = (
-                        rect.x + node.layout.padding.left,
-                        rect.y + node.layout.padding.top,
+                        rect.x + node.own_box.padding.left,
+                        rect.y + node.own_box.padding.top,
                     );
                     let placed = |r: Rect| Rect {
                         x: r.x + x,
@@ -1730,12 +1859,13 @@ impl Scene {
                         .filter(|_| node.editable)
                         .and_then(|(_, _, caret)| caret)
                         .and_then(|at| text.caret(run, at, CARET_WIDTH));
-                    if let Some(caret) = caret {
+                    if let (Some(caret), Appearance::Text(own)) = (caret, &node.appearance) {
                         let ink = node.shaped_as.as_ref().unwrap_or(&own.style).color;
                         drawn.push(plain(placed(caret), ink));
                     }
                 }
-                _ => continue,
+                None if drawn.is_empty() => continue,
+                None => {}
             }
             if clip != open {
                 if open.is_some() {
@@ -1762,8 +1892,8 @@ impl Scene {
             }
             let node = self.get(*id).expect("a live node");
             let reach = placed[index].reach;
-            let across = node.layout.overflow_x == Overflow::Scroll && reach.width > 0.0;
-            let down = node.layout.overflow_y == Overflow::Scroll && reach.height > 0.0;
+            let across = node.own_box.overflow_x == Overflow::Scroll && reach.width > 0.0;
+            let down = node.own_box.overflow_y == Overflow::Scroll && reach.height > 0.0;
             let mut thumbs = Vec::new();
             if down {
                 let (at, length) = thumb(rect.height, reach.height, node.scroll.1);
@@ -2214,9 +2344,9 @@ impl Scene {
                     continue;
                 };
                 let (overflow, at) = if vertical {
-                    (held.layout.overflow_y, &mut held.scroll.1)
+                    (held.own_box.overflow_y, &mut held.scroll.1)
                 } else {
-                    (held.layout.overflow_x, &mut held.scroll.0)
+                    (held.own_box.overflow_x, &mut held.scroll.0)
                 };
                 // Only a box that says `scroll` moves with the wheel. A
                 // `hidden` one is scrolled by the host alone.
@@ -2413,6 +2543,11 @@ impl Scene {
         let Some(node) = self.get(id) else {
             return Vec::new();
         };
+        // A flow container's text children are laid out as its one text, so
+        // the layout sees the container as text and nothing beneath it.
+        if node.layout.flow().is_some() {
+            return Vec::new();
+        }
         let mut out = Vec::with_capacity(node.children.len());
         for child in &node.children {
             match self.get(*child) {
@@ -2639,7 +2774,10 @@ fn apply(node: &mut NodeDef, target: BindingTarget, value: &BindingValue) {
                 held.style = style.clone();
             }
         }
-        (BindingTarget::Layout, BindingValue::Layout(layout)) => {
+        (BindingTarget::Box, BindingValue::Box(own_box)) => {
+            node.own_box = *own_box;
+        }
+        (BindingTarget::Layout, BindingValue::Layout(layout)) if node.layout.is_kind_of(layout) => {
             node.layout = *layout;
         }
         _ => {}
@@ -2649,7 +2787,7 @@ fn apply(node: &mut NodeDef, target: BindingTarget, value: &BindingValue) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Align, Axis, Edges, Justify, Length};
+    use crate::types::{Align, Axis, Edges, Flow, Justify, Length};
 
     /// Template ids are the guest's, so these pick their own. Distinct ids are
     /// distinct templates, which is what decides patch against replace.
@@ -2659,7 +2797,8 @@ mod tests {
     /// A plain box: no children, nothing drawn, sized by its content.
     fn blank() -> NodeDef {
         NodeDef {
-            layout: Flex::default(),
+            own_box: OwnBox::default(),
+            layout: Layout::default(),
             appearance: Appearance::Nothing,
             first_child: 0,
             child_count: 0,
@@ -2681,11 +2820,11 @@ mod tests {
         }
     }
 
-    fn row() -> Flex {
-        Flex {
+    fn row() -> Layout {
+        Layout::Flex(Flex {
             axis: Axis::Row,
             ..Flex::default()
-        }
+        })
     }
 
     fn fresh(id: u32, nodes: Vec<NodeDef>, bindings: Vec<Binding>) -> TemplateRef {
@@ -2799,13 +2938,16 @@ mod tests {
                     // The application's own box: fills the window and centres
                     // its one child on both axes.
                     NodeDef {
-                        layout: Flex {
-                            justify_content: Justify::Center,
-                            align_items: Align::Center,
+                        own_box: OwnBox {
                             width: Length::Percent(100.0),
                             height: Length::Percent(100.0),
-                            ..Flex::default()
+                            ..OwnBox::default()
                         },
+                        layout: Layout::Flex(Flex {
+                            justify_content: Justify::Center,
+                            align_items: Align::Center,
+                            ..Flex::default()
+                        }),
                         first_child: 1,
                         child_count: 1,
                         ..blank()
@@ -3051,10 +3193,10 @@ mod tests {
             &fresh(
                 DIAL,
                 vec![NodeDef {
-                    layout: Flex {
+                    own_box: OwnBox {
                         width: Length::Px(120.0),
                         height: Length::Px(40.0),
-                        ..Flex::default()
+                        ..OwnBox::default()
                     },
                     appearance: Appearance::Fill(BoxStyle {
                         background: Some(Color::rgb(1.0, 0.0, 0.0)),
@@ -3118,10 +3260,10 @@ mod tests {
     /// A box of a fixed size, for a test that needs to know where things are.
     fn sized(width: f32, height: f32) -> NodeDef {
         NodeDef {
-            layout: Flex {
+            own_box: OwnBox {
                 width: Length::Px(width),
                 height: Length::Px(height),
-                ..Flex::default()
+                ..OwnBox::default()
             },
             ..blank()
         }
@@ -3174,11 +3316,11 @@ mod tests {
                 PANEL,
                 vec![
                     NodeDef {
-                        layout: Flex {
-                            axis: Axis::Row,
+                        own_box: OwnBox {
                             padding: Edges::all(10.0),
-                            ..Flex::default()
+                            ..OwnBox::default()
                         },
+                        layout: row(),
                         first_child: 1,
                         child_count: 2,
                         ..blank()
@@ -3362,9 +3504,9 @@ mod tests {
                 DIAL,
                 vec![
                     NodeDef {
-                        layout: Flex {
+                        own_box: OwnBox {
                             padding: Edges::all(10.0),
-                            ..Flex::default()
+                            ..OwnBox::default()
                         },
                         first_child: 1,
                         child_count: 1,
@@ -3576,11 +3718,11 @@ mod tests {
                 PANEL,
                 vec![
                     NodeDef {
-                        layout: Flex {
-                            axis: Axis::Row,
+                        own_box: OwnBox {
                             padding: Edges::all(10.0),
-                            ..Flex::default()
+                            ..OwnBox::default()
                         },
+                        layout: row(),
                         first_child: 1,
                         child_count: 2,
                         ..blank()
@@ -3590,7 +3732,7 @@ mod tests {
                 ],
                 vec![Binding {
                     node: 1,
-                    target: BindingTarget::Layout,
+                    target: BindingTarget::Box,
                 }],
                 vec![
                     look(1, State::Hovered, 1, Restyle::Fill(filled(HOVERED))),
@@ -3677,9 +3819,9 @@ mod tests {
                 DIAL,
                 vec![
                     NodeDef {
-                        layout: Flex {
+                        own_box: OwnBox {
                             padding: Edges::all(10.0),
-                            ..Flex::default()
+                            ..OwnBox::default()
                         },
                         first_child: 1,
                         child_count: 1,
@@ -3747,10 +3889,10 @@ mod tests {
             &TemplateRef::Known(PANEL),
             &[Hole {
                 binding: 0,
-                value: BindingValue::Layout(Flex {
+                value: BindingValue::Box(OwnBox {
                     width: Length::Px(0.0),
                     height: Length::Px(40.0),
-                    ..Flex::default()
+                    ..OwnBox::default()
                 }),
             }],
             &mut text,
@@ -3794,7 +3936,7 @@ mod tests {
                 ],
                 vec![Binding {
                     node: 1,
-                    target: BindingTarget::Layout,
+                    target: BindingTarget::Box,
                 }],
                 vec![look(2, State::Hovered, 2, Restyle::Text(loud.clone()))],
             ),
@@ -3815,10 +3957,10 @@ mod tests {
             &TemplateRef::Known(PANEL),
             &[Hole {
                 binding: 0,
-                value: BindingValue::Layout(Flex {
+                value: BindingValue::Box(OwnBox {
                     width: Length::Px(0.0),
                     height: Length::Px(40.0),
-                    ..Flex::default()
+                    ..OwnBox::default()
                 }),
             }],
             &mut text,
@@ -3920,9 +4062,9 @@ mod tests {
     /// is told not to, and a list whose rows did would never need to scroll.
     fn list_row(red: f32) -> NodeDef {
         NodeDef {
-            layout: Flex {
+            own_box: OwnBox {
                 shrink: 0.0,
-                ..sized(100.0, 40.0).layout
+                ..sized(100.0, 40.0).own_box
             },
             appearance: Appearance::Fill(filled(red)),
             ..blank()
@@ -3942,9 +4084,9 @@ mod tests {
                 ..blank()
             },
             NodeDef {
-                layout: Flex {
+                own_box: OwnBox {
                     overflow_y,
-                    ..sized(100.0, 100.0).layout
+                    ..sized(100.0, 100.0).own_box
                 },
                 first_child: 2,
                 child_count: 5,
@@ -4246,10 +4388,10 @@ mod tests {
     /// 20 scroll the inner once and then the outer twice.
     #[test]
     fn a_scroller_at_its_end_passes_the_wheel_outward() {
-        let scrolls = |height| Flex {
+        let scrolls = |height| OwnBox {
             overflow_y: Overflow::Scroll,
             shrink: 0.0,
-            ..sized(100.0, height).layout
+            ..sized(100.0, height).own_box
         };
         let mut text = TextEngine::new();
         let mut scene = Scene::new();
@@ -4267,22 +4409,22 @@ mod tests {
                     // The outer list: 100 tall, holding 100 of inner list and
                     // 100 of footer.
                     NodeDef {
-                        layout: scrolls(100.0),
+                        own_box: scrolls(100.0),
                         first_child: 2,
                         child_count: 2,
                         ..blank()
                     },
                     // The inner list: 100 tall, holding three rows of 40.
                     NodeDef {
-                        layout: scrolls(100.0),
+                        own_box: scrolls(100.0),
                         first_child: 4,
                         child_count: 3,
                         ..blank()
                     },
                     NodeDef {
-                        layout: Flex {
+                        own_box: OwnBox {
                             shrink: 0.0,
-                            ..sized(100.0, 100.0).layout
+                            ..sized(100.0, 100.0).own_box
                         },
                         ..blank()
                     },
@@ -4575,11 +4717,11 @@ mod tests {
                 PANEL,
                 vec![
                     NodeDef {
-                        layout: Flex {
-                            axis: Axis::Row,
+                        own_box: OwnBox {
                             padding: Edges::all(10.0),
-                            ..Flex::default()
+                            ..OwnBox::default()
                         },
+                        layout: row(),
                         first_child: 1,
                         child_count: 2,
                         ..blank()
@@ -4759,22 +4901,22 @@ mod tests {
     fn field_template() -> TemplateRef {
         let nodes = vec![
             NodeDef {
-                layout: Flex {
-                    axis: Axis::Row,
+                own_box: OwnBox {
                     width: Length::Px(100.0),
                     padding: Edges::all(INSET),
                     overflow_x: Overflow::Hidden,
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
+                layout: row(),
                 first_child: 1,
                 child_count: 1,
                 focusable: true,
                 ..blank()
             },
             NodeDef {
-                layout: Flex {
+                own_box: OwnBox {
                     shrink: 0.0,
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
                 editable: true,
                 ..text_node("")
@@ -4857,9 +4999,9 @@ mod tests {
         let mut scene = Scene::new();
         let root = scene.root();
         let padded = NodeDef {
-            layout: Flex {
+            own_box: OwnBox {
                 padding: Edges::all(7.0),
-                ..Flex::default()
+                ..OwnBox::default()
             },
             ..text_node("padded")
         };
@@ -5234,6 +5376,223 @@ mod tests {
         assert!(!scene.select_all_text(), "there is no other text");
         select(&mut scene, root, 1, 4);
         assert_eq!(scene.selected_text().as_deref(), Some("ell"));
+    }
+
+    const FLOWING: u32 = 40;
+
+    /// A flow container `width` wide in the window's top left corner, with a
+    /// text node for each of `parts`. The second part is bold. Hole 0 is the
+    /// second part's text and hole 1 the container's layout.
+    fn a_flow_of(text: &mut TextEngine, width: f32, parts: &[&str]) -> (Scene, u32) {
+        let mut scene = Scene::new();
+        let root = scene.root();
+        let mut nodes = vec![NodeDef {
+            own_box: OwnBox {
+                width: Length::Px(width),
+                ..OwnBox::default()
+            },
+            layout: Layout::Flow(Flow::default()),
+            first_child: 1,
+            child_count: parts.len() as u32,
+            ..blank()
+        }];
+        for (index, part) in parts.iter().enumerate() {
+            let mut node = text_node(part);
+            if let (1, Appearance::Text(shown)) = (index, &mut node.appearance) {
+                shown.style.weight = 700;
+            }
+            nodes.push(node);
+        }
+        scene.render(
+            root,
+            &fresh(FLOWING, nodes, vec![content_binding(2), layout_binding(0)]),
+            &[],
+            text,
+        );
+        scene.draw(window(), text);
+        (scene, root)
+    }
+
+    /// The text nodes of a flow container are one piece of text: one run is
+    /// drawn for them all, and its lines are broken across the whole, so
+    /// three short texts that do not fit on a line between them wrap.
+    #[test]
+    fn a_flow_container_lays_its_texts_out_as_one() {
+        let mut text = TextEngine::new();
+        let parts = ["The quick ", "brown fox jumps", " over the lazy dog"];
+        let (mut scene, _) = a_flow_of(&mut text, 2000.0, &parts);
+        let wide = glyphs(&scene.draw(window(), &mut text));
+        assert_eq!(wide.len(), 1, "one run for the three texts");
+        let run = text.get(wide[0].run).expect("the container's run");
+        assert_eq!(run.content(), "The quick brown fox jumps over the lazy dog");
+        let one_line = text.measure_run(wide[0].run, None);
+
+        let (mut scene, _) = a_flow_of(&mut text, one_line.width / 3.0, &parts);
+        let narrow = glyphs(&scene.draw(window(), &mut text));
+        assert_eq!(narrow.len(), 1);
+        let wrapped = text.measure_run(narrow[0].run, Some(one_line.width / 3.0));
+        assert!(
+            wrapped.height > one_line.height * 2.0,
+            "the texts wrap as one: {wrapped:?} against {one_line:?}"
+        );
+    }
+
+    /// A word that is half in one text node and half in the next is one
+    /// word: a second press on it selects all of it.
+    #[test]
+    fn a_word_in_two_parts_of_a_flow_is_one_word() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_flow_of(&mut text, 600.0, &["It is un", "believ", "able, that."]);
+        let (x, y) = in_line(&mut scene, 0, 10, &mut text);
+
+        for _ in 0..2 {
+            point(&mut scene, pressed(x, y), &text);
+            point(&mut scene, released(x, y), &text);
+        }
+
+        assert_eq!(scene.selected_text().as_deref(), Some("unbelievable"));
+    }
+
+    /// Text copied from a flow container is its parts joined with nothing
+    /// between them.
+    #[test]
+    fn a_flow_containers_text_is_copied_as_one() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_flow_of(&mut text, 600.0, &["one ", "two", " three"]);
+
+        assert!(scene.select_all_text());
+
+        assert_eq!(scene.selected_text().as_deref(), Some("one two three"));
+    }
+
+    /// A hole that writes one text node of a flow container changes the
+    /// container's text, in the run it already has.
+    #[test]
+    fn a_hole_in_a_flow_containers_part_reshapes_the_whole() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_flow_of(&mut text, 600.0, &["one ", "two", " three"]);
+        let before = glyphs(&scene.draw(window(), &mut text))[0].run;
+
+        scene.render(
+            root,
+            &TemplateRef::Known(FLOWING),
+            &[content(0, "2")],
+            &mut text,
+        );
+
+        let after = glyphs(&scene.draw(window(), &mut text))[0].run;
+        assert_eq!(after, before, "the same run, shaped again");
+        assert_eq!(text.get(after).map(|r| r.content()), Some("one 2 three"));
+        assert!(scene.select_all_text());
+        assert_eq!(scene.selected_text().as_deref(), Some("one 2 three"));
+    }
+
+    fn layout_binding(node: u32) -> Binding {
+        Binding {
+            node,
+            target: BindingTarget::Layout,
+        }
+    }
+
+    fn layout(binding: u32, layout: Layout) -> Hole {
+        Hole {
+            binding,
+            value: BindingValue::Layout(layout),
+        }
+    }
+
+    /// A layout hole on a node that lays out by flex writes how its children
+    /// are arranged: two boxes side by side are then one above the other.
+    #[test]
+    fn a_layout_hole_rearranges_a_nodes_children() {
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        let tile = || NodeDef {
+            appearance: Appearance::Fill(filled(PLAIN)),
+            ..sized(40.0, 20.0)
+        };
+        scene.render(
+            root,
+            &fresh(
+                PANEL,
+                vec![
+                    NodeDef {
+                        layout: row(),
+                        first_child: 1,
+                        child_count: 2,
+                        ..blank()
+                    },
+                    tile(),
+                    tile(),
+                ],
+                vec![layout_binding(0)],
+            ),
+            &[],
+            &mut text,
+        );
+        let second = |scene: &mut Scene, text: &mut TextEngine| {
+            let bounds = quads(&scene.draw(window(), text))[1].bounds;
+            (bounds.x, bounds.y)
+        };
+        assert_eq!(second(&mut scene, &mut text), (40.0, 0.0));
+
+        scene.render(
+            root,
+            &TemplateRef::Known(PANEL),
+            &[layout(0, Layout::default())],
+            &mut text,
+        );
+        assert_eq!(second(&mut scene, &mut text), (0.0, 20.0));
+    }
+
+    /// A layout hole on a flow container writes how its lines are set, and
+    /// its text is shaped again in the run it already has.
+    #[test]
+    fn a_layout_hole_resets_the_lines_of_a_flow_container() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_flow_of(&mut text, 600.0, &["one ", "two", " three"]);
+        let run = glyphs(&scene.draw(window(), &mut text))[0].run;
+        let before = text.measure_run(run, Some(600.0)).height;
+
+        scene.render(
+            root,
+            &TemplateRef::Known(FLOWING),
+            &[layout(
+                1,
+                Layout::Flow(Flow {
+                    line_height: Some(3.0),
+                    ..Flow::default()
+                }),
+            )],
+            &mut text,
+        );
+
+        let drawn = glyphs(&scene.draw(window(), &mut text));
+        assert_eq!(drawn[0].run, run, "the same run, shaped again");
+        let after = text.measure_run(run, Some(600.0)).height;
+        assert!(after > before * 2.0, "{before} then {after}");
+    }
+
+    /// Whether a node's children are items or text is the template's. A
+    /// layout hole of the other kind is not applied: the flow container is
+    /// still one, and still draws its texts as one run.
+    #[test]
+    fn a_layout_hole_of_the_other_kind_is_not_applied() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_flow_of(&mut text, 600.0, &["one ", "two", " three"]);
+        let before = glyphs(&scene.draw(window(), &mut text));
+
+        scene.render(
+            root,
+            &TemplateRef::Known(FLOWING),
+            &[layout(1, row())],
+            &mut text,
+        );
+
+        assert_eq!(glyphs(&scene.draw(window(), &mut text)), before);
+        assert!(scene.select_all_text());
+        assert_eq!(scene.selected_text().as_deref(), Some("one two three"));
     }
 }
 
