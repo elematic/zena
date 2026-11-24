@@ -8,6 +8,7 @@
 //! The engine is [`parley`], which brings `fontique` for font enumeration,
 //! `harfrust` for shaping and `skrifa` for outlines.
 
+use parley::fontique::Blob;
 use parley::{
     Affinity, Alignment, AlignmentOptions, BoundingBox, Cursor, FontContext, FontFamily, FontStyle,
     FontWeight, GenericFamily, Layout, LayoutContext, Selection, StyleProperty,
@@ -71,6 +72,54 @@ impl TextEngine {
             free: Vec::new(),
             scale: 1.0,
         }
+    }
+
+    /// Create a text engine pre-loaded with a bundled font.
+    pub fn with_font(bytes: Vec<u8>) -> Self {
+        let mut engine = Self::new();
+        engine.register_font(bytes);
+        engine
+    }
+
+    /// Register raw TTF/OTF font bytes with the font collection and wire its
+    /// families into the CSS generic fallback families (`system-ui`,
+    /// `sans-serif`, `serif`, `monospace`).
+    ///
+    /// Needed on platforms without OS font discovery (such as `wasm32`), and
+    /// useful anywhere an application wants deterministic font metrics.
+    /// Returns the number of font faces registered.
+    pub fn register_font(&mut self, bytes: Vec<u8>) -> usize {
+        let registered = self
+            .font_cx
+            .collection
+            .register_fonts(Blob::from(bytes), None);
+        let faces: usize = registered.iter().map(|(_, fonts)| fonts.len()).sum();
+        let families: Vec<_> = registered.iter().map(|(id, _)| *id).collect();
+        if !families.is_empty() {
+            for generic in [
+                GenericFamily::SystemUi,
+                GenericFamily::SansSerif,
+                GenericFamily::UiSansSerif,
+                GenericFamily::Serif,
+                GenericFamily::Monospace,
+            ] {
+                self.font_cx
+                    .collection
+                    .append_generic_families(generic, families.iter().copied());
+            }
+            // Reshape any runs that were registered before fonts arrived.
+            for slot in self.runs.iter_mut().flatten() {
+                slot.layout = shape(
+                    &mut self.font_cx,
+                    &mut self.layout_cx,
+                    &slot.content,
+                    &slot.style,
+                    self.scale,
+                );
+                slot.broken_at = Some(f32::NAN);
+            }
+        }
+        faces
     }
 
     /// Set the scale factor new and re-shaped runs are built at. Existing

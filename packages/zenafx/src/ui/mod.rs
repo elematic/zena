@@ -16,10 +16,6 @@
 
 pub mod clipboard;
 pub mod demo;
-pub mod events;
-pub mod layout;
-pub mod paint;
-pub mod scene;
 pub mod surface;
-pub mod text;
-pub mod types;
+
+pub use zenafx_render::{events, layout, paint, scene, text, types};

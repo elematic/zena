@@ -16,6 +16,7 @@ const COMPRESSIBLE = new Set([
   '.json',
   '.map',
   '.svg',
+  '.ttf',
   '.wasm',
   '.txt',
   '.xml',

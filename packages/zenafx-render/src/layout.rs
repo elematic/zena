@@ -285,7 +285,7 @@ fn dimension(length: Length) -> Dimension {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::types::{Edges, TextStyle};
+    use crate::types::{Edges, TextStyle};
 
     fn boxed(layout: Flex, first_child: u32, child_count: u32) -> Node {
         Node {

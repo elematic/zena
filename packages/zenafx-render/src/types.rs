@@ -1,0 +1,358 @@
+//! Rust mirrors of the records `zenafx:host` and `zenafx:ui/style` declare.
+//!
+//! These are hand-written rather than generated, because the loader binds
+//! imports itself (see "Runtime linking" in `docs/design/zenafx-ui.md`) and so never gets
+//! a `bindgen!` world to lift them out of. Each type here corresponds one for
+//! one to a record in `packages/zenafx/wit/zenafx.wit`; the canonical-ABI
+//! conversion happens where the host functions are registered.
+//!
+//! The `ComponentType` derive names a field or case after its Rust
+//! identifier verbatim, so every name WIT spells with a hyphen carries an
+//! explicit `#[component(name = ...)]`. A mismatch is caught when the
+//! linker typechecks the import against the component, not at runtime.
+
+#[cfg(feature = "wasmtime")]
+use wasmtime::component::{ComponentType, Lift, Lower};
+
+/// Non-premultiplied sRGB, each channel 0..1.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct Color {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+impl Color {
+    pub const fn rgb(r: f32, g: f32, b: f32) -> Self {
+        Self { r, g, b, a: 1.0 }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct Size {
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct BoxStyle {
+    pub background: Option<Color>,
+    #[cfg_attr(feature = "wasmtime", component(name = "border-color"))]
+    pub border_color: Option<Color>,
+    #[cfg_attr(feature = "wasmtime", component(name = "border-width"))]
+    pub border_width: f32,
+    #[cfg_attr(feature = "wasmtime", component(name = "corner-radius"))]
+    pub corner_radius: f32,
+    pub opacity: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct TextStyle {
+    pub family: String,
+    pub size: f32,
+    pub weight: u16,
+    pub italic: bool,
+    pub color: Color,
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            family: "system-ui".to_owned(),
+            size: 16.0,
+            weight: 400,
+            italic: false,
+            color: Color::rgb(0.0, 0.0, 0.0),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(variant))]
+pub enum Length {
+    #[cfg_attr(feature = "wasmtime", component(name = "auto"))]
+    Auto,
+    #[cfg_attr(feature = "wasmtime", component(name = "px"))]
+    Px(f32),
+    #[cfg_attr(feature = "wasmtime", component(name = "percent"))]
+    Percent(f32),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(enum))]
+#[repr(u8)]
+pub enum Axis {
+    #[cfg_attr(feature = "wasmtime", component(name = "row"))]
+    Row,
+    #[default]
+    #[cfg_attr(feature = "wasmtime", component(name = "column"))]
+    Column,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(enum))]
+#[repr(u8)]
+pub enum Justify {
+    #[default]
+    #[cfg_attr(feature = "wasmtime", component(name = "start"))]
+    Start,
+    #[cfg_attr(feature = "wasmtime", component(name = "center"))]
+    Center,
+    #[cfg_attr(feature = "wasmtime", component(name = "end"))]
+    End,
+    #[cfg_attr(feature = "wasmtime", component(name = "space-between"))]
+    SpaceBetween,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(enum))]
+#[repr(u8)]
+pub enum Align {
+    #[default]
+    #[cfg_attr(feature = "wasmtime", component(name = "start"))]
+    Start,
+    #[cfg_attr(feature = "wasmtime", component(name = "center"))]
+    Center,
+    #[cfg_attr(feature = "wasmtime", component(name = "end"))]
+    End,
+    #[cfg_attr(feature = "wasmtime", component(name = "stretch"))]
+    Stretch,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct Edges {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl Edges {
+    pub const fn all(v: f32) -> Self {
+        Self {
+            top: v,
+            right: v,
+            bottom: v,
+            left: v,
+        }
+    }
+}
+
+/// What becomes of content that does not fit in a box, on one axis.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(enum))]
+#[repr(u8)]
+pub enum Overflow {
+    /// Cut off at the box's edge. The box is never laid out smaller than
+    /// its content, so this is for a box whose content is expected to fit.
+    #[default]
+    #[cfg_attr(feature = "wasmtime", component(name = "clip"))]
+    Clip,
+    /// Cut off at the box's edge. The box may be laid out smaller than its
+    /// content.
+    #[cfg_attr(feature = "wasmtime", component(name = "hidden"))]
+    Hidden,
+    /// Cut off, and the box scrolls.
+    #[cfg_attr(feature = "wasmtime", component(name = "scroll"))]
+    Scroll,
+}
+
+/// Geometry, and what becomes of content that does not fit. Nothing in a
+/// style affects measurement.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct Flex {
+    pub axis: Axis,
+    #[cfg_attr(feature = "wasmtime", component(name = "justify-content"))]
+    pub justify_content: Justify,
+    #[cfg_attr(feature = "wasmtime", component(name = "align-items"))]
+    pub align_items: Align,
+    pub gap: f32,
+    pub padding: Edges,
+    pub width: Length,
+    pub height: Length,
+    pub grow: f32,
+    pub shrink: f32,
+    #[cfg_attr(feature = "wasmtime", component(name = "overflow-x"))]
+    pub overflow_x: Overflow,
+    #[cfg_attr(feature = "wasmtime", component(name = "overflow-y"))]
+    pub overflow_y: Overflow,
+}
+
+impl Default for Flex {
+    fn default() -> Self {
+        Self {
+            axis: Axis::Column,
+            justify_content: Justify::Start,
+            align_items: Align::Start,
+            gap: 0.0,
+            padding: Edges::default(),
+            width: Length::Auto,
+            height: Length::Auto,
+            grow: 0.0,
+            // CSS's default, and taffy's: a flex item may shrink below its
+            // basis before it overflows.
+            shrink: 1.0,
+            overflow_x: Overflow::Clip,
+            overflow_y: Overflow::Clip,
+        }
+    }
+}
+
+/// What a shaped run occupies at some width.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct Measured {
+    pub width: f32,
+    pub height: f32,
+    /// Distance from the top of the run to the first line's baseline.
+    pub baseline: f32,
+}
+
+/// The space a solve offers on one axis.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(variant))]
+pub enum Available {
+    #[cfg_attr(feature = "wasmtime", component(name = "definite"))]
+    Definite(f32),
+    #[cfg_attr(feature = "wasmtime", component(name = "min-content"))]
+    MinContent,
+    #[cfg_attr(feature = "wasmtime", component(name = "max-content"))]
+    MaxContent,
+}
+
+/// One question a solve asks about a leaf.
+///
+/// Layout is a recursive query rather than one pass down and one pass up: a
+/// leaf is asked several times per solve, and which questions it gets depend
+/// on the styles above it. A `known` dimension is one the parent has already
+/// fixed, and the solve is asking what the other becomes at that size.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct MeasureRequest {
+    #[cfg_attr(feature = "wasmtime", component(name = "known-width"))]
+    pub known_width: Option<f32>,
+    #[cfg_attr(feature = "wasmtime", component(name = "known-height"))]
+    pub known_height: Option<f32>,
+    #[cfg_attr(feature = "wasmtime", component(name = "available-width"))]
+    pub available_width: Available,
+    #[cfg_attr(feature = "wasmtime", component(name = "available-height"))]
+    pub available_height: Available,
+}
+
+/// What a leaf holds.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(variant))]
+pub enum Content {
+    /// Sized by its own style and its children.
+    #[cfg_attr(feature = "wasmtime", component(name = "box"))]
+    Box,
+    /// A run registered with the text engine.
+    #[cfg_attr(feature = "wasmtime", component(name = "text"))]
+    Text(u32),
+}
+
+/// One node of a tree given in pre-order. Index 0 is the root; a node's
+/// children are the `child_count` entries starting at `first_child`.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct Node {
+    pub layout: Flex,
+    pub content: Content,
+    #[cfg_attr(feature = "wasmtime", component(name = "first-child"))]
+    pub first_child: u32,
+    #[cfg_attr(feature = "wasmtime", component(name = "child-count"))]
+    pub child_count: u32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct Quad {
+    pub bounds: Rect,
+    pub background: Option<Color>,
+    #[cfg_attr(feature = "wasmtime", component(name = "border-color"))]
+    pub border_color: Option<Color>,
+    #[cfg_attr(feature = "wasmtime", component(name = "border-width"))]
+    pub border_width: f32,
+    #[cfg_attr(feature = "wasmtime", component(name = "corner-radius"))]
+    pub corner_radius: f32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct Glyphs {
+    pub run: u32,
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(variant))]
+pub enum Command {
+    #[cfg_attr(feature = "wasmtime", component(name = "quad"))]
+    Quad(Quad),
+    #[cfg_attr(feature = "wasmtime", component(name = "glyphs"))]
+    Glyphs(Glyphs),
+    #[cfg_attr(feature = "wasmtime", component(name = "push-clip"))]
+    PushClip(Rect),
+    #[cfg_attr(feature = "wasmtime", component(name = "pop-clip"))]
+    PopClip,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct FrameEvent {
+    /// Milliseconds on a monotonic clock since the window opened.
+    #[cfg_attr(feature = "wasmtime", component(name = "time-ms"))]
+    pub time_ms: f64,
+    pub width: u32,
+    pub height: u32,
+    /// Physical pixels per logical pixel.
+    pub scale: f32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
+pub struct PointerEvent {
+    pub x: f32,
+    pub y: f32,
+    pub button: u8,
+    pub down: bool,
+}
