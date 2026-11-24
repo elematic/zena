@@ -120,7 +120,10 @@ import {
   contractKeyword,
   DeclareFunction,
   SymbolDeclaration,
-  SymbolPropertyName
+  SymbolPropertyName,
+  NodeLiteral,
+  BindingExpression,
+  DecoratedExpression
 } from './ast.zena';
 
 /**
@@ -189,6 +192,7 @@ export final class Parser {
   var #extraGreaters: i32;
   var #destructParamCounter: i32;
   var #combinedTypeAnnotation: RecordTypeAnnotation | null;
+  var #noNodeLiteral: boolean;
   #errors: GrowableArray<Diagnostic>;
   var #completeness: ParseCompleteness;
   var #lastErrorOffset: i32;
@@ -206,7 +210,7 @@ export final class Parser {
   new(source: String, path: String, recover: boolean = false,
       table: StringTable | null = null,
       allowTopLevelStatements: boolean = false)
-    : #source = source, #path = path, #recover = recover, #allowTopLevelStatements = allowTopLevelStatements, #tokens = new Array<Token>(0), #comments = new Array<Comment>(0), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null, #errors = new Array<Diagnostic>(0), #completeness = ParseCompleteness.Complete, #lastErrorOffset = -1
+    : #source = source, #path = path, #recover = recover, #allowTopLevelStatements = allowTopLevelStatements, #tokens = new Array<Token>(0), #comments = new Array<Comment>(0), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null, #noNodeLiteral = false, #errors = new Array<Diagnostic>(0), #completeness = ParseCompleteness.Complete, #lastErrorOffset = -1
   {
     let tokenizer = new Tokenizer(source, table);
     this.#tokens = tokenizer.tokenize();
@@ -797,7 +801,10 @@ export final class Parser {
     let startToken = this.#peek();
     
     // Decorated statement: @decorator ... declare function ...
-    if (this.#check(TokenType.At)) {
+    // Non-declaration `@tag expr` falls through to expression-statement parsing
+    // when statements are allowed (inside blocks or under `parseAllowingStatements`).
+    if (this.#check(TokenType.At) &&
+        (this.#isDecoratedDeclaration() || (topLevel && !this.#allowTopLevelStatements))) {
       let decorators = new Array<Decorator>(2);
       while (this.#check(TokenType.At)) {
         decorators.push(this.#parseDecorator());
@@ -1452,6 +1459,8 @@ export final class Parser {
   }
 
   #parseBlockStatement(startToken: Token): BlockStatement {
+    let prevNoNodeLiteral = this.#noNodeLiteral;
+    this.#noNodeLiteral = false;
     let body = new Array<Statement>(8);
     
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
@@ -1477,6 +1486,7 @@ export final class Parser {
       this.#consume(TokenType.RBrace, "Expected '}' after block");
     }
     
+    this.#noNodeLiteral = prevNoNodeLiteral;
     return new BlockStatement(body, this.#makeLocation(startToken));
   }
   
@@ -1915,6 +1925,10 @@ export final class Parser {
   #isBlockEndedExpression(expr: Expression): boolean {
     if (expr is MatchExpression) { return true; }
     if (expr is TryExpression) { return true; }
+    if (expr is NodeLiteral) { return true; }
+    if (expr is DecoratedExpression) {
+      return this.#isBlockEndedExpression(expr.expression);
+    }
     if (expr is IfExpression) {
       if (expr.alternate == null) {
         return expr.consequent is BlockStatement;
@@ -2564,6 +2578,17 @@ export final class Parser {
       return new AwaitExpression(argument, this.#makeLocation(startToken));
     }
 
+    // Decorated expression: @ui Box { ... }, @mat[...], @Complex{re: 1.0}
+    if (this.#check(TokenType.At)) {
+      let startToken = this.#peek();
+      let decorators = new Array<Decorator>(2);
+      while (this.#check(TokenType.At)) {
+        decorators.push(this.#parseDecorator());
+      }
+      let expression = this.#parseUnary();
+      return new DecoratedExpression(decorators, expression, this.#makeLocation(startToken));
+    }
+
     if (this.#check(TokenType.Throw)) {
       let next = this.#peek2().kind;
       if (next != TokenType.RParen
@@ -2593,6 +2618,13 @@ export final class Parser {
         let typeArguments = this.#parseTypeArguments();
         this.#consume(TokenType.LParen, "Expected '(' after type arguments");
         expr = this.#finishCall(expr, typeArguments, false, callStart);
+      } else if (!this.#noNodeLiteral && this.#isNodeLiteralHead(expr) && this.#check(TokenType.Less) && this.#isGenericNodeLiteral()) {
+        let typeArguments = this.#parseTypeArguments();
+        this.#consume(TokenType.LBrace, "Expected '{' after type arguments");
+        expr = this.#parseNodeBody(expr, typeArguments, new Array<Expression>(0), callStart);
+      } else if (!this.#noNodeLiteral && this.#check(TokenType.LBrace) && this.#canFinishAsNodeLiteral(expr)) {
+        this.#advance(); // consume '{'
+        expr = this.#finishNodeLiteralFromExpr(expr, callStart);
       } else if (this.#match(TokenType.Dot)) {
         if (this.#match(TokenType.LBracket)) {
           var symbolPath: Expression = this.#parseIdentifier();
@@ -2626,7 +2658,10 @@ export final class Parser {
           expr = new MemberExpression(expr, name, false, false, null, this.#makeLocation(callStart));
         }
       } else if (this.#match(TokenType.LBracket)) {
+        let prevNoNodeLiteral = this.#noNodeLiteral;
+        this.#noNodeLiteral = false;
         let index = this.#parseExpression();
+        this.#noNodeLiteral = prevNoNodeLiteral;
         this.#consume(TokenType.RBracket, "Expected ']' after index");
         expr = new IndexExpression(expr, index, false, this.#makeLocation(callStart));
       } else if (this.#match(TokenType.QuestionDot)) {
@@ -2655,7 +2690,10 @@ export final class Parser {
           expr = new MemberExpression(expr, name, true, false, null, this.#makeLocation(callStart));
         }
       } else if (this.#match(TokenType.QuestionLBracket)) {
+        let prevNoNodeLiteral = this.#noNodeLiteral;
+        this.#noNodeLiteral = false;
         let index = this.#parseExpression();
+        this.#noNodeLiteral = prevNoNodeLiteral;
         this.#consume(TokenType.RBracket, "Expected ']' after index");
         expr = new IndexExpression(expr, index, true, this.#makeLocation(callStart));
       } else if (this.#match(TokenType.QuestionLParen)) {
@@ -2673,6 +2711,8 @@ export final class Parser {
   }
   
   #finishCall(callee: Expression, typeArguments: GrowableArray<TypeAnnotation> | null, optional: boolean, startToken: Token): CallExpression {
+    let prevNoNodeLiteral = this.#noNodeLiteral;
+    this.#noNodeLiteral = false;
     let args = new Array<Expression>(4);
     
     if (!this.#check(TokenType.RParen)) {
@@ -2709,7 +2749,89 @@ export final class Parser {
       this.#consume(TokenType.RParen, "Expected ')' after arguments");
     }
     
+    this.#noNodeLiteral = prevNoNodeLiteral;
     return new CallExpression(callee, args, typeArguments, optional, this.#makeLocation(startToken));
+  }
+
+  #isNodeLiteralHead(expr: Expression): boolean {
+    if (expr is Identifier) { return true; }
+    if (expr is MemberExpression) {
+      return !expr.optional && !expr.isSymbolAccess && this.#isNodeLiteralHead(expr.object);
+    }
+    return false;
+  }
+
+  #canFinishAsNodeLiteral(expr: Expression): boolean {
+    if (this.#isNodeLiteralHead(expr)) { return true; }
+    if (expr is CallExpression) {
+      return !expr.optional && this.#isNodeLiteralHead(expr.callee);
+    }
+    return false;
+  }
+
+  #isGenericNodeLiteral(): boolean {
+    let end = this.#genericArgumentsEnd();
+    return end >= 0 && this.#tokens[this.#current + end].kind == TokenType.LBrace;
+  }
+
+  #finishNodeLiteralFromExpr(expr: Expression, startToken: Token): NodeLiteral {
+    if (expr is CallExpression) {
+      return this.#parseNodeBody(expr.callee, expr.typeArguments, expr.args, startToken);
+    }
+    return this.#parseNodeBody(expr, null, new Array<Expression>(0), startToken);
+  }
+
+  #parseNodeBody(
+    type: Expression,
+    typeArguments: GrowableArray<TypeAnnotation> | null,
+    args: GrowableArray<Expression>,
+    startToken: Token,
+  ): NodeLiteral {
+    let prevNoNodeLiteral = this.#noNodeLiteral;
+    this.#noNodeLiteral = false;
+    let properties = new Array<Node>(4);
+    let children = new Array<Expression>(4);
+
+    while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      if (this.#match(TokenType.DotDotDot)) {
+        let spreadStart = this.#previous();
+        let argument = this.#parseExpression();
+        properties.push(new SpreadElement(argument, this.#makeLocation(spreadStart)));
+      } else if (this.#check(TokenType.At)) {
+        children.push(this.#parseUnary());
+      } else if (this.#isIdentifier() && this.#peek().value == '$' && this.#peek2().kind == TokenType.LParen) {
+        children.push(this.#parsePrimary());
+      } else if (this.#isIdentifier()) {
+        let nextKind = this.#peek2().kind;
+        if (nextKind == TokenType.Colon) {
+          let propStart = this.#peek();
+          let propName = this.#parseIdentifier();
+          this.#advance(); // consume ':'
+          let propValue = this.#parseExpression();
+          properties.push(new PropertyAssignment(propName, propValue, this.#makeLocation(propStart)));
+        } else if (nextKind == TokenType.LBrace || nextKind == TokenType.LParen ||
+                   nextKind == TokenType.Dot || nextKind == TokenType.Less) {
+          let childStart = this.#peek();
+          let child = this.#parseCall();
+          if (!(child is NodeLiteral) && !(child is CallExpression)) {
+            throw this.#error("Expected a node, call, binding '$(...)', or property in node body", childStart);
+          }
+          children.push(child);
+        } else {
+          let propStart = this.#peek();
+          let propName = this.#parseIdentifier();
+          properties.push(new PropertyAssignment(propName, propName, this.#makeLocation(propStart)));
+        }
+      } else {
+        throw this.#error("Expected a property, child node, or binding '$(...)' in node body");
+      }
+
+      this.#match(TokenType.Comma);
+    }
+
+    this.#consume(TokenType.RBrace, "Expected '}' after node body");
+    this.#noNodeLiteral = prevNoNodeLiteral;
+    return new NodeLiteral(type, typeArguments, args, properties, children, this.#makeLocation(startToken));
   }
   
   #parsePrimary(): Expression {
@@ -2824,6 +2946,8 @@ export final class Parser {
         return this.#parseArrowFunction(startToken, null, false, false);
       }
       
+      let prevNoNodeLiteral = this.#noNodeLiteral;
+      this.#noNodeLiteral = false;
       // Parse first expression; `...t` makes this a tuple, even alone.
       let firstSpread = this.#match(TokenType.DotDotDot);
       let first = this.#parseExpression();
@@ -2847,27 +2971,45 @@ export final class Parser {
           }
         }
         this.#consume(TokenType.RParen, "Expected ')' after tuple");
+        this.#noNodeLiteral = prevNoNodeLiteral;
         return new TupleLiteral(elements, spreadIndices, this.#makeLocation(startToken));
       }
       
       // Single expression: grouping
       this.#consume(TokenType.RParen, "Expected ')' after expression");
+      this.#noNodeLiteral = prevNoNodeLiteral;
       return first;
     }
     
     // Array literal
     if (this.#match(TokenType.LBracket)) {
-      return this.#parseArrayLiteral(startToken);
+      let prevNoNodeLiteral = this.#noNodeLiteral;
+      this.#noNodeLiteral = false;
+      let arr = this.#parseArrayLiteral(startToken);
+      this.#noNodeLiteral = prevNoNodeLiteral;
+      return arr;
     }
     
     // Record or map literal
     if (this.#match(TokenType.LBrace)) {
-      return this.#parseRecordOrMapLiteral(startToken);
+      let prevNoNodeLiteral = this.#noNodeLiteral;
+      this.#noNodeLiteral = false;
+      let rec = this.#parseRecordOrMapLiteral(startToken);
+      this.#noNodeLiteral = prevNoNodeLiteral;
+      return rec;
     }
     
-    // Pipeline placeholder ($)
+    // Binding expression `$(expr)` or pipeline placeholder `$`
     if (this.#isIdentifier() && this.#peek().value == '$') {
       let token = this.#advance();
+      if (this.#match(TokenType.LParen)) {
+        let prevNoNodeLiteral = this.#noNodeLiteral;
+        this.#noNodeLiteral = false;
+        let inner = this.#parseExpression();
+        this.#noNodeLiteral = prevNoNodeLiteral;
+        this.#consume(TokenType.RParen, "Expected ')' after binding expression");
+        return new BindingExpression(inner, this.#makeLocation(token));
+      }
       return new PipePlaceholder(this.#makeLocation(token));
     }
     
@@ -4598,7 +4740,10 @@ export final class Parser {
       this.#parseIdentifier()
     };
     this.#consume(TokenType.Equals, "Expected '=' in initializer");
+    let prevNoNodeLiteral = this.#noNodeLiteral;
+    this.#noNodeLiteral = true;
     let value = this.#parseExpression();
+    this.#noNodeLiteral = prevNoNodeLiteral;
     return new FieldInitializer(fieldName, value, this.#makeLocation(initStart));
   }
   
@@ -4645,6 +4790,43 @@ export final class Parser {
    * arguments are ordinary expressions; what a builtin accepts is checked
    * where it is read.
    */
+  /**
+   * Look past one or more `@name(args)` decorators to see if they introduce a
+   * declaration (`declare` or `export`). Anything else is a decorated
+   * expression (`@ui Box { ... }`, `@mat[...]`).
+   */
+  #isDecoratedDeclaration(): boolean {
+    var i = 0;
+    while (this.#tokens[this.#current + i].kind == TokenType.At) {
+      i += 1;
+      if (!this.#isIdentifierKind(this.#tokens[this.#current + i].kind)) {
+        return false;
+      }
+      i += 1;
+      while (this.#tokens[this.#current + i].kind == TokenType.Dot) {
+        i += 1;
+        if (!this.#isIdentifierKind(this.#tokens[this.#current + i].kind)) {
+          return false;
+        }
+        i += 1;
+      }
+      if (this.#tokens[this.#current + i].kind == TokenType.LParen &&
+          this.#tokens[this.#current + i].start == this.#tokens[this.#current + i - 1].end) {
+        var depth = 1;
+        i += 1;
+        while (depth > 0) {
+          let k = this.#tokens[this.#current + i].kind;
+          if (k == TokenType.EOF) { return false; }
+          if (k == TokenType.LParen) { depth = depth + 1; }
+          else if (k == TokenType.RParen) { depth = depth - 1; }
+          i += 1;
+        }
+      }
+    }
+    let next = this.#tokens[this.#current + i].kind;
+    return next == TokenType.Declare || next == TokenType.Export;
+  }
+
   #parseDecorator(): Decorator {
     let startToken = this.#peek();
     this.#consume(TokenType.At, "Expected '@'");
@@ -4656,7 +4838,13 @@ export final class Parser {
       name = `${name}.${segment.name}`;
     }
     let args = new Array<Expression>(2);
-    if (this.#match(TokenType.LParen)) {
+    // Only parse `(` as decorator arguments when it directly follows the
+    // decorator name without whitespace, so `@tag (a + b)` and
+    // `@memo (x: i32) => x` decorate the expression that follows.
+    if (this.#check(TokenType.LParen) && this.#peek().start == this.#previous().end) {
+      this.#advance();
+      let prevNoNodeLiteral = this.#noNodeLiteral;
+      this.#noNodeLiteral = false;
       if (!this.#check(TokenType.RParen)) {
         args.push(this.#parseExpression());
         while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen)) {
@@ -4664,6 +4852,7 @@ export final class Parser {
         }
       }
       this.#consume(TokenType.RParen, "Expected ')' after decorator arguments");
+      this.#noNodeLiteral = prevNoNodeLiteral;
     }
     return new Decorator(name, path, args, this.#makeLocation(startToken));
   }

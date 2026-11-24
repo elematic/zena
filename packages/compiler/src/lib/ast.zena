@@ -246,6 +246,38 @@ export sealed class Expression extends Node {
    * tuple's elements splice in there; null when there are none.
    */
   case TupleLiteral(elements: GrowableArray<Expression>, spreadIndices: GrowableArray<i32> | null, loc: SourceLocation | null)
+  /**
+   * A node literal: `Type<T>(args) { props..., children... }`.
+   * Covers property-only construction (`Point { x: 1.0, y: 2.0 }`) and nested
+   * trees (`Box { style: cardStyle, Text('Hi'), Slot {} }`). `type` is an
+   * `Identifier` or dotted `MemberExpression`; `properties` holds
+   * `PropertyAssignment` and `SpreadElement`; `children` holds child
+   * `NodeLiteral`s, `CallExpression`s (e.g., `Text('Hi')`),
+   * `BindingExpression`s, and `DecoratedExpression`s.
+   */
+  case NodeLiteral(
+    type: Expression,
+    typeArguments: GrowableArray<TypeAnnotation> | null,
+    args: GrowableArray<Expression>,
+    properties: GrowableArray<Node>,
+    children: GrowableArray<Expression>,
+    loc: SourceLocation | null)
+  /**
+   * A staged binding / splice expression: `$(expr)`.
+   * Parsed everywhere and checked semantically inside staged `@` constructs
+   * such as `@ui` and `@q`.
+   */
+  case BindingExpression(
+    expression: Expression,
+    loc: SourceLocation | null)
+  /**
+   * An expression preceded by one or more `@` decorators:
+   * `@ui Box { ... }`, `@mat[...]`, `@Complex{re: 1.0, im: 2.0}`.
+   */
+  case DecoratedExpression(
+    decorators: GrowableArray<Decorator>,
+    expression: Expression,
+    loc: SourceLocation | null)
 
   // Control Flow Expressions
   case MatchExpression(

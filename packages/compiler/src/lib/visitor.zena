@@ -19,7 +19,7 @@ import {
   RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression,
   CallExpression, MemberExpression, IndexExpression, ThisExpression,
   SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral,
-  TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression, ShieldedStatement,
+  TupleLiteral, NodeLiteral, BindingExpression, DecoratedExpression, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression, ShieldedStatement,
   // Statements
   Statement, VariableDeclaration, UsingStatement, FunctionDeclaration, ExpressionStatement, BlockStatement,
   ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
@@ -153,6 +153,20 @@ export function walkChildren(node: Node, enter: (n: Node) => boolean, leave: (n:
       }
       case TupleLiteral {elements}: {
         for (let e in elements) { walk(e, enter, leave); }
+      }
+      case NodeLiteral {type, typeArguments, args, properties, children}: {
+        walk(type, enter, leave);
+        if (typeArguments != null) { for (let t in typeArguments) { walk(t, enter, leave); } }
+        for (let a in args) { walk(a, enter, leave); }
+        for (let p in properties) { walk(p, enter, leave); }
+        for (let c in children) { walk(c, enter, leave); }
+      }
+      case BindingExpression {expression}: {
+        walk(expression, enter, leave);
+      }
+      case DecoratedExpression {decorators, expression}: {
+        for (let d in decorators) { walk(d, enter, leave); }
+        walk(expression, enter, leave);
       }
 
       // -- Control Flow Expressions --

@@ -160,4 +160,28 @@ let tests = suite('ast preservation', () => {
     preservesTree("import {FirstThing, SecondThing as RenamedThing, ThirdThing, FourthThing} from 'some-longer-module-name';");
     preservesTree("export {FirstThing, SecondThing as RenamedThing, ThirdThing, FourthThing} from 'some-longer-module-name';");
   });
+
+  test('node literals, bindings, and decorated expressions', (t) => {
+    preservesTree('let p = Point { x: 1.0, y: 2.0 };');
+    preservesTree('let s = Slot {};');
+    preservesTree('let b = Box { ...base, gap, padding: 8.0 };');
+    preservesTree('let g = Box<i32> { value: 1 };');
+    preservesTree('let q = ui.Box { gap: 4.0 };');
+    preservesTree("let t = Text('Hello') { style: titleStyle };");
+    preservesTree('let l = ListView<Item>(items) { gap: 4.0 };');
+    preservesTree("let u = @ui Column { style: panelStyle, gap: 8.0, Row { Text(this.#title) { style: titleStyle } $(if (show) { @ui Badge('New') } else { null }) } Slot {} };");
+    preservesTree("let leaf = @ui Text('Hello');");
+    preservesTree('let multi = @a @b Box {};');
+    preservesTree('let nested = @a (@b Box {});');
+    preservesTree('let grouped = @tag (a + b);');
+    preservesTree('let arrow = @memo (x: i32) => x * 2;');
+    preservesTree('let member = (@ui Box {}).foo;');
+    preservesTree('let innerMember = @ui Box {}.foo;');
+    preservesTree('let mat = @mat[[1, 2], [3, 4]];');
+    preservesTree('let c = @Complex{re: 1.0, im: 2.0};');
+    preservesTree('let r = @retry(3) fetch(url);');
+    preservesTree('let x = Point { x: 1 }.x;');
+    preservesTree('let b = $(this.#count + 1);');
+    preservesTree('class A {\n  x: i32;\n\n  new(v: i32) : x = v {}\n}');
+  });
 });
