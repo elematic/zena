@@ -194,7 +194,7 @@ return @q { print("Hello") };
 
 ### 3.4 Interpolation (Unquoting)
 
-To inject dynamic values (AST nodes) into the quasiquote, Zena uses `$(expression)` as its staged unquote/splice syntax — the same `$(...)` splice used for Phase 2 holes in tagged node literals such as `@ui Box { ... }` ([declarative.md](./declarative.md)). The parser accepts `$(...)` everywhere and the type checker permits it only inside staged `@` constructs (`@q`, `@ui`, etc.), just as `await` is permitted only inside `async` functions and `old(...)` only inside `ensures` clauses.
+To inject dynamic values (AST nodes) into the quasiquote, Zena uses `$(expression)` as its staged splice/binding syntax — the same `$(...)` syntax used for reactive bindings in tagged node literals such as `@ui Box { ... }` ([declarative.md](./declarative.md)). The parser accepts `$(...)` everywhere and the type checker permits it only inside staged `@` constructs (`@q`, `@ui`, etc.), just as `await` is permitted only inside `async` functions and `old(...)` only inside `ensures` clauses.
 
 Inside a `@q { ... }` block, `$(...)` inserts the AST returned by the expression:
 

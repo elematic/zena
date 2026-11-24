@@ -143,18 +143,16 @@ Untagged node literals evaluate eagerly in ordinary Zena code and construct thei
 
 `new` does not appear in a node literal, because the type name is the constructor. In ordinary call position the recommendation is to make `new` optional while keeping the keyword available as a reading cue.
 
-### Tagged Node Literals (`@tag Type { ... }`) and Holes (`$(...)`)
+### Tagged Node Literals (`@tag Type { ... }`) and Bindings (`$(...)`)
 
 Prefixing a construct with `@Name` in Zena re-interprets already-valid syntax at compile time ([decorators.md](./decorators.md), [syntax-overhaul.md](./syntax-overhaul.md)): `@signal var count` on a field, `@mat[...]` on an array literal, `@Complex{re: 1.0, im: 2.0}` on a record literal, `@transaction { ... }` on a block, and `@ui Box { ... }` on a node literal. `@` never changes how the parser parses what follows it.
 
-Applying a template tag such as `@ui` to a node literal compiles it in **two phases**, generalizing how tagged template literals split static `TemplateStringsArray` strings from dynamic values:
+Applying a template tag such as `@ui` to a node literal gives each call site a single cached **template** (its fixed node structure, cached once in a Wasm global so all instances share one template identity) while preserving ordinary Zena evaluation for properties:
 
-1. **Phase 1 (template):** Everything outside `$(...)` describes static structure and constant properties. It is built once per call site and cached in a Wasm global, giving each call site a stable template identity. The compiler rejects references to `this`, local variables, or parameters outside `$(...)`.
-2. **Phase 2 (holes):** Each `$(expr)` splices a dynamic Zena expression into the holes passed at evaluation time.
+1. **Outside `$(...)` — block evaluation time (one-shot):** Ordinary Zena expressions (`this.#title`, `titleStyle(this.#accent)`, `onPress: () => ...`, or a mutable `var`) evaluate once when the node literal runs, with no `const` restriction. Expressions that are provably constant (literals, enums, and immutable module-level `let`s of immutable types) fold directly into the cached template as a mount-time optimization. All other expressions become one-shot bindings sent on mount with zero thunks and zero `Effect`s, sharing the same call-site template.
+2. **Inside `$(...)` — deferred / reactive bindings:** Each `$(expr)` marks an expression that can be re-evaluated later (in `@ui`, wrapped in a thunk `() => expr` so reactive updates track signal reads; in child position, also used for dynamic child expressions such as conditionals, lists, and directives).
 
-`$(expr)` is parsed as a standard unquote/hole expression everywhere (shared with `@q { ... }` in [macros.md](./macros.md)). The type checker permits `$(...)` only inside a staged `@` construct such as `@ui` or `@q`, in the same way `await` is permitted only inside `async` functions and `old(...)` only inside `ensures` clauses. Using `$(...)` in an untagged node literal or nominal record constructor (`Point { x: $(1.0) }`) is a type error, because untagged expressions already evaluate normally.
-
-Whether a `$(expr)` hole evaluates eagerly or is wrapped in a thunk is determined by the hole's expected type — the same type-directed mechanism tagged template literals use for primitive boxing ([wasm-web-ui.md](./wasm-web-ui.md)). A tag whose hole takes a plain value `T` (or a callback such as `onPress: $(() => ...)`) evaluates `expr` eagerly at the call site. A tag whose hole expects a thunk (`() => T` / `Thunk<T>`) causes the compiler to wrap `expr` in a thunk so reactive frameworks can track signal reads.
+`$(expr)` is parsed as a standard splice/binding expression everywhere (shared with `@q { ... }` in [macros.md](./macros.md)). The type checker permits `$(...)` only inside a staged `@` construct such as `@ui` or `@q`, in the same way `await` is permitted only inside `async` functions and `old(...)` only inside `ensures` clauses. Using `$(...)` in an untagged node literal or nominal record constructor (`Point { x: $(1.0) }`) is a type error, because untagged expressions already evaluate eagerly.
 
 ### Control Flow and Directives
 
@@ -170,7 +168,7 @@ Node literals have no built-in `if`, `match`, or `for` statements. All control f
     @ui Text { 'Nothing here' }
   } else {
     repeat(this.#items, (item) => item.id, (item) =>
-      @ui Row { Text $(item.name) }
+      @ui Row { Text item.name }
     )
   })
 }
@@ -180,9 +178,9 @@ Keeping control flow inside `$(...)` has three consequences:
 
 - Every Zena expression (`if`, `match`, `.map()`, helper method calls, and user-defined directives such as `cache(...)` and `repeat(...)`) works in child position and composes freely.
 - Nested templates carry an explicit `@ui` tag rather than inheriting one from an enclosing block, so extracting a branch into a helper method preserves its meaning and return type.
-- `.zconf` files and `@ui` templates share the exact same node grammar, differing only in whether `$(...)` holes are permitted.
+- `.zconf` files and `@ui` templates share the exact same node grammar, differing only in whether runtime expressions and `$(...)` bindings are permitted.
 
-See [zenafx-widget-authoring.md](./zenafx-widget-authoring.md) for how ZenaFX uses `@ui`, `$(...)` thunks, and guest directives (`cache`, `repeat`).
+See [zenafx-widget-authoring.md](./zenafx-widget-authoring.md) for how ZenaFX uses `@ui`, one-shot vs. reactive `$(...)` bindings, and guest directives (`cache`, `repeat`).
 
 ### Markup Sugar and Component Sigil
 
@@ -383,7 +381,7 @@ _No major features listed for this patch release._
 
 1. **Implement Node Literals and Tagged Node Literals**:
    - Support unified `Type [arg] { props..., children... }` literals for nominal construction, eager builders, and standalone `.zconf` files.
-   - Support `@tag Type { ... }` two-phase lowering (cached Phase 1 template + Phase 2 `$(...)` holes) with type-directed eager or thunk hole adaptation.
+   - Support `@tag Type { ... }` call-site template caching, one-shot block-eval bindings (with constant folding), and `$(...)` deferred/reactive bindings.
    - Support `.ztpl`, `.zhtml`, `.zsvg`, and `.zmd` template files.
 2. **Standardize `${ ... }` Interpolation in markup mode**:
    - Lower `${ for (x in xs) { ... } }` to `xs.map(...)`.
