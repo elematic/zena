@@ -172,14 +172,14 @@ export func mat(ctx: MacroContext, args: Expression[]): Expression {
   // 2. Generate code to allocate memory
   // 3. Generate code to store values
 
-### 3.3 Quasiquoting (`q{...}`)
+### 3.3 Quasiquoting (`@q { ... }`)
 
-The syntax `q{ ... }` is an example of a **Tagged Record/Block Literal**, as proposed in the Scientific Computing design.
+The syntax `@q { ... }` is an example of a **Tagged Block** (`@Name { ... }`), consistent with Zena's unified `@` syntax ([syntax-overhaul.md](./syntax-overhaul.md), [scientific-computing.md](./scientific-computing.md)), where `@` re-interprets an already-valid construct at compile time without changing the parser grammar.
 
--   **`q`**: A built-in macro or tag for "Quasiquote".
--   **`{ ... }`**: A block of Zena code.
+- **`@q`**: A built-in tag for "Quasiquote".
+- **`{ ... }`**: A block of Zena code.
 
-The `q` macro takes the code block and, instead of executing it, returns its **AST** (Abstract Syntax Tree). This allows macro authors to write code templates naturally rather than manually constructing AST nodes (e.g., `new BinaryExpression(op, left, right)`).
+The `@q` tag takes the code block and, instead of executing it, returns its **AST** (Abstract Syntax Tree). This allows macro authors to write code templates directly instead of manually constructing AST nodes (e.g., `new BinaryExpression(op, left, right)`).
 
 ```zena
 // Without Quasiquote (Manual AST construction)
@@ -189,42 +189,39 @@ return new CallExpression(
 );
 
 // With Quasiquote
-return q{ print("Hello") };
+return @q { print("Hello") };
 ````
 
 ### 3.4 Interpolation (Unquoting)
 
-To inject dynamic values (AST nodes) into the quasiquote, we need an "unquote" mechanism.
+To inject dynamic values (AST nodes) into the quasiquote, Zena uses `$(expression)` as its staged unquote/splice syntax — the same `$(...)` splice used for Phase 2 holes in tagged node literals such as `@ui Box { ... }` ([declarative.md](./declarative.md)). The parser accepts `$(...)` everywhere and the type checker permits it only inside staged `@` constructs (`@q`, `@ui`, etc.), just as `await` is permitted only inside `async` functions and `old(...)` only inside `ensures` clauses.
 
-**Syntax**: `$(expression)`
-Since `$` is a valid identifier character in Zena, `$` can be treated as a special function within the quasiquote context. Inside a `q{...}` block, `$(...)` is interpreted as "insert the AST returned by this expression here".
+Inside a `@q { ... }` block, `$(...)` inserts the AST returned by the expression:
 
 ```zena
 let val = new Literal(42);
-return q{
+return @q {
   let x = $(val); // Becomes: let x = 42;
 };
 ```
 
 ### 3.5 Comparison: Tagged Blocks vs. Template Literals
 
-You might ask: _Why not use tagged template literals like `zena`...`?_
-
-While tagged template literals are a valid option (and used successfully in languages like JS with `lit-html` or `sql` tags), Zena prefers **Tagged Blocks** (`q{...}`) for code generation for the following reasons:
+While tagged template literals are a valid option (and used for HTML templates in [wasm-web-ui.md](./wasm-web-ui.md) or foreign DSLs like SQL), Zena prefers **Tagged Blocks** (`@q { ... }`) for code generation for the following reasons:
 
 1.  **Parsing Efficiency**:
-    - `q{ ... }`: The content is parsed by the main compiler during the initial pass. The macro receives a pre-built AST.
+    - `@q { ... }`: The content is parsed by the main compiler during the initial pass. The macro receives a pre-built AST.
     - `` zena`...` ``: The content is parsed as a string. The macro (or the compiler's intrinsic handler) must invoke the parser _again_ to convert the string to an AST.
 
 2.  **Structural Validity**:
-    - `q{ ... }`: Enforces that the template is syntactically valid Zena code (mostly). This catches syntax errors early.
-    - `` zena`...` ``: Allows arbitrary text, which might be useful for non-Zena DSLs (like SQL), but for generating Zena code, it delays syntax errors until macro expansion time.
+    - `@q { ... }`: Enforces that the template is syntactically valid Zena code. This catches syntax errors early.
+    - `` zena`...` ``: Allows arbitrary text, which is useful for non-Zena DSLs (like SQL), but for generating Zena code it delays syntax errors until macro expansion time.
 
 3.  **Interpolation**:
-    - `q{ ... }`: Uses `$(...)` which integrates with the AST structure.
-    - `` zena`...` ``: Uses string interpolation `${...}`, which operates on text, not AST nodes.
+    - `@q { ... }`: Uses `$(...)` which integrates with the AST structure and avoids nesting clashes with string template `${...}`.
+    - `` zena`...` ``: Uses string interpolation `${...}`, which operates on text rather than AST nodes.
 
-**Decision**: Use **Tagged Blocks** (`q{...}`) for structural macros to leverage the compiler's parser. Use **Template Literals** only when the DSL syntax is completely different from Zena (e.g., `sql`SELECT...``).
+**Decision**: Use **Tagged Blocks** (`@q { ... }`) for structural macros to leverage the compiler's parser. Use **Template Literals** when the DSL syntax differs from Zena (e.g., `` sql`SELECT...` `` or `` html`<p>...</p>` ``).
 
 ### 3.6 Type Information
 
@@ -256,7 +253,7 @@ Zena macros are **hygienic by default**. This means:
 1.  **No Variable Capture**: Variables declared inside a macro do not accidentally shadow variables in the user's code.
 2.  **Safe References**: Identifiers used in the macro (like `Matrix`) refer to the binding at the definition site, not the call site.
 
-**Mechanism**: The compiler automatically renames variables declared within `q{...}` to unique names (gensyms) during expansion, unless they are explicitly marked to escape hygiene.
+**Mechanism**: The compiler automatically renames variables declared within `@q { ... }` to unique names (gensyms) during expansion, unless they are explicitly marked to escape hygiene.
 
 ### 4.2 Scope & Side-Effects
 
@@ -268,7 +265,7 @@ Macros primarily return an AST node to replace their invocation. However, they o
   ```
 - **Top-Level Declarations**: A macro might need to hoist a helper function or a static table.
   ```zena
-  ctx.addTopLevel(q{ const _table = ... });
+  ctx.addTopLevel(@q { let _table = ...; });
   ```
 
 ### 4.3 Error Reporting
@@ -387,7 +384,7 @@ A declarative macro uses `@macro` and returns a quasi-quote:
 @macro
 let assert = (expr: Expression<bool>, message?: String): Statement => {
   match expr.ast {
-    case BinaryExpr { left, op, right } => q{
+    case BinaryExpr { left, op, right } => @q {
       {
         let __left = $(left);
         let __right = $(right);
@@ -401,7 +398,7 @@ let assert = (expr: Expression<bool>, message?: String): Statement => {
         }
       }
     }
-    case _ => q{
+    case _ => @q {
       if (!$(expr)) {
         throw new AssertionError(
           $(message ?? `Assertion failed: ${expr.source}`)

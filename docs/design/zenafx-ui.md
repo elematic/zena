@@ -86,7 +86,7 @@
     - [Templates, nodes and holes](#templates-nodes-and-holes)
     - [One box per widget](#one-box-per-widget)
     - [Interior and content](#interior-and-content)
-    - [Choice](#choice)
+    - [Detached nodes and slot assignment](#detached-nodes-and-slot-assignment)
     - [Identity and host state](#identity-and-host-state)
     - [Batching and the frame](#batching-and-the-frame)
     - [Implementation status of the protocol](#implementation-status-of-the-protocol)
@@ -184,7 +184,7 @@ that produced that split and what it costs.
 
 ## Prior art
 
-Four systems supply the main ideas, and the web supplies two mechanisms ZenaFX
+Three systems supply the main ideas, and the web supplies two mechanisms ZenaFX
 replaces.
 
 **Fuchsia's [Flatland][flatland]**, the 2D composition API of
@@ -199,24 +199,16 @@ compositor-enforced clip.
 changing values, and sends only the changed values on update. ZenaFX takes
 that, for a reason specific to the component boundary: sending a whole tree
 across a [canonical ABI][canonical-abi] call per frame would be the dominant
-cost, and sending a handful of values is not.
+cost, and sending a handful of values is not. ZenaFX also adopts Lit's
+guest-side directive model (`cache`, `repeat`) over detachable nodes, keeping
+branch caching and keyed list reconciliation in guest libraries instead of in
+the host protocol.
 
 **[Solid][solid]** runs a component once and routes every later change through a
 fine-grained subscription, so writing a piece of state updates the one place that
 reads it with no re-run and no tree comparison. ZenaFX takes that for the same
 reason it takes Lit's templates: a change that arrives as one value is a change
-that costs one small call across the boundary. It also takes Solid's habit of
-making keyed and positional iteration separate constructs, `<For>` and `<Index>`,
-rather than inferring which one an author meant.
-
-**[SwiftUI][swiftui]** reifies control flow in its types: `if` and `switch`
-inside a [`ViewBuilder`][viewbuilder] become a `_ConditionalContent`, so the
-shapes a position can take are known before anything runs, and a view's identity
-comes from where it sits rather than from a key an author supplied. ZenaFX takes
-both. A template enumerating a position's alternatives is what lets the host
-build those nodes once and reduce a branch change to a single value, and
-identity-by-position is what leaves keys an optimisation rather than a
-correctness requirement.
+that costs one small call across the boundary.
 
 **The web** supplies two mechanisms ZenaFX replaces with ordinary lexical
 imports. [`customElements.define('my-button', ...)`][custom-elements] writes
@@ -230,8 +222,6 @@ document-wide, so styling is not a local property of the code that wrote it.
 [lit]: https://lit.dev
 [lit-templates]: https://lit.dev/docs/templates/overview/
 [solid]: https://www.solidjs.com
-[swiftui]: https://developer.apple.com/documentation/swiftui
-[viewbuilder]: https://developer.apple.com/documentation/swiftui/viewbuilder
 [canonical-abi]: https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
 [custom-elements]: https://developer.mozilla.org/en-US/docs/Web/API/CustomElementRegistry/define
 [cascade]: https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_cascade/Cascade
@@ -1968,7 +1958,7 @@ template says which node and which property, so a hole on the wire is an index
 into the template's hole list and carries no name.
 
 ```wit
-enum binding-target { content, style, layout, active }
+enum binding-target { content, style, layout }
 
 record binding { node: u32, target: binding-target }
 record hole { binding: u32, value: binding-value }
@@ -1983,8 +1973,10 @@ variant template-ref { known(template-id), fresh(template-def) }
 resource node {
   render: func(template: template-ref, holes: list<hole>);
   content: func(slot: u32, nodes: u32) -> list<own<node>>;
+  set-slot: func(slot: u32, children: list<borrow<node>>);
 }
 
+create-node: func() -> own<node>;
 root: func() -> own<node>;
 ready: func();
 ```
@@ -2060,57 +2052,68 @@ a node goes away when the interior holding it is rebuilt. The host therefore kee
 no table for node handles: the scene id is the resource representation, and two
 handles onto one node are sound because the destructor does nothing.
 
-### Choice
+### Detached nodes and slot assignment
 
-Control flow that picks among known alternatives is a node kind, and which
-alternative shows is a hole:
+Dynamic child holes — conditional branches, tabs, and reordered lists — need to
+detach a subtree without destroying it and to reorder existing nodes inside a
+slot. One pair of operations covers both:
 
 ```wit
-variant node-kind {
-  /// Every child shows, in order.
-  box,
-  /// One child shows, named by an `active` hole.
-  choice,
-  /// Content hangs here.
-  slot,
+create-node: func() -> own<node>;
+
+resource node {
+  set-slot: func(slot: u32, children: list<borrow<node>>);
 }
 ```
 
-Flipping a branch is then a `u32` write. The host keeps every alternative's nodes,
-so flipping back reshapes no text. This works because a template enumerates the
-shapes a position can take, which is also what lets the host allocate those nodes
-once. SwiftUI reaches the same arrangement through types, where `if` inside a
-`ViewBuilder` produces `_ConditionalContent<A, B>`.
+A node created with `create-node` starts detached: it holds its rendered
+interior and shaped text runs in the host, and layout, paint, and hit testing
+skip it until a parent places it in a slot with `set-slot`. Removing a node
+from a slot detaches it again while keeping its interior and shaped runs alive
+for as long as the guest holds the `own<node>` handle. Dropping the handle
+frees the node and its interior in the host.
 
-A shape that cannot be enumerated, such as a tree view over recursive data, uses
-`render` with a different template instead, at the cost of rebuilding that node's
-interior.
+Passing a child widget a non-owning handle preserves the ownership rule from
+[Interior and content](#interior-and-content): only the creator holds the
+owning handle, so a child cannot destroy a slot node its parent owns.
 
-One question here is open. While a branch is inactive the values behind its holes
-can change. Writing them anyway spends calls on nodes nobody is looking at;
-suspending an inactive subtree and replaying on activation is correct and requires
-the branch to track what went stale. Solid's `<Show>` and lit's `cache` choose
-differently.
+Two guest-side directives build directly on this primitive, with no protocol
+support of their own:
+
+- **Branch caching (`cache`).** A guest keeps a map from template identity (or
+  an explicit key) to a parked `own<node>` and its signal effects. Switching
+  branches calls `set-slot` to swap the active node in and pauses the parked
+  branch's effects. Returning to a branch calls `set-slot` again with no
+  rebuild and no text re-shaping. Unvisited branches are never allocated.
+- **Keyed list reordering (`repeat`).** A guest keeps a map from item key to
+  each row's `own<node>`. Reordering a list calls `set-slot` once with the
+  handles in the new order, leaving every row's interior, bindings, and shaped
+  text intact.
+
+Under the feed-forward id model in [Open questions](#open-questions), the same
+operations become `set-slot` and `remove` variants inside `apply`, so creation,
+detachment, reordering, and hole writes batch into one call.
 
 ### Identity and host state
 
-The guest states node identity and the host never infers it. A parent names a slot
-and a child count; a child renders into the node it was handed. Nothing in the
-protocol matches a description against an existing node, so there is no
-reconciliation and nothing needs keys.
+The guest states node identity and the host never infers it. A parent either
+asks `content` for positional slot nodes or creates `own<node>` handles and
+places them with `set-slot`; a child renders into the node it was handed.
+Nothing in the protocol matches a description against an existing node, so
+there is no host-side reconciliation.
 
-Keys are what React, Flutter and Solid use to decide which existing instance a new
-description refers to. Two properties make them unnecessary here. Guest-side
-widget state is reached by ordinary references rather than by position in a
-framework tree, so recreating a node loses no state. And the host holds nothing on
-a node that it could not rebuild: a node carries its layout, its appearance, its
-children and a shaped text run, and the run is a cache.
+Keys are what React, Flutter and Solid use to decide which existing instance a
+new description refers to. Two properties keep keys out of the host protocol.
+Guest-side widget state is reached by ordinary references rather than by
+position in a framework tree, so recreating a node loses no state. And the host
+holds nothing on a node that it could not rebuild: a node carries its layout,
+its appearance, its children and a shaped text run, and the run is a cache.
 
 The second property has to be maintained deliberately, because a UI eventually
 needs focus, text selection, scroll offsets, animations in flight and media
-playback, and none of those can be rebuilt from a description. The rule is that no
-host-side state lives on a render-tree node. A stateful thing is its own resource,
-and a node points at one:
+playback, and none of those can be rebuilt from a description. The rule is that
+no host-side state lives on a render-tree node. A stateful thing is its own
+resource, and a node points at one:
 
 ```wit
 resource text-field { … }   // its string, selection and IME state
@@ -2118,39 +2121,39 @@ resource scroll-view { … }  // its offset
 resource media { … }        // its decoder
 ```
 
-A guest creates a `text-field`, holds the handle for as long as that widget lives,
-and renders a node that shows it. Rebuilding that node, rendering a different
-template, or reordering the list it sits in leaves the field's cursor alone,
-because the cursor was never in the node. Focus becomes a request naming a
-focusable resource, which also gives the host the arbitration it needs: it chooses
-among focusables it was handed, and one component cannot name another's.
+A guest creates a `text-field`, holds the handle for as long as that widget
+lives, and renders a node that shows it. Rebuilding that node, rendering a
+different template, or reordering the list it sits in leaves the field's cursor
+alone, because the cursor was never in the node. Focus becomes a request naming
+a focusable resource, which also gives the host the arbitration it needs: it
+chooses among focusables it was handed, and one component cannot name
+another's.
 
-Keys remain available as an optimisation. Recreating a node invalidates the guest
-handles beneath it, so a guest that reorders a long list re-points its bindings and
-re-sends their values. Reordering by key would leave those handles valid. The
-change is additive — `content(slot, nodes)` becomes `content(slot, keys)` with
-positional reconciliation as `keys = 0..n` — so it can wait for a benchmark that
-asks for it.
+When a guest wants keyed reordering to avoid rebuilding row subtrees and
+re-shaping text, a guest-side `repeat` directive holds each row's `own<node>`
+and permutes them with `set-slot` ([Detached nodes and slot
+assignment](#detached-nodes-and-slot-assignment)).
 
 ### Batching and the frame
 
-`render` and `content` return handles, so they are ordinary calls. Hole writes are
-the frame-by-frame traffic and return nothing, so they batch:
+`render`, `content` and `create-node` return handles (or take a fresh template
+definition), so they are ordinary calls. Hole writes are the frame-by-frame
+traffic and return nothing, so they batch:
 
 ```wit
 record write { node: borrow<node>, holes: list<hole> }
 apply: func(writes: list<write>);
 ```
 
-A guest driven by fine-grained subscriptions would otherwise call once per changed
-value. Marking nodes dirty and flushing one `apply` per frame makes the cost
-proportional to the frame rather than to the number of values changed, which puts
-the frame scheduler inside this design rather than on top of it. Writes in one
-`apply` cannot be split across frames; writes in two calls can.
+A guest driven by fine-grained subscriptions would otherwise call once per
+changed value. Marking nodes dirty and flushing one `apply` per frame makes the
+cost proportional to the frame rather than to the number of values changed,
+which puts the frame scheduler inside this design rather than on top of it.
+Writes in one `apply` cannot be split across frames; writes in two calls can.
 
-Reads go the other way and do not batch. Geometry read back reports the previous
-solve, and there is no way to ask for a synchronous one, so layout thrashing cannot
-be expressed.
+Reads go the other way and do not batch. Geometry read back reports the
+previous solve, and there is no way to ask for a synchronous one, so layout
+thrashing cannot be expressed.
 
 ### Implementation status of the protocol
 
@@ -2158,9 +2161,9 @@ be expressed.
 one-box-per-widget. `examples/zenafx/counter/` and `examples/zenafx/widgets/`
 drive them.
 
-`active` and the `choice` node kind, `apply`, keyed `content`, and the state
-resources are designed and not built. A guest today writes a hole with
-`render(known(id), holes)`, which is what `apply` batches.
+`create-node`, `set-slot`, `apply`, and the state resources are designed and
+not built. A guest today writes a hole with `render(known(id), holes)`, which
+is what `apply` batches.
 
 ### Moving the component boundary
 
@@ -2923,6 +2926,17 @@ engine mid-solve, which is more machinery than calling `taffy` in the host, and
 it buys nothing until someone writes a custom layout. [Tiers beyond boxes and text](#tiers-beyond-boxes-and-text) describes the shape
 it takes then.
 
+**A `choice` node kind in templates.** An earlier version of this design put a
+`choice` node kind and an `active` hole into `zenafx:host/scene`, compiling
+`if` and `match` into a fixed list of pre-allocated branch subtrees (like
+SwiftUI's `_ConditionalContent` or Wiz's `one-of`). Rejected because it eagerly
+allocates nodes for branches that may never be visited, cannot cache
+dynamically keyed views (such as data-driven tabs or routes), and bakes
+branch-retention policy into the host protocol. [Detached nodes and slot
+assignment](#detached-nodes-and-slot-assignment) replaces it with `create-node`
+and `set-slot`, which let guest directives implement lazy `cache()` and keyed
+`repeat()` with one smaller host primitive.
+
 **A global registry, so a template can name a child widget by tag.** Rejected
 because it reintroduces the collision described in [Prior art](#prior-art): a component that wants
 a child imports that child's world, and two libraries that each supply a
@@ -2930,21 +2944,24 @@ button then coexist.
 
 ## Open questions
 
-1. **Whether a guest should name its own nodes.** `render` and `content` hand
-   back `own<node>` handles the host minted, so creating nodes takes a call that
-   returns. A guest naming its own ids under a handle it holds would make every
-   scene call return nothing, so writes, creation and reordering would all batch
-   into one `apply`, as in [Feed-forward mutation](#feed-forward-mutation). The
-   handle would still be the authority, so a forged id could only reach the
-   forger's own subtree. What host-minted handles give is that a guest cannot
-   name a node it was never given, with no check in the host. This is a
-   question about the shape of `zenafx:host/scene`, and it is worth settling
-   before that interface gets a version applications depend on.
-2. **Staleness behind an inactive branch.** The values behind a hidden branch's
-   holes can change while the branch is inactive. Writing them anyway spends calls
-   on nodes nobody is looking at; suspending the subtree and replaying on
-   activation requires the branch to track what went stale. See
-   [Choice](#choice).
+1. **Whether a guest should name its own nodes.** `render`, `content` and
+   `create-node` hand back `own<node>` handles the host minted, so creating
+   nodes takes a call that returns. A guest naming its own ids under a handle
+   it holds would make every scene call return nothing, so writes, creation,
+   detachment and reordering would all batch into one `apply`, as in
+   [Feed-forward mutation](#feed-forward-mutation). The handle would still be
+   the authority, so a forged id could only reach the forger's own subtree.
+   What host-minted handles give is that a guest cannot name a node it was
+   never given, with no check in the host. This is a question about the shape
+   of `zenafx:host/scene`, and it is worth settling before that interface gets
+   a version applications depend on.
+2. **Resource retention for detached subtrees.** Moving branch caching into a
+   guest `cache()` directive ([Detached nodes and slot
+   assignment](#detached-nodes-and-slot-assignment)) lets the guest pause and
+   resume signal effects while a branch is detached, which avoids writing holes
+   to hidden nodes. What remains open is whether the host should keep shaped
+   text runs for every detached node indefinitely or evict cached glyph layouts
+   under memory pressure and re-shape on reattachment.
 3. **What WIT type an event payload has.** The `handle` export in
    [Events](#events-input-and-what-a-widget-reports) takes `list<u8>`, which is
    the untyped envelope the rest of that section argues against. A closed variant
@@ -3042,13 +3059,12 @@ button then coexist.
   `import ... from` a WIT means, resource lifetime, and the type mapping
 - [component-emission.md](./component-emission.md) — how components are
   emitted, and the `--wit`/`--world` surface
-- [declarative.md](./declarative.md) — the typed node-block grammar that becomes
-  ZenaFX's authoring surface, and the `html <tag>` markup sugar over it
+- [declarative.md](./declarative.md) — unified node literals (`Type { ... }`),
+  tagged node literals (`@ui Box { ... }`), `$(...)` holes, and markup sugar
 - [zenafx-widget-authoring.md](./zenafx-widget-authoring.md) — what a widget
-  looks like written against that grammar: node blocks instead of one convenience
-  function per node kind, children as an opaque value rather than a second call,
-  the rules that split a tree into a template and its holes, and selectors
-  shipped as data. An exploration; nothing in it is built.
+  looks like written with `@ui` tagged node literals and `$(...)` holes, how
+  signals and guest directives (`cache`, `repeat`) drive the scene protocol,
+  and selectors shipped as data. An exploration; nothing in it is built.
 - [capabilities.md](./capabilities.md) — capability-based I/O in the language,
   of which viewports are one instance
 - [streams.md](./streams.md) — `Stream<T>` and the rendezvous core the event

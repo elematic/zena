@@ -281,8 +281,9 @@ only the result.
 A summary row that shows and hides the content under it, as HTML's
 `<details>` does.
 
-- **Adds:** [`choice`](./zenafx-ui.md#choice), so that showing a branch is one
-  hole write; hover, pressed and focused styles resolved by the host; focus,
+- **Adds:** [detached nodes and `set-slot`](./zenafx-ui.md#detached-nodes-and-slot-assignment),
+  so that showing or parking a branch is one slot update (via the guest `cache`
+  directive); hover, pressed and focused styles resolved by the host; focus,
   and activation by Enter and Space; the expanded state as an accessibility
   property; a transition on height.
 - **Finds out:** whether a transition to a height the layout computes can run
