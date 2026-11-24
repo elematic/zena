@@ -20,6 +20,7 @@
 //! a text node's content reshapes under the same run id, which is what keeps a
 //! patch distinguishable from a rebuild.
 
+#[cfg(feature = "wasmtime")]
 use wasmtime::component::{ComponentType, Lift, Lower};
 
 use super::events::{
@@ -34,22 +35,24 @@ use super::types::{
 };
 
 /// A node of the retained tree, as a component sends it.
-#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(record)]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct TextContent {
     pub content: String,
     pub style: TextStyle,
 }
 
 /// What a node draws.
-#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(variant)]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(variant))]
 pub enum Appearance {
-    #[component(name = "nothing")]
+    #[cfg_attr(feature = "wasmtime", component(name = "nothing"))]
     Nothing,
-    #[component(name = "fill")]
+    #[cfg_attr(feature = "wasmtime", component(name = "fill"))]
     Fill(BoxStyle),
-    #[component(name = "text")]
+    #[cfg_attr(feature = "wasmtime", component(name = "text"))]
     Text(TextContent),
 }
 
@@ -58,17 +61,18 @@ pub enum Appearance {
 /// Node 0 describes the node being rendered into; the rest are its interior.
 /// `first_child`/`child_count` index the same list they arrive in: they are
 /// positions in a description, never scene identities.
-#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(record)]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct NodeDef {
     pub layout: Flex,
     pub appearance: Appearance,
-    #[component(name = "first-child")]
+    #[cfg_attr(feature = "wasmtime", component(name = "first-child"))]
     pub first_child: u32,
-    #[component(name = "child-count")]
+    #[cfg_attr(feature = "wasmtime", component(name = "child-count"))]
     pub child_count: u32,
     /// Whether content goes here instead of interior.
-    #[component(name = "is-slot")]
+    #[cfg_attr(feature = "wasmtime", component(name = "is-slot"))]
     pub is_slot: bool,
     /// The cursor to show over this node and over what is beneath it that
     /// names none. `None` leaves it to the node above.
@@ -83,23 +87,25 @@ pub struct NodeDef {
 }
 
 /// Which property of a node a binding writes.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ComponentType, Lift, Lower)]
-#[component(enum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(enum))]
 #[repr(u8)]
 pub enum BindingTarget {
-    #[component(name = "content")]
+    #[cfg_attr(feature = "wasmtime", component(name = "content"))]
     Content,
-    #[component(name = "style")]
+    #[cfg_attr(feature = "wasmtime", component(name = "style"))]
     Style,
-    #[component(name = "layout")]
+    #[cfg_attr(feature = "wasmtime", component(name = "layout"))]
     Layout,
 }
 
 /// What is selected in a text node's content: two places in UTF-8 bytes
 /// from the start. The caret is at `focus`. See `text-selection` in
 /// `wit/zenafx.wit`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ComponentType, Lift, Lower)]
-#[component(record)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct TextSelection {
     pub anchor: u32,
     pub focus: u32,
@@ -107,24 +113,26 @@ pub struct TextSelection {
 
 /// One bound property of a template, named by the template node it belongs
 /// to. A binding is identified by its index in the template's list.
-#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(record)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct Binding {
     pub node: u32,
     pub target: BindingTarget,
 }
 
 /// The value a binding carries.
-#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(variant)]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(variant))]
 pub enum BindingValue {
-    #[component(name = "content")]
+    #[cfg_attr(feature = "wasmtime", component(name = "content"))]
     Content(String),
-    #[component(name = "style")]
+    #[cfg_attr(feature = "wasmtime", component(name = "style"))]
     Style(BoxStyle),
-    #[component(name = "text-style")]
+    #[cfg_attr(feature = "wasmtime", component(name = "text-style"))]
     TextStyle(TextStyle),
-    #[component(name = "layout")]
+    #[cfg_attr(feature = "wasmtime", component(name = "layout"))]
     Layout(Flex),
 }
 
@@ -132,45 +140,49 @@ pub enum BindingValue {
 ///
 /// The guest sends only the holes whose values changed, so a list of these is
 /// sparse and says nothing about the holes it leaves out.
-#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(record)]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct Hole {
     pub binding: u32,
     pub value: BindingValue,
 }
 
 /// Something true of a node because of where the pointer is.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ComponentType, Lift, Lower)]
-#[component(enum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(enum))]
 #[repr(u8)]
 pub enum State {
     /// The node the pointer is over is this node or one beneath it.
-    #[component(name = "hovered")]
+    #[cfg_attr(feature = "wasmtime", component(name = "hovered"))]
     Hovered,
     /// The primary button went down over this node or one beneath it, and
     /// has not come up since.
-    #[component(name = "pressed")]
+    #[cfg_attr(feature = "wasmtime", component(name = "pressed"))]
     Pressed,
     /// The node that has the focus is this node or one beneath it.
-    #[component(name = "focused")]
+    #[cfg_attr(feature = "wasmtime", component(name = "focused"))]
     Focused,
 }
 
 /// How a node looks while a state holds.
-#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(variant)]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(variant))]
 pub enum Restyle {
-    #[component(name = "fill")]
+    #[cfg_attr(feature = "wasmtime", component(name = "fill"))]
     Fill(BoxStyle),
-    #[component(name = "text")]
+    #[cfg_attr(feature = "wasmtime", component(name = "text"))]
     Text(TextStyle),
 }
 
 /// One node's look while a state holds, as a template describes it: `node`
 /// changes, `of` is the node whose state is read, and both are positions in
 /// the template.
-#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(record)]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct StateStyle {
     pub node: u32,
     pub when: State,
@@ -181,78 +193,79 @@ pub struct StateStyle {
 /// What the pointer looks like, by CSS's `cursor` keywords. The window's
 /// library names its cursors after the same keywords, so each of these is
 /// the platform cursor of the same name.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, ComponentType, Lift, Lower)]
-#[component(enum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(enum))]
 #[repr(u8)]
 pub enum Cursor {
     #[default]
-    #[component(name = "default")]
+    #[cfg_attr(feature = "wasmtime", component(name = "default"))]
     Default,
-    #[component(name = "context-menu")]
+    #[cfg_attr(feature = "wasmtime", component(name = "context-menu"))]
     ContextMenu,
-    #[component(name = "help")]
+    #[cfg_attr(feature = "wasmtime", component(name = "help"))]
     Help,
-    #[component(name = "pointer")]
+    #[cfg_attr(feature = "wasmtime", component(name = "pointer"))]
     Pointer,
-    #[component(name = "progress")]
+    #[cfg_attr(feature = "wasmtime", component(name = "progress"))]
     Progress,
-    #[component(name = "wait")]
+    #[cfg_attr(feature = "wasmtime", component(name = "wait"))]
     Wait,
-    #[component(name = "cell")]
+    #[cfg_attr(feature = "wasmtime", component(name = "cell"))]
     Cell,
-    #[component(name = "crosshair")]
+    #[cfg_attr(feature = "wasmtime", component(name = "crosshair"))]
     Crosshair,
-    #[component(name = "text")]
+    #[cfg_attr(feature = "wasmtime", component(name = "text"))]
     Text,
-    #[component(name = "vertical-text")]
+    #[cfg_attr(feature = "wasmtime", component(name = "vertical-text"))]
     VerticalText,
-    #[component(name = "alias")]
+    #[cfg_attr(feature = "wasmtime", component(name = "alias"))]
     Alias,
-    #[component(name = "copy")]
+    #[cfg_attr(feature = "wasmtime", component(name = "copy"))]
     Copy,
-    #[component(name = "move")]
+    #[cfg_attr(feature = "wasmtime", component(name = "move"))]
     Move,
-    #[component(name = "no-drop")]
+    #[cfg_attr(feature = "wasmtime", component(name = "no-drop"))]
     NoDrop,
-    #[component(name = "not-allowed")]
+    #[cfg_attr(feature = "wasmtime", component(name = "not-allowed"))]
     NotAllowed,
-    #[component(name = "grab")]
+    #[cfg_attr(feature = "wasmtime", component(name = "grab"))]
     Grab,
-    #[component(name = "grabbing")]
+    #[cfg_attr(feature = "wasmtime", component(name = "grabbing"))]
     Grabbing,
-    #[component(name = "e-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "e-resize"))]
     EResize,
-    #[component(name = "n-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "n-resize"))]
     NResize,
-    #[component(name = "ne-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "ne-resize"))]
     NeResize,
-    #[component(name = "nw-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "nw-resize"))]
     NwResize,
-    #[component(name = "s-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "s-resize"))]
     SResize,
-    #[component(name = "se-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "se-resize"))]
     SeResize,
-    #[component(name = "sw-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "sw-resize"))]
     SwResize,
-    #[component(name = "w-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "w-resize"))]
     WResize,
-    #[component(name = "ew-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "ew-resize"))]
     EwResize,
-    #[component(name = "ns-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "ns-resize"))]
     NsResize,
-    #[component(name = "nesw-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "nesw-resize"))]
     NeswResize,
-    #[component(name = "nwse-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "nwse-resize"))]
     NwseResize,
-    #[component(name = "col-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "col-resize"))]
     ColResize,
-    #[component(name = "row-resize")]
+    #[cfg_attr(feature = "wasmtime", component(name = "row-resize"))]
     RowResize,
-    #[component(name = "all-scroll")]
+    #[cfg_attr(feature = "wasmtime", component(name = "all-scroll"))]
     AllScroll,
-    #[component(name = "zoom-in")]
+    #[cfg_attr(feature = "wasmtime", component(name = "zoom-in"))]
     ZoomIn,
-    #[component(name = "zoom-out")]
+    #[cfg_attr(feature = "wasmtime", component(name = "zoom-out"))]
     ZoomOut,
 }
 
@@ -294,11 +307,16 @@ impl Cursor {
         Cursor::ZoomIn,
         Cursor::ZoomOut,
     ];
+
+    pub fn from_index(index: usize) -> Option<Self> {
+        Self::ALL.get(index).copied()
+    }
 }
 
 /// A template the first time it is used. The id is the guest's.
-#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(record)]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct TemplateDef {
     pub id: u32,
     pub nodes: Vec<NodeDef>,
@@ -307,12 +325,13 @@ pub struct TemplateDef {
 }
 
 /// A template the host may not have seen.
-#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(variant)]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(variant))]
 pub enum TemplateRef {
-    #[component(name = "known")]
+    #[cfg_attr(feature = "wasmtime", component(name = "known"))]
     Known(u32),
-    #[component(name = "fresh")]
+    #[cfg_attr(feature = "wasmtime", component(name = "fresh"))]
     Fresh(TemplateDef),
 }
 
@@ -363,7 +382,7 @@ struct Selected {
 /// first, in the same place, selects a word and a third selects everything.
 #[derive(Copy, Clone, Debug)]
 struct Press {
-    at: std::time::Instant,
+    at_ms: f64,
     x: f32,
     y: f32,
     count: u8,
@@ -371,8 +390,21 @@ struct Press {
 
 /// How long after a press another one counts as following it, and how far
 /// from it.
-const PRESS_AGAIN_WITHIN: std::time::Duration = std::time::Duration::from_millis(500);
+const PRESS_AGAIN_WITHIN_MS: f64 = 500.0;
 const PRESS_AGAIN_NEAR: f32 = 4.0;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now_ms() -> f64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_ms() -> f64 {
+    0.0
+}
 
 /// One answer from the solver, and the question it answers: the window's
 /// size and the text scale. The tree is the rest of the question, and
@@ -1243,6 +1275,18 @@ impl Scene {
     /// - A press on something whose text is left out of selecting changes
     ///   nothing, so pressing a button keeps what was selected.
     pub fn select_with(&mut self, input: PointerInput, text: &TextEngine) -> bool {
+        self.select_with_at(input, text, now_ms())
+    }
+
+    /// As [`Scene::select_with`], taking an explicit monotonic timestamp in
+    /// milliseconds so hosts without `std::time::Instant` (such as `wasm32`)
+    /// can supply `performance.now()`.
+    pub fn select_with_at(
+        &mut self,
+        input: PointerInput,
+        text: &TextEngine,
+        now_ms: f64,
+    ) -> bool {
         match input {
             PointerInput::Button {
                 x,
@@ -1250,7 +1294,7 @@ impl Scene {
                 button: 0,
                 down: true,
             } => {
-                let count = self.count_press(x, y);
+                let count = self.count_press(x, y, now_ms);
                 self.selecting = None;
                 self.selected_before = Some(self.selection);
                 // The text the press is in: a field's, or else whatever
@@ -1335,16 +1379,17 @@ impl Scene {
 
     /// How many times running the primary button has now gone down in one
     /// place: 1 for a press on its own.
-    fn count_press(&mut self, x: f32, y: f32) -> u8 {
-        let now = std::time::Instant::now();
+    fn count_press(&mut self, x: f32, y: f32, now_ms: f64) -> u8 {
         let again = self.pressed_last.filter(|last| {
-            now.duration_since(last.at) <= PRESS_AGAIN_WITHIN
+            let elapsed = now_ms - last.at_ms;
+            elapsed >= 0.0
+                && elapsed <= PRESS_AGAIN_WITHIN_MS
                 && (x - last.x).abs() <= PRESS_AGAIN_NEAR
                 && (y - last.y).abs() <= PRESS_AGAIN_NEAR
         });
         let count = again.map_or(1, |last| last.count.saturating_add(1));
         self.pressed_last = Some(Press {
-            at: now,
+            at_ms: now_ms,
             x,
             y,
             count,
@@ -2604,7 +2649,7 @@ fn apply(node: &mut NodeDef, target: BindingTarget, value: &BindingValue) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::types::{Align, Axis, Edges, Justify, Length};
+    use crate::types::{Align, Axis, Edges, Justify, Length};
 
     /// Template ids are the guest's, so these pick their own. Distinct ids are
     /// distinct templates, which is what decides patch against replace.
@@ -4667,7 +4712,7 @@ mod tests {
     /// it some other shortcut.
     #[test]
     fn tab_is_the_key_that_moves_the_focus() {
-        use crate::ui::events::{KeyDefault, Modifiers};
+        use crate::events::{KeyDefault, Modifiers};
         let held = |shift, alt| KeyEvent {
             modifiers: Modifiers {
                 shift,

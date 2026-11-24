@@ -132,6 +132,9 @@
             # zenafx's text stack (parley -> fontique) links the system
             # fontconfig on Linux, found through pkg-config at build time.
             pkgs.pkg-config
+            # The linker rustc's wasm32-unknown-unknown target invokes when
+            # building packages/zenafx-web's rendering engine.
+            pkgs.lld
           ];
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.fontconfig ];
 

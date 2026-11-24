@@ -83,6 +83,7 @@ const bundleAssets = async () => {
       {in: RUNTIME_ENTRY, out: 'sandbox/vendor/zena-runtime'},
       {in: WEB_UI_ENTRY, out: 'sandbox/vendor/wasm-web-ui'},
       {in: LIT_HTML_ENTRY, out: 'sandbox/vendor/lit-html'},
+      {in: './src/demos/zenafx-client.js', out: 'demos/zenafx/demo'},
       {in: CSS_ENTRY, out: 'css/style'},
     ],
     outdir: '_site',
@@ -121,9 +122,11 @@ export default async function (eleventyConfig) {
   // bundleAssets). esbuild does the rebuild; this is what triggers the reload.
   eleventyConfig.addWatchTarget('./src/css/');
 
-  // esbuild owns the stylesheet tree; Eleventy would otherwise turn the docs
-  // in there into pages.
+  // esbuild owns the stylesheet tree and demo client script; Eleventy would
+  // otherwise turn docs/scripts in there into pages.
   eleventyConfig.ignores.add('src/css/**');
+  eleventyConfig.ignores.add('src/demos/zenafx-client.js');
+  eleventyConfig.addWatchTarget('./src/demos/zenafx-client.js');
 
   eleventyConfig.addPassthroughCopy({'src/public': '.'});
   // The playground resolves the compiler with `new URL('./compiler.wasm',
@@ -132,6 +135,22 @@ export default async function (eleventyConfig) {
   // against the bundle's own URL — which is why this lands in `js/`.
   eleventyConfig.addPassthroughCopy({
     '../compiler-js/compiler.wasm': 'js/compiler.wasm',
+  });
+  // Unlinked ZenaFX Web demo assets at `/demos/zenafx/`.
+  eleventyConfig.addPassthroughCopy({
+    '../zenafx-web/out/zenafx_web_engine.wasm':
+      'demos/zenafx/zenafx_web_engine.wasm',
+    '../zenafx/out/button.wasm': 'demos/zenafx/examples/button.wasm',
+    '../zenafx/out/widgets.wasm': 'demos/zenafx/examples/widgets.wasm',
+    '../zenafx/out/counter.wasm': 'demos/zenafx/examples/counter.wasm',
+    '../zenafx/out/scroll.wasm': 'demos/zenafx/examples/scroll.wasm',
+    '../zenafx/out/split.wasm': 'demos/zenafx/examples/split.wasm',
+    '../zenafx/out/cursors.wasm': 'demos/zenafx/examples/cursors.wasm',
+    '../zenafx/out/disclosure.wasm': 'demos/zenafx/examples/disclosure.wasm',
+    '../zenafx/out/input.wasm': 'demos/zenafx/examples/input.wasm',
+    '../zenafx/out/selection.wasm': 'demos/zenafx/examples/selection.wasm',
+    '../../node_modules/@radica/base/fonts/Open Sans/Open_Sans/OpenSans-VariableFont_wdth,wght.ttf':
+      'demos/zenafx/font.ttf',
   });
 
   /* Search index & precompression ---------------------------------------- */

@@ -9,59 +9,64 @@
 //!
 //! "Events: input, and what a widget reports" in `docs/design/zenafx-ui.md`.
 
+#[cfg(feature = "wasmtime")]
 use wasmtime::component::{ComponentType, Lift, Lower};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ComponentType, Lift, Lower)]
-#[component(enum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(enum))]
 #[repr(u8)]
 pub enum PointerKind {
-    #[component(name = "down")]
+    #[cfg_attr(feature = "wasmtime", component(name = "down"))]
     Down,
-    #[component(name = "up")]
+    #[cfg_attr(feature = "wasmtime", component(name = "up"))]
     Up,
-    #[component(name = "move")]
+    #[cfg_attr(feature = "wasmtime", component(name = "move"))]
     Move,
     /// The target is now inside the listener's scope and was not before.
-    #[component(name = "enter")]
+    #[cfg_attr(feature = "wasmtime", component(name = "enter"))]
     Enter,
     /// The target was inside the listener's scope and no longer is.
-    #[component(name = "leave")]
+    #[cfg_attr(feature = "wasmtime", component(name = "leave"))]
     Leave,
 }
 
 /// Which targets a listener hears. The target of a pointer event is the node
 /// painted last under the pointer.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ComponentType, Lift, Lower)]
-#[component(enum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(enum))]
 #[repr(u8)]
 pub enum Scope {
     /// Only when the listening node is the target.
-    #[component(name = "node")]
+    #[cfg_attr(feature = "wasmtime", component(name = "node"))]
     Node,
     /// When the listening node or any node beneath it is the target.
-    #[component(name = "subtree")]
+    #[cfg_attr(feature = "wasmtime", component(name = "subtree"))]
     Subtree,
     /// As `Subtree`, and only while the pointer is captured for the target.
-    #[component(name = "captured")]
+    #[cfg_attr(feature = "wasmtime", component(name = "captured"))]
     Captured,
 }
 
 /// When a listener is offered a `down`, `up` or `move`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ComponentType, Lift, Lower)]
-#[component(enum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(enum))]
 #[repr(u8)]
 pub enum Phase {
     /// After the target, walking up to the root.
-    #[component(name = "bubble")]
+    #[cfg_attr(feature = "wasmtime", component(name = "bubble"))]
     Bubble,
     /// Before the target, walking down from the root.
-    #[component(name = "intercept")]
+    #[cfg_attr(feature = "wasmtime", component(name = "intercept"))]
     Intercept,
 }
 
 /// One event as one listener receives it.
-#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
-#[component(record)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct PointerEvent {
     pub kind: PointerKind,
     /// Measured from the top left corner of the listening node's box, so a
@@ -128,8 +133,9 @@ pub struct Delivery {
 }
 
 /// The keys held with another key.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ComponentType, Lift, Lower)]
-#[component(record)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct Modifiers {
     pub shift: bool,
     pub control: bool,
@@ -140,8 +146,9 @@ pub struct Modifiers {
 /// A key going down or coming up, named as the W3C's keyboard events name
 /// it. The window makes one from what the platform reports, and a listener
 /// receives it unchanged: a key has no position to measure from a node.
-#[derive(Clone, Debug, PartialEq, Eq, ComponentType, Lift, Lower)]
-#[component(record)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct KeyEvent {
     pub down: bool,
     /// What the key means: a character, or a name such as `Enter`.

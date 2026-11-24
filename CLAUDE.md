@@ -17,3 +17,5 @@ read the CONTEXT.md nearest their work before editing:
 - `packages/changes/CONTEXT.md` — change files, units and groups, and release versions
 - `packages/terminal/CONTEXT.md` — colors, Clack-style layout and a spinner for command-line programs
 - `packages/workspace-hack/CONTEXT.md` — generated crate unifying the Rust crates' dependency features
+- `packages/zenafx-render/CONTEXT.md` — platform-independent ZenaFX rendering engine (retained scene, taffy, parley, vello_cpu)
+- `packages/zenafx-web/CONTEXT.md` — ZenaFX web runtime (wasm32 engine + JS Component Model Async host + Canvas2D/WebGPU surface)

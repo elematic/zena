@@ -162,6 +162,38 @@ impl Painter {
             *dst = ((src.r as u32) << 16) | ((src.g as u32) << 8) | src.b as u32;
         }
     }
+
+    /// Copy the frame into an unpremultiplied `RGBA8` byte buffer (`width * height * 4`),
+    /// suitable for HTML5 `<canvas>` `ImageData`.
+    pub fn blit_rgba_unpremul(&self, out: &mut [u8]) {
+        for (dst, src) in out.chunks_exact_mut(4).zip(self.pixels()) {
+            let a = src.a;
+            if a == 255 {
+                dst[0] = src.r;
+                dst[1] = src.g;
+                dst[2] = src.b;
+                dst[3] = 255;
+            } else if a == 0 {
+                dst[0] = 0;
+                dst[1] = 0;
+                dst[2] = 0;
+                dst[3] = 0;
+            } else {
+                let a32 = a as u32;
+                dst[0] = (((src.r as u32) * 255 + a32 / 2) / a32).min(255) as u8;
+                dst[1] = (((src.g as u32) * 255 + a32 / 2) / a32).min(255) as u8;
+                dst[2] = (((src.b as u32) * 255 + a32 / 2) / a32).min(255) as u8;
+                dst[3] = a;
+            }
+        }
+    }
+
+    /// Raw premultiplied `RGBA8` bytes of the rasterized frame, suitable for
+    /// zero-copy upload to a WebGPU `rgba8unorm` texture with
+    /// `alphaMode: "premultiplied"`.
+    pub fn pixels_rgba_bytes(&self) -> &[u8] {
+        self.pixmap.data_as_u8_slice()
+    }
 }
 
 fn alpha(c: Color) -> AlphaColor<Srgb> {
@@ -193,7 +225,7 @@ fn quad_path(r: &Rect, corner_radius: f32) -> BezPath {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::types::{Glyphs, Quad, TextStyle};
+    use crate::types::{Glyphs, Quad, TextStyle};
 
     const WHITE: Color = Color::rgb(1.0, 1.0, 1.0);
 
