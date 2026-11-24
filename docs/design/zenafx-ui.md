@@ -661,24 +661,36 @@ interface style {
   enum align { start, center, end, stretch }
   record edges { top: f32, right: f32, bottom: f32, left: f32 }
 
-  /// Geometry only. Nothing here affects painting, and nothing in
-  /// `box-style` or `text-style` affects measurement.
+  /// A node's own box. Geometry only: nothing here affects painting, and
+  /// nothing in `box-style` or `text-style` affects measurement.
+  record box {
+    width: length,
+    height: length,
+    grow: f32,
+    shrink: f32,
+    padding: edges,
+    overflow-x: overflow,
+    overflow-y: overflow,
+  }
+
+  /// How a node lays out its children: as items in a row or a column, or
+  /// as text in lines. Each case holds its own fields.
+  variant layout { flex(flex), flow(flow) }
+
   record flex {
     axis: axis,
     justify-content: justify,
     align-items: align,
     gap: f32,
-    padding: edges,
-    width: length,
-    height: length,
-    grow: f32,
-    shrink: f32,
   }
+
+  /// [zenafx-text-flow.md](./zenafx-text-flow.md).
+  record flow { align: text-align, line-height: option<f32> }
 }
 ```
 
-`flex` describes geometry and `box-style` describes appearance, with no field
-in either affecting the other. That separation is what lets the host skip a
+`box` and `layout` describe geometry and `box-style` describes appearance,
+with no field in one affecting the other. That separation is what lets the host skip a
 layout solve when only colours changed, and skip re-measuring text when only a
 parent's background changed.
 
@@ -1061,7 +1073,7 @@ Three things follow from the offset being the scene's.
   under the pointer that scrolls on that axis and has further to go, so a list
   at its last row scrolls the page it is in.
 
-`overflow` is in `flex` because it changes layout as well as paint. A `clip`
+`overflow` is in `box` because it changes layout as well as paint. A `clip`
 box is never laid out smaller than its content. A `hidden` or a `scroll` box
 can be, which is what lets a list take the room it is given and scroll the
 rest. `a_hidden_or_scrolling_box_can_be_smaller_than_its_content` in
@@ -1217,10 +1229,10 @@ Three things came out of building the example.
   from growing past the window, because it never learns the window's width.
   The right panel starts at its minimum width, grows, and does not shrink, so
   the layout stops the left one. A box has no minimum or maximum of its own
-  yet. Those wait on layout becoming a list of declarations, since `flex`
-  already has eleven fields.
+  yet. Those wait on layout becoming a list of declarations, since `box`
+  would gain a field on every node for each.
 
-Each move of a drag is an event in and a layout hole out, on the component's
+Each move of a drag is an event in and a `box` hole out, on the component's
 thread, and a solve. That is the cost the split was built to find. It has not
 been measured against a frame budget. If it shows, the alternative is a drag
 the host runs: the component says that a node's size follows the pointer
@@ -1967,7 +1979,7 @@ bindings written on mount and never updated again cost zero bytes on subsequent
 frames.
 
 ```wit
-enum binding-target { content, style, layout }
+enum binding-target { content, style, box, layout }
 
 record binding { node: u32, target: binding-target }
 record hole { binding: u32, value: binding-value }

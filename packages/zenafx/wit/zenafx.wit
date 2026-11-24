@@ -71,36 +71,81 @@ interface style {
     scroll,
   }
 
-  /// Geometry, and what becomes of content that does not fit. Nothing in
-  /// `box-style` or `text-style` affects measurement.
+  /// A node's own box: its size, the room inside its edge, and what becomes
+  /// of content that does not fit. Its parent's layout places it. Nothing
+  /// in `box-style` or `text-style` affects measurement.
+  record box {
+    width: length,
+    height: length,
+    /// How much of the room left over in a flex container this box takes,
+    /// and how readily it gives up room there is not enough of. They mean
+    /// something when the parent lays out by `flex`.
+    grow: f32,
+    shrink: f32,
+    padding: edges,
+    overflow-x: overflow,
+    overflow-y: overflow,
+  }
+
+  /// Children as items in a row or a column.
   record flex {
     axis: axis,
     justify-content: justify,
     align-items: align,
     gap: f32,
-    padding: edges,
-    width: length,
-    height: length,
-    grow: f32,
-    shrink: f32,
-    overflow-x: overflow,
-    overflow-y: overflow,
+  }
+
+  /// Where the lines of a flow container sit across its width, as
+  /// `text-align` in CSS.
+  enum text-align {
+    /// The side a line of the text's own direction starts at.
+    start,
+    center,
+    end,
+    /// Every line but the last is spread to the full width.
+    justify,
+  }
+
+  /// Children as text in lines.
+  ///
+  /// The texts of the node's text children are joined in order, each in
+  /// its own style, and lines are broken across the whole. A word in bold
+  /// in the middle of a sentence is a text child of its own, and the
+  /// sentence still wraps as one. A word that is half in one child and half
+  /// in the next is one word.
+  ///
+  /// A child that is not a text node is not shown. A text child's
+  /// `editable` and `unselectable` do nothing, and a state style does not
+  /// change how one looks.
+  record flow {
+    align: text-align,
+    /// The distance from one line to the next, as a multiple of the text
+    /// size, as a `line-height` with no unit in CSS. `none` is what each
+    /// font asks for.
+    line-height: option<f32>,
+  }
+
+  /// How a node lays out its children.
+  variant layout {
+    flex(flex),
+    flow(flow),
   }
 }
 
 interface scene {
   use geometry.{rect};
-  use style.{box-style, text-style, flex, color, length};
+  use style.{box-style, text-style, box, layout, color, length};
 
   /// A node within one viewport, named by whoever holds that viewport.
   /// Node 0 is the viewport's own root and already exists. An id means
   /// nothing outside the viewport it is used with.
   type node = u32;
 
-  record box-op { id: node, parent: node, layout: flex, style: box-style }
-  record text-op { id: node, parent: node, content: string, layout: flex,
+  record box-op { id: node, parent: node, box: box, layout: layout,
+                  style: box-style }
+  record text-op { id: node, parent: node, content: string, box: box,
                    style: text-style }
-  record layout-op { target: node, layout: flex }
+  record layout-op { target: node, box: box, layout: layout }
   record style-op { target: node, style: box-style }
   record content-op { target: node, content: string }
 
@@ -198,7 +243,7 @@ package zenafx:host@0.1.0 {
   }
 
   interface layout {
-    use zenafx:ui/style@0.1.0.{flex};
+    use zenafx:ui/style@0.1.0.{box, flex};
     use zenafx:ui/geometry@0.1.0.{size, rect};
 
     /// The space a solve offers on one axis.
@@ -225,10 +270,11 @@ package zenafx:host@0.1.0 {
       available-height: available,
     }
 
-    /// What a leaf holds. A box has no content of its own and is sized by
-    /// its style and its children.
+    /// What a node holds. A box has no content of its own: it is sized by
+    /// its own box and by its children, which it lays out by flex. Text is
+    /// a leaf, measured as the solve goes.
     variant content {
-      box,
+      box(flex),
       /// A run registered with `zenafx:host/text`.
       text(u32),
     }
@@ -241,7 +287,7 @@ package zenafx:host@0.1.0 {
     /// only keeps siblings adjacent when no child but the last has
     /// children of its own, so it works for a chain and breaks for a tree.
     record node {
-      layout: flex,
+      box: box,
       content: content,
       first-child: u32,
       child-count: u32,
@@ -449,7 +495,7 @@ package zenafx:host@0.1.0 {
   /// solve and a paint over what the host already has, with no call into any
   /// component — which is what makes resizing free.
   interface scene {
-    use zenafx:ui/style@0.1.0.{flex, box-style, text-style};
+    use zenafx:ui/style@0.1.0.{box, layout, box-style, text-style};
     use events.{pointer-kind, scope, phase, delivery, key-delivery};
 
     /// Chosen by the guest, so a template definition needs no round trip.
@@ -535,7 +581,14 @@ package zenafx:host@0.1.0 {
     /// cannot recurse, and breadth-first order keeps a node's children
     /// contiguous and after it.
     record node-def {
-      layout: flex,
+      /// The node's own box, which its parent's layout places.
+      box: box,
+      /// How the node lays out its children: as items in a row or a
+      /// column, or as text in lines. A node with `flow` is a flow
+      /// container, and is one text to its parent's layout and to the
+      /// selection. A text node has no children, and its `layout` does
+      /// nothing.
+      layout: layout,
       appearance: appearance,
       first-child: u32,
       child-count: u32,
@@ -611,7 +664,12 @@ package zenafx:host@0.1.0 {
 
     /// Which property of a node a hole writes. The set is what the host can
     /// patch in place without rebuilding the node.
-    enum binding-target { content, style, layout }
+    ///
+    /// A `layout` hole writes a layout of the kind the node has: the gap of
+    /// a row, or the alignment of a flow container's lines. One of the other
+    /// kind is not applied, since whether a node's children are items or
+    /// text is the template's.
+    enum binding-target { content, style, box, layout }
 
     /// What is selected in a text node's content, as two places counted in
     /// UTF-8 bytes from the start. `anchor` is where the selection began and
@@ -639,7 +697,8 @@ package zenafx:host@0.1.0 {
       content(string),
       style(box-style),
       text-style(text-style),
-      layout(flex),
+      box(box),
+      layout(layout),
     }
 
     /// One hole and what to put in it.

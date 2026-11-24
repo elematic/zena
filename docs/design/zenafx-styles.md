@@ -110,9 +110,9 @@ know them. Better names are an open question.
 ## Styles today
 
 Every style is written on the node it applies to, which is what CSS calls an
-inline style. A node of a template carries a `flex` record with its eleven
-layout fields, and a `box-style` or `text-style` record with its look. A hole
-can replace a whole record for one instance. A node also names its cursor, in
+inline style. A node of a template carries a `box` record and a `layout`
+with its eleven layout fields between them, and a `box-style` or `text-style`
+record with its look. A hole can replace a whole record for one instance. A node also names its cursor, in
 a `cursor` field that no hole writes.
 
 A template also has a `states` list, which is the only conditional style:
@@ -210,7 +210,7 @@ has no value. A declaration that uses it does not apply, and a condition that
 tests it does not hold.
 
 **What reads a value.** The host reads the built-in properties of every node,
-to lay it out and paint it, as it reads a node's `flex` record today. One of
+to lay it out and paint it, as it reads a node's `box` record today. One of
 an application's properties is read in three places only: a declaration that
 applies to a node and uses it as its value, a condition that tests it, and a
 component that asks for it. So a theme with fifty properties costs nothing on
@@ -432,11 +432,11 @@ A declaration is checked when it reaches the host: the property must be
 defined, and the value must have its type. Two declarations that use each
 other's properties have no value to settle on, and neither applies.
 
-Layout properties are declarations too. `flex` has eleven fields, which come to
-sixteen values once its records and variants are flattened. That is the most
-the canonical ABI passes without spilling to memory, so grid tracks, margins
-or size limits would take it past that. A list holding only what differs from
-the initial values is smaller for most nodes and has room to grow.
+Layout properties are declarations too. A flex node's `box` and `layout` have
+eleven fields between them, and a record grows with every property added:
+grid tracks, margins or size limits would each be a field on every node. A
+list holding only what differs from the initial values is smaller for most
+nodes and has room to grow.
 
 ### Inheritance
 
@@ -1454,7 +1454,7 @@ one of an application's own.
 In the order they could be made, each working without the next:
 
 1. Property definitions and declarations for the built-in properties.
-   `box-style`, `text-style` and `flex` become a rule set with the reach
+   `box-style`, `text-style`, `box` and `layout` become a rule set with the reach
    `node` on each node, and so do `node-def`'s `cursor` and `unselectable`
    fields. The properties that inherit
    do so from this step on. Nothing is conditional yet, and the `states` list

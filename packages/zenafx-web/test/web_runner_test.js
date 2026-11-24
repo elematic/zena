@@ -954,3 +954,49 @@ suite('zenafx-web: ZenaFxCanvasSurface (demand-driven rAF + Canvas2D)', () => {
     }
   });
 });
+
+suite('zenafx-web: richtext.wasm component (flow containers)', () => {
+  test('draws each flow container as one run and copies its text joined', async () => {
+    const {engine, runner} = await loadComponent('richtext');
+    try {
+      runner.frame(800, 600);
+      const paragraphs = [
+        'Rich text',
+        'Text in a flow container is one piece of text. A phrase can be ' +
+          'set apart, or be in another colour, or be larger, and the lines ' +
+          'still break across all of it.',
+        'A word that is half bold, like unbelievable, is still one word. ' +
+          'Press on it twice.',
+        'This note is centred.',
+      ];
+      const glyphs = engine
+        .inspectFrame()
+        .commands.filter((c) => c.type === 'glyphs');
+      assert.deepEqual(
+        glyphs.map((g) => g.text),
+        paragraphs,
+        'one run for each flow container, with its text nodes joined',
+      );
+
+      const ctrl = {shift: false, control: true, alt: false, meta: false};
+      for (const [key, code] of [
+        ['a', 'KeyA'],
+        ['c', 'KeyC'],
+      ]) {
+        runner.key({
+          down: true,
+          key,
+          code,
+          modifiers: ctrl,
+          repeat: false,
+          text: null,
+        });
+        await runner.waitForDeliveries();
+      }
+      assert.equal(runner.clipboard.read(), paragraphs.join('\n'));
+    } finally {
+      runner.dispose();
+      engine.dispose();
+    }
+  });
+});

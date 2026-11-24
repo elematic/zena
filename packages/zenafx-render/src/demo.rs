@@ -8,7 +8,7 @@ use crate::layout::solve;
 use crate::text::TextEngine;
 use crate::types::{
     Align, Axis, BoxStyle, Color, Command, Content, Edges, Flex, Glyphs, Justify, Length, Node,
-    Quad, Size, TextStyle,
+    OwnBox, Quad, Size, TextStyle,
 };
 
 /// A flat scene: layout nodes in pre-order, with a style for each.
@@ -65,34 +65,36 @@ pub fn hello(text: &mut TextEngine, message: &str) -> FlatScene {
     FlatScene {
         nodes: vec![
             Node {
-                layout: Flex {
+                own_box: OwnBox {
+                    width: Length::Percent(100.0),
+                    height: Length::Percent(100.0),
+                    ..OwnBox::default()
+                },
+                content: Content::Box(Flex {
                     axis: Axis::Column,
                     justify_content: Justify::Center,
                     align_items: Align::Center,
-                    width: Length::Percent(100.0),
-                    height: Length::Percent(100.0),
                     ..Flex::default()
-                },
-                content: Content::Box,
+                }),
                 first_child: 1,
                 child_count: 1,
             },
             Node {
-                layout: Flex {
+                own_box: OwnBox {
                     padding: Edges {
                         top: 24.0,
                         right: 40.0,
                         bottom: 24.0,
                         left: 40.0,
                     },
-                    ..Flex::default()
+                    ..OwnBox::default()
                 },
-                content: Content::Box,
+                content: Content::Box(Flex::default()),
                 first_child: 2,
                 child_count: 1,
             },
             Node {
-                layout: Flex::default(),
+                own_box: OwnBox::default(),
                 content: Content::Text(run),
                 first_child: 0,
                 child_count: 0,
