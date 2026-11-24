@@ -558,12 +558,12 @@ frame, because the platform draws the cursor.
 
 **`user-select`** says whether the pointer can select the text of a node, with
 CSS's values `text` and `none`. It inherits, so a button leaves its label out
-with one declaration on its own box. The text selection change adds it as an
-`unselectable` field of `node-def`.
+with one declaration on its own box. Today it is the `unselectable` field of
+`node-def`.
 
 Two other fields of `node-def` stay fields. `focusable` says that a node can
-have the keyboard focus. `editable`, which the text field change adds, says
-that a person edits a text node's content. They say what a node does and not
+have the keyboard focus. `editable` says that a person edits a text node's
+content. They say what a node does and not
 how it looks, as `tabindex` and `contenteditable` are attributes in HTML and
 not properties in CSS. [Open questions](#open-questions) asks whether a
 condition should be able to turn them off.
@@ -1455,8 +1455,8 @@ In the order they could be made, each working without the next:
 
 1. Property definitions and declarations for the built-in properties.
    `box-style`, `text-style` and `flex` become a rule set with the reach
-   `node` on each node, and so do `node-def`'s `cursor` field and, once text
-   selection has landed, its `unselectable` field. The properties that inherit
+   `node` on each node, and so do `node-def`'s `cursor` and `unselectable`
+   fields. The properties that inherit
    do so from this step on. Nothing is conditional yet, and the `states` list
    stays.
 2. Conditions on rules, with `flag` tests of the host's three states.
