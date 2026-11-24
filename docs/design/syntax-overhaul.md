@@ -470,14 +470,15 @@ Macros produce specialized or optimized variants:
 
 ### 9.4 Parsing
 
-`@Identifier` can be followed by `(`, `[`, or `{`:
+`@Identifier` transforms an already-valid Zena construct without changing how the parser parses it. It can precede `(`, `[`, `{`, or a node literal (`Type { ... }`):
 
-| Syntax        | Meaning                    | Example                  |
-| ------------- | -------------------------- | ------------------------ |
-| `@Name`       | Macro with no arguments    | `@deprecated`            |
-| `@Name(a, b)` | Macro invocation with args | `@external("mod", "fn")` |
-| `@Name[...]`  | Macro on array literal     | `@Array[1, 2, 3]`        |
-| `@Name{...}`  | Macro on record/map/block  | `@Point{x: 1}`           |
+| Syntax               | Meaning                    | Example                  |
+| -------------------- | -------------------------- | ------------------------ |
+| `@Name`              | Macro with no arguments    | `@deprecated`            |
+| `@Name(a, b)`        | Macro invocation with args | `@external("mod", "fn")` |
+| `@Name[...]`         | Macro on array literal     | `@Array[1, 2, 3]`        |
+| `@Name{...}`         | Macro on record/map/block  | `@Point{x: 1}`           |
+| `@Name Type { ... }` | Tagged node literal        | `@ui Box { ... }`        |
 
 **`()` is for arguments, not tuples**: Just like `foo(1, 2)` is a function call
 with two arguments (not one tuple), `@Name(1, 2)` is a macro invocation with
@@ -528,12 +529,10 @@ Block macros transform statement sequences. Use cases include:
   expensiveComputation();
 }
 
-// Builder DSL — could expand to method chains
-@html {
-  div { class: "container";
-    h1 { "Hello" }
-    p { "World" }
-  }
+// Tagged node literal — two-phase template + $(...) holes (see declarative.md)
+@ui Box {
+  style: cardStyle,
+  Text $(this.#title)
 }
 ```
 
@@ -549,11 +548,14 @@ compile-time transformation (decorators are also compile-time transforms).
 
 ### 9.7 Relationship to Decorators
 
-Both decorators and collection macros are compile-time AST transformations
-invoked with `@`. The distinction is positional:
+Decorators, collection macros, block macros, and tagged node literals all use
+`@` to re-interpret already-valid Zena syntax at compile time without changing
+the parser grammar of the operand:
 
 - `@Name declaration` → decorator (transforms a declaration)
-- `@Name literal` → collection macro (transforms a literal into construction code)
+- `@Name literal` → collection/record macro (transforms a literal into construction code)
+- `@Name { ... }` → block macro (transforms a statement block)
+- `@Name Type { ... }` → tagged node literal (transforms a node literal, e.g. into a two-phase template with `$(...)` holes)
 
 This unification means one macro system, one sigil, one mental model.
 

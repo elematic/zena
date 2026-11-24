@@ -907,10 +907,10 @@ for each rule set against the nodes of the template in its scope. Two kinds of
 node in a scope are outside the template, and are tested when they are
 rendered:
 
-- A loop in a widget's build compiles to a slot and a template for the loop's
-  body, which the widget renders once for each item. The body's nodes are the
-  widget's own. The host keeps the answer for each pair of a rule set and a
-  body template.
+- A dynamic child hole (such as a `repeat` list or conditional branch) renders
+  nested `@ui` templates into a slot. Those nodes belong to the widget that
+  rendered them. The host keeps the answer for each pair of a rule set and a
+  child template.
 - A child widget's node has the facts the child's template fixed and the ones
   the parent set on it.
 
