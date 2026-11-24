@@ -907,17 +907,18 @@ for each rule set against the nodes of the template in its scope. Two kinds of
 node in a scope are outside the template, and are tested when they are
 rendered:
 
-- A dynamic child hole (such as a `repeat` list or conditional branch) renders
-  nested `@ui` templates into a slot. Those nodes belong to the widget that
-  rendered them. The host keeps the answer for each pair of a rule set and a
-  child template.
+- A dynamic child binding (such as a `repeat` list or conditional branch)
+  renders nested `@ui` templates into a slot. Those nodes belong to the widget
+  that rendered them. The host keeps the answer for each pair of a rule set and
+  a child template.
 - A child widget's node has the facts the child's template fixed and the ones
   the parent set on it.
 
 ### Holes
 
-A hole is a place in a template that is filled in for each instance and can be
-filled in again later. [Rules for template and holes](./zenafx-widget-authoring.md#rules-for-template-and-holes)
+A binding (written `hole` in the current WIT record) is a place in a template
+that is filled in for each instance and can be filled in again later.
+[Rules for templates and bindings](./zenafx-widget-authoring.md#rules-for-templates-and-bindings)
 has two kinds, and they reach the host in different ways.
 
 - **A child hole** is a place where nodes go: a child widget, the items of a

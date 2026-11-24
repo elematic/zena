@@ -83,7 +83,7 @@
     - [`zenafx:host` in WIT](#zenafxhost-in-wit)
   - [The scene protocol](#the-scene-protocol)
     - [Reasons for a retained tree](#reasons-for-a-retained-tree)
-    - [Templates, nodes and holes](#templates-nodes-and-holes)
+    - [Templates, nodes and bindings](#templates-nodes-and-bindings)
     - [One box per widget](#one-box-per-widget)
     - [Interior and content](#interior-and-content)
     - [Detached nodes and slot assignment](#detached-nodes-and-slot-assignment)
@@ -1941,21 +1941,26 @@ compose in the language, inside one component, and
 [Moving the component boundary](#moving-the-component-boundary) is why that choice
 is free.
 
-### Templates, nodes and holes
+### Templates, nodes and bindings
 
 A **node** is an entry in the retained tree: a layout box with an appearance,
 which is `nothing`, `fill` or `text`. Appearance travels with geometry, so the
 host paints the tree it solved. No component builds a display list, and none
 handles a shaped text run.
 
-A **template** is a flat list of node descriptions plus a list of holes. The list
-is flat because WIT value types cannot recurse. `first-child` and `child-count`
-index that same list, in breadth-first order, which keeps a node's children
-contiguous and after it.
+A **template** is a flat list of node descriptions plus a list of **bindings**.
+The list is flat because WIT value types cannot recurse. `first-child` and
+`child-count` index that same list, in breadth-first order, which keeps a
+node's children contiguous and after it.
 
-A **hole** is one property of one template node that a value arrives at later. The
-template says which node and which property, so a hole on the wire is an index
-into the template's hole list and carries no name.
+A **binding** is one property of one template node that a value arrives at on
+mount or on update. The template stores `bindings: Vec<Binding>` once (a node
+index and a target property, roughly 8 bytes per entry), shared by every
+instance of that template with zero per-instance host allocation. On the wire,
+a binding update (`record hole` in the current WIT) is an index into the
+template's binding list paired with a `binding-value`, carrying no name. One-shot
+bindings written on mount and never updated again cost zero bytes on subsequent
+frames.
 
 ```wit
 enum binding-target { content, style, layout }
@@ -3060,9 +3065,9 @@ button then coexist.
 - [component-emission.md](./component-emission.md) — how components are
   emitted, and the `--wit`/`--world` surface
 - [declarative.md](./declarative.md) — unified node literals (`Type { ... }`),
-  tagged node literals (`@ui Box { ... }`), `$(...)` holes, and markup sugar
+  tagged node literals (`@ui Box { ... }`), `$(...)` bindings, and markup sugar
 - [zenafx-widget-authoring.md](./zenafx-widget-authoring.md) — what a widget
-  looks like written with `@ui` tagged node literals and `$(...)` holes, how
+  looks like written with `@ui` tagged node literals and `$(...)` bindings, how
   signals and guest directives (`cache`, `repeat`) drive the scene protocol,
   and selectors shipped as data. An exploration; nothing in it is built.
 - [capabilities.md](./capabilities.md) — capability-based I/O in the language,

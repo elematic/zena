@@ -529,10 +529,11 @@ Block macros transform statement sequences. Use cases include:
   expensiveComputation();
 }
 
-// Tagged node literal — two-phase template + $(...) holes (see declarative.md)
+// Tagged node literal — cached template + $(...) reactive bindings (see declarative.md)
 @ui Box {
   style: cardStyle,
-  Text $(this.#title)
+  Text this.#title
+  Text $(this.subtitle)
 }
 ```
 
@@ -555,7 +556,7 @@ the parser grammar of the operand:
 - `@Name declaration` → decorator (transforms a declaration)
 - `@Name literal` → collection/record macro (transforms a literal into construction code)
 - `@Name { ... }` → block macro (transforms a statement block)
-- `@Name Type { ... }` → tagged node literal (transforms a node literal, e.g. into a two-phase template with `$(...)` holes)
+- `@Name Type { ... }` → tagged node literal (transforms a node literal, e.g. into a cached template with `$(...)` reactive bindings)
 
 This unification means one macro system, one sigil, one mental model.
 
