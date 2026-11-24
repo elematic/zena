@@ -1703,6 +1703,39 @@ let tests = suite('formatter', () => {
       )
     `);
   });
+
+  test('formats node literals, bindings, and decorated expressions', (t) => {
+    checkFormat('property-only node literal', 'let p = Point{x:1.0,y:2.0};', 'let p = Point { x: 1.0, y: 2.0 };');
+    checkStable('empty node literal', 'let s = Slot {};');
+    checkFormat('generic and positional node literal', "let t = Text('Hello'){style:titleStyle};", "let t = Text('Hello') { style: titleStyle };");
+    checkStable('generic with args', 'let l = ListView<Item>(items) { gap: 4.0 };');
+    checkStable('qualified with spread', 'let b = ui.Box { ...base, gap: 8.0 };');
+    checkStable('binding expression', 'let x = $(this.#count + 1);');
+    checkFormat('decorated array and record', 'let m = @mat[[1,2],[3,4]];\nlet c = @Complex{re:1.0,im:2.0};', dedentRaw`
+      let m = @mat [[1, 2], [3, 4]];
+      let c = @Complex { re: 1.0, im: 2.0 };
+    `);
+    checkStable('decorated call with args', 'let r = @retry(3) fetch(url);');
+    checkFormat('nested ui tree', "let v = @ui Column{style:panelStyle,gap:8.0,Row{style:headerStyle,Text('Hello') Text(this.#title){style:titleStyle} $(if(show){@ui Badge('New')}else{null})} Slot{}};", dedentRaw`
+      let v = @ui Column {
+        style: panelStyle,
+        gap: 8.0,
+
+        Row {
+          style: headerStyle,
+
+          Text('Hello')
+          Text(this.#title) { style: titleStyle }
+          $(if (show) {
+            @ui Badge('New');
+          } else {
+            null;
+          })
+        }
+        Slot {}
+      };
+    `);
+  });
 });
 
 // Written out because a fixture above contains the text of an exported

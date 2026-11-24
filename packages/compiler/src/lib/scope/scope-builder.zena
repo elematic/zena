@@ -11,7 +11,7 @@ import {
   RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression,
   CallExpression, MemberExpression, IndexExpression, ThisExpression,
   SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral,
-  TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression, ShieldedStatement,
+  TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression, NodeLiteral, BindingExpression, DecoratedExpression, ShieldedStatement,
   // Statements
   VariableDeclaration, UsingStatement, FunctionDeclaration, ExpressionStatement, BlockStatement,
   ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
@@ -1257,6 +1257,34 @@ export final class ScopeBuilder {
       case BooleanLiteral: {}
       case NullLiteral: {}
       case PipePlaceholder: {}
+      case NodeLiteral {type, typeArguments, args, properties, children}: {
+        this.#processExpression(type);
+        if (typeArguments != null) {
+          for (let ta in typeArguments) {
+            this.#processTypeAnnotation(ta);
+          }
+        }
+        for (let arg in args) {
+          this.#processExpression(arg);
+        }
+        for (let prop in properties) {
+          match (prop) {
+            case PropertyAssignment {value}: { this.#processExpression(value); }
+            case SpreadElement {argument}: { this.#processExpression(argument); }
+            case _: {}
+          }
+        }
+        for (let child in children) {
+          this.#processExpression(child);
+        }
+      }
+      case BindingExpression {expression}: {
+        this.#processExpression(expression);
+      }
+      case DecoratedExpression {decorators, expression}: {
+        this.#processDecorators(decorators);
+        this.#processExpression(expression);
+      }
     }
   }
 

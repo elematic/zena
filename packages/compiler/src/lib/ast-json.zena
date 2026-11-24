@@ -5,7 +5,7 @@
 
 import { JsonObject, JsonArray, stringify } from 'zena:json';
 import {
-  Node, Module, Statement, Expression, TypeAnnotation, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, LetPatternCondition, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, Identifier, BindingPattern, IdentifierPattern, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, TemplateElement, TemplateLiteral, TaggedTemplateExpression, BinaryExpression, UnaryExpression, AssignmentExpression, AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression, Parameter, CallExpression, TypeParameter, MemberExpression, IndexExpression, ThisExpression, NewExpression, ArrayLiteral, RecordLiteral, TupleLiteral, PropertyAssignment, SpreadElement, MapLiteral, MapEntry, RecordPattern, TuplePattern, ArrayPattern, RestPattern, BindingProperty, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, MatchExpression, MatchCase, IfExpression, ThrowExpression, TryExpression, AwaitExpression, CatchClause, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTypeAnnotation, ThisTypeAnnotation, PropertySignature, TypeAliasDeclaration, CaseClassParam, SealedVariant, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, SuperExpression, FieldInitializer, SuperInitializer, InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature, EnumDeclaration, EnumMember, ImportDeclaration, ImportSpecifier, ExportAllDeclaration, ExportFromDeclaration, Decorator, ContractClause, ContractMode, contractKeyword, contractModifier, DeclareFunction, SymbolDeclaration, SymbolPropertyName,
+  Node, Module, Statement, Expression, TypeAnnotation, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, LetPatternCondition, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, Identifier, BindingPattern, IdentifierPattern, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, TemplateElement, TemplateLiteral, TaggedTemplateExpression, BinaryExpression, UnaryExpression, AssignmentExpression, AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression, Parameter, CallExpression, TypeParameter, MemberExpression, IndexExpression, ThisExpression, NewExpression, ArrayLiteral, RecordLiteral, TupleLiteral, NodeLiteral, BindingExpression, DecoratedExpression, PropertyAssignment, SpreadElement, MapLiteral, MapEntry, RecordPattern, TuplePattern, ArrayPattern, RestPattern, BindingProperty, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, MatchExpression, MatchCase, IfExpression, ThrowExpression, TryExpression, AwaitExpression, CatchClause, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTypeAnnotation, ThisTypeAnnotation, PropertySignature, TypeAliasDeclaration, CaseClassParam, SealedVariant, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, SuperExpression, FieldInitializer, SuperInitializer, InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature, EnumDeclaration, EnumMember, ImportDeclaration, ImportSpecifier, ExportAllDeclaration, ExportFromDeclaration, Decorator, ContractClause, ContractMode, contractKeyword, contractModifier, DeclareFunction, SymbolDeclaration, SymbolPropertyName,
 } from './ast.zena';
 
 // ============================================================================
@@ -61,6 +61,9 @@ function nodeTypeName(node: Node) {
     case RecordLiteral {}: 'RecordLiteral'
     case MapLiteral {}: 'MapLiteral'
     case TupleLiteral {}: 'TupleLiteral'
+    case NodeLiteral {}: 'NodeLiteral'
+    case BindingExpression {}: 'BindingExpression'
+    case DecoratedExpression {}: 'DecoratedExpression'
     case PropertyAssignment {}: 'PropertyAssignment'
     case SpreadElement {}: 'SpreadElement'
     case MapEntry {}: 'MapEntry'
@@ -341,6 +344,24 @@ export function nodeToJson(node: Node): JsonObject {
     }
     case RecordLiteral { properties }: {
       obj['properties'] = propertyAssignmentsToJson(properties);
+    }
+    case NodeLiteral { type, typeArguments, args, properties, children }: {
+      obj['nodeType'] = nodeToJson(type);
+      if (typeArguments != null) {
+        obj['typeArguments'] = typeAnnotationsToJson(typeArguments);
+      }
+      if (args.length > 0) {
+        obj['arguments'] = expressionsToJson(args);
+      }
+      obj['properties'] = propertyAssignmentsToJson(properties);
+      obj['children'] = expressionsToJson(children);
+    }
+    case BindingExpression { expression }: {
+      obj['expression'] = nodeToJson(expression);
+    }
+    case DecoratedExpression { decorators, expression }: {
+      obj['decorators'] = decoratorsToJson(decorators);
+      obj['expression'] = nodeToJson(expression);
     }
     case MapLiteral { entries }: {
       obj['entries'] = mapEntriesToJson(entries);
