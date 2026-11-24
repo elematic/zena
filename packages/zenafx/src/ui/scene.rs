@@ -30,7 +30,7 @@ use super::layout::{Placed, measure_text, place_with};
 use super::text::TextEngine;
 use super::types::{
     BoxStyle, Color, Command, Content, Flex, Glyphs, Length, Measured, Node as FlatNode, Overflow,
-    Quad, Rect, Size, TextStyle,
+    Quad, Rect, Size, TextFlow, TextStyle,
 };
 
 /// A node of the retained tree, as a component sends it.
@@ -80,6 +80,10 @@ pub struct NodeDef {
     /// Whether the pointer cannot select this node's text, nor the text of
     /// anything beneath it.
     pub unselectable: bool,
+    /// Set on a flow container: a node whose text children are joined and
+    /// laid out as one piece of text.
+    #[component(name = "text-flow")]
+    pub flow: Option<TextFlow>,
 }
 
 /// Which property of a node a binding writes.
@@ -456,6 +460,11 @@ struct Retained {
     /// Whether text here, and beneath here, is left out of what the pointer
     /// can select.
     unselectable: bool,
+    /// Set on a flow container. Its `run` is then the texts of its text
+    /// children shaped as one, and those children have no run of their own.
+    flow: Option<TextFlow>,
+    /// A flow container's text: its text children's contents, joined.
+    joined: String,
 }
 
 impl Retained {
@@ -481,6 +490,8 @@ impl Retained {
             cursor: None,
             editable: false,
             unselectable: false,
+            flow: None,
+            joined: String::new(),
         }
     }
 
@@ -770,11 +781,21 @@ impl Scene {
             }
         }
 
+        // A text node in a flow container is shaped as part of the
+        // container's text and has no run of its own.
+        let mut in_flow = vec![false; filled.len()];
+        for def in filled.iter().filter(|def| def.flow.is_some()) {
+            let (first, count) = (def.first_child as usize, def.child_count as usize);
+            for child in in_flow.iter_mut().skip(first).take(count) {
+                *child = true;
+            }
+        }
+
         // Index 0 is the node itself, which is what makes a widget one box
         // rather than a box inside a box.
         let mut ids = vec![node];
-        for def in &filled[1..] {
-            let run = self.shape(def, text);
+        for (def, part) in filled.iter().zip(&in_flow).skip(1) {
+            let run = if *part { None } else { self.shape(def, text) };
             ids.push(self.alloc(Retained {
                 layout: def.layout,
                 appearance: def.appearance.clone(),
@@ -782,9 +803,10 @@ impl Scene {
                 is_slot: def.is_slot,
                 cursor: def.cursor,
                 focusable: def.focusable,
-                // Only text can be edited.
+                // Only text can be edited, and only a text node by itself.
                 editable: def.editable && run.is_some(),
                 unselectable: def.unselectable,
+                flow: def.flow,
                 ..Retained::empty()
             }));
         }
@@ -797,6 +819,7 @@ impl Scene {
             held.focusable = filled[0].focusable;
             held.editable = filled[0].editable && run.is_some();
             held.unselectable = filled[0].unselectable;
+            held.flow = filled[0].flow;
         }
 
         for (index, def) in filled.iter().enumerate() {
@@ -811,6 +834,13 @@ impl Scene {
             }
             if let Some(held) = self.get_mut(ids[index]) {
                 held.children = children;
+            }
+        }
+        // A flow container's text is its children's, so it is shaped once
+        // they are in place.
+        for (index, def) in filled.iter().enumerate() {
+            if def.flow.is_some() {
+                self.reflow(ids[index], text);
             }
         }
 
@@ -855,6 +885,64 @@ impl Scene {
         }
     }
 
+    /// Shape a flow container's text again from its text children: their
+    /// contents joined in order, each in its own style. A container with no
+    /// text children has no run.
+    fn reflow(&mut self, container: u32, text: &mut TextEngine) {
+        let Some(held) = self.get(container) else {
+            return;
+        };
+        let Some(flow) = held.flow else {
+            return;
+        };
+        let parts: Vec<&TextContent> = held
+            .children
+            .iter()
+            .filter_map(|child| match &self.get(*child)?.appearance {
+                Appearance::Text(shown) => Some(shown),
+                _ => None,
+            })
+            .collect();
+        let styled: Vec<(&str, &TextStyle)> = parts
+            .iter()
+            .map(|part| (part.content.as_str(), &part.style))
+            .collect();
+        let joined: String = parts.iter().map(|part| part.content.as_str()).collect();
+        let run = match (held.run, styled.is_empty()) {
+            (Some(run), false) => {
+                text.update_parts(run, &styled, &flow);
+                Some(run)
+            }
+            (Some(run), true) => {
+                text.release_run(run);
+                None
+            }
+            (None, false) => Some(text.register_parts(&styled, &flow)),
+            (None, true) => None,
+        };
+        if let Some(held) = self.get_mut(container) {
+            held.run = run;
+            held.joined = joined;
+        }
+    }
+
+    /// The flow container `node` is a text child of, if it is one.
+    fn flow_above(&self, node: u32) -> Option<u32> {
+        let parent = self.get(node)?.parent?;
+        self.get(parent)?.flow.map(|_| parent)
+    }
+
+    /// The text a node holds: a text node's content, or the joined text of a
+    /// flow container.
+    fn content_of(&self, node: u32) -> Option<&str> {
+        let held = self.get(node)?;
+        match &held.appearance {
+            Appearance::Text(shown) => Some(&shown.content),
+            _ if held.flow.is_some() => Some(&held.joined),
+            _ => None,
+        }
+    }
+
     /// Write one hole into a node that already shows the right template.
     fn write_hole(
         &mut self,
@@ -878,8 +966,9 @@ impl Scene {
             return;
         };
         // Whether the write changed a text, which may be the one the caret
-        // is in.
+        // is in, or the style a text is in.
         let mut rewrote = false;
+        let mut restyled = false;
         match (target, &hole.value) {
             (BindingTarget::Content, BindingValue::Content(content)) => {
                 if let Appearance::Text(text_content) = &mut held.appearance {
@@ -903,6 +992,7 @@ impl Scene {
             }
             (BindingTarget::Style, BindingValue::TextStyle(style)) => {
                 if let Appearance::Text(text_content) = &mut held.appearance {
+                    restyled = true;
                     text_content.style = style.clone();
                     let content = text_content.content.clone();
                     // A run that is showing a look keeps it: this is the
@@ -917,6 +1007,16 @@ impl Scene {
             }
             _ => {}
         }
+        // A text node in a flow container is part of the container's text,
+        // which is shaped again as a whole. A selection in that text is in
+        // the container.
+        let id = match self.flow_above(id) {
+            Some(container) if rewrote || restyled => {
+                self.reflow(container, text);
+                container
+            }
+            _ => id,
+        };
         // New text under the selection leaves the selection's places where
         // they were, held within the text, and the caret may have moved out
         // of sight with it.
@@ -948,10 +1048,7 @@ impl Scene {
     /// How many UTF-8 bytes of text a node shows. 0 for a node that is not
     /// text.
     fn length_of(&self, node: u32) -> u32 {
-        match self.get(node).map(|n| &n.appearance) {
-            Some(Appearance::Text(shown)) => shown.content.len() as u32,
-            _ => 0,
-        }
+        self.content_of(node).map_or(0, |text| text.len() as u32)
     }
 
     /// Hold the selection's two places within the text they are in, after
@@ -1067,9 +1164,8 @@ impl Scene {
         let parts: Vec<&str> = self
             .selected_ranges()
             .into_iter()
-            .filter_map(|(node, from, to, _)| match &self.get(node)?.appearance {
-                Appearance::Text(shown) => shown.content.get(from as usize..to as usize),
-                _ => None,
+            .filter_map(|(node, from, to, _)| {
+                self.content_of(node)?.get(from as usize..to as usize)
             })
             .collect();
         let text = parts.join("\n");
@@ -1644,17 +1740,24 @@ impl Scene {
                 _ => None,
             });
             let mut drawn: Vec<Command> = Vec::new();
-            match (look, &node.appearance, node.run) {
-                (Some(style), _, None) | (None, Appearance::Fill(style), _) => {
-                    drawn.push(Command::Quad(Quad {
-                        bounds: rect,
-                        background: style.background,
-                        border_color: style.border_color,
-                        border_width: style.border_width,
-                        corner_radius: style.corner_radius,
-                    }));
-                }
-                (_, Appearance::Text(own), Some(run)) => {
+            // A box's fill, in the look that holds for it. A flow container
+            // can have one, behind its text.
+            let fill = match (look, &node.appearance) {
+                (Some(style), Appearance::Fill(_) | Appearance::Nothing) => Some(style),
+                (None, Appearance::Fill(style)) => Some(style),
+                _ => None,
+            };
+            if let Some(style) = fill {
+                drawn.push(Command::Quad(Quad {
+                    bounds: rect,
+                    background: style.background,
+                    border_color: style.border_color,
+                    border_width: style.border_width,
+                    corner_radius: style.corner_radius,
+                }));
+            }
+            match node.run {
+                Some(run) => {
                     // A text node's padding is inside its box, so its text
                     // starts that far in.
                     let (x, y) = (
@@ -1685,12 +1788,13 @@ impl Scene {
                         .filter(|_| node.editable)
                         .and_then(|(_, _, caret)| caret)
                         .and_then(|at| text.caret(run, at, CARET_WIDTH));
-                    if let Some(caret) = caret {
+                    if let (Some(caret), Appearance::Text(own)) = (caret, &node.appearance) {
                         let ink = node.shaped_as.as_ref().unwrap_or(&own.style).color;
                         drawn.push(plain(placed(caret), ink));
                     }
                 }
-                _ => continue,
+                None if drawn.is_empty() => continue,
+                None => {}
             }
             if clip != open {
                 if open.is_some() {
@@ -2368,6 +2472,11 @@ impl Scene {
         let Some(node) = self.get(id) else {
             return Vec::new();
         };
+        // A flow container's text children are laid out as its one text, so
+        // the layout sees the container as text and nothing beneath it.
+        if node.flow.is_some() {
+            return Vec::new();
+        }
         let mut out = Vec::with_capacity(node.children.len());
         for child in &node.children {
             match self.get(*child) {
@@ -2623,6 +2732,7 @@ mod tests {
             focusable: false,
             editable: false,
             unselectable: false,
+            flow: None,
         }
     }
 
@@ -5189,6 +5299,115 @@ mod tests {
         assert!(!scene.select_all_text(), "there is no other text");
         select(&mut scene, root, 1, 4);
         assert_eq!(scene.selected_text().as_deref(), Some("ell"));
+    }
+
+    const FLOWING: u32 = 40;
+
+    /// A flow container `width` wide in the window's top left corner, with a
+    /// text node for each of `parts`. The second part is bold. Hole 0 is the
+    /// second part's text.
+    fn a_flow_of(text: &mut TextEngine, width: f32, parts: &[&str]) -> (Scene, u32) {
+        let mut scene = Scene::new();
+        let root = scene.root();
+        let mut nodes = vec![NodeDef {
+            layout: Flex {
+                width: Length::Px(width),
+                ..Flex::default()
+            },
+            first_child: 1,
+            child_count: parts.len() as u32,
+            flow: Some(TextFlow::default()),
+            ..blank()
+        }];
+        for (index, part) in parts.iter().enumerate() {
+            let mut node = text_node(part);
+            if let (1, Appearance::Text(shown)) = (index, &mut node.appearance) {
+                shown.style.weight = 700;
+            }
+            nodes.push(node);
+        }
+        scene.render(
+            root,
+            &fresh(FLOWING, nodes, vec![content_binding(2)]),
+            &[],
+            text,
+        );
+        scene.draw(window(), text);
+        (scene, root)
+    }
+
+    /// The text nodes of a flow container are one piece of text: one run is
+    /// drawn for them all, and its lines are broken across the whole, so
+    /// three short texts that do not fit on a line between them wrap.
+    #[test]
+    fn a_flow_container_lays_its_texts_out_as_one() {
+        let mut text = TextEngine::new();
+        let parts = ["The quick ", "brown fox jumps", " over the lazy dog"];
+        let (mut scene, _) = a_flow_of(&mut text, 2000.0, &parts);
+        let wide = glyphs(&scene.draw(window(), &mut text));
+        assert_eq!(wide.len(), 1, "one run for the three texts");
+        let run = text.get(wide[0].run).expect("the container's run");
+        assert_eq!(run.content(), "The quick brown fox jumps over the lazy dog");
+        let one_line = text.measure_run(wide[0].run, None);
+
+        let (mut scene, _) = a_flow_of(&mut text, one_line.width / 3.0, &parts);
+        let narrow = glyphs(&scene.draw(window(), &mut text));
+        assert_eq!(narrow.len(), 1);
+        let wrapped = text.measure_run(narrow[0].run, Some(one_line.width / 3.0));
+        assert!(
+            wrapped.height > one_line.height * 2.0,
+            "the texts wrap as one: {wrapped:?} against {one_line:?}"
+        );
+    }
+
+    /// A word that is half in one text node and half in the next is one
+    /// word: a second press on it selects all of it.
+    #[test]
+    fn a_word_in_two_parts_of_a_flow_is_one_word() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_flow_of(&mut text, 600.0, &["It is un", "believ", "able, that."]);
+        let (x, y) = in_line(&mut scene, 0, 10, &mut text);
+
+        for _ in 0..2 {
+            point(&mut scene, pressed(x, y), &text);
+            point(&mut scene, released(x, y), &text);
+        }
+
+        assert_eq!(scene.selected_text().as_deref(), Some("unbelievable"));
+    }
+
+    /// Text copied from a flow container is its parts joined with nothing
+    /// between them.
+    #[test]
+    fn a_flow_containers_text_is_copied_as_one() {
+        let mut text = TextEngine::new();
+        let (mut scene, _) = a_flow_of(&mut text, 600.0, &["one ", "two", " three"]);
+
+        assert!(scene.select_all_text());
+
+        assert_eq!(scene.selected_text().as_deref(), Some("one two three"));
+    }
+
+    /// A hole that writes one text node of a flow container changes the
+    /// container's text, in the run it already has.
+    #[test]
+    fn a_hole_in_a_flow_containers_part_reshapes_the_whole() {
+        let mut text = TextEngine::new();
+        let (mut scene, root) = a_flow_of(&mut text, 600.0, &["one ", "two", " three"]);
+        let before = glyphs(&scene.draw(window(), &mut text))[0].run;
+
+        scene.render(
+            root,
+            &TemplateRef::Known(FLOWING),
+            &[content(0, "2")],
+            &mut text,
+        );
+
+        let after = glyphs(&scene.draw(window(), &mut text))[0].run;
+        assert_eq!(after, before, "the same run, shaped again");
+        assert_eq!(text.get(after).map(|r| r.content()), Some("one 2 three"));
+        assert!(scene.select_all_text());
+        assert_eq!(scene.selected_text().as_deref(), Some("one 2 three"));
     }
 }
 

@@ -152,6 +152,35 @@ impl Edges {
     }
 }
 
+/// Where the lines of a flow container sit across its width.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, ComponentType, Lift, Lower)]
+#[component(enum)]
+#[repr(u8)]
+pub enum TextAlign {
+    /// The side a line of the text's own direction starts at.
+    #[default]
+    #[component(name = "start")]
+    Start,
+    #[component(name = "center")]
+    Center,
+    #[component(name = "end")]
+    End,
+    /// Every line but the last is spread to the full width.
+    #[component(name = "justify")]
+    Justify,
+}
+
+/// How a flow container sets its children as text.
+#[derive(Copy, Clone, Debug, PartialEq, Default, ComponentType, Lift, Lower)]
+#[component(record)]
+pub struct TextFlow {
+    pub align: TextAlign,
+    /// The distance from one line to the next, as a multiple of the text
+    /// size. `None` is what each font asks for.
+    #[component(name = "line-height")]
+    pub line_height: Option<f32>,
+}
+
 /// What becomes of content that does not fit in a box, on one axis.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, ComponentType, Lift, Lower)]
 #[component(enum)]

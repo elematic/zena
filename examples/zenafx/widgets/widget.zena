@@ -18,7 +18,8 @@
 import { Flex, Edges, Axis, Justify, Align, Length, BoxStyle, TextStyle,
          LengthAuto, LengthPercent, Overflow } from 'zenafx:ui/style';
 import { NodeDef, Appearance, AppearanceNothing, AppearanceFill, AppearanceText,
-         TextContent, Binding, StateStyle, Cursor } from 'zenafx:host/scene';
+         TextContent, Binding, StateStyle, Cursor, TextFlow,
+         TextAlign } from 'zenafx:host/scene';
 import { Template } from '../framework.zena';
 import { some, none } from 'zena:core';
 
@@ -79,6 +80,13 @@ export type BoxOpts = {
    * button leaves its label out.
    */
   unselectable?: boolean,
+  /** For a `flow`: where its lines sit across its width. */
+  textAlign?: TextAlign,
+  /**
+   * For a `flow`: the distance from one line to the next, as a multiple of
+   * the text size. Left out, it is what each font asks for.
+   */
+  lineHeight?: f32,
 };
 
 /** Read the options, filling in what was left out. */
@@ -127,9 +135,35 @@ export class Box {
   unselectable: boolean;
   /** Whether content hangs here. */
   isSlot: boolean;
+  /** Set on a flow container, whose text children are one piece of text. */
+  flow: Option<TextFlow>;
 
   new(this.layout, this.appearance, this.children, this.cursor, this.focusable = false,
-      this.editable = false, this.unselectable = false, this.isSlot = false);
+      this.editable = false, this.unselectable = false, this.isSlot = false,
+      this.flow = none);
+}
+
+function lineHeightOf(opts: BoxOpts): Option<f32> {
+  if (let {lineHeight} = opts) {
+    return some(lineHeight);
+  }
+  return none;
+}
+
+/**
+ * A flow container: its `text` children are laid out together as one piece of
+ * text, each in its own style. Lines are broken across all of them, so a word
+ * in bold in the middle of a sentence is a `text` of its own and the sentence
+ * still wraps as one.
+ *
+ * It is a box in every other way: it takes a width, padding and a `style`.
+ */
+export function flow(opts: BoxOpts = {}, children: Array<Box> = []): Box {
+  let {focusable = false, unselectable = false} = opts;
+  let align = opts.textAlign ?? TextAlign.Start;
+  return new Box(flexOf(opts), appearanceOf(opts), GrowableArray.from(children),
+                 cursorOf(opts), focusable, false, unselectable, false,
+                 some(new TextFlow(align, lineHeightOf(opts))));
 }
 
 /** A box. Lays out its children, and draws a panel when given a `style`. */
@@ -194,7 +228,8 @@ export function flatten(root: Box): Array<NodeDef> {
     let node = order[n];
     nodes.push(new NodeDef(node.layout, node.appearance, firstChildOf[n] as u32,
                            node.children.length as u32, node.isSlot, node.cursor,
-                           node.focusable, node.editable, node.unselectable));
+                           node.focusable, node.editable, node.unselectable,
+                           node.flow));
     n += 1;
   }
   return nodes;

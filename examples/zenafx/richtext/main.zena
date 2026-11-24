@@ -1,0 +1,86 @@
+/**
+ * Paragraphs of text in more than one style.
+ *
+ * A paragraph here is a flow container: a box whose `text` children are laid
+ * out together as one piece of text. A phrase in bold is a `text` of its own,
+ * with its own style, and the paragraph still wraps as one. Nothing is
+ * measured or broken into lines here, and no part is placed.
+ *
+ * The page is one template, and nothing in it changes. Its text can be
+ * selected as any text can, and a word that is half bold is still one word to
+ * a second press.
+ */
+import { Color, BoxStyle, TextStyle, Edges, Align, LengthPx } from 'zenafx:ui/style';
+import { TextAlign } from 'zenafx:host/scene';
+import { Rendering, Widget, Template, shows, runApp } from '../framework.zena';
+import { box, flow, text, full, flatten } from '../widgets/widget.zena';
+import { some, none } from 'zena:core';
+
+let page = new Color(0.97, 0.97, 0.98, 1.0);
+let paper = new Color(1.0, 1.0, 1.0, 1.0);
+let edge = new Color(0.86, 0.88, 0.92, 1.0);
+let ink = new Color(0.10, 0.11, 0.13, 1.0);
+let muted = new Color(0.36, 0.39, 0.46, 1.0);
+let accent = new Color(0.20, 0.38, 0.86, 1.0);
+
+let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
+let cardStyle = new BoxStyle(some(paper), some(edge), 1.0, 8.0, 1.0);
+
+function styled(size: f32, weight: i32, italic: boolean, color: Color) {
+  return new TextStyle('system-ui', size, weight as u16, italic, color);
+}
+
+let title = styled(24.0, 700, false, ink);
+let plain = styled(16.0, 400, false, ink);
+let bold = styled(16.0, 700, false, ink);
+let italic = styled(16.0, 400, true, ink);
+let coloured = styled(16.0, 600, false, accent);
+let large = styled(21.0, 400, false, ink);
+let note = styled(13.0, 400, false, muted);
+let noteBold = styled(13.0, 700, false, muted);
+
+/**
+ * A card 440 wide, with a title, two paragraphs and a note. Each is a flow
+ * container, and the card stretches each to its own width, which is the width
+ * its lines are broken at.
+ */
+let pageTemplate = new Template(flatten(
+  box({style: pageStyle, align: Align.Center, padding: new Edges(32.0, 32.0, 32.0, 32.0),
+       width: full, height: full}, [
+    box({style: cardStyle, align: Align.Stretch, gap: 14.0,
+         padding: new Edges(24.0, 28.0, 24.0, 28.0), width: new LengthPx(440.0)}, [
+      flow({}, [text('Rich text', title)]),
+      flow({lineHeight: 1.5}, [
+        text('Text in a flow container is ', plain),
+        text('one piece of text', bold),
+        text('. A phrase can be ', plain),
+        text('set apart', italic),
+        text(', or be ', plain),
+        text('in another colour', coloured),
+        text(', or be ', plain),
+        text('larger', large),
+        text(', and the lines still break across all of it.', plain),
+      ]),
+      flow({lineHeight: 1.5}, [
+        text('A word that is half bold, like un', plain),
+        text('believ', bold),
+        text('able, is still one word. Press on it twice.', plain),
+      ]),
+      flow({textAlign: TextAlign.Center}, [
+        text('This note is ', note),
+        text('centred', noteBold),
+        text('.', note),
+      ]),
+    ]),
+  ])), []);
+
+class Page extends Widget {
+  build(): Rendering {
+    return shows(pageTemplate, []);
+  }
+}
+
+/** The component's entry: build the widget tree and show it. */
+export function main(): void {
+  runApp(new Page());
+}

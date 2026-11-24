@@ -649,6 +649,7 @@ mod tests {
                     focusable: true,
                     editable: false,
                     unselectable: false,
+                    flow: None,
                 }],
                 bindings: vec![],
                 states: vec![],

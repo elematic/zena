@@ -124,13 +124,16 @@ impl Painter {
         };
         self.ctx
             .set_transform(Affine::translate((x as f64, y as f64)));
-        self.ctx.set_paint(alpha(registered.style().color));
 
         for line in registered.layout().lines() {
             for item in line.items() {
                 let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                     continue;
                 };
+                // Each stretch of glyphs is in the colour of the part of the
+                // run it came from.
+                let part = glyph_run.style().brush;
+                self.ctx.set_paint(alpha(registered.color_of(part)));
                 let parley_run = glyph_run.run();
                 let font = parley_run.font().clone();
                 let size = parley_run.font_size();
@@ -409,6 +412,59 @@ mod tests {
         assert!(
             below > 10,
             "expected ink on later lines, got {below} dark pixels below row {first_line_rows}"
+        );
+    }
+
+    /// A run of two parts is painted in two colours: each part's glyphs in
+    /// the part's own.
+    #[test]
+    fn each_part_of_a_run_is_painted_in_its_own_colour() {
+        let mut text = TextEngine::new();
+        let in_colour = |color| TextStyle {
+            size: 40.0,
+            color,
+            ..TextStyle::default()
+        };
+        let (red, blue) = (
+            in_colour(Color::rgb(1.0, 0.0, 0.0)),
+            in_colour(Color::rgb(0.0, 0.0, 1.0)),
+        );
+        let run = text.register_parts(
+            &[("HHHH", &red), ("HHHH", &blue)],
+            &crate::ui::types::TextFlow::default(),
+        );
+        let m = text.measure_run(run, None);
+        let mut p = Painter::new(m.width.ceil() as u16 + 4, m.height.ceil() as u16 + 4);
+        p.draw(
+            &[Command::Glyphs(Glyphs {
+                run,
+                x: 2.0,
+                y: 2.0,
+            })],
+            WHITE,
+            &mut text,
+        );
+
+        let width = p.size().0 as usize;
+        let reddish = |px: &PremulRgba8| px.r > 200 && px.g < 80 && px.b < 80;
+        let bluish = |px: &PremulRgba8| px.b > 200 && px.g < 80 && px.r < 80;
+        let (mut left, mut right) = ((0, 0), (0, 0));
+        for (index, px) in p.pixels().iter().enumerate() {
+            let side = if index % width < width / 2 {
+                &mut left
+            } else {
+                &mut right
+            };
+            side.0 += reddish(px) as u32;
+            side.1 += bluish(px) as u32;
+        }
+        assert!(
+            left.0 > 20 && left.1 == 0,
+            "the first part is red: {left:?}"
+        );
+        assert!(
+            right.1 > 20 && right.0 == 0,
+            "the second is blue: {right:?}"
         );
     }
 
