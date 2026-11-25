@@ -172,6 +172,56 @@ export class RenderEngine {
   }
 
   /**
+   * `zenafx:host/scene.create-node()`
+   * @returns {number}
+   */
+  createNode() {
+    return this.#exports.scene_create_node(this.#handle) >>> 0;
+  }
+
+  /**
+   * `zenafx:host/scene.[method]node.set-slot(slot, children)`
+   * @param {number} node
+   * @param {number} slot
+   * @param {number[]} children
+   * @returns {boolean}
+   */
+  setSlot(node, slot, children) {
+    const byteLen = children.length * 4;
+    const ptr = byteLen > 0 ? this.#exports.alloc(byteLen) : 0;
+    try {
+      if (byteLen > 0) {
+        const view = new DataView(this.#memory.buffer);
+        for (let i = 0; i < children.length; i++) {
+          view.setUint32(ptr + i * 4, children[i] >>> 0, true);
+        }
+      }
+      return (
+        this.#exports.scene_set_slot(
+          this.#handle,
+          node >>> 0,
+          slot >>> 0,
+          ptr,
+          children.length,
+        ) !== 0
+      );
+    } finally {
+      if (byteLen > 0) {
+        this.#exports.dealloc(ptr, byteLen);
+      }
+    }
+  }
+
+  /**
+   * `resource.drop` on `zenafx:host/scene.node`.
+   * @param {number} node
+   * @returns {boolean}
+   */
+  dropNode(node) {
+    return this.#exports.scene_drop_node(this.#handle, node >>> 0) !== 0;
+  }
+
+  /**
    * `zenafx:host/scene.[method]node.render(...)`
    * @param {number} node
    * @param {Uint8Array} encodedPayload

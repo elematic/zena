@@ -1,0 +1,144 @@
+/**
+ * Guest directives (`cache` and `repeat`) driven by `@signal` and `@ui` over
+ * `create-node` and `set-slot`.
+ *
+ * - Clicking "Toggle" parks and restores a cached details branch without
+ *   rebuilding its host node or re-shaping its text; its reactive `Effect`
+ *   pauses while parked and syncs on resume.
+ * - Clicking "Update" writes the summary signal (observable only once resumed
+ *   if details are parked).
+ * - Clicking "Reverse" reorders a keyed list via `repeat`, permuting the
+ *   existing host nodes in place with zero text re-shaping.
+ * - Clicking "Drop" removes the first item, releasing its owned host node.
+ */
+import {
+  Color, BoxStyle, TextStyle, Edges, Axis, Justify, Align,
+} from 'zenafx:ui/style';
+import {
+  ui, Widget, Box, Text, TemplateResult, full, runApp, cache, repeat,
+} from '../ui.zena';
+import { signal } from 'zena:signals';
+import { some, none } from 'zena:core';
+
+let pageBg = new Color(0.98, 0.98, 0.99, 1.0);
+let ink = new Color(0.10, 0.11, 0.13, 1.0);
+let paper = new Color(1.0, 1.0, 1.0, 1.0);
+let btnFill = new Color(0.20, 0.38, 0.86, 1.0);
+let panelFill = new Color(0.93, 0.95, 0.99, 1.0);
+let panelEdge = new Color(0.75, 0.80, 0.90, 1.0);
+
+let pageStyle = new BoxStyle(some(pageBg), none, 0.0, 0.0, 1.0);
+let btnStyle = new BoxStyle(some(btnFill), none, 0.0, 8.0, 1.0);
+let panelStyle = new BoxStyle(some(panelFill), some(panelEdge), 1.0, 8.0, 1.0);
+let btnText = new TextStyle('system-ui', 14.0, 600 as u16, false, paper);
+let bodyText = new TextStyle('system-ui', 18.0, 400 as u16, false, ink);
+let btnPadding = new Edges(8.0, 16.0, 8.0, 16.0);
+let panelPadding = new Edges(10.0, 14.0, 10.0, 14.0);
+
+final class Item {
+  id: i32;
+  label: String;
+
+  new(this.id, this.label);
+}
+
+class ActionButton extends Widget {
+  #label: String;
+  #onPress: () => void;
+
+  new(label: String, onPress: () => void) : #label = label, #onPress = onPress, super();
+
+  build(): TemplateResult {
+    return @ui Box {
+      style: btnStyle,
+      padding: btnPadding,
+      onDown: () => { this.#onPress(); },
+
+      Text(this.#label) { style: btnText }
+    };
+  }
+}
+
+function initialItems() {
+  let list = new GrowableArray<Item>();
+  list.push(new Item(1, 'Alpha'));
+  list.push(new Item(2, 'Beta'));
+  list.push(new Item(3, 'Gamma'));
+  return list;
+}
+
+class DirectivesPage extends Widget {
+  @signal var #showDetails: boolean = false;
+  @signal var #summary: String = 'Initial summary';
+  @signal var #items: GrowableArray<Item> = initialItems();
+
+  build(): TemplateResult {
+    return @ui Box {
+      width: full,
+      height: full,
+      style: pageStyle,
+      justify: Justify.Center,
+      align: Align.Center,
+      gap: 16.0,
+
+      Box {
+        axis: Axis.Row,
+        gap: 10.0,
+
+        ActionButton('Toggle', () => { this.#showDetails = !this.#showDetails; })
+        ActionButton('Update', () => { this.#summary = 'Updated summary'; })
+        ActionButton('Reverse', () => { this.#reverseItems(); })
+        ActionButton('Drop', () => { this.#dropFirst(); })
+      }
+
+      $(cache(if (this.#showDetails) {
+        @ui Box {
+          style: panelStyle,
+          padding: panelPadding,
+
+          Text($(this.#summary)) { style: bodyText }
+        }
+      } else {
+        null
+      }))
+
+      Box {
+        gap: 6.0,
+
+        $(repeat(
+          this.#items,
+          (item) => item.id,
+          (item) => @ui Box {
+            Text(item.label) { style: bodyText }
+          },
+        ))
+      }
+    };
+  }
+
+  #reverseItems(): void {
+    let cur = this.#items;
+    let next = new GrowableArray<Item>();
+    var i = cur.length - 1;
+    while (i >= 0) {
+      next.push(cur[i]);
+      i -= 1;
+    }
+    this.#items = next;
+  }
+
+  #dropFirst(): void {
+    let cur = this.#items;
+    let next = new GrowableArray<Item>();
+    var i = 1;
+    while (i < cur.length) {
+      next.push(cur[i]);
+      i += 1;
+    }
+    this.#items = next;
+  }
+}
+
+export function main(): void {
+  runApp(new DirectivesPage());
+}

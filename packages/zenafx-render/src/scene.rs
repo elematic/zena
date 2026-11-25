@@ -504,6 +504,11 @@ struct Retained {
     unselectable: bool,
     /// A flow container's text: its text children's contents, joined.
     joined: String,
+    /// Whether this node was created with `create_node` and is owned by a
+    /// guest `own<node>` handle rather than by a parent's slot. Removing it
+    /// from a slot detaches it while keeping its interior and shaped runs
+    /// alive; dropping the guest handle frees it via `drop_node`.
+    guest_owned: bool,
 }
 
 impl Retained {
@@ -531,6 +536,15 @@ impl Retained {
             editable: false,
             unselectable: false,
             joined: String::new(),
+            guest_owned: false,
+        }
+    }
+
+    /// An empty detached node owned by a guest handle (`create_node`).
+    fn detached() -> Self {
+        Self {
+            guest_owned: true,
+            ..Self::empty()
         }
     }
 
@@ -758,6 +772,137 @@ impl Scene {
         Some(children)
     }
 
+    /// Allocate a detached node owned by a guest handle (`create-node`).
+    ///
+    /// Layout, paint, and hit testing start from the root and therefore skip a
+    /// detached node until a parent places it in a slot with [`Scene::set_slot`].
+    pub fn create_node(&mut self) -> u32 {
+        self.alloc(Retained::detached())
+    }
+
+    /// Replace the children of slot `index` of `node`'s interior with
+    /// `children`, in order.
+    ///
+    /// Previous children not in `children` are detached if `guest_owned`
+    /// (keeping their interior and shaped text runs alive) or dropped if
+    /// created by `content`. Each node in `children` is detached from any
+    /// previous parent slot and attached under this slot.
+    ///
+    /// Returns `false` if the slot does not exist, or if `children` contains
+    /// an unknown id, duplicate id, the root, or an ancestor of the slot.
+    pub fn set_slot(
+        &mut self,
+        node: u32,
+        index: u32,
+        children: &[u32],
+        text: &mut TextEngine,
+    ) -> bool {
+        let Some(slot) = self.slot(node, index) else {
+            return false;
+        };
+        let slot_ancestors = self.path(Some(slot));
+        for (i, &child) in children.iter().enumerate() {
+            if self.get(child).is_none()
+                || self.root == Some(child)
+                || slot_ancestors.contains(&child)
+                || children[..i].contains(&child)
+            {
+                return false;
+            }
+        }
+
+        let old_children = self
+            .get(slot)
+            .map(|n| n.children.clone())
+            .unwrap_or_default();
+        for old in old_children {
+            if !children.contains(&old) {
+                if self.is_guest_owned(old) {
+                    self.detach_subtree(old);
+                } else {
+                    self.forget_pointer_in(old);
+                    self.drop_subtree(old, text);
+                }
+            }
+        }
+
+        for &child in children {
+            let prev_parent = self.get(child).and_then(|n| n.parent);
+            if let Some(prev) = prev_parent
+                && prev != slot
+            {
+                if let Some(prev_node) = self.get_mut(prev) {
+                    prev_node.children.retain(|&c| c != child);
+                }
+                self.forget_pointer_in(child);
+                self.clear_rects_in(child);
+            }
+            if let Some(held) = self.get_mut(child) {
+                held.parent = Some(slot);
+            }
+        }
+
+        if let Some(slot_node) = self.get_mut(slot) {
+            slot_node.children = children.to_vec();
+        }
+        self.changed();
+        true
+    }
+
+    /// Release a guest-owned node handle (`resource.drop` on `node`).
+    ///
+    /// Only nodes created with [`Scene::create_node`] are freed here; nodes
+    /// returned by `root` or `content` belong to their parent's interior and
+    /// are left untouched (returning `false`).
+    pub fn drop_node(&mut self, id: u32, text: &mut TextEngine) -> bool {
+        if !self.is_guest_owned(id) {
+            return false;
+        }
+        let parent = self.get(id).and_then(|n| n.parent);
+        if let Some(p) = parent
+            && let Some(parent_node) = self.get_mut(p)
+        {
+            parent_node.children.retain(|&c| c != id);
+        }
+        self.forget_pointer_in(id);
+        if let Some(held) = self.get_mut(id) {
+            held.guest_owned = false;
+            held.parent = None;
+        }
+        self.drop_subtree(id, text);
+        if parent.is_some() {
+            self.changed();
+        }
+        true
+    }
+
+    fn is_guest_owned(&self, id: u32) -> bool {
+        self.get(id).is_some_and(|n| n.guest_owned)
+    }
+
+    /// Detach a guest-owned node from its parent without destroying its
+    /// interior or shaped text runs.
+    fn detach_subtree(&mut self, id: u32) {
+        self.forget_pointer_in(id);
+        self.clear_rects_in(id);
+        if let Some(held) = self.get_mut(id) {
+            held.parent = None;
+        }
+    }
+
+    fn clear_rects_in(&mut self, id: u32) {
+        if let Some(rect) = self.rects.get_mut(id as usize) {
+            *rect = None;
+        }
+        let children = self
+            .get(id)
+            .map(|n| n.children.clone())
+            .unwrap_or_default();
+        for child in children {
+            self.clear_rects_in(child);
+        }
+    }
+
     /// The node that is slot `index` of `node`'s interior.
     fn slot(&self, node: u32, index: u32) -> Option<u32> {
         let interior = self.get(node)?.interior.as_ref()?;
@@ -797,6 +942,7 @@ impl Scene {
             let listeners = held.listener_ids();
             *held = Retained {
                 parent: held.parent,
+                guest_owned: held.guest_owned,
                 ..Retained::empty()
             };
             if let Some(run) = gone {
@@ -2587,6 +2733,13 @@ impl Scene {
 
     /// Free a subtree and the text it shaped.
     fn drop_subtree(&mut self, id: u32, text: &mut TextEngine) {
+        // A guest-owned node hanging inside a dropped ancestor stays alive for
+        // as long as the guest holds its `own<node>` handle; detach it instead
+        // of freeing its arena slot out from under that handle.
+        if self.is_guest_owned(id) {
+            self.detach_subtree(id);
+            return;
+        }
         let Some(node) = self.nodes.get_mut(id as usize).and_then(Option::take) else {
             return;
         };
@@ -5593,6 +5746,127 @@ mod tests {
         assert_eq!(glyphs(&scene.draw(window(), &mut text)), before);
         assert!(scene.select_all_text());
         assert_eq!(scene.selected_text().as_deref(), Some("one two three"));
+    }
+
+    #[test]
+    fn a_detached_node_is_skipped_until_placed_in_a_slot_and_keeps_its_run_across_park() {
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        let host = fresh(
+            DIAL,
+            vec![
+                NodeDef {
+                    first_child: 1,
+                    child_count: 1,
+                    ..blank()
+                },
+                NodeDef {
+                    is_slot: true,
+                    ..blank()
+                },
+            ],
+            vec![],
+        );
+        scene.render(root, &host, &[], &mut text);
+
+        // Create and render into a detached node before attaching it.
+        let parked = scene.create_node();
+        scene.render(parked, &just_text(OTHER, "cached branch"), &[], &mut text);
+
+        // Detached node is not drawn yet, even though its text is already shaped.
+        assert!(glyphs(&scene.draw(window(), &mut text)).is_empty());
+
+        // Attach it into slot 0.
+        assert!(scene.set_slot(root, 0, &[parked], &mut text));
+        let first = glyphs(&scene.draw(window(), &mut text));
+        assert_eq!(first.len(), 1);
+        let run = first[0].run;
+        assert_eq!(
+            text.get(run).expect("live run").content(),
+            "cached branch"
+        );
+
+        // Park it by clearing the slot: not drawn, but shaped run stays alive.
+        assert!(scene.set_slot(root, 0, &[], &mut text));
+        assert!(glyphs(&scene.draw(window(), &mut text)).is_empty());
+        assert!(
+            text.get(run).is_some(),
+            "parking a guest-owned node must keep its shaped text run alive"
+        );
+
+        // Reattach it: draws with the exact same shaped run id.
+        assert!(scene.set_slot(root, 0, &[parked], &mut text));
+        let again = glyphs(&scene.draw(window(), &mut text));
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].run, run, "reattaching must reuse the parked run");
+
+        // Dropping the guest handle detaches and frees the node and its run.
+        assert!(scene.drop_node(parked, &mut text));
+        assert!(glyphs(&scene.draw(window(), &mut text)).is_empty());
+        assert!(
+            text.get(run).is_none(),
+            "dropping a guest-owned node must release its shaped run"
+        );
+        // Dropping a slot-owned handle (`root`) is a no-op.
+        assert!(!scene.drop_node(root, &mut text));
+    }
+
+    #[test]
+    fn set_slot_reorders_guest_owned_nodes_without_reshaping_and_rejects_invalid_inputs() {
+        let mut text = TextEngine::new();
+        let mut scene = Scene::new();
+        let root = scene.root();
+        let host = fresh(
+            DIAL,
+            vec![
+                NodeDef {
+                    layout: row(),
+                    first_child: 1,
+                    child_count: 1,
+                    ..blank()
+                },
+                NodeDef {
+                    is_slot: true,
+                    ..blank()
+                },
+            ],
+            vec![],
+        );
+        scene.render(root, &host, &[], &mut text);
+
+        let a = scene.create_node();
+        let b = scene.create_node();
+        scene.render(a, &just_text(OTHER, "alpha"), &[], &mut text);
+        scene.render(b, &just_text(PANEL, "beta"), &[], &mut text);
+
+        assert!(scene.set_slot(root, 0, &[a, b], &mut text));
+        let before = glyphs(&scene.draw(window(), &mut text));
+        assert_eq!(before.len(), 2);
+        let (run_a, run_b) = (before[0].run, before[1].run);
+
+        // Reorder [b, a]: same shaped runs in reversed paint/layout order.
+        assert!(scene.set_slot(root, 0, &[b, a], &mut text));
+        let after = glyphs(&scene.draw(window(), &mut text));
+        assert_eq!(after.len(), 2);
+        assert_eq!((after[0].run, after[1].run), (run_b, run_a));
+        assert!(after[0].x < after[1].x);
+
+        // Invalid set_slot inputs fail without corrupting the slot.
+        assert!(!scene.set_slot(root, 99, &[a], &mut text));
+        assert!(!scene.set_slot(root, 0, &[a, a], &mut text));
+        assert!(!scene.set_slot(root, 0, &[root], &mut text));
+        assert!(!scene.set_slot(root, 0, &[9999], &mut text));
+
+        // Rebuilding the parent's interior detaches guest-owned children rather
+        // than freeing them out from under the guest's handles.
+        scene.render(root, &just_text(99, "replaced"), &[], &mut text);
+        assert!(text.get(run_a).is_some());
+        assert!(text.get(run_b).is_some());
+        assert!(scene.drop_node(a, &mut text));
+        assert!(scene.drop_node(b, &mut text));
+        assert!(text.get(run_a).is_none());
+        assert!(text.get(run_b).is_none());
     }
 }
 

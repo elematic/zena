@@ -815,6 +815,15 @@ package zenafx:host@0.1.0 {
       /// to put a child in and can read nothing the child puts there.
       content: func(slot: u32, count: u32) -> list<own<node>>;
 
+      /// Replace the children hanging in slot `slot` with `children`, in order.
+      ///
+      /// Any previous child not present in `children` is detached if it was
+      /// created with `create-node` — keeping its interior and shaped text runs
+      /// alive for as long as the guest holds its handle — or dropped if it was
+      /// created by `content`. Each node in `children` is reparented into the
+      /// slot (detaching it from any previous slot first).
+      set-slot: func(slot: u32, children: list<borrow<node>>);
+
       /// Hear pointer events of one kind at a node of this node's interior.
       ///
       /// `target` is a position in the template this node shows, as in a
@@ -873,6 +882,14 @@ package zenafx:host@0.1.0 {
 
     /// The scene's root. The first `render` on it installs the tree.
     root: func() -> own<node>;
+
+    /// Create a detached node owned by the caller.
+    ///
+    /// A detached node can be rendered into and holds its interior and shaped
+    /// text runs in the host while layout, paint, and hit testing skip it
+    /// until a parent places it in a slot with `set-slot`. Dropping the
+    /// returned handle frees the node and its interior.
+    create-node: func() -> own<node>;
 
     /// Say that the tree is complete and worth drawing.
     ///
