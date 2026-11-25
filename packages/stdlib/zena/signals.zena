@@ -1342,3 +1342,65 @@ export function hasSources(node: ReactiveNode): boolean {
   }
   return (node as Consumer).[deps] != null;
 }
+
+// ---------------------------------------------------------------------------
+// Field decorator
+// ---------------------------------------------------------------------------
+
+// Helpers called by `@signal` so the decorator body only references functions
+// in this module rather than module-level variables.
+
+function needsSignalReadHook() {
+  return frozen || activeConsumer != null;
+}
+
+function signalFieldRead(tracker: Tracker | null): Tracker | null {
+  if (frozen) {
+    throw frozenError();
+  }
+  let t = tracker ?? new Tracker();
+  track(t, null);
+  return t;
+}
+
+function checkSignalWritable() {
+  if (frozen) {
+    throw frozenError();
+  }
+}
+
+function signalFieldChanged(tracker: Tracker | null) {
+  if (tracker != null) {
+    changed(tracker);
+  }
+}
+
+/**
+ * Turns a mutable class field into a reactive signal.
+ *
+ * The value is stored directly on the host instance and its `Tracker` is
+ * allocated lazily on the first read inside a `Computed` or `Effect`.
+ * Untracked reads and writes allocate nothing; writes equal to the current
+ * value (`==`) do not notify consumers.
+ */
+export decorator signal<T>(var value: T) {
+  var #value: T;
+  var #tracker: Tracker | null = null;
+
+  value: T {
+    get {
+      if (needsSignalReadHook()) {
+        this.#tracker = signalFieldRead(this.#tracker);
+      }
+      return this.#value;
+    }
+    set(v) {
+      checkSignalWritable();
+      if (v == this.#value) {
+        return;
+      }
+      this.#value = v;
+      signalFieldChanged(this.#tracker);
+    }
+  }
+}

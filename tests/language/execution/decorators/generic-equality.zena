@@ -1,0 +1,45 @@
+// @mode: run
+// @invoke: main
+// @result: 2
+
+// A generic decorator whose body uses structural `==` applied to two fields
+// of different types on one class — one a record, one a class. Reachability
+// must discover each application's body under its own type arguments so the
+// record's structural equality helper is reached even when another application
+// binds `T` to a class.
+
+decorator tracked<T>(var value: T) {
+  var #value: T;
+  var #writes: i32 = 0;
+
+  value: T {
+    get { return this.#value; }
+    set(v) {
+      if (v == this.#value) {
+        return;
+      }
+      this.#value = v;
+      this.#writes += 1;
+    }
+  }
+}
+
+class Tag {
+  id: i32;
+  new(this.id);
+}
+
+class Holder {
+  @tracked var point: {x: i32, y: i32} = {x: 0, y: 0};
+  @tracked var tag: Tag = new Tag(1);
+}
+
+export let main = (): i32 => {
+  let h = new Holder();
+  h.point = {x: 0, y: 0};
+  h.point = {x: 1, y: 2};
+  let same = h.tag;
+  h.tag = same;
+  h.tag = new Tag(2);
+  return h.point.x + h.tag.id - 1;
+};
