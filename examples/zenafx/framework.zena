@@ -174,6 +174,57 @@ export function grab(position: u32, handler: (event: PointerEvent) => void): Lis
 }
 
 /**
+ * Something that can be mounted into a host scene node: a widget or a
+ * `TemplateResult`.
+ */
+export interface Mountable {
+  mount(node: Node, projected: GrowableArray<Mountable> | null): void;
+  unmount(): void;
+}
+
+/**
+ * Framework-internal symbol used to attach parent-supplied projected children
+ * to a child widget without exposing them on the widget's public or subclass
+ * surface.
+ */
+export symbol projectChildren;
+
+/**
+ * Base class shared by legacy `Widget`s (`build(): Rendering`) and reactive
+ * `@ui` widgets (`build(): TemplateResult`).
+ */
+export abstract class WidgetBase implements Mountable {
+  /** Parent-supplied children projected into this widget's `Slot {}`. */
+  var #projected: GrowableArray<Mountable> | null = null;
+
+  /** Framework-internal hook to attach parent-projected children. */
+  [projectChildren](children: GrowableArray<Mountable> | null): void {
+    this.#projected = children;
+  }
+
+  /** Internal helper for subclasses in the framework to read projected children. */
+  _projectedChildren(): GrowableArray<Mountable> | null {
+    return this.#projected;
+  }
+
+  abstract placeIn(node: Node): void;
+  abstract refresh(): void;
+  abstract dispose(): void;
+
+  mount(node: Node, projected: GrowableArray<Mountable> | null): void {
+    if (projected != null) {
+      this.#projected = projected;
+    }
+    this.placeIn(node);
+    this.refresh();
+  }
+
+  unmount(): void {
+    this.dispose();
+  }
+}
+
+/**
  * What a widget shows: which template, the value for each of its holes, the
  * widgets to hang in each of its slots, and what it hears.
  *
@@ -340,6 +391,20 @@ async function pump(events: Stream<Delivery>, hearing: Hearing): Future<void> {
   }
 }
 
+/** Start pumping a single pointer listener on `node`. */
+export function startPointerListener(node: Node, listener: Listener): void {
+  let hearing = new Hearing(listener.handler);
+  pump(node.listenPointer(listener.position, listener.kind, listener.scope,
+                          listener.phase),
+       hearing);
+}
+
+/** Start pumping a single keyboard listener on `node`. */
+export function startKeyListener(node: Node, listener: KeyListener): void {
+  let hearing = new KeyHearing(listener.handler);
+  pumpKeys(node.listenKeys(listener.position, listener.phase), hearing);
+}
+
 /** What a widget last hung in one slot: the widgets, and the nodes they got. */
 class Hung {
   var children: Array<Widget>;
@@ -352,10 +417,11 @@ class Hung {
  * A widget: one node of the scene, and what it shows there.
  *
  * A subclass writes `build` and nothing else. It never sees a node, a node id,
- * a template id or a hole number — and when its own state changes it calls
- * `refresh`, which works out what that costs.
+ * a template id or a hole number — and when its own state changes it either
+ * updates `@signal` fields (for reactive `TemplateResult` widgets) or calls
+ * `refresh` (for legacy `Rendering` widgets).
  */
-export abstract class Widget {
+export abstract class Widget extends WidgetBase {
   /** Where this widget lives, once a parent has given it somewhere. */
   var #node: Node | null = null;
   /** What it last showed there. A different template is a rebuild. */
@@ -385,6 +451,8 @@ export abstract class Widget {
    * Called on every render, so it is a description and not a side effect.
    */
   abstract build(): Rendering;
+
+  dispose(): void {}
 
   /**
    * Give this widget a node to live in, forgetting whatever it showed before.
@@ -583,7 +651,7 @@ export abstract class Widget {
  * cannot wait for the entry to return. A component that keeps working never
  * does.
  */
-export function runApp(widget: Widget): void {
+export function runApp(widget: WidgetBase): void {
   widget.placeIn(root());
   widget.refresh();
   ready();

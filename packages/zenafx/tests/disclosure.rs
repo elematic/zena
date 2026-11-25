@@ -191,10 +191,10 @@ fn a_key_the_component_passes_on_is_still_acted_on() {
 
     assert_eq!(
         app.events_delivered() - before,
-        2,
-        "the summary's two key listeners were each offered the key"
+        1,
+        "the summary's key listener was offered the key"
     );
-    assert_eq!(ringed(&mut app), [false, true], "and neither prevented it");
+    assert_eq!(ringed(&mut app), [false, true], "and passed it on");
 }
 
 /// A press on a summary opens it and gives it the focus, so the keyboard

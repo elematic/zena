@@ -15,7 +15,7 @@ import {
   isBigIntLiteralRaw, isScopedType, scopedInner, soleNonNullMember, internFunctionType, forInLowersToIndexLoop,
   isIterableRangeClass, holdsOwner, typeContainsScoped, erasedType } from '../../types.zena';
 import {
-  Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, NumberLiteral, ThrowExpression, TryExpression, ContractClause, contractFailureMessage, ShieldedStatement, StringLiteral, SuperInitializer, TemplateLiteral, UnaryExpression,
+  Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, DecoratedExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, NumberLiteral, ThrowExpression, TryExpression, ContractClause, contractFailureMessage, ShieldedStatement, StringLiteral, SuperInitializer, TemplateLiteral, UnaryExpression,
 } from '../../ast.zena';
 import {
   WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo, TypeTestSite,
@@ -687,6 +687,7 @@ function isInstantiationSite(n: Node, model: SemanticModel): boolean {
       n is VariableDeclaration || n is AssignmentExpression || n is NewExpression ||
       n is IndexExpression || n is AsExpression || n is IsExpression ||
       n is TemplateLiteral || n is TaggedTemplateExpression ||
+      (n is DecoratedExpression && model.getUiLowering(n) != null) ||
       n is ArrayLiteral || n is TupleLiteral || n is RecordLiteral ||
       n is MapLiteral || n is RangeExpression || n is MatchExpression ||
       n is MatchCase || n is LetPatternCondition || n is ForInStatement ||
@@ -1376,6 +1377,20 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       // like the explicit-constructor promotion.
       if (n is TaggedTemplateExpression) {
         this.registerTaggedTemplate(n, model);
+      }
+      if (n is DecoratedExpression) {
+        let ui = model.getUiLowering(n);
+        if (ui != null) {
+          this.registerUiTemplate(n, ui.templateType, model, resolveType);
+          this.registerLiterals(ui.templateBlock);
+          this.registerLiterals(ui.templateResult);
+          this.registerLiterals(ui.instanceBlock);
+          this.registerLiterals(ui.instanceResult);
+          this.registerInstantiations(ui.templateBlock, model, resolveType, classType);
+          this.registerInstantiations(ui.templateResult, model, resolveType, classType);
+          this.registerInstantiations(ui.instanceBlock, model, resolveType, classType);
+          this.registerInstantiations(ui.instanceResult, model, resolveType, classType);
+        }
       }
       if (n is TemplateLiteral) {
         this.registerTemplateLiteral(n, model, resolveType);
@@ -2976,6 +2991,32 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * records carry neither the cache global nor the tag reference —
    * organ four of the skipped-walk blindness).
    */
+  registerUiTemplate(expr: DecoratedExpression, templateType: Type, model: SemanticModel, resolveType: (t: Type) => Type): void {
+    if (this.pass.wasm.uiTemplateGlobals.has(expr)) {
+      return;
+    }
+    let resolved = resolveType(templateType);
+    this.pass.typeLowerer.discoverType(resolved, model);
+    let vt = typeToValType(this.pass.wasm, resolved);
+    let globalType: ValType = if (let ValTypeRef {target} = vt) {
+      new ValTypeRefNull(target)
+    } else {
+      vt
+    };
+    let globalName = "ui_tpl_cache_" + i32ToString(expr.id as i32);
+    let g = new WasmGlobal(
+      globalName,
+      globalName,
+      globalType,
+      true,
+      null,
+      null,
+      model
+    );
+    this.pass.wasm.globals.push(g);
+    this.pass.wasm.uiTemplateGlobals[expr] = g;
+  }
+
   registerTaggedTemplate(expr: TaggedTemplateExpression, model: SemanticModel): void {
         // The tag receives the raw text of each segment as well as the
         // cooked (`strings.raw`), and the lowering reads both out of the
@@ -3366,6 +3407,16 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is TaggedTemplateExpression) {
         this.registerTaggedTemplate(n, model);
+      }
+      if (n is DecoratedExpression) {
+        let ui = model.getUiLowering(n);
+        if (ui != null) {
+          this.registerUiTemplate(n, ui.templateType, model, resolveType);
+          this.discoverNodeTypes(ui.templateBlock, model, resolveType);
+          this.discoverNodeTypes(ui.templateResult, model, resolveType);
+          this.discoverNodeTypes(ui.instanceBlock, model, resolveType);
+          this.discoverNodeTypes(ui.instanceResult, model, resolveType);
+        }
       }
       if (n is TemplateLiteral) {
         this.registerTemplateLiteral(n, model, resolveType);

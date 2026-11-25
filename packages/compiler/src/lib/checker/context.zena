@@ -9,7 +9,8 @@ import {
   ClassDeclaration, DeclareFunction, EnumDeclaration, Expression,
   FunctionExpression, Identifier, InterfaceDeclaration, MixinDeclaration,
   Node, NodeId, Parameter, SealedVariant, SourceLocation, StringLiteral,
-  TypeAliasDeclaration, TypeAnnotation, TypeParameter, decoratorStringArg
+  TypeAliasDeclaration, TypeAnnotation, TypeParameter, decoratorStringArg,
+  makeNodeIdGenerator
 } from '../ast.zena';
 import {
   BooleanType, ClassType, EnumType, ErrorType, F32Type, F64Type, FieldInfo,
@@ -24,7 +25,7 @@ import {
   ClosureDependency, EdgeDrop, ModelIndex, SemanticModel, SymbolDependencies
 } from '../semantic-model.zena';
 import { DiagnosticBag, DiagnosticCode } from '../diagnostics.zena';
-import { Symbol, SymbolId, noSymbolId } from '../scope/symbol.zena';
+import { Symbol, SymbolId, noSymbolId, makeSymbolIdGenerator } from '../scope/symbol.zena';
 import { ModuleExports, ScopeResult } from '../scope/scope-builder.zena';
 import { WellKnown, isWellKnown, wellKnownLibrary, wellKnownName } from '../well-known.zena';
 import { nowMs, performance } from '../time.zena';
@@ -136,6 +137,9 @@ export function newEnumType(symbolId: SymbolId, declaringModule: String, ed: Enu
 
 export final class SharedCheckerState {
   var typeIdGenerator = makeTypeIdGenerator();
+  /** Generators for checker-synthesized AST nodes and symbols (outside parser ranges). */
+  synthNodeIds = makeNodeIdGenerator(1610612736);
+  synthSymbolIds = makeSymbolIdGenerator(1610612736);
   /** The compiler's interned types, shared with its codegen. */
   interner = new TypeInterner();
   preludeTypes = new Map<String, Type>();
@@ -1070,6 +1074,16 @@ export final class CheckerContext {
    */
   freshTypeId(): TypeId {
     return this.#sharedState.typeIdGenerator.next();
+  }
+
+  /** Mint a unique NodeId for a checker-synthesized AST node. */
+  mintNodeId(): NodeId {
+    return this.#sharedState.synthNodeIds.next();
+  }
+
+  /** Mint a unique SymbolId for a checker-synthesized local binding. */
+  mintSymbolId(): SymbolId {
+    return this.#sharedState.synthSymbolIds.next();
   }
 
   /** The compiler's interned types; see `TypeInterner`. */

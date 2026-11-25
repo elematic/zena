@@ -1,0 +1,80 @@
+// @mode: check
+
+class MockEl {
+  bind(prop: String): void {}
+}
+
+final class Box extends MockEl {
+  var #gap: f32 = 0.0;
+  static patch(inst: MockInst, idx: i32): Box { return new Box(); }
+  addChild(child: MockEl): void {}
+  gap: f32 {
+    get { return this.#gap; }
+    set(v) { this.#gap = v; }
+  }
+}
+
+final class Text extends MockEl {
+  var #content: String = '';
+  new(content: String = '') : #content = content, super();
+  static patch(inst: MockInst, idx: i32): Text { return new Text(); }
+  content: String {
+    get { return this.#content; }
+    set(v) { this.#content = v; }
+  }
+}
+
+final class MockTpl {
+  instantiate(): MockInst { return new MockInst(); }
+}
+
+final class MockInst {
+  react(fn: () => void): void {}
+  setSlotChild(idx: i32, child: Widget): void {}
+  bindSlot(idx: i32, fn: () => MockInst | null): void {}
+}
+
+final class MockUi {
+  slot(): MockEl { return new MockEl(); }
+  compile(root: MockEl): MockTpl { return new MockTpl(); }
+}
+
+class Widget {
+  label: String;
+  new(this.label);
+}
+
+let ui = new MockUi();
+let notATag = 42;
+
+function badBindingOutside(): i32 {
+  return $(1 + 2); // @error: Binding expressions '$(...)' can only be used inside a staged '@' expression
+}
+
+function badUntagged(): void {
+  let _ = Box { gap: 1.0 }; // @error: Untagged node literals are not yet supported
+}
+
+function badTag(): void {
+  let _ = @notATag Box {}; // @error: is not a staged node-tree tag
+}
+
+function badProps(): MockInst {
+  return @ui Box {
+    unknownProp: 1, // @error: Property 'unknownProp' does not exist on type 'Box'
+    gap: 'oops', // @error: Type mismatch in assignment
+    gap: $('also oops'), // @error: Type mismatch in assignment
+  };
+}
+
+function badLeafChildren(): MockInst {
+  return @ui Text('hi') {
+    Box {} // @error: 'Text' does not accept children
+  };
+}
+
+function badWidgetPositionalBinding(s: String): MockInst {
+  return @ui Box {
+    Widget($(s)) // @error: cannot be passed as positional constructor arguments
+  };
+}

@@ -1,0 +1,937 @@
+/**
+ * Type-checking and two-phase AST synthesis for staged node-tree expressions
+ * (such as `@ui Box { ... }`).
+ *
+ * The compiler has no built-in knowledge of ZenaFX or its scene protocol.
+ * Instead, it speaks a small tag protocol:
+ *
+ *   - Tag object (e.g. `ui`): a value whose class declares `compile(root)` and
+ *     `slot()` (and optionally `wrapSlot()` and `dynamicChild(fn)`).
+ *   - Host element class (e.g. `Box`, `Flow`, `Text`, `Slot`): a class with a
+ *     static `patch(inst, nodeIndex)` method. Built once in Phase 1 (cached in
+ *     a Wasm global per call site) with constant properties folded directly
+ *     into the element tree and dynamic/reactive properties marked via
+ *     `.bind(propName)`. Patched per-instance in Phase 2 through
+ *     `Element.patch(inst, preOrderNodeIdx)` using the element's real setters.
+ *   - Child component / widget class (e.g. `Counter`, `Button`, `Card`): any
+ *     other class. Occupies a placeholder `tag.slot()` in Phase 1, is
+ *     constructed with `new WidgetClass(args...)` in Phase 2, has its named
+ *     properties set directly (or reactively via `inst.react(...)`), projects
+ *     its children via `inst.project(w, [...])`, and mounts via
+ *     `inst.setSlotChild(preSlotIdx, w)`.
+ *   - Dynamic child `$(expr)`: occupies a `tag.slot()` in Phase 1 and binds
+ *     `inst.bindSlot(preSlotIdx, () => expr)` in Phase 2.
+ */
+import {
+  Node, Expression, Statement, BlockStatement, VariableDeclaration,
+  ExpressionStatement, Identifier, IdentifierPattern, NumberLiteral,
+  StringLiteral, BooleanLiteral, NullLiteral, UnaryExpression,
+  BinaryExpression, AsExpression, NewExpression, MemberExpression,
+  CallExpression, AssignmentExpression, FunctionExpression, ArrayLiteral,
+  NodeLiteral, BindingExpression, DecoratedExpression, Decorator,
+  PropertyAssignment, SpreadElement, Parameter, SourceLocation,
+  TypeAnnotation, Module, ClassDeclaration, EnumDeclaration,
+  InterfaceDeclaration, MethodDefinition,
+} from '../ast.zena';
+import {
+  Type, ClassType, InterfaceType, EnumType, ErrorType, FunctionType,
+  FieldInfo, unwrapAliases, typeToString,
+} from '../types.zena';
+import { DiagnosticCode } from '../diagnostics.zena';
+import { Symbol } from '../scope/symbol.zena';
+import { UiLowering } from '../semantic-model.zena';
+import { CheckerContext } from './context.zena';
+import { checkExpression } from './expressions.zena';
+import { checkStatement } from './statements.zena';
+
+/**
+ * Type-check a `DecoratedExpression` (`@tag expr`).
+ *
+ * Currently supports single staged node-tree tags whose resolved value class
+ * implements `compile` and `slot` (such as ZenaFX's `@ui`).
+ */
+export function checkDecoratedExpression(
+  ctx: CheckerContext,
+  expr: DecoratedExpression,
+  expectedType: Type | null
+): Type {
+  if (expr.decorators.length != 1) {
+    ctx.error(
+      "Decorated expressions currently support a single tag decorator.",
+      DiagnosticCode.TypeMismatch,
+      expr.loc
+    );
+    return new ErrorType();
+  }
+  let dec = expr.decorators[0];
+  if (dec.path.length != 1 || dec.args.length > 0) {
+    ctx.error(
+      `Unsupported expression decorator '@${dec.name}'.`,
+      DiagnosticCode.TypeMismatch,
+      dec.loc
+    );
+    return new ErrorType();
+  }
+
+  let tagIdent = dec.path[0];
+  let tagSym = ctx.model.resolve(tagIdent);
+  let tagType = checkExpression(ctx, tagIdent, null);
+  if (tagType is ErrorType) {
+    return new ErrorType();
+  }
+
+  let unwrappedTag = unwrapAliases(tagType);
+  if (!isUiTagType(unwrappedTag)) {
+    ctx.error(
+      `Expression decorator '@${tagIdent.name}' is not a staged node-tree tag (type '${typeToString(tagType)}' has no 'compile' and 'slot' methods).`,
+      DiagnosticCode.TypeMismatch,
+      dec.loc
+    );
+    return new ErrorType();
+  }
+  if (tagSym == null) {
+    return new ErrorType();
+  }
+
+  let builder = new UiSynthesizer(ctx, expr, dec, tagIdent, tagSym);
+  return builder.build();
+}
+
+function isUiTagType(t: Type): boolean {
+  if (t is ClassType) {
+    return t.members.has("compile") && t.members.has("slot");
+  }
+  if (t is InterfaceType) {
+    return t.members.has("compile") && t.members.has("slot");
+  }
+  return false;
+}
+
+function isHostElementClass(cls: ClassType) {
+  return cls.staticMembers.has("patch");
+}
+
+function resolveClassFromExpr(ctx: CheckerContext, typeExpr: Expression): ClassType | null {
+  if (typeExpr is Identifier) {
+    var resolved = ctx.resolveTypeReference(typeExpr, typeExpr.name);
+    if (resolved == null) {
+      let val = ctx.resolveIdentifier(typeExpr);
+      if (val is ClassType) {
+        resolved = val;
+      }
+    }
+    if (resolved != null) {
+      let u = unwrapAliases(resolved);
+      if (u is ClassType) {
+        return u;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether `expr` is provably safe to fold into the call-site-cached Phase 1
+ * template (no `this`, no locals/params, no mutable `var`, no `$(...)`, no
+ * closures, and no arbitrary function calls).
+ */
+function isTemplateStatic(ctx: CheckerContext, expr: Expression): boolean {
+  return match (expr) {
+    case NumberLiteral: true
+    case StringLiteral: true
+    case BooleanLiteral: true
+    case NullLiteral: true
+    case Identifier as ident: {
+      let sym = ctx.model.resolve(ident);
+      if (sym == null) {
+        false
+      } else {
+        let target = sym.resolveTarget();
+        if (target.isMutable) {
+          false
+        } else {
+          isTopLevelStaticSymbol(ctx, target)
+        }
+      }
+    }
+    case MemberExpression {object, property, optional, isSymbolAccess}: {
+      if (optional || isSymbolAccess) {
+        false
+      } else if (object is Identifier) {
+        let objType = ctx.resolveTypeReference(object, object.name);
+        if (objType != null && unwrapAliases(objType) is EnumType) {
+          true
+        } else if (isTemplateStatic(ctx, object)) {
+          let valType = ctx.resolveIdentifier(object);
+          if (valType != null) {
+            let u = unwrapAliases(valType);
+            if (u is ClassType) {
+              let member = u.members.get(property.name);
+              if (let FieldInfo {isMutable} = member) {
+                !isMutable
+              } else {
+                false
+              }
+            } else {
+              u is EnumType
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        }
+      } else {
+        isTemplateStatic(ctx, object)
+      }
+    }
+    case UnaryExpression {argument}: isTemplateStatic(ctx, argument)
+    case BinaryExpression {left, right}: isTemplateStatic(ctx, left) && isTemplateStatic(ctx, right)
+    case AsExpression {expression}: isTemplateStatic(ctx, expression)
+    case NewExpression {callee, args, constructorName}: {
+      if (constructorName != null) {
+        false
+      } else {
+        let cls = resolveClassFromExpr(ctx, callee);
+        if (cls == null || !hasPureValueConstructor(ctx, callee, cls)) {
+          false
+        } else {
+          var allStatic = true;
+          for (let arg in args) {
+            if (!isTemplateStatic(ctx, arg)) {
+              allStatic = false;
+              break;
+            }
+          }
+          allStatic
+        }
+      }
+    }
+    case _: false
+  };
+}
+
+function isTopLevelStaticSymbol(ctx: CheckerContext, target: Symbol): boolean {
+  if (target.declaration == null) {
+    return true;
+  }
+  let decl = target.declaration as Node;
+  if (decl is ClassDeclaration || decl is EnumDeclaration || decl is InterfaceDeclaration) {
+    return true;
+  }
+  // Cross-module imports only ever target top-level exports.
+  if (target.modulePath != "" && target.modulePath != ctx.filePath) {
+    return true;
+  }
+  if (decl is IdentifierPattern) {
+    let parent = ctx.model.getParent(decl);
+    if (parent is VariableDeclaration) {
+      let grand = ctx.model.getParent(parent);
+      return grand is Module;
+    }
+  }
+  return false;
+}
+
+function hasPureValueConstructor(ctx: CheckerContext, callee: Identifier, cls: ClassType): boolean {
+  if (cls.isCaseClass) {
+    return true;
+  }
+  let sym = ctx.model.resolve(callee);
+  if (sym == null) {
+    return false;
+  }
+  let decl = sym.resolveTarget().declaration;
+  if (decl is ClassDeclaration) {
+    for (let member in decl.body) {
+      if (member is MethodDefinition && member.name is Identifier && (member.name as Identifier).name == "<constructor>") {
+        let body = member.body;
+        if (body == null) {
+          return true;
+        }
+        return body is BlockStatement && body.body.length == 0;
+      }
+    }
+    // Synthesized/default constructor with no explicit body.
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Synthesizes Phase 1 (call-site-cached template construction) and Phase 2
+ * (per-instance instantiation, one-shot setters, reactive thunks, child
+ * widgets, and projected children) for a single `@ui` expression.
+ */
+final class UiSynthesizer {
+  ctx: CheckerContext;
+  rootExpr: DecoratedExpression;
+  dec: Decorator;
+  tagIdent: Identifier;
+  tagSym: Symbol;
+
+  templateStmts = new GrowableArray<Statement>();
+  instanceStmts = new GrowableArray<Statement>();
+
+  var #nodeCounter: i32 = 0;
+  var #slotCounter: i32 = 0;
+  var #varCounter: i32 = 0;
+
+  var #cacheSym: Symbol | null = null;
+  var #instSym: Symbol | null = null;
+
+  new(this.ctx, this.rootExpr, this.dec, this.tagIdent, this.tagSym);
+
+  // --------------------------------------------------------------------------
+  // AST synthesis helpers (mint IDs in creation order, record parents/symbols)
+  // --------------------------------------------------------------------------
+
+  #mint<T extends Node>(node: T): T {
+    node.id = this.ctx.mintNodeId();
+    return node;
+  }
+
+  #setParent(child: Node, parent: Node): void {
+    this.ctx.model.setParent(child, parent);
+  }
+
+  #recordSym(node: Node, sym: Symbol): void {
+    let symbols = this.ctx.model.symbols;
+    if (symbols != null) {
+      symbols.record(node, sym);
+    }
+  }
+
+  #cloneSymIdent(name: String, sym: Symbol, loc: SourceLocation | null = null): Identifier {
+    let id = this.#mint(new Identifier(name, loc));
+    this.#recordSym(id, sym);
+    return id;
+  }
+
+  #tagRef(loc: SourceLocation | null = null): Identifier {
+    return this.#cloneSymIdent(this.tagIdent.name, this.tagSym, loc);
+  }
+
+  #instRef(loc: SourceLocation | null = null): Identifier {
+    return this.#cloneSymIdent("__ui_inst", this.#instSym as Symbol, loc);
+  }
+
+  #intLit(value: i32, loc: SourceLocation | null = null): NumberLiteral {
+    return this.#mint(new NumberLiteral(`${value}`, loc));
+  }
+
+  #strLit(value: String, loc: SourceLocation | null = null): StringLiteral {
+    return this.#mint(new StringLiteral(value, loc));
+  }
+
+  #member(obj: Expression, propName: String, loc: SourceLocation | null = null): MemberExpression {
+    let prop = this.#mint(new Identifier(propName, loc));
+    let m = this.#mint(new MemberExpression(obj, prop, false, false, null, loc));
+    this.#setParent(obj, m);
+    this.#setParent(prop, m);
+    return m;
+  }
+
+  #call(callee: Expression, args: GrowableArray<Expression>, loc: SourceLocation | null = null): CallExpression {
+    let c = this.#mint(new CallExpression(callee, args, null, false, loc));
+    this.#setParent(callee, c);
+    for (let arg in args) {
+      this.#setParent(arg, c);
+    }
+    return c;
+  }
+
+  #methodCall(obj: Expression, method: String, args: GrowableArray<Expression>, loc: SourceLocation | null = null): CallExpression {
+    let m = this.#member(obj, method, loc);
+    return this.#call(m, args, loc);
+  }
+
+  #newExpr(classIdent: Identifier, classSym: Symbol, typeArgs: GrowableArray<TypeAnnotation> | null, args: GrowableArray<Expression>, loc: SourceLocation | null): NewExpression {
+    let callee = this.#cloneSymIdent(classIdent.name, classSym, classIdent.loc);
+    let ne = this.#mint(new NewExpression(callee, typeArgs, args, null, loc));
+    this.#setParent(callee, ne);
+    for (let arg in args) {
+      this.#setParent(arg, ne);
+    }
+    return ne;
+  }
+
+  #declareLocal(targetStmts: GrowableArray<Statement>, prefix: String, init: Expression, loc: SourceLocation | null = null): Symbol {
+    let idx = this.#varCounter;
+    this.#varCounter += 1;
+    let name = `${prefix}${idx}`;
+    let pat = this.#mint(new IdentifierPattern(name, null));
+    let sym = new Symbol(name, pat, "", false, this.ctx.mintSymbolId());
+    this.#recordSym(pat, sym);
+    let decl = this.#mint(new VariableDeclaration("let", pat, null, init, false, loc));
+    this.#setParent(pat, decl);
+    this.#setParent(init, decl);
+    targetStmts.push(decl);
+    return sym;
+  }
+
+  #emitStmt(targetStmts: GrowableArray<Statement>, expr: Expression, loc: SourceLocation | null = null): void {
+    let stmt = this.#mint(new ExpressionStatement(expr, loc));
+    this.#setParent(expr, stmt);
+    targetStmts.push(stmt);
+  }
+
+  #emitAssign(targetStmts: GrowableArray<Statement>, objSym: Symbol, propName: String, value: Expression, loc: SourceLocation | null): void {
+    let lhs = this.#member(this.#cloneSymIdent(objSym.name, objSym, null), propName, loc);
+    let assign = this.#mint(new AssignmentExpression(lhs, value, null, loc));
+    this.#setParent(lhs, assign);
+    this.#setParent(value, assign);
+    this.#emitStmt(targetStmts, assign, loc);
+  }
+
+  #emitReactAssign(objSym: Symbol, propName: String, inner: Expression, loc: SourceLocation | null): void {
+    let lhs = this.#member(this.#cloneSymIdent(objSym.name, objSym, null), propName, loc);
+    let assign = this.#mint(new AssignmentExpression(lhs, inner, null, loc));
+    this.#setParent(lhs, assign);
+    this.#setParent(inner, assign);
+    let exprStmt = this.#mint(new ExpressionStatement(assign, loc));
+    this.#setParent(assign, exprStmt);
+    let stmts = new GrowableArray<Statement>();
+    stmts.push(exprStmt);
+    let body = this.#mint(new BlockStatement(stmts, loc));
+    this.#setParent(exprStmt, body);
+    let fn = this.#mint(new FunctionExpression(null, new GrowableArray<Parameter>(), null, body, false, false, null, loc));
+    this.#setParent(body, fn);
+    let args = new GrowableArray<Expression>();
+    args.push(fn);
+    let call = this.#methodCall(this.#instRef(), "react", args, loc);
+    this.#emitStmt(this.instanceStmts, call, loc);
+  }
+
+  #makeThunk(inner: Expression, loc: SourceLocation | null): FunctionExpression {
+    let fn = this.#mint(new FunctionExpression(null, new GrowableArray<Parameter>(), null, inner, false, false, null, loc));
+    this.#setParent(inner, fn);
+    return fn;
+  }
+
+  // --------------------------------------------------------------------------
+  // Entry point
+  // --------------------------------------------------------------------------
+
+  build(): Type {
+    // Mint the synthetic cached-template symbol and `let __ui_inst = __ui_tpl.instantiate();`
+    let cachePat = this.#mint(new IdentifierPattern("__ui_tpl", null));
+    let cacheSym = new Symbol("__ui_tpl", cachePat, "", false, this.ctx.mintSymbolId());
+    this.#recordSym(cachePat, cacheSym);
+    this.#cacheSym = cacheSym;
+
+    let instantiateCall = this.#methodCall(
+      this.#cloneSymIdent("__ui_tpl", cacheSym, null),
+      "instantiate",
+      new GrowableArray<Expression>(),
+      this.rootExpr.loc
+    );
+    this.#instSym = this.#declareLocal(this.instanceStmts, "__ui_inst", instantiateCall, this.rootExpr.loc);
+
+    let rootNodeSym = this.#compileRoot(this.rootExpr.expression);
+    if (rootNodeSym == null) {
+      return new ErrorType();
+    }
+
+    // Phase 1 result: `tag.compile(_n0)`
+    let compileArgs = new GrowableArray<Expression>();
+    compileArgs.push(this.#cloneSymIdent(rootNodeSym.name, rootNodeSym, null));
+    let templateResult = this.#methodCall(this.#tagRef(), "compile", compileArgs, this.rootExpr.loc);
+
+    let templateBlock = this.#mint(new BlockStatement(this.templateStmts, this.rootExpr.loc));
+    for (let s in this.templateStmts) {
+      this.#setParent(s, templateBlock);
+    }
+    this.#setParent(templateBlock, this.rootExpr);
+    this.#setParent(templateResult, this.rootExpr);
+
+    // Phase 2 result: `__ui_inst`
+    let instanceResult = this.#instRef(this.rootExpr.loc);
+    let instanceBlock = this.#mint(new BlockStatement(this.instanceStmts, this.rootExpr.loc));
+    for (let s in this.instanceStmts) {
+      this.#setParent(s, instanceBlock);
+    }
+    this.#setParent(instanceBlock, this.rootExpr);
+    this.#setParent(instanceResult, this.rootExpr);
+
+    // Type-check Phase 1 (static template build)
+    for (let s in this.templateStmts) {
+      checkStatement(this.ctx, s);
+    }
+    let templateType = checkExpression(this.ctx, templateResult, null);
+    this.ctx.model.setBindingType(cacheSym, templateType);
+
+    // Type-check Phase 2 (per-instance construction)
+    for (let s in this.instanceStmts) {
+      checkStatement(this.ctx, s);
+    }
+    let resultType = checkExpression(this.ctx, instanceResult, null);
+
+    let lowering = new UiLowering(
+      templateBlock,
+      templateResult,
+      templateType,
+      cacheSym,
+      instanceBlock,
+      instanceResult
+    );
+    this.ctx.model.setUiLowering(this.rootExpr, lowering);
+    return resultType;
+  }
+
+  #compileRoot(nodeExpr: Expression): Symbol | null {
+    match (nodeExpr) {
+      case NodeLiteral {type, typeArguments, args, properties, children, loc}: {
+        let cls = resolveClassFromExpr(this.ctx, type);
+        if (cls == null) {
+          this.ctx.error(
+            "Expected a class type in '@ui' node literal.",
+            DiagnosticCode.TypeMismatch,
+            type.loc
+          );
+          return null;
+        }
+        if (isHostElementClass(cls)) {
+          return this.#compileHostElement(type as Identifier, cls, typeArguments, args, properties, children, loc);
+        }
+        // Root is a Widget: wrap in `tag.wrapSlot()`.
+        let wrapCall = this.#methodCall(this.#tagRef(), "wrapSlot", new GrowableArray<Expression>(), loc);
+        let rootSym = this.#declareLocal(this.templateStmts, "__ui_n", wrapCall, loc);
+        this.#nodeCounter += 2; // root container + its child slot
+        let slotIdx = this.#slotCounter;
+        this.#slotCounter += 1;
+        this.#compileWidgetIntoSlot(slotIdx, type as Identifier, cls, typeArguments, args, properties, children, loc);
+        return rootSym;
+      }
+      case CallExpression {callee, typeArguments, args, loc}: {
+        let cls = resolveClassFromExpr(this.ctx, callee);
+        if (cls == null) {
+          this.ctx.error(
+            "Expected a node or widget class after '@ui'.",
+            DiagnosticCode.TypeMismatch,
+            callee.loc
+          );
+          return null;
+        }
+        let emptyProps = new GrowableArray<Node>();
+        let emptyChildren = new GrowableArray<Expression>();
+        if (isHostElementClass(cls)) {
+          return this.#compileHostElement(callee as Identifier, cls, typeArguments, args, emptyProps, emptyChildren, loc);
+        }
+        let wrapCall = this.#methodCall(this.#tagRef(), "wrapSlot", new GrowableArray<Expression>(), loc);
+        let rootSym = this.#declareLocal(this.templateStmts, "__ui_n", wrapCall, loc);
+        this.#nodeCounter += 2;
+        let slotIdx = this.#slotCounter;
+        this.#slotCounter += 1;
+        this.#compileWidgetIntoSlot(slotIdx, callee as Identifier, cls, typeArguments, args, emptyProps, emptyChildren, loc);
+        return rootSym;
+      }
+      case _: {
+        this.ctx.error(
+          "'@ui' must decorate a node literal (e.g. '@ui Box { ... }').",
+          DiagnosticCode.TypeMismatch,
+          nodeExpr.loc
+        );
+        return null;
+      }
+    }
+  }
+
+  #compileHostElement(
+    typeIdent: Identifier,
+    cls: ClassType,
+    typeArguments: GrowableArray<TypeAnnotation> | null,
+    args: GrowableArray<Expression>,
+    properties: GrowableArray<Node>,
+    children: GrowableArray<Expression>,
+    loc: SourceLocation | null
+  ): Symbol | null {
+    let classSym = this.ctx.model.resolve(typeIdent);
+    if (classSym == null) {
+      return null;
+    }
+
+    let preNodeIdx = this.#nodeCounter;
+    this.#nodeCounter += 1;
+    if (cls.staticMembers.has("isSlot")) {
+      // A projection slot element is itself a host slot node and advances pre-order slot numbering.
+      this.#slotCounter += 1;
+    }
+
+    // Check positional args: static args pass straight to `new E(args...)` in Phase 1;
+    // dynamic/reactive args map by constructor parameter name to `bind(paramName)` + Phase 2 patch.
+    var allArgsStatic = true;
+    for (let arg in args) {
+      if (arg is BindingExpression || !isTemplateStatic(this.ctx, arg)) {
+        allArgsStatic = false;
+        break;
+      }
+    }
+
+    let ctorArgs = new GrowableArray<Expression>();
+    if (allArgsStatic) {
+      for (let arg in args) {
+        ctorArgs.push(arg);
+      }
+    }
+    let newNode = this.#newExpr(typeIdent, classSym, typeArguments, ctorArgs, loc);
+    let nodeSym = this.#declareLocal(this.templateStmts, "__ui_n", newNode, loc);
+
+    // Lazily emit `let __ui_pK = Element.patch(__ui_inst, preNodeIdx);` on first Phase 2 write.
+    var patchSym: Symbol | null = null;
+    let ensurePatch = () => {
+      let existing = patchSym;
+      if (existing != null) {
+        return existing;
+      }
+      let patchArgs = new GrowableArray<Expression>();
+      patchArgs.push(this.#instRef());
+      patchArgs.push(this.#intLit(preNodeIdx));
+      let patchCall = this.#methodCall(
+        this.#cloneSymIdent(typeIdent.name, classSym, typeIdent.loc),
+        "patch",
+        patchArgs,
+        loc
+      );
+      let sym = this.#declareLocal(this.instanceStmts, "__ui_p", patchCall, loc);
+      patchSym = sym;
+      return sym;
+    };
+
+    if (!allArgsStatic) {
+      let paramNames = if (cls.constructorType != null) {
+        (cls.constructorType as FunctionType).parameterNames
+      } else {
+        null
+      };
+      var i = 0;
+      while (i < args.length) {
+        let arg = args[i];
+        if (paramNames == null || i >= paramNames.length) {
+          this.ctx.error(
+            `Dynamic positional argument ${i} on '${cls.name}' has no matching constructor parameter name.`,
+            DiagnosticCode.TypeMismatch,
+            arg.loc
+          );
+          i += 1;
+          continue;
+        }
+        let propName = paramNames[i];
+        if (arg is BindingExpression) {
+          this.#emitBind(nodeSym, propName, arg.loc);
+          this.#emitReactAssign(ensurePatch(), propName, arg.expression, arg.loc);
+        } else if (isTemplateStatic(this.ctx, arg)) {
+          this.#emitAssign(this.templateStmts, nodeSym, propName, arg, arg.loc);
+        } else {
+          this.#emitBind(nodeSym, propName, arg.loc);
+          this.#emitAssign(this.instanceStmts, ensurePatch(), propName, arg, arg.loc);
+        }
+        i += 1;
+      }
+    }
+
+    // Properties
+    for (let prop in properties) {
+      match (prop) {
+        case PropertyAssignment {name, value, loc as propLoc}: {
+          let propName = name.name;
+          if (value is BindingExpression) {
+            this.#emitBind(nodeSym, propName, propLoc);
+            this.#emitReactAssign(ensurePatch(), propName, value.expression, propLoc);
+          } else if (isTemplateStatic(this.ctx, value)) {
+            this.#emitAssign(this.templateStmts, nodeSym, propName, value, propLoc);
+          } else {
+            this.#emitBind(nodeSym, propName, propLoc);
+            this.#emitAssign(this.instanceStmts, ensurePatch(), propName, value, propLoc);
+          }
+        }
+        case SpreadElement {loc as spreadLoc}: {
+          this.ctx.error(
+            "Spread properties are not yet supported in '@ui' node literals.",
+            DiagnosticCode.TypeMismatch,
+            spreadLoc
+          );
+        }
+        case _: {}
+      }
+    }
+
+    // Children
+    if (children.length > 0 && !cls.members.has("addChild")) {
+      this.ctx.error(
+        `'${cls.name}' does not accept children.`,
+        DiagnosticCode.TypeMismatch,
+        children[0].loc
+      );
+      return nodeSym;
+    }
+
+    for (let child in children) {
+      this.#compileChildOfHost(nodeSym, child);
+    }
+
+    return nodeSym;
+  }
+
+  #emitBind(nodeSym: Symbol, propName: String, loc: SourceLocation | null): void {
+    let args = new GrowableArray<Expression>();
+    args.push(this.#strLit(propName, loc));
+    let call = this.#methodCall(this.#cloneSymIdent(nodeSym.name, nodeSym, null), "bind", args, loc);
+    this.#emitStmt(this.templateStmts, call, loc);
+  }
+
+  #emitAddChild(parentSym: Symbol, childSym: Symbol, loc: SourceLocation | null): void {
+    let args = new GrowableArray<Expression>();
+    args.push(this.#cloneSymIdent(childSym.name, childSym, null));
+    let call = this.#methodCall(this.#cloneSymIdent(parentSym.name, parentSym, null), "addChild", args, loc);
+    this.#emitStmt(this.templateStmts, call, loc);
+  }
+
+  #emitPlaceholderSlot(parentSym: Symbol, loc: SourceLocation | null): i32 {
+    this.#nodeCounter += 1;
+    let slotIdx = this.#slotCounter;
+    this.#slotCounter += 1;
+    let slotCall = this.#methodCall(this.#tagRef(), "slot", new GrowableArray<Expression>(), loc);
+    let slotSym = this.#declareLocal(this.templateStmts, "__ui_s", slotCall, loc);
+    this.#emitAddChild(parentSym, slotSym, loc);
+    return slotIdx;
+  }
+
+  #compileChildOfHost(parentSym: Symbol, child: Expression): void {
+    match (child) {
+      case NodeLiteral {type, typeArguments, args, properties, children, loc}: {
+        let cls = resolveClassFromExpr(this.ctx, type);
+        if (cls == null) {
+          this.ctx.error(
+            "Expected a class type in '@ui' child node.",
+            DiagnosticCode.TypeMismatch,
+            type.loc
+          );
+          return;
+        }
+        if (isHostElementClass(cls)) {
+          let childSym = this.#compileHostElement(type as Identifier, cls, typeArguments, args, properties, children, loc);
+          if (childSym != null) {
+            this.#emitAddChild(parentSym, childSym, loc);
+          }
+        } else {
+          let slotIdx = this.#emitPlaceholderSlot(parentSym, loc);
+          this.#compileWidgetIntoSlot(slotIdx, type as Identifier, cls, typeArguments, args, properties, children, loc);
+        }
+      }
+      case CallExpression {callee, typeArguments, args, loc}: {
+        let cls = resolveClassFromExpr(this.ctx, callee);
+        if (cls == null) {
+          this.ctx.error(
+            "Expected a node or widget class in '@ui' child position; wrap dynamic expressions in '$(...)'.",
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+          return;
+        }
+        let emptyProps = new GrowableArray<Node>();
+        let emptyChildren = new GrowableArray<Expression>();
+        if (isHostElementClass(cls)) {
+          let childSym = this.#compileHostElement(callee as Identifier, cls, typeArguments, args, emptyProps, emptyChildren, loc);
+          if (childSym != null) {
+            this.#emitAddChild(parentSym, childSym, loc);
+          }
+        } else {
+          let slotIdx = this.#emitPlaceholderSlot(parentSym, loc);
+          this.#compileWidgetIntoSlot(slotIdx, callee as Identifier, cls, typeArguments, args, emptyProps, emptyChildren, loc);
+        }
+      }
+      case BindingExpression {expression, loc}: {
+        let slotIdx = this.#emitPlaceholderSlot(parentSym, loc);
+        let thunk = this.#makeThunk(expression, loc);
+        let bindArgs = new GrowableArray<Expression>();
+        bindArgs.push(this.#intLit(slotIdx, loc));
+        bindArgs.push(thunk);
+        let call = this.#methodCall(this.#instRef(), "bindSlot", bindArgs, loc);
+        this.#emitStmt(this.instanceStmts, call, loc);
+      }
+      case DecoratedExpression as nested: {
+        let slotIdx = this.#emitPlaceholderSlot(parentSym, nested.loc);
+        let setArgs = new GrowableArray<Expression>();
+        setArgs.push(this.#intLit(slotIdx, nested.loc));
+        setArgs.push(nested);
+        let call = this.#methodCall(this.#instRef(), "setSlotChild", setArgs, nested.loc);
+        this.#emitStmt(this.instanceStmts, call, nested.loc);
+      }
+      case _: {
+        this.ctx.error(
+          "Unsupported child expression in '@ui'; wrap dynamic children in '$(...)'.",
+          DiagnosticCode.TypeMismatch,
+          child.loc
+        );
+      }
+    }
+  }
+
+  #compileWidgetExpr(
+    typeIdent: Identifier,
+    cls: ClassType,
+    typeArguments: GrowableArray<TypeAnnotation> | null,
+    args: GrowableArray<Expression>,
+    properties: GrowableArray<Node>,
+    children: GrowableArray<Expression>,
+    loc: SourceLocation | null
+  ): Symbol | null {
+    let classSym = this.ctx.model.resolve(typeIdent);
+    if (classSym == null) {
+      return null;
+    }
+
+    let ctorArgs = new GrowableArray<Expression>();
+    for (let arg in args) {
+      if (arg is BindingExpression) {
+        this.ctx.error(
+          `Reactive bindings '$(...)' cannot be passed as positional constructor arguments to '${cls.name}'; use a named property instead.`,
+          DiagnosticCode.TypeMismatch,
+          arg.loc
+        );
+        ctorArgs.push(arg.expression);
+      } else {
+        ctorArgs.push(arg);
+      }
+    }
+
+    let newWidget = this.#newExpr(typeIdent, classSym, typeArguments, ctorArgs, loc);
+    let widgetSym = this.#declareLocal(this.instanceStmts, "__ui_w", newWidget, loc);
+
+    for (let prop in properties) {
+      match (prop) {
+        case PropertyAssignment {name, value, loc as propLoc}: {
+          if (value is BindingExpression) {
+            this.#emitReactAssign(widgetSym, name.name, value.expression, propLoc);
+          } else {
+            this.#emitAssign(this.instanceStmts, widgetSym, name.name, value, propLoc);
+          }
+        }
+        case SpreadElement {loc as spreadLoc}: {
+          this.ctx.error(
+            "Spread properties are not yet supported on widgets in '@ui'.",
+            DiagnosticCode.TypeMismatch,
+            spreadLoc
+          );
+        }
+        case _: {}
+      }
+    }
+
+    if (children.length > 0) {
+      let projectedElements = new GrowableArray<Expression>();
+      for (let child in children) {
+        let proj = this.#compileProjectedChild(child);
+        if (proj != null) {
+          projectedElements.push(proj);
+        }
+      }
+      let arr = this.#mint(new ArrayLiteral(projectedElements, loc));
+      for (let el in projectedElements) {
+        this.#setParent(el, arr);
+      }
+      let projArgs = new GrowableArray<Expression>();
+      projArgs.push(this.#cloneSymIdent(widgetSym.name, widgetSym, null));
+      projArgs.push(arr);
+      let projCall = this.#methodCall(this.#instRef(), "project", projArgs, loc);
+      this.#emitStmt(this.instanceStmts, projCall, loc);
+    }
+
+    return widgetSym;
+  }
+
+  #compileWidgetIntoSlot(
+    slotIdx: i32,
+    typeIdent: Identifier,
+    cls: ClassType,
+    typeArguments: GrowableArray<TypeAnnotation> | null,
+    args: GrowableArray<Expression>,
+    properties: GrowableArray<Node>,
+    children: GrowableArray<Expression>,
+    loc: SourceLocation | null
+  ): void {
+    let widgetSym = this.#compileWidgetExpr(typeIdent, cls, typeArguments, args, properties, children, loc);
+    if (widgetSym == null) {
+      return;
+    }
+    let setArgs = new GrowableArray<Expression>();
+    setArgs.push(this.#intLit(slotIdx, loc));
+    setArgs.push(this.#cloneSymIdent(widgetSym.name, widgetSym, null));
+    let call = this.#methodCall(this.#instRef(), "setSlotChild", setArgs, loc);
+    this.#emitStmt(this.instanceStmts, call, loc);
+  }
+
+  #compileProjectedChild(child: Expression): Expression | null {
+    match (child) {
+      case NodeLiteral {type, typeArguments, args, properties, children, loc}: {
+        let cls = resolveClassFromExpr(this.ctx, type);
+        if (cls == null) {
+          this.ctx.error(
+            "Expected a class type in projected child.",
+            DiagnosticCode.TypeMismatch,
+            type.loc
+          );
+          return null;
+        }
+        if (isHostElementClass(cls)) {
+          return this.#wrapAsNestedUi(child, loc);
+        }
+        let wSym = this.#compileWidgetExpr(type as Identifier, cls, typeArguments, args, properties, children, loc);
+        if (wSym == null) { return null; }
+        return this.#cloneSymIdent(wSym.name, wSym, loc);
+      }
+      case CallExpression {callee, typeArguments, args, loc}: {
+        let cls = resolveClassFromExpr(this.ctx, callee);
+        if (cls == null) {
+          this.ctx.error(
+            "Expected a node or widget class in projected child; wrap dynamic expressions in '$(...)'.",
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+          return null;
+        }
+        if (isHostElementClass(cls)) {
+          return this.#wrapAsNestedUi(child, loc);
+        }
+        let wSym = this.#compileWidgetExpr(
+          callee as Identifier, cls, typeArguments, args,
+          new GrowableArray<Node>(), new GrowableArray<Expression>(), loc
+        );
+        if (wSym == null) { return null; }
+        return this.#cloneSymIdent(wSym.name, wSym, loc);
+      }
+      case BindingExpression {expression, loc}: {
+        let thunk = this.#makeThunk(expression, loc);
+        let dynArgs = new GrowableArray<Expression>();
+        dynArgs.push(thunk);
+        return this.#methodCall(this.#tagRef(), "dynamicChild", dynArgs, loc);
+      }
+      case DecoratedExpression: {
+        return child;
+      }
+      case _: {
+        this.ctx.error(
+          "Unsupported projected child expression; wrap dynamic children in '$(...)'.",
+          DiagnosticCode.TypeMismatch,
+          child.loc
+        );
+        return null;
+      }
+    }
+  }
+
+  #wrapAsNestedUi(inner: Expression, loc: SourceLocation | null): DecoratedExpression {
+    let tagCopy = this.#tagRef(this.tagIdent.loc);
+    let path = new GrowableArray<Identifier>();
+    path.push(tagCopy);
+    let decCopy = this.#mint(new Decorator(this.dec.name, path, new GrowableArray<Expression>(), this.dec.loc));
+    this.#setParent(tagCopy, decCopy);
+    let decs = new GrowableArray<Decorator>();
+    decs.push(decCopy);
+    let nested = this.#mint(new DecoratedExpression(decs, inner, loc));
+    this.#setParent(decCopy, nested);
+    this.#setParent(inner, nested);
+    return nested;
+  }
+}

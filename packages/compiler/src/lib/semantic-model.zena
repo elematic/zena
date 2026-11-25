@@ -42,7 +42,7 @@ import {
 } from './types.zena';
 import { Diagnostic } from './diagnostics.zena';
 import {
-  Node, NodeId, Expression, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, IdGenerator, syntacticMemberName, MemberExpression, getMemberPropertyName,
+  Node, NodeId, Expression, BlockStatement, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, IdGenerator, syntacticMemberName, MemberExpression, getMemberPropertyName,
 } from './ast.zena';
 import { Symbol, SymbolId } from './scope/symbol.zena';
 import { SymbolMap } from './scope/scope-builder.zena';
@@ -275,6 +275,9 @@ export final class ModelIndex {
     let baKeys = model.boxAdaptations.map.keys();
     for (let k in baKeys) { this.#claim(model, k); }
 
+    let uiKeys = model.uiLowerings.map.keys();
+    for (let k in uiKeys) { this.#claim(model, k); }
+
     let faKeys = model.functionAdaptations.map.keys();
     for (let k in faKeys) { this.#claim(model, k); }
 
@@ -394,6 +397,34 @@ export final class FunctionAdaptation {
   target: FunctionType;
   
   new(this.source, this.target);
+}
+
+/**
+ * Synthesized two-phase lowering for a staged node-tree expression (such as
+ * `@ui Box { ... }`).
+ *
+ * Phase 1 (`templateBlock` + `templateResult`) builds the static template once
+ * per call site and is cached in a Wasm global. Phase 2 (`instanceBlock` +
+ * `instanceResult`) reads that cached template through `cacheSymbol` and
+ * constructs the per-instance result with one-shot bindings, reactive thunks,
+ * event listeners, and child widgets.
+ */
+export final class UiLowering {
+  templateBlock: BlockStatement;
+  templateResult: Expression;
+  templateType: Type;
+  cacheSymbol: Symbol;
+  instanceBlock: BlockStatement;
+  instanceResult: Expression;
+
+  new(
+    this.templateBlock,
+    this.templateResult,
+    this.templateType,
+    this.cacheSymbol,
+    this.instanceBlock,
+    this.instanceResult
+  );
 }
 
 /**
@@ -586,6 +617,30 @@ export final class SemanticModel {
    * around the lowered value; nothing else in the tree names the class.
    */
   #boxAdaptations = new NodeMap<ClassType>();
+  #uiLowerings = new NodeMap<UiLowering>();
+
+  setUiLowering(node: Node, lowering: UiLowering): void {
+    this.#uiLowerings[node] = lowering;
+  }
+
+  getUiLoweringDirect(node: Node): UiLowering | null {
+    if (let (true, l) = this.#uiLowerings.get(node)) {
+      return l;
+    }
+    return null;
+  }
+
+  getUiLowering(node: Node): UiLowering | null {
+    let l = this.getUiLoweringDirect(node);
+    if (l != null) return l;
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner != this) {
+        return owner.getUiLoweringDirect(node);
+      }
+    }
+    return null;
+  }
 
   setBoxAdaptation(node: Node, box: ClassType): void {
     this.#boxAdaptations[node] = box;
@@ -1578,6 +1633,7 @@ export final class SemanticModel {
   recordUnionAdaptations: NodeMap<RecordUnionAdaptation> { get { return this.#recordUnionAdaptations; } }
   interfaceAdaptations: NodeMap<InterfaceAdaptation> { get { return this.#interfaceAdaptations; } }
   boxAdaptations: NodeMap<ClassType> { get { return this.#boxAdaptations; } }
+  uiLowerings: NodeMap<UiLowering> { get { return this.#uiLowerings; } }
   functionAdaptations: NodeMap<FunctionAdaptation> { get { return this.#functionAdaptations; } }
   unionCallCalleeTypes: NodeMap<UnionType> { get { return this.#unionCallCalleeTypes; } }
   originalArgCounts: NodeMap<i32> { get { return this.#originalArgCounts; } }
