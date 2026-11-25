@@ -14,7 +14,7 @@ import { findDeclaration, collectValueExports, isArrayIntrinsic } from '../looku
  * variable assigned anywhere in the loop.
  */
 import {
-  Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ShieldedStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, MixinDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, ArrayPattern, RestPattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression, SymbolPropertyName, ContractClause, ContractKind, isOldCallee,
+  Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ShieldedStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, MixinDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, DecoratedExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, ArrayPattern, RestPattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression, SymbolPropertyName, ContractClause, ContractKind, isOldCallee,
   hasOptionalChainStep, isMethodCallStep, isOptionalPostfixStep, postfixStepTarget, samePostfixChain,
 } from '../../ast.zena';
 import {
@@ -6594,6 +6594,8 @@ export final class FunctionLowerer {
       }
     } else if (expr is TaggedTemplateExpression) {
       throw new TemplateAbandon('tagged template');
+    } else if (expr is DecoratedExpression) {
+      throw new TemplateAbandon('decorated expression');
     } else if (expr is AssignmentExpression) {
       // What the store does with the value it replaces depends on the
       // type argument (emitScopedFieldReplace).
@@ -6690,6 +6692,7 @@ export final class FunctionLowerer {
       case PipelineExpression as pipe: this.#lowerPipeline(pipe)
       case PipePlaceholder: this.#lowerPipePlaceholder()
       case TaggedTemplateExpression as tagged: this.#lowerTaggedTemplate(tagged)
+      case DecoratedExpression as dec: this.#lowerDecoratedExpression(dec)
       case AwaitExpression as aw: this.#lowerAwait(aw)
       case _: this.#bailValue('expression kind' + kindTagOf(expr))
     };
@@ -11539,6 +11542,67 @@ export final class FunctionLowerer {
 
   #lowerTaggedTemplate(expr: TaggedTemplateExpression): i32 {
     return lowerTaggedTemplate(this.#cx(), expr);
+  }
+
+  #lowerDecoratedExpression(expr: DecoratedExpression): i32 {
+    let ui = this.func.model.getUiLowering(expr);
+    if (ui == null) {
+      return this.#bailValue('decorated expression without ui lowering');
+    }
+    let gOpt = if (this.wasm.uiTemplateGlobals.has(expr)) {
+      this.wasm.uiTemplateGlobals[expr]
+    } else {
+      null
+    };
+    if (gOpt == null) {
+      return this.#bailValue('ui template cache global missing');
+    }
+    let g = gOpt;
+
+    let cached = this.b.emit(IrOp.global_get, g.type, -1,
+        this.b.addRef(new IrRefGlobal(g)));
+    let isNull = this.b.emit(IrOp.ref_is_null, new ValTypeI32(), cached, -1);
+    let initB = this.b.newBlock();
+    let doneB = this.b.newBlock();
+    this.b.brIf(isNull, initB, noValues(), doneB, noValues());
+
+    this.b.switchTo(initB);
+    let savedReachable = this.#cx().reachable;
+    this.#cx().reachable = true;
+    for (let stmt in ui.templateBlock.body) {
+      this.#lowerStatement(stmt);
+    }
+    let tplVal = this.#lowerExpression(ui.templateResult);
+    this.b.emitVoid(IrOp.global_set, tplVal,
+        this.b.addRef(new IrRefGlobal(g)));
+    this.b.br(doneB, noValues());
+
+    this.b.switchTo(doneB);
+    this.#cx().reachable = savedReachable;
+    let loaded = this.b.emit(IrOp.global_get, g.type, -1,
+        this.b.addRef(new IrRefGlobal(g)));
+    let tplNonNull = if (let ValTypeRefNull {target} = g.type) {
+      this.b.emit(IrOp.ref_as_non_null, new ValTypeRef(target), loaded, -1)
+    } else {
+      loaded
+    };
+
+    let cacheSymId = ui.cacheSymbol.id;
+    let hadPrev = this.#cx().env.has(cacheSymId);
+    let prevVal = if (hadPrev) this.#cx().env[cacheSymId] else -1;
+    this.#cx().env[cacheSymId] = tplNonNull;
+
+    for (let stmt in ui.instanceBlock.body) {
+      this.#lowerStatement(stmt);
+    }
+    let resultVal = this.#lowerExpression(ui.instanceResult);
+
+    if (hadPrev) {
+      this.#cx().env[cacheSymId] = prevVal;
+    } else {
+      this.#cx().env.delete(cacheSymId);
+    }
+    return resultVal;
   }
 
   #lowerTemplateLiteral(tpl: TemplateLiteral): i32 {

@@ -1,0 +1,1023 @@
+/**
+ * Signal-driven declarative UI runtime and `@ui` tag protocol for ZenaFX.
+ *
+ * A `@ui` node literal compiles into two phases:
+ *
+ *   1. Call-site template compilation (cached once per call site in a Wasm
+ *      global): instantiates `Box`, `Flow`, `Text`, `Slot`, and placeholder
+ *      child slots (`ui.slot()`), folds provably constant properties directly
+ *      into the node tree, declares dynamic bindings via `.bind(propName)`,
+ *      and flattens everything in breadth-first order via `ui.compile(root)`.
+ *
+ *   2. Per-instance instantiation (`build()` runs once per widget mount):
+ *      creates a `TemplateResult` via `compiled.instantiate()`, applies
+ *      one-shot dynamic properties and listeners via `Element.patch(inst, i)`,
+ *      registers reactive `$(...)` thunks via `inst.react(...)` and
+ *      `inst.bindSlot(...)`, and attaches child widgets and projected children.
+ *
+ * On mount, all initial values (one-shot and reactive) batch into a single
+ * `node.render(...)` call. Subsequent `@signal` writes run only the affected
+ * `Effect` and patch only that single binding without re-running `build()`.
+ */
+import {
+  Box as OwnBox, Flex, Flow as FlowLayout, Layout, LayoutFlex, LayoutFlow,
+  TextAlign, Edges, Axis, Justify, Align, Length, BoxStyle, TextStyle,
+  LengthAuto, LengthPercent, Overflow, Color,
+} from 'zenafx:ui/style';
+import {
+  Node, NodeDef, Appearance, AppearanceNothing, AppearanceFill, AppearanceText,
+  TextContent, Binding, BindingTarget, BindingValue, BindingValueContent,
+  BindingValueStyle, BindingValueTextStyle, BindingValueBox, BindingValueLayout,
+  Hole, State, Restyle, RestyleFill, RestyleText, StateStyle, Cursor,
+} from 'zenafx:host/scene';
+import { PointerKind, PointerEvent, KeyEvent } from 'zenafx:host/events';
+import { Effect, hasSources } from 'zena:signals';
+import { HashMap } from 'zena:collections';
+import { some, none } from 'zena:core';
+import {
+  Template, WidgetBase, Mountable, Listener, KeyListener,
+  Answer, KeyAnswer, Handler, KeyHandler, projectChildren,
+  startPointerListener, startKeyListener, runApp,
+} from './framework.zena';
+
+export { runApp, Answer, KeyAnswer } from './framework.zena';
+
+/**
+ * Base class for signal-driven `@ui` widgets.
+ *
+ * `build()` runs once when the widget is placed in a scene node and returns a
+ * `TemplateResult`. All subsequent updates flow through `zena:signals`
+ * `Effect`s directly to the affected bindings without re-running `build()`.
+ */
+export abstract class Widget extends WidgetBase {
+  var #node: Node | null = null;
+  var #mounted: TemplateResult | null = null;
+
+  abstract build(): TemplateResult;
+
+  placeIn(node: Node): void {
+    this.dispose();
+    this.#node = node;
+  }
+
+  refresh(): void {
+    if (this.#mounted != null) {
+      return;
+    }
+    let node = this.#node;
+    if (node != null) {
+      let result = this.build();
+      this.#mounted = result;
+      result.mount(node, this._projectedChildren());
+    }
+  }
+
+  dispose(): void {
+    let mounted = this.#mounted;
+    if (mounted != null) {
+      this.#mounted = null;
+      mounted.unmount();
+    }
+  }
+}
+
+export let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
+export let full = new LengthPercent(100.0);
+
+let defaultInk = new Color(0.0, 0.0, 0.0, 1.0);
+let defaultTextStyle = new TextStyle('system-ui', 16.0, 400 as u16, false, defaultInk);
+
+/** What a dynamic `$(...)` child expression may evaluate to. */
+export type Child =
+  Widget
+  | TemplateResult
+  | Mountable
+  | GrowableArray<Widget>
+  | GrowableArray<TemplateResult>
+  | GrowableArray<Mountable>
+  | Array<Widget>
+  | Array<TemplateResult>
+  | Array<Mountable>
+  | null;
+
+final class PendingState {
+  when: State;
+  style: Restyle;
+
+  new(this.when, this.style);
+}
+
+final class NodeBindings {
+  content: i32;
+  style: i32;
+  box: i32;
+  layout: i32;
+
+  new(this.content, this.style, this.box, this.layout);
+}
+
+final class DynamicSlotEntry {
+  bfsSlot: i32;
+  fn: () => Child;
+
+  new(this.bfsSlot, this.fn);
+}
+
+/**
+ * A flattened, cached ZenaFX template paired with pre-order-to-BFS lookup
+ * tables so per-instance patching can address nodes and slots by source order.
+ */
+export final class CompiledTemplate {
+  template: Template;
+  preToBfsNode: GrowableArray<i32>;
+  preToBfsSlot: GrowableArray<i32>;
+  projectionSlot: i32;
+  nodeBindings: GrowableArray<NodeBindings>;
+  initialNodes: GrowableArray<NodeDef>;
+
+  new(
+    this.template,
+    this.preToBfsNode,
+    this.preToBfsSlot,
+    this.projectionSlot,
+    this.nodeBindings,
+    this.initialNodes,
+  );
+
+  instantiate(): TemplateResult {
+    return new TemplateResult(this);
+  }
+
+  bfsNodeIndex(preIndex: i32): i32 {
+    return this.preToBfsNode[preIndex];
+  }
+
+  bfsSlotIndex(preSlotIndex: i32): i32 {
+    return this.preToBfsSlot[preSlotIndex];
+  }
+
+  bindingIndex(bfsNode: i32, target: BindingTarget): i32 {
+    let entry = this.nodeBindings[bfsNode];
+    return match (target) {
+      case BindingTarget.Content: entry.content
+      case BindingTarget.Style: entry.style
+      case BindingTarget.Box: entry.box
+      case BindingTarget.Layout: entry.layout
+    };
+  }
+}
+
+/**
+ * Per-instance result of evaluating a `@ui` expression.
+ *
+ * Buffers initial one-shot and reactive binding writes so mount sends one
+ * `node.render` call, then keeps live `Effect`s to patch individual bindings
+ * and dynamic slots on subsequent `@signal` changes.
+ */
+export final class TemplateResult implements Mountable {
+  compiled: CompiledTemplate;
+  var #node: Node | null = null;
+  var #mounting: boolean = true;
+  var #pendingHoles = new GrowableArray<Hole>();
+  #lastSent = new HashMap<i32, BindingValue>();
+  var #reactThunks = new GrowableArray<() => void>();
+  var #effects = new GrowableArray<Effect>();
+  #listeners = new GrowableArray<Listener>();
+  #keyListeners = new GrowableArray<KeyListener>();
+  #staticSlots = new HashMap<i32, Mountable>();
+  #dynamicSlots = new GrowableArray<DynamicSlotEntry>();
+  var #mountedSlots = new HashMap<i32, GrowableArray<Mountable>>();
+
+  new(this.compiled);
+
+  /** Register a reactive thunk to run inside an `Effect` on mount. */
+  react(fn: () => void): void {
+    this.#reactThunks.push(fn);
+  }
+
+  /** Assign a static child (`Widget` or `TemplateResult`) to a pre-order slot. */
+  setSlotChild(preSlotIndex: i32, child: Mountable): void {
+    let bfsSlot = this.compiled.bfsSlotIndex(preSlotIndex);
+    this.#staticSlots[bfsSlot] = child;
+  }
+
+  /** Bind a dynamic `$(...)` child expression to a pre-order slot. */
+  bindSlot(preSlotIndex: i32, fn: () => Child): void {
+    let bfsSlot = this.compiled.bfsSlotIndex(preSlotIndex);
+    this.#dynamicSlots.push(new DynamicSlotEntry(bfsSlot, fn));
+  }
+
+  /** Attach parent-supplied children to a child widget for `Slot {}` projection. */
+  project(widget: WidgetBase, children: Array<Mountable>): void {
+    widget.[projectChildren](GrowableArray.from(children));
+  }
+
+  /** Record a pointer listener for a BFS node index. */
+  addListener(listener: Listener): void {
+    this.#listeners.push(listener);
+  }
+
+  /** Record a keyboard listener for a BFS node index. */
+  addKeyListener(listener: KeyListener): void {
+    this.#keyListeners.push(listener);
+  }
+
+  /**
+   * Write a binding value for `bfsNode` / `target`.
+   *
+   * During mount, updates are coalesced into `#pendingHoles` so the initial
+   * render crosses the host boundary once. After mount, unchanged values are
+   * skipped and changed values patch the single binding in place.
+   */
+  writeBinding(bfsNode: i32, target: BindingTarget, value: BindingValue): void {
+    let bindingIdx = this.compiled.bindingIndex(bfsNode, target);
+    if (bindingIdx < 0) {
+      return;
+    }
+    if (let (true, prev) = this.#lastSent.get(bindingIdx)) {
+      if (prev == value) {
+        return;
+      }
+    }
+    this.#lastSent[bindingIdx] = value;
+
+    if (this.#mounting) {
+      let targetId = bindingIdx as u32;
+      var i = 0;
+      while (i < this.#pendingHoles.length) {
+        if (this.#pendingHoles[i].binding == targetId) {
+          this.#pendingHoles[i] = new Hole(targetId, value);
+          return;
+        }
+        i += 1;
+      }
+      this.#pendingHoles.push(new Hole(targetId, value));
+      return;
+    }
+
+    let node = this.#node;
+    if (node != null) {
+      node.render(this.compiled.template.reference(), [new Hole(bindingIdx as u32, value)]);
+    }
+  }
+
+  mount(node: Node, projected: GrowableArray<Mountable> | null): void {
+    this.#node = node;
+    this.#mounting = true;
+
+    for (let fn in this.#reactThunks) {
+      let eff = new Effect(fn);
+      if (hasSources(eff)) {
+        this.#effects.push(eff);
+      } else {
+        eff.dispose();
+      }
+    }
+    this.#reactThunks = new GrowableArray<() => void>();
+
+    node.render(this.compiled.template.reference(), this.#pendingHoles);
+    this.#pendingHoles = new GrowableArray<Hole>();
+    this.#mounting = false;
+
+    for (let listener in this.#listeners) {
+      startPointerListener(node, listener);
+    }
+    for (let keyListener in this.#keyListeners) {
+      startKeyListener(node, keyListener);
+    }
+
+    if (this.compiled.projectionSlot >= 0 && projected != null) {
+      this.#mountSlot(node, this.compiled.projectionSlot, projected);
+    }
+
+    for (let bfsSlot in this.#staticSlots.keys()) {
+      let list = new GrowableArray<Mountable>();
+      list.push(this.#staticSlots[bfsSlot]);
+      this.#mountSlot(node, bfsSlot, list);
+    }
+
+    for (let entry in this.#dynamicSlots) {
+      let slotIndex = entry.bfsSlot;
+      let thunk = entry.fn;
+      let eff = new Effect(() => {
+        let next = flattenChild(thunk());
+        this.#mountSlot(node, slotIndex, next);
+      });
+      if (hasSources(eff)) {
+        this.#effects.push(eff);
+      } else {
+        eff.dispose();
+      }
+    }
+  }
+
+  #mountSlot(node: Node, bfsSlot: i32, next: GrowableArray<Mountable>): void {
+    if (let (true, prev) = this.#mountedSlots.get(bfsSlot)) {
+      for (let oldChild in prev) {
+        oldChild.unmount();
+      }
+    }
+    let nodes = node.content(bfsSlot as u32, next.length as u32);
+    var i = 0;
+    while (i < next.length) {
+      next[i].mount(nodes[i], null);
+      i += 1;
+    }
+    this.#mountedSlots[bfsSlot] = next;
+  }
+
+  unmount(): void {
+    for (let eff in this.#effects) {
+      eff.dispose();
+    }
+    this.#effects = new GrowableArray<Effect>();
+    for (let bfsSlot in this.#mountedSlots.keys()) {
+      for (let child in this.#mountedSlots[bfsSlot]) {
+        child.unmount();
+      }
+    }
+    this.#mountedSlots = new HashMap<i32, GrowableArray<Mountable>>();
+    this.#node = null;
+  }
+}
+
+function flattenChild(child: Child): GrowableArray<Mountable> {
+  let out = new GrowableArray<Mountable>();
+  if (child == null) {
+    return out;
+  }
+  if (child is Widget) {
+    out.push(child);
+  } else if (child is TemplateResult) {
+    out.push(child);
+  } else if (child is Mountable) {
+    out.push(child);
+  } else if (child is GrowableArray<Widget>) {
+    for (let w in child) {
+      out.push(w);
+    }
+  } else if (child is GrowableArray<TemplateResult>) {
+    for (let t in child) {
+      out.push(t);
+    }
+  } else if (child is GrowableArray<Mountable>) {
+    for (let m in child) {
+      out.push(m);
+    }
+  } else if (child is Array<Widget>) {
+    for (let w in child) {
+      out.push(w);
+    }
+  } else if (child is Array<TemplateResult>) {
+    for (let t in child) {
+      out.push(t);
+    }
+  } else if (child is Array<Mountable>) {
+    for (let m in child) {
+      out.push(m);
+    }
+  }
+  return out;
+}
+
+function makeVoidListener(kind: PointerKind, handler: () => void, pos: u32) {
+  return new Listener(kind, (event) => {
+    handler();
+    return Answer.StopPropagation;
+  }, pos);
+}
+
+function makeMoveListener(handler: (event: PointerEvent) => void, pos: u32) {
+  return new Listener(PointerKind.Move, (event) => {
+    handler(event);
+    return Answer.StopPropagation;
+  }, pos);
+}
+
+/**
+ * Base class for host element builders (`Box`, `Flow`, `Text`, `Slot`).
+ *
+ * Each element class serves both phases:
+ *   - Phase 1 (template build): constructed with `new Box()` etc.; setters
+ *     configure the static `NodeDef`, `bind(prop)` declares dynamic bindings.
+ *   - Phase 2 (per-instance patch): constructed with `Box.patch(inst, preIdx)`;
+ *     setters write directly to `inst.writeBinding(...)` or register listeners.
+ */
+export class HostElement {
+  var _width: Length = new LengthAuto();
+  var _height: Length = new LengthAuto();
+  var _grow: f32 = 0.0;
+  var _shrink: f32 = 1.0;
+  var _padding: Edges = noPadding;
+  var _overflowX: Overflow = Overflow.Clip;
+  var _overflowY: Overflow = Overflow.Clip;
+
+  var _axis: Axis = Axis.Column;
+  var _justify: Justify = Justify.Start;
+  var _align: Align = Align.Start;
+  var _gap: f32 = 0.0;
+
+  var _isFlow: boolean = false;
+  var _textAlign: TextAlign = TextAlign.Start;
+  var _lineHeight: Option<f32> = none;
+
+  var _isText: boolean = false;
+  var _textContent: String = '';
+  var _textStyle: TextStyle = defaultTextStyle;
+  var _boxStyle: Option<BoxStyle> = none;
+
+  var _isSlot: boolean = false;
+  var _isProjection: boolean = false;
+  var _cursor: Option<Cursor> = none;
+  var _focusable: boolean = false;
+  var _editable: boolean = false;
+  var _unselectable: boolean = false;
+
+  var _boundContent: boolean = false;
+  var _boundStyle: boolean = false;
+  var _boundBox: boolean = false;
+  var _boundLayout: boolean = false;
+
+  _states = new GrowableArray<PendingState>();
+  _children = new GrowableArray<HostElement>();
+
+  /** Non-null when this object is a Phase 2 per-instance patcher. */
+  var _patchTarget: TemplateResult | null = null;
+  var _bfsNodeIndex: i32 = -1;
+
+  /**
+   * Declare that `propName` on this node will be supplied dynamically at mount
+   * or updated reactively via `Effect`.
+   */
+  bind(propName: String): void {
+    if (propName == 'content') {
+      this._boundContent = true;
+    } else if (propName == 'style') {
+      this._boundStyle = true;
+    } else if (
+      propName == 'width' || propName == 'height' || propName == 'grow' ||
+      propName == 'shrink' || propName == 'padding' ||
+      propName == 'overflowX' || propName == 'overflowY'
+    ) {
+      this._boundBox = true;
+    } else if (
+      propName == 'axis' || propName == 'justify' || propName == 'align' ||
+      propName == 'gap' || propName == 'textAlign' || propName == 'lineHeight'
+    ) {
+      this._boundLayout = true;
+    }
+  }
+
+  _initPatch(target: TemplateResult, preNodeIndex: i32): void {
+    let bfsIdx = target.compiled.bfsNodeIndex(preNodeIndex);
+    this._patchTarget = target;
+    this._bfsNodeIndex = bfsIdx;
+    let def = target.compiled.initialNodes[bfsIdx];
+    this._width = def.box.width;
+    this._height = def.box.height;
+    this._grow = def.box.grow;
+    this._shrink = def.box.shrink;
+    this._padding = def.box.padding;
+    this._overflowX = def.box.overflowX;
+    this._overflowY = def.box.overflowY;
+    match (def.layout) {
+      case LayoutFlex {value}: {
+        this._isFlow = false;
+        this._axis = value.axis;
+        this._justify = value.justifyContent;
+        this._align = value.alignItems;
+        this._gap = value.gap;
+      }
+      case LayoutFlow {value}: {
+        this._isFlow = true;
+        this._textAlign = value.align;
+        this._lineHeight = value.lineHeight;
+      }
+    }
+    match (def.appearance) {
+      case AppearanceFill {value}: { this._boxStyle = some(value); }
+      case AppearanceText {value}: {
+        this._isText = true;
+        this._textContent = value.content;
+        this._textStyle = value.style;
+      }
+      case AppearanceNothing: {}
+    }
+  }
+
+  _ownBox(): OwnBox {
+    return new OwnBox(
+      this._width, this._height, this._grow, this._shrink,
+      this._padding, this._overflowX, this._overflowY,
+    );
+  }
+
+  _layout(): Layout {
+    if (this._isFlow) {
+      return new LayoutFlow(new FlowLayout(this._textAlign, this._lineHeight));
+    }
+    return new LayoutFlex(new Flex(this._axis, this._justify, this._align, this._gap));
+  }
+
+  _appearance(): Appearance {
+    if (this._isText) {
+      return new AppearanceText(new TextContent(this._textContent, this._textStyle));
+    }
+    if (let Some {value} = this._boxStyle) {
+      return new AppearanceFill(value);
+    }
+    return new AppearanceNothing();
+  }
+
+  _flushBox(): void {
+    let target = this._patchTarget;
+    if (target != null) {
+      target.writeBinding(this._bfsNodeIndex, BindingTarget.Box, new BindingValueBox(this._ownBox()));
+    }
+  }
+
+  _flushLayout(): void {
+    let target = this._patchTarget;
+    if (target != null) {
+      target.writeBinding(this._bfsNodeIndex, BindingTarget.Layout, new BindingValueLayout(this._layout()));
+    }
+  }
+
+  // Common box / node properties shared by Box, Flow, and Text.
+  width: Length {
+    get { return this._width; }
+    set(v) { this._width = v; this._flushBox(); }
+  }
+  height: Length {
+    get { return this._height; }
+    set(v) { this._height = v; this._flushBox(); }
+  }
+  grow: f32 {
+    get { return this._grow; }
+    set(v) { this._grow = v; this._flushBox(); }
+  }
+  shrink: f32 {
+    get { return this._shrink; }
+    set(v) { this._shrink = v; this._flushBox(); }
+  }
+  padding: Edges {
+    get { return this._padding; }
+    set(v) { this._padding = v; this._flushBox(); }
+  }
+  overflowX: Overflow {
+    get { return this._overflowX; }
+    set(v) { this._overflowX = v; this._flushBox(); }
+  }
+  overflowY: Overflow {
+    get { return this._overflowY; }
+    set(v) { this._overflowY = v; this._flushBox(); }
+  }
+  cursor: Cursor {
+    get {
+      if (let Some {value} = this._cursor) { return value; }
+      return Cursor.Default;
+    }
+    set(v) { this._cursor = some(v); }
+  }
+  focusable: boolean {
+    get { return this._focusable; }
+    set(v) { this._focusable = v; }
+  }
+  unselectable: boolean {
+    get { return this._unselectable; }
+    set(v) { this._unselectable = v; }
+  }
+
+  // Event listeners (always registered per-instance in Phase 2).
+  onDown: () => void {
+    get { return () => {}; }
+    set(handler) {
+      let target = this._patchTarget;
+      if (target != null) {
+        target.addListener(makeVoidListener(PointerKind.Down, handler, this._bfsNodeIndex as u32));
+      }
+    }
+  }
+  onUp: () => void {
+    get { return () => {}; }
+    set(handler) {
+      let target = this._patchTarget;
+      if (target != null) {
+        target.addListener(makeVoidListener(PointerKind.Up, handler, this._bfsNodeIndex as u32));
+      }
+    }
+  }
+  onMove: (event: PointerEvent) => void {
+    get { return (event: PointerEvent) => {}; }
+    set(handler) {
+      let target = this._patchTarget;
+      if (target != null) {
+        target.addListener(makeMoveListener(handler, this._bfsNodeIndex as u32));
+      }
+    }
+  }
+  onEnter: () => void {
+    get { return () => {}; }
+    set(handler) {
+      let target = this._patchTarget;
+      if (target != null) {
+        target.addListener(makeVoidListener(PointerKind.Enter, handler, this._bfsNodeIndex as u32));
+      }
+    }
+  }
+  onLeave: () => void {
+    get { return () => {}; }
+    set(handler) {
+      let target = this._patchTarget;
+      if (target != null) {
+        target.addListener(makeVoidListener(PointerKind.Leave, handler, this._bfsNodeIndex as u32));
+      }
+    }
+  }
+  onPointerDown: Handler {
+    get { return (event: PointerEvent) => Answer.Pass; }
+    set(handler) {
+      let target = this._patchTarget;
+      if (target != null) {
+        target.addListener(new Listener(PointerKind.Down, handler, this._bfsNodeIndex as u32));
+      }
+    }
+  }
+  onKey: KeyHandler {
+    get { return (event: KeyEvent) => KeyAnswer.Pass; }
+    set(handler) {
+      let target = this._patchTarget;
+      if (target != null) {
+        target.addKeyListener(new KeyListener(handler, this._bfsNodeIndex as u32));
+      }
+    }
+  }
+}
+
+let defaultBoxStyle = new BoxStyle(none, none, 0.0, 0.0, 1.0);
+
+/** A flex container box. */
+export final class Box extends HostElement {
+  new() : super();
+
+  static patch(result: TemplateResult, nodeIndex: i32): Box {
+    let b = new Box();
+    b._initPatch(result, nodeIndex);
+    return b;
+  }
+
+  addChild(child: HostElement): void {
+    this._children.push(child);
+  }
+
+  style: BoxStyle {
+    get {
+      if (let Some {value} = this._boxStyle) { return value; }
+      return defaultBoxStyle;
+    }
+    set(v) {
+      this._boxStyle = some(v);
+      let target = this._patchTarget;
+      if (target != null) {
+        target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueStyle(v));
+      }
+    }
+  }
+
+  axis: Axis {
+    get { return this._axis; }
+    set(v) { this._axis = v; this._flushLayout(); }
+  }
+  justify: Justify {
+    get { return this._justify; }
+    set(v) { this._justify = v; this._flushLayout(); }
+  }
+  align: Align {
+    get { return this._align; }
+    set(v) { this._align = v; this._flushLayout(); }
+  }
+  gap: f32 {
+    get { return this._gap; }
+    set(v) { this._gap = v; this._flushLayout(); }
+  }
+
+  hovered: BoxStyle {
+    get { return defaultBoxStyle; }
+    set(v) { this._states.push(new PendingState(State.Hovered, new RestyleFill(v))); }
+  }
+  pressed: BoxStyle {
+    get { return defaultBoxStyle; }
+    set(v) { this._states.push(new PendingState(State.Pressed, new RestyleFill(v))); }
+  }
+  focused: BoxStyle {
+    get { return defaultBoxStyle; }
+    set(v) { this._states.push(new PendingState(State.Focused, new RestyleFill(v))); }
+  }
+}
+
+/** A text-flow container whose `Text` children lay out as one run of lines. */
+export final class Flow extends HostElement {
+  new() : super() {
+    this._isFlow = true;
+  }
+
+  static patch(result: TemplateResult, nodeIndex: i32): Flow {
+    let f = new Flow();
+    f._initPatch(result, nodeIndex);
+    return f;
+  }
+
+  addChild(child: HostElement): void {
+    this._children.push(child);
+  }
+
+  style: BoxStyle {
+    get {
+      if (let Some {value} = this._boxStyle) { return value; }
+      return defaultBoxStyle;
+    }
+    set(v) {
+      this._boxStyle = some(v);
+      let target = this._patchTarget;
+      if (target != null) {
+        target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueStyle(v));
+      }
+    }
+  }
+
+  textAlign: TextAlign {
+    get { return this._textAlign; }
+    set(v) { this._textAlign = v; this._flushLayout(); }
+  }
+  lineHeight: f32 {
+    get {
+      if (let Some {value} = this._lineHeight) { return value; }
+      return 1.0;
+    }
+    set(v) { this._lineHeight = some(v); this._flushLayout(); }
+  }
+
+  hovered: BoxStyle {
+    get { return defaultBoxStyle; }
+    set(v) { this._states.push(new PendingState(State.Hovered, new RestyleFill(v))); }
+  }
+  pressed: BoxStyle {
+    get { return defaultBoxStyle; }
+    set(v) { this._states.push(new PendingState(State.Pressed, new RestyleFill(v))); }
+  }
+  focused: BoxStyle {
+    get { return defaultBoxStyle; }
+    set(v) { this._states.push(new PendingState(State.Focused, new RestyleFill(v))); }
+  }
+}
+
+/** A leaf text node. Positional argument sets `content`. */
+export final class Text extends HostElement {
+  new(content: String = '') : super() {
+    this._isText = true;
+    this._textContent = content;
+  }
+
+  static patch(result: TemplateResult, nodeIndex: i32): Text {
+    let t = new Text();
+    t._initPatch(result, nodeIndex);
+    return t;
+  }
+
+  content: String {
+    get { return this._textContent; }
+    set(v) {
+      this._textContent = v;
+      let target = this._patchTarget;
+      if (target != null) {
+        target.writeBinding(this._bfsNodeIndex, BindingTarget.Content, new BindingValueContent(v));
+      }
+    }
+  }
+
+  style: TextStyle {
+    get { return this._textStyle; }
+    set(v) {
+      this._textStyle = v;
+      let target = this._patchTarget;
+      if (target != null) {
+        target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueTextStyle(v));
+      }
+    }
+  }
+
+  editable: boolean {
+    get { return this._editable; }
+    set(v) { this._editable = v; }
+  }
+
+  hovered: TextStyle {
+    get { return defaultTextStyle; }
+    set(v) { this._states.push(new PendingState(State.Hovered, new RestyleText(v))); }
+  }
+  pressed: TextStyle {
+    get { return defaultTextStyle; }
+    set(v) { this._states.push(new PendingState(State.Pressed, new RestyleText(v))); }
+  }
+  focused: TextStyle {
+    get { return defaultTextStyle; }
+    set(v) { this._states.push(new PendingState(State.Focused, new RestyleText(v))); }
+  }
+}
+
+/**
+ * Projection slot: splices whatever children the parent placed inside this
+ * widget into the surrounding container.
+ */
+export final class Slot extends HostElement {
+  new() : super() {
+    this._isSlot = true;
+    this._isProjection = true;
+  }
+
+  static isSlot(): boolean {
+    return true;
+  }
+
+  static patch(result: TemplateResult, nodeIndex: i32): Slot {
+    let s = new Slot();
+    s._initPatch(result, nodeIndex);
+    return s;
+  }
+}
+
+/**
+ * The `@ui` tag object. Implements the staged node-tree compiler protocol:
+ * `compile(root)` flattens a static element tree into a cached
+ * `CompiledTemplate`, and `slot()` creates a placeholder slot node for a
+ * child widget or dynamic `$(...)` child binding.
+ */
+export final class UiTag {
+  /** Create a placeholder slot node in the template for a child widget or `$(...)`. */
+  slot(): HostElement {
+    let el = new HostElement();
+    el._isSlot = true;
+    return el;
+  }
+
+  /** Wrap a root child widget in a transparent container with one slot. */
+  wrapSlot(): HostElement {
+    let root = new Box();
+    root.addChild(this.slot());
+    return root;
+  }
+
+  /** Wrap a dynamic `$(...)` projected child in a single-slot `TemplateResult`. */
+  dynamicChild(fn: () => Child): TemplateResult {
+    let tpl = dynamicChildTemplate();
+    let inst = tpl.instantiate();
+    inst.bindSlot(0, fn);
+    return inst;
+  }
+
+  /** Flatten a static `HostElement` tree in BFS order into a `CompiledTemplate`. */
+  compile(root: HostElement): CompiledTemplate {
+    // 1. Pre-order walk to record source-order node & slot indices.
+    let preNodes = new GrowableArray<HostElement>();
+    let preSlots = new GrowableArray<HostElement>();
+    let visitPre = (el: HostElement): void => {
+      preNodes.push(el);
+      if (el._isSlot) {
+        preSlots.push(el);
+      }
+      for (let child in el._children) {
+        visitPre(child);
+      }
+    };
+    visitPre(root);
+
+    // 2. Breadth-first flattening required by `zenafx:host/scene`.
+    let order = new GrowableArray<HostElement>();
+    let firstChildOf = new GrowableArray<i32>();
+    order.push(root);
+    var i = 0;
+    while (i < order.length) {
+      let el = order[i];
+      firstChildOf.push(order.length);
+      for (let child in el._children) {
+        order.push(child);
+      }
+      i += 1;
+    }
+
+    // 3. Build NodeDefs, Bindings, StateStyles, and slot numbering (matching
+    //    `scene.rs`: slots are `order[1..]` with `isSlot == true`).
+    let nodes = new GrowableArray<NodeDef>();
+    let bindings = new GrowableArray<Binding>();
+    let states = new GrowableArray<StateStyle>();
+    let nodeBindings = new GrowableArray<NodeBindings>();
+    let bfsSlotOrder = new GrowableArray<HostElement>();
+    var projectionSlot = -1;
+
+    var n = 0;
+    while (n < order.length) {
+      let el = order[n];
+      let def = new NodeDef(
+        el._ownBox(),
+        el._layout(),
+        el._appearance(),
+        firstChildOf[n] as u32,
+        el._children.length as u32,
+        el._isSlot,
+        el._cursor,
+        el._focusable,
+        el._editable,
+        el._unselectable,
+      );
+      nodes.push(def);
+
+      var bContent = -1;
+      var bStyle = -1;
+      var bBox = -1;
+      var bLayout = -1;
+      if (el._boundContent) {
+        bContent = bindings.length;
+        bindings.push(new Binding(n as u32, BindingTarget.Content));
+      }
+      if (el._boundStyle) {
+        bStyle = bindings.length;
+        bindings.push(new Binding(n as u32, BindingTarget.Style));
+      }
+      if (el._boundBox) {
+        bBox = bindings.length;
+        bindings.push(new Binding(n as u32, BindingTarget.Box));
+      }
+      if (el._boundLayout) {
+        bLayout = bindings.length;
+        bindings.push(new Binding(n as u32, BindingTarget.Layout));
+      }
+      nodeBindings.push(new NodeBindings(bContent, bStyle, bBox, bLayout));
+
+      for (let st in el._states) {
+        states.push(new StateStyle(n as u32, st.when, n as u32, st.style));
+      }
+
+      if (n > 0 && el._isSlot) {
+        let slotIdx = bfsSlotOrder.length;
+        bfsSlotOrder.push(el);
+        if (el._isProjection) {
+          projectionSlot = slotIdx;
+        }
+      }
+
+      n += 1;
+    }
+
+    // 4. Compute pre-order -> BFS lookup maps.
+    let preToBfsNode = new GrowableArray<i32>();
+    for (let el in preNodes) {
+      var found = -1;
+      var k = 0;
+      while (k < order.length) {
+        if (order[k] === el) {
+          found = k;
+          break;
+        }
+        k += 1;
+      }
+      preToBfsNode.push(found);
+    }
+
+    let preToBfsSlot = new GrowableArray<i32>();
+    for (let el in preSlots) {
+      var found = -1;
+      var k = 0;
+      while (k < bfsSlotOrder.length) {
+        if (bfsSlotOrder[k] === el) {
+          found = k;
+          break;
+        }
+        k += 1;
+      }
+      preToBfsSlot.push(found);
+    }
+
+    let tpl = new Template(nodes, bindings, states);
+    return new CompiledTemplate(
+      tpl,
+      preToBfsNode,
+      preToBfsSlot,
+      projectionSlot,
+      nodeBindings,
+      nodes,
+    );
+  }
+}
+
+export let ui = new UiTag();
+
+var cachedDynamicChildTemplate: CompiledTemplate | null = null;
+function dynamicChildTemplate(): CompiledTemplate {
+  let existing = cachedDynamicChildTemplate;
+  if (existing != null) {
+    return existing;
+  }
+  let compiled = ui.compile(ui.wrapSlot());
+  cachedDynamicChildTemplate = compiled;
+  return compiled;
+}

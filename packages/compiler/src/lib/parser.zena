@@ -5274,6 +5274,18 @@ export final class Parser {
 export function assignNodeIds(node: Node, idGen: IdGenerator<NodeId>): void {
   walkEnter(node, (n) => {
     n.id = idGen.next();
+    // `walk` treats `Decorator` as a leaf so `@external("env", "print")` does
+    // not register its string arguments as runtime literals, but its path
+    // identifiers and arguments are still resolved in scope and need distinct
+    // NodeIds within the module's range.
+    if (n is Decorator) {
+      for (let seg in n.path) {
+        seg.id = idGen.next();
+      }
+      for (let arg in n.args) {
+        assignNodeIds(arg, idGen);
+      }
+    }
   });
 }
 

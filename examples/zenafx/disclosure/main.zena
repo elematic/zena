@@ -1,30 +1,13 @@
 /**
  * Two summaries, each showing and hiding the lines under it, worked from the
  * keyboard as well as with the pointer.
- *
- * A summary can have the focus. `Tab` moves the focus from one to the other
- * and round again, and the one that has it shows a ring. That is all the
- * host's doing: the template says which node can have the focus and how it
- * looks focused, and no handler here hears `Tab`.
- *
- * What a summary does hear is a press, and `Enter` or a space while it has the
- * focus. Either opens it or closes it. A key is offered along the path from
- * the root to the node with the focus, as a press is offered along the path to
- * the node under the pointer, so the summary without the focus hears nothing.
- *
- * The lines under a summary are content in a slot, there when it is open and
- * gone when it is closed. Showing them is two writes, one for the slot and one
- * for the lines. A node that is built once and shown or hidden by a single
- * value, which the design calls a choice, would make it one.
  */
-import { Color, BoxStyle, TextStyle, Edges, Axis, Justify, Align, LengthPx,
-         Overflow } from 'zenafx:ui/style';
-import { Binding, BindingTarget, BindingValueContent, StateStyle, State, RestyleFill,
-         Cursor } from 'zenafx:host/scene';
-import { PointerKind } from 'zenafx:host/events';
-import { Rendering, Widget, Template, Listener, Answer, shows, holds, onKey,
-         runApp } from '../framework.zena';
-import { box, slot, text, full, flatten, template } from '../widgets/widget.zena';
+import {
+  Color, BoxStyle, TextStyle, Edges, Justify, Align, LengthPx,
+} from 'zenafx:ui/style';
+import { Cursor } from 'zenafx:host/scene';
+import { ui, Widget, Box, Text, TemplateResult, full, KeyAnswer, runApp } from '../ui.zena';
+import { signal } from 'zena:signals';
 import { some, none } from 'zena:core';
 
 let page = new Color(0.98, 0.98, 0.99, 1.0);
@@ -40,112 +23,96 @@ let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
 let summaryStyle = new BoxStyle(some(paper), some(edge), 1.0, 8.0, 1.0);
 let hoveredStyle = new BoxStyle(some(hovered), some(edge), 1.0, 8.0, 1.0);
 let pressedStyle = new BoxStyle(some(pressed), some(edge), 1.0, 8.0, 1.0);
-/** The summary with the focus: the same box with a heavier edge, as a ring. */
 let focusedStyle = new BoxStyle(some(paper), some(ring), 2.0, 8.0, 1.0);
 let summaryText = new TextStyle('system-ui', 16.0, 600 as u16, false, ink);
 let lineText = new TextStyle('system-ui', 15.0, 400 as u16, false, muted);
 
-/** One line of the content under a summary. */
-let lineTemplate = template(text('', lineText), [
-  new Binding(0 as u32, BindingTarget.Content),
-]);
+let disclosureWidth = new LengthPx(320.0);
+let summaryPadding = new Edges(12.0, 16.0, 12.0, 16.0);
+let bodyPadding = new Edges(0.0, 16.0, 0.0, 16.0);
 
+/** One line of the content under a summary. */
 class Line extends Widget {
   #says: String;
 
   new(says: String) : #says = says, super();
 
-  build(): Rendering {
-    return shows(lineTemplate, [new BindingValueContent(this.#says)]);
+  build(): TemplateResult {
+    return @ui Text(this.#says) { style: lineText };
   }
 }
-
-/**
- * A disclosure's template. Breadth first: 0 its own box, 1 the summary, 2 the
- * box the content hangs in, 3 the summary's label, 4 the slot.
- *
- * The summary, node 1, is the node that can have the focus and the one with
- * looks. A later look wins when more than one state holds, and the ring is
- * last: a summary under the pointer that also has the focus shows the ring.
- */
-let disclosureTemplate = new Template(
-  flatten(box({align: Align.Stretch, gap: 6.0, width: new LengthPx(320.0)}, [
-    box({style: summaryStyle, padding: new Edges(12.0, 16.0, 12.0, 16.0),
-         cursor: Cursor.Pointer, focusable: true}, [
-      text('', summaryText),
-    ]),
-    box({gap: 4.0, padding: new Edges(0.0, 16.0, 0.0, 16.0)}, [slot()]),
-  ])),
-  [new Binding(3 as u32, BindingTarget.Content)],
-  [new StateStyle(1 as u32, State.Hovered, 1 as u32, new RestyleFill(hoveredStyle)),
-   new StateStyle(1 as u32, State.Pressed, 1 as u32, new RestyleFill(pressedStyle)),
-   new StateStyle(1 as u32, State.Focused, 1 as u32, new RestyleFill(focusedStyle))],
-);
 
 /** A summary, the lines under it, and whether they show. */
 class Disclosure extends Widget {
   #summary: String;
   #lines: Array<Widget>;
-  var #open = false;
+  @signal var #open: boolean = false;
 
-  new(summary: String, lines: Array<Widget>)
-      : #summary = summary, #lines = lines, super();
+  new(summary: String, lines: Array<Widget>) : #summary = summary, #lines = lines, super();
 
-  build(): Rendering {
-    let mark = if (this.#open) '▾' else '▸';
-    let content: Array<Widget> = if (this.#open) this.#lines else [];
-    return new Rendering(disclosureTemplate,
-      [new BindingValueContent(`${mark} ${this.#summary}`)],
-      [content],
-      // A press anywhere on the summary, which is node 1 and what is in it.
-      [new Listener(PointerKind.Down, (event) => {
-        this.#toggle();
-        return Answer.StopPropagation;
-      }, 1 as u32)],
-      // The same from the keyboard, while the summary has the focus. Any
-      // other key is passed on, `Tab` among them, which the host then moves
-      // the focus with.
-      [onKey('Enter', () => { this.#toggle(); }),
-       onKey(' ', () => { this.#toggle(); })]);
+  build(): TemplateResult {
+    return @ui Box {
+      align: Align.Stretch,
+      gap: 6.0,
+      width: disclosureWidth,
+
+      Box {
+        style: summaryStyle,
+        hovered: hoveredStyle,
+        pressed: pressedStyle,
+        focused: focusedStyle,
+        padding: summaryPadding,
+        cursor: Cursor.Pointer,
+        focusable: true,
+        onDown: () => { this.#toggle(); },
+        onKey: (event) => {
+          if (event.down && (event.key == 'Enter' || event.key == ' ')) {
+            this.#toggle();
+            return KeyAnswer.Used;
+          }
+          return KeyAnswer.Pass;
+        },
+
+        Text($(`${if (this.#open) '▾' else '▸'} ${this.#summary}`)) {
+          style: summaryText,
+        }
+      }
+
+      Box {
+        gap: 4.0,
+        padding: bodyPadding,
+
+        $(if (this.#open) { this.#lines } else { null })
+      }
+    };
   }
 
   #toggle(): void {
     this.#open = !this.#open;
-    this.refresh();
   }
 }
-
-/** The page: its own box, and one slot for the disclosures. */
-let pageTemplate = template(
-  box({style: pageStyle, justify: Justify.Center, align: Align.Center, gap: 16.0,
-       width: full, height: full}, [slot()]),
-  [],
-);
 
 class Page extends Widget {
-  /** Made on the first render. See the same field in `counter/main.zena`. */
-  var #content: Array<Widget> | null = null;
+  build(): TemplateResult {
+    return @ui Box {
+      width: full,
+      height: full,
+      style: pageStyle,
+      justify: Justify.Center,
+      align: Align.Center,
+      gap: 16.0,
 
-  build(): Rendering {
-    var content = this.#content;
-    if (content == null) {
-      let made: Array<Widget> = [
-        new Disclosure('Shipping', [
-          new Line('Sent within two working days.'),
-          new Line('Tracked, and signed for on arrival.')
-        ]),
-        new Disclosure('Returns', [
-          new Line('Within thirty days, in its box.')
-        ])
-      ];
-      this.#content = made;
-      content = made;
-    }
-    return holds(pageTemplate, [content]);
+      Disclosure('Shipping', [
+        new Line('Sent within two working days.'),
+        new Line('Tracked, and signed for on arrival.'),
+      ])
+      Disclosure('Returns', [
+        new Line('Within thirty days, in its box.'),
+      ])
+    };
   }
 }
 
-/** The component's entry: build the widget tree and show it. */
 export function main(): void {
   runApp(new Page());
 }

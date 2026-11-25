@@ -1,0 +1,297 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+
+import { signal, Effect, hasSources } from 'zena:signals';
+import { some, none } from 'zena:core';
+
+// Minimal mock `@ui` tag implementing the compiler's staged node-tree protocol.
+
+enum Align { Start, Center, Stretch }
+
+var compileCount = 0;
+
+class MockElement {
+  kind: String;
+  var gap: f32 = 0.0;
+  var align: Align = Align.Start;
+  var text: String = '';
+  binds = new GrowableArray<String>();
+  children = new GrowableArray<MockElement>();
+  var isSlot: boolean = false;
+  var isProjection: boolean = false;
+
+  var patchTarget: MockInstance | null = null;
+  var nodeIdx: i32 = -1;
+
+  new(this.kind);
+
+  bind(prop: String): void {
+    this.binds.push(prop);
+  }
+}
+
+final class Box extends MockElement {
+  new() : super('box');
+
+  static patch(inst: MockInstance, nodeIdx: i32): Box {
+    let b = new Box();
+    b.patchTarget = inst;
+    b.nodeIdx = nodeIdx;
+    return b;
+  }
+
+  addChild(child: MockElement): void {
+    this.children.push(child);
+  }
+
+  gapProp: f32 {
+    get { return this.gap; }
+    set(v) {
+      this.gap = v;
+      let t = this.patchTarget;
+      if (t != null) {
+        t.recordPatch(this.nodeIdx, `gap=${v}`);
+      }
+    }
+  }
+
+  alignProp: Align {
+    get { return this.align; }
+    set(v) {
+      this.align = v;
+      let t = this.patchTarget;
+      if (t != null) {
+        t.recordPatch(this.nodeIdx, 'align');
+      }
+    }
+  }
+}
+
+final class Text extends MockElement {
+  new(content: String = '') : super('text') {
+    this.text = content;
+  }
+
+  static patch(inst: MockInstance, nodeIdx: i32): Text {
+    let t = new Text();
+    t.patchTarget = inst;
+    t.nodeIdx = nodeIdx;
+    return t;
+  }
+
+  content: String {
+    get { return this.text; }
+    set(v) {
+      this.text = v;
+      let t = this.patchTarget;
+      if (t != null) {
+        t.recordPatch(this.nodeIdx, `text=${v}`);
+      }
+    }
+  }
+}
+
+final class Slot extends MockElement {
+  new() : super('slot') {
+    this.isSlot = true;
+    this.isProjection = true;
+  }
+
+  static isSlot(): boolean { return true; }
+
+  static patch(inst: MockInstance, nodeIdx: i32): Slot {
+    let s = new Slot();
+    s.patchTarget = inst;
+    s.nodeIdx = nodeIdx;
+    return s;
+  }
+}
+
+interface MockMountable {
+  tag(): String;
+}
+
+class MockWidget implements MockMountable {
+  var projected: GrowableArray<MockMountable> | null = null;
+  tag(): String { return 'widget'; }
+}
+
+final class MockTemplate {
+  root: MockElement;
+  new(this.root);
+
+  instantiate(): MockInstance {
+    return new MockInstance(this);
+  }
+}
+
+final class MockInstance implements MockMountable {
+  template: MockTemplate;
+  patches = new GrowableArray<String>();
+  effects = new GrowableArray<Effect>();
+  slotChildren = new GrowableArray<MockMountable>();
+  dynamicSlots = new GrowableArray<() => MockInstance | MockWidget | null>();
+  var lastDynamic: MockInstance | MockWidget | null = null;
+
+  new(this.template);
+
+  tag(): String { return 'instance'; }
+
+  recordPatch(nodeIdx: i32, desc: String): void {
+    this.patches.push(`${nodeIdx}:${desc}`);
+  }
+
+  react(fn: () => void): void {
+    let eff = new Effect(fn);
+    if (hasSources(eff)) {
+      this.effects.push(eff);
+    } else {
+      eff.dispose();
+    }
+  }
+
+  setSlotChild(slotIdx: i32, child: MockMountable): void {
+    this.slotChildren.push(child);
+  }
+
+  bindSlot(slotIdx: i32, fn: () => MockInstance | MockWidget | null): void {
+    this.dynamicSlots.push(fn);
+    let eff = new Effect(() => {
+      this.lastDynamic = fn();
+    });
+    if (hasSources(eff)) {
+      this.effects.push(eff);
+    } else {
+      eff.dispose();
+    }
+  }
+
+  project(widget: MockWidget, children: Array<MockMountable>): void {
+    widget.projected = GrowableArray.from(children);
+  }
+}
+
+final class MockUiTag {
+  slot(): MockElement {
+    let el = new MockElement('slot');
+    el.isSlot = true;
+    return el;
+  }
+
+  wrapSlot(): MockElement {
+    let b = new Box();
+    b.addChild(this.slot());
+    return b;
+  }
+
+  compile(root: MockElement): MockTemplate {
+    compileCount += 1;
+    return new MockTemplate(root);
+  }
+}
+
+let ui = new MockUiTag();
+let defaultGap: f32 = 8.0;
+
+class Badge extends MockWidget {
+  label: String;
+  @signal var count: i32 = 0;
+
+  new(this.label) : super();
+}
+
+class Card extends MockWidget {
+  title: String;
+  @signal var open: boolean = false;
+  @signal var note: Option<String> = none;
+
+  new(this.title) : super();
+
+  build(): MockInstance {
+    return @ui Box {
+      gapProp: defaultGap,
+      alignProp: Align.Center,
+
+      Text('Static title')
+      Text(this.title)
+      Text($(if (let Some {value} = this.note) { value } else { 'empty' }))
+      $(if (this.open) {
+        @ui Box { Text('Expanded') }
+      } else {
+        null
+      })
+    };
+  }
+}
+
+class HostPage extends MockWidget {
+  @signal var badgeCount: i32 = 1;
+
+  build(): MockInstance {
+    return @ui Box {
+      Badge('Inbox') {
+        count: $(this.badgeCount),
+
+        Text('Projected 1')
+        Text('Projected 2')
+      }
+    };
+  }
+}
+
+export function main(): i32 {
+  // 1. Call-site caching & constant folding
+  let c1 = new Card('One');
+  let c2 = new Card('Two');
+  let i1 = c1.build();
+  let i2 = c2.build();
+  // Both Card instances share the single cached template for Card.build.
+  if (i1.template !== i2.template) { return 1; }
+  if (compileCount != 1) { return 2; }
+
+  // Static Box props folded with 0 binds; Text('Static title') folded with 0 binds;
+  // Text(this.title) and Text($(..)) each declared 1 'content' bind.
+  let root = i1.template.root;
+  if (root.gap != 8.0) { return 3; }
+  if (root.align != Align.Center) { return 4; }
+  if (root.binds.length != 0) { return 5; }
+  if (root.children[0].text != 'Static title') { return 6; }
+  if (root.children[0].binds.length != 0) { return 7; }
+  if (root.children[1].binds.length != 1) { return 8; }
+  if (root.children[2].binds.length != 1) { return 9; }
+
+  // 2. Initial patches & reactive updates (including `if (let Some)` inside `$(...)`)
+  if (i1.patches.length != 2) { return 10; }
+  if (i1.patches[0] != '2:text=One') { return 11; }
+  if (i1.patches[1] != '3:text=empty') { return 12; }
+  if (i1.lastDynamic != null) { return 13; }
+
+  c1.note = some('updated');
+  if (i1.patches.length != 3) { return 14; }
+  if (i1.patches[2] != '3:text=updated') { return 15; }
+
+  // 3. Dynamic child slot with nested `@ui`
+  c1.open = true;
+  if (i1.lastDynamic == null) { return 16; }
+  if (compileCount != 2) { return 17; }
+  // Opening c2 reuses the nested `@ui` cached template (compileCount stays 2).
+  c2.open = true;
+  if (compileCount != 2) { return 18; }
+  c1.open = false;
+  if (i1.lastDynamic != null) { return 19; }
+
+  // 4. Child widget with reactive prop + projected children
+  let page = new HostPage();
+  let pi = page.build();
+  if (pi.slotChildren.length != 1) { return 20; }
+  let badge = pi.slotChildren[0] as Badge;
+  if (badge.label != 'Inbox') { return 21; }
+  if (badge.count != 1) { return 22; }
+  page.badgeCount = 7;
+  if (badge.count != 7) { return 23; }
+  let proj = badge.projected;
+  if (proj == null || proj.length != 2) { return 24; }
+
+  return 0;
+}

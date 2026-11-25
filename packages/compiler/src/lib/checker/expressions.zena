@@ -48,6 +48,7 @@ import {
   isNumericOrNumericTypeParam, unwrapBigIntTarget
 } from './literals.zena';
 import { checkMatchCaseBody, checkMatchExpr } from './match.zena';
+import { checkDecoratedExpression } from './ui.zena';
 import {
   accessMemberKey, checkIndexExpression, discriminatedRecordMember, checkIndexWrite, checkMemberExpression, displayMemberName, isStaticReceiver, resolveArrayBackingClass, staticAccessMismatch, staticMemberHint
 } from './members.zena';
@@ -1873,16 +1874,15 @@ function checkExpressionInner(
     }
   }
   case NodeLiteral {loc}: {
-    ctx.error("Node literals are not yet supported in the type checker.", DiagnosticCode.TypeMismatch, loc);
+    ctx.error("Untagged node literals are not yet supported in the type checker.", DiagnosticCode.TypeMismatch, loc);
     new ErrorType()
   }
   case BindingExpression {loc}: {
-    ctx.error("Binding expressions '$(...)' are not yet supported in the type checker.", DiagnosticCode.TypeMismatch, loc);
+    ctx.error("Binding expressions '$(...)' can only be used inside a staged '@' expression such as '@ui'.", DiagnosticCode.TypeMismatch, loc);
     new ErrorType()
   }
-  case DecoratedExpression {loc}: {
-    ctx.error("Decorated expressions are not yet supported in the type checker.", DiagnosticCode.TypeMismatch, loc);
-    new ErrorType()
+  case DecoratedExpression as dec: {
+    checkDecoratedExpression(ctx, dec, expectedType)
   }
   };
 }
