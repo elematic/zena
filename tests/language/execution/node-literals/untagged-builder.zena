@@ -1,0 +1,80 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+
+// Untagged node literals (`Type(args) { props..., ...spreads..., children... }`):
+// - class builders with optional commas, property setters, `spread`, and `addChild`
+// - nested child node literals and class-call shorthand (`Leaf('x')`)
+// - record type alias literals (`Point { x: 1.0 y: 2.0 }`)
+
+type Point = { x: f32, y: f32 };
+type Insets = { x?: f32, y?: f32 };
+
+final class Rule {
+  cond: String;
+  var bg: i32 = 0;
+
+  new(this.cond);
+}
+
+final class StyleBuilder {
+  var bg: i32 = 0;
+  var gap: f32 = 0.0;
+  var padding: Insets = {};
+  rules = new GrowableArray<Rule>();
+
+  spread(other: StyleBuilder): void {
+    if (other.bg != 0) { this.bg = other.bg; }
+    if (other.gap != 0.0) { this.gap = other.gap; }
+    this.padding = { ...this.padding, ...other.padding };
+    for (let r in other.rules) {
+      this.rules.push(r);
+    }
+  }
+
+  addChild(rule: Rule): void {
+    this.rules.push(rule);
+  }
+}
+
+let base = StyleBuilder {
+  bg: 10
+  gap: 8.0
+  padding: Insets { x: 12.0 y: 6.0 }
+
+  Rule('hovered') { bg: 20 }
+};
+
+let derived = StyleBuilder {
+  ...base
+  bg: 30
+
+  Rule('pressed') { bg: 40 }
+  Rule('empty')
+};
+
+export function main(): i32 {
+  // Record alias node literal (comma-free + spread)
+  let p = Point { x: 3.0 y: 4.0 };
+  if (p.x != 3.0 || p.y != 4.0) { return 1; }
+
+  let p2 = Point { ...p x: 9.0 };
+  if (p2.x != 9.0 || p2.y != 4.0) { return 2; }
+
+  // Base class builder
+  if (base.bg != 10 || base.gap != 8.0) { return 3; }
+  let padX: f32 = base.padding.x ?? 0.0;
+  let padY: f32 = base.padding.y ?? 0.0;
+  if (padX != 12.0 || padY != 6.0) { return 4; }
+  if (base.rules.length != 1) { return 5; }
+  if (base.rules[0].cond != 'hovered' || base.rules[0].bg != 20) { return 6; }
+
+  // Derived class builder preserves spread rules and overrides bg
+  if (derived.bg != 30 || derived.gap != 8.0) { return 7; }
+  if (derived.rules.length != 3) { return 8; }
+  if (derived.rules[0].cond != 'hovered' || derived.rules[0].bg != 20) { return 9; }
+  if (derived.rules[1].cond != 'pressed' || derived.rules[1].bg != 40) { return 10; }
+  if (derived.rules[2].cond != 'empty' || derived.rules[2].bg != 0) { return 11; }
+
+  return 0;
+}

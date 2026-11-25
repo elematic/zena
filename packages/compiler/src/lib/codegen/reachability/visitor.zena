@@ -15,7 +15,7 @@ import {
   isBigIntLiteralRaw, isScopedType, scopedInner, soleNonNullMember, internFunctionType, forInLowersToIndexLoop,
   isIterableRangeClass, holdsOwner, typeContainsScoped, erasedType } from '../../types.zena';
 import {
-  Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, DecoratedExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, NumberLiteral, ThrowExpression, TryExpression, ContractClause, contractFailureMessage, ShieldedStatement, StringLiteral, SuperInitializer, TemplateLiteral, UnaryExpression,
+  Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, NodeLiteral, DecoratedExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, NumberLiteral, ThrowExpression, TryExpression, ContractClause, contractFailureMessage, ShieldedStatement, StringLiteral, SuperInitializer, TemplateLiteral, UnaryExpression,
 } from '../../ast.zena';
 import {
   WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo, TypeTestSite,
@@ -688,6 +688,7 @@ function isInstantiationSite(n: Node, model: SemanticModel): boolean {
       n is IndexExpression || n is AsExpression || n is IsExpression ||
       n is TemplateLiteral || n is TaggedTemplateExpression ||
       (n is DecoratedExpression && model.getUiLowering(n) != null) ||
+      (n is NodeLiteral && model.getNodeLowering(n) != null) ||
       n is ArrayLiteral || n is TupleLiteral || n is RecordLiteral ||
       n is MapLiteral || n is RangeExpression || n is MatchExpression ||
       n is MatchCase || n is LetPatternCondition || n is ForInStatement ||
@@ -1390,6 +1391,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.registerInstantiations(ui.templateResult, model, resolveType, classType);
           this.registerInstantiations(ui.instanceBlock, model, resolveType, classType);
           this.registerInstantiations(ui.instanceResult, model, resolveType, classType);
+        }
+      }
+      if (n is NodeLiteral) {
+        let nl = model.getNodeLowering(n);
+        if (nl != null) {
+          this.registerLiterals(nl.block);
+          this.registerLiterals(nl.result);
+          this.registerInstantiations(nl.block, model, resolveType, classType);
+          this.registerInstantiations(nl.result, model, resolveType, classType);
         }
       }
       if (n is TemplateLiteral) {
@@ -3416,6 +3426,13 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.discoverNodeTypes(ui.templateResult, model, resolveType);
           this.discoverNodeTypes(ui.instanceBlock, model, resolveType);
           this.discoverNodeTypes(ui.instanceResult, model, resolveType);
+        }
+      }
+      if (n is NodeLiteral) {
+        let nl = model.getNodeLowering(n);
+        if (nl != null) {
+          this.discoverNodeTypes(nl.block, model, resolveType);
+          this.discoverNodeTypes(nl.result, model, resolveType);
         }
       }
       if (n is TemplateLiteral) {

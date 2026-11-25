@@ -14,7 +14,7 @@ import { findDeclaration, collectValueExports, isArrayIntrinsic } from '../looku
  * variable assigned anywhere in the loop.
  */
 import {
-  Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ShieldedStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, MixinDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, DecoratedExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, ArrayPattern, RestPattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression, SymbolPropertyName, ContractClause, ContractKind, isOldCallee,
+  Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ShieldedStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, MixinDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, NodeLiteral, DecoratedExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, ArrayPattern, RestPattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression, SymbolPropertyName, ContractClause, ContractKind, isOldCallee,
   hasOptionalChainStep, isMethodCallStep, isOptionalPostfixStep, postfixStepTarget, samePostfixChain,
 } from '../../ast.zena';
 import {
@@ -6596,6 +6596,8 @@ export final class FunctionLowerer {
       throw new TemplateAbandon('tagged template');
     } else if (expr is DecoratedExpression) {
       throw new TemplateAbandon('decorated expression');
+    } else if (expr is NodeLiteral) {
+      throw new TemplateAbandon('node literal');
     } else if (expr is AssignmentExpression) {
       // What the store does with the value it replaces depends on the
       // type argument (emitScopedFieldReplace).
@@ -6693,6 +6695,7 @@ export final class FunctionLowerer {
       case PipePlaceholder: this.#lowerPipePlaceholder()
       case TaggedTemplateExpression as tagged: this.#lowerTaggedTemplate(tagged)
       case DecoratedExpression as dec: this.#lowerDecoratedExpression(dec)
+      case NodeLiteral as nl: this.#lowerNodeLiteral(nl)
       case AwaitExpression as aw: this.#lowerAwait(aw)
       case _: this.#bailValue('expression kind' + kindTagOf(expr))
     };
@@ -11542,6 +11545,17 @@ export final class FunctionLowerer {
 
   #lowerTaggedTemplate(expr: TaggedTemplateExpression): i32 {
     return lowerTaggedTemplate(this.#cx(), expr);
+  }
+
+  #lowerNodeLiteral(expr: NodeLiteral): i32 {
+    let nl = this.func.model.getNodeLowering(expr);
+    if (nl == null) {
+      return this.#bailValue('node literal without lowering');
+    }
+    for (let stmt in nl.block.body) {
+      this.#lowerStatement(stmt);
+    }
+    return this.#lowerExpression(nl.result);
   }
 
   #lowerDecoratedExpression(expr: DecoratedExpression): i32 {

@@ -6,9 +6,11 @@ Proposal. Two pieces are built today:
 
 - The host's list of state styles described under [Styles today](#styles-today),
   which the rule system below would replace.
-- The unified, record-based guest `Style` surface described under
-  [Authoring surface](#authoring-surface), prototyped in
-  `examples/zenafx/ui.zena` and used by the `@ui` example widgets.
+- Step 1 of the guest [Authoring surface](#authoring-surface): untagged node
+  literal builders in the compiler, unified `Style` / `When` / `Rule` /
+  `Stylesheet` builders and the `Condition` algebra with flat post-order
+  serialization in `examples/zenafx/style.zena` and `examples/zenafx/ui.zena`,
+  and the updated `@ui` example widgets.
 
 The rest of this document asks for nine host-protocol decisions:
 
@@ -170,33 +172,34 @@ arguments, `Option` wrappers, and repeated defaults for every style value.
 
 A single `Style` value bundles every style property of a node — sizing, flex
 and flow layout, visual fill and border, typography, cursor, text selection,
-and state overrides — matching the property model in [Properties](#properties).
+and conditional rules — matching the property model in [Properties](#properties).
 
 ```zena
-let centeredPage: Style = {
-  width: full,
-  height: full,
-  justify: Justify.Center,
-  align: Align.Center,
+let centeredPage = Style {
+  width: full
+  height: full
+  justify: Justify.Center
+  align: Align.Center
 };
 
-let pageStyle: Style = {
-  ...centeredPage,
-  background: pageBg,
-  gap: 24.0,
+let pageStyle = Style {
+  ...centeredPage
+  background: pageBg
+  gap: 24.0
 };
 
-let buttonStyle: Style = {
-  background: resting,
-  cornerRadius: 10.0,
-  padding: { x: 24.0, y: 12.0 },
-  justify: Justify.Center,
-  align: Align.Center,
-  hovered: { background: hovered },
-  pressed: { background: pressed },
+let buttonStyle = Style {
+  background: resting
+  cornerRadius: 10.0
+  padding: { x: 24.0, y: 12.0 }
+  justify: Justify.Center
+  align: Align.Center
+
+  When(hovered) { background: hoveredBg }
+  When(pressed) { background: pressedBg }
 };
 
-let labelStyle: Style = { fontSize: 16.0, fontWeight: 600, color: paper };
+let labelStyle = Style { fontSize: 16.0 fontWeight: 600 color: paper };
 ```
 
 A node then takes one `style` property alongside its structural content and
@@ -216,86 +219,133 @@ Four rules shape this boundary:
 - **Layout and visual properties live together in `Style`.** A library can
   export layout bundles (`centeredPage`, `toolbarRow`), surface bundles
   (`cardSurface`), or complete control styles (`buttonStyle`) as ordinary
-  values and compose them with record spread (`{ ...centeredPage, background:
-pageBg }`).
+  values and compose them with `...spread`.
 - **Behaviour and structure stay on the node.** Text content, child nodes,
   `Slot {}`, `focusable`, `editable`, and event handlers (`onDown`, `onKey`)
   remain node properties, matching the split under
   [The cursor and text selection](#the-cursor-and-text-selection).
-- **State overrides are partial.** `hovered`, `pressed`, and `focused` inside
-  `Style` declare only the properties that change (for example,
-  `focused: { borderColor: ring, borderWidth: 2.0 }`). Today the guest merges
-  each override onto the base visual style when lowering to `state-style`; once
-  host rules land, each override becomes a rule directly.
+- **A `Style` is an ordered list of rules, not just a flat record.** Base
+  declarations form the unconditional base, and each `When(...)` child appends
+  a conditional rule in source order. Spreading `...buttonStyle` preserves
+  `buttonStyle`'s conditional rules instead of shallowly overwriting them, so
+  later rules override only the properties they redeclare. Today the guest
+  merges each host-state override (`hovered`, `pressed`, `focused`) onto the
+  base visual style when lowering to `state-style`; once host rules land, each
+  override becomes a rule directly.
 - **Value constructors stay lightweight.** Edge insets use a presence-optional
   record (`{ all: 16.0 }`, `{ x: 24.0, y: 12.0 }`,
   `{ top: 18.0, x: 22.0, bottom: 22.0 }`), font weights take plain `i32`
   literals, and small helpers (`rgb`, `rgba`, `px`, `pct`, `full`, `auto`)
   replace positional class constructors.
 
-In `@ui`, module-level `Style` constants and inline template-static record
-literals (`Box { style: { axis: Axis.Row, gap: 10.0 } }`) fold directly into
-the call-site-cached `Template` with zero runtime bindings. A dynamic or
-reactive `style` expression (`style: titleStyle(this.#accent)` or
-`style: $(...)`) declares bindings for the node's underlying `box`, `layout`,
-and `style` targets and diffs per target on updates, so changing only a
-background sends only a `style` hole.
+Inline `Style` builders (`Box { style: Style { axis: Axis.Row gap: 10.0 } }`)
+and typed record literals (`StyleProps { axis: Axis.Row gap: 10.0 }`) stay
+available as lightweight shorthand when a node needs no separate binding. In
+`@ui`, module-level `Style` constants fold directly into the call-site-cached
+`Template` with zero runtime bindings. A dynamic or reactive `style` expression
+(`style: titleStyle(this.#accent)` or `style: $(...)`) declares bindings for
+the node's underlying `box`, `layout`, and `style` targets and diffs per target
+on updates, so changing only a background sends only a `style` hole.
 
-### Record syntax and builder syntax
+### Builder syntax, stylesheets, and macro conditions
 
-The prototype in `examples/zenafx/ui.zena` defines `Style` as a
-presence-optional record type ([record-presence.md](./record-presence.md)).
-Record literals work in Zena today with no new compiler features: omitted
-properties default cleanly, closed-literal checking catches misspelled property
-names at compile time, `{ ...a, ...b }` composes styles with presence
-propagation, and inline `style: { gap: 6.0 }` requires no type name.
+Flat records cover unconditional inline styles well, but hit four limits as
+soon as styles carry rules:
 
-The limitation of plain records appears once a style carries arbitrary
-conditions and nested rules rather than the three fixed host states: commas are
-required between declarations, and nested conditional blocks do not fit a flat
-key-value record.
+- Record keys are a fixed schema and cannot express arbitrary application facts
+  (`selected`, `disabled`), compound boolean conditions, or range queries
+  (`panelWidth >= 600.0`).
+- Record fields are unordered and each key appears once, whereas rule order
+  decides which conditional declaration wins.
+- Shallow record spread (`{ ...a, ...b }`) overwrites nested state objects
+  wholesale rather than concatenating rules so declarations combine
+  property-by-property.
+- Scoped rules matching descendants within a widget's scope need a condition
+  per rule and a `scope` reach rather than one flat property bag.
 
-Zena's node-literal grammar ([declarative.md](./declarative.md)) already parses
-`Type { ... }` with optional commas, `...spread`, shorthand properties, and
-nested child blocks. Once untagged node literals are supported in the type
-checker and lowering, the same property names and composition model extend to
-builder syntax:
+Zena's untagged node-literal grammar ([declarative.md](./declarative.md))
+handles all four without adding a CSS parser. An untagged node literal
+`Type(args) { props..., ...spreads..., children... }` constructs `new
+Type(args...)`, assigns properties and calls `.spread(arg)` in source order,
+and appends child blocks via `.addChild(child)` — with optional commas.
+
+**Step 1 — untagged builder nodes with typed condition builders (built).**
+Most styles live at module level (`let buttonStyle = Style { ... };`), so they
+already execute once at module initialization and need no call-site tag.
+Conditions are built with typed functions (`all`, `any`, `not`, `gte`, `gt`,
+`lte`, `lt`, `under`, `within`) over `FlagKey` and `NumberKey` symbols, and
+`Stylesheet` supports CSS-style nesting: a nested `Rule(child)` inside
+`Rule(parent)` conjoins with `within(parent)`, and `When(state)` inside a
+`Rule` conjoins with `all(...)`:
 
 ```zena
-let buttonStyle = Style {
-  background: resting
-  cornerRadius: 10.0
-  padding: { x: 24.0, y: 12.0 }
-  justify: Justify.Center
-  align: Align.Center
+let rowStyle = Style {
+  padding: { x: 14.0, y: 10.0 }
+  cursor: Cursor.Pointer
 
-  When(State.Hovered) { background: hovered }
-  When(State.Pressed) { background: pressed }
+  When(hovered) { background: rowHover }
+  When(all([selected, not(disabled)])) { background: accentSoft color: accent }
+  When(gte(panelWidth, 600.0)) { axis: Axis.Row gap: 16.0 }
 };
-```
 
-And stylesheets from [Stylesheets](#stylesheets) use the same block form
-instead of nested function calls and arrays:
-
-```zena
 export let cardStyles = Stylesheet {
   Rule(card) {
     background: paper
     cornerRadius: 8.0
-  }
-  Rule(all([title, within(card)])) {
-    fontSize: 18.0
-  }
-  Rule(all([title, within(card), hovered])) {
-    color: use(accent)
+    padding: { all: 16.0 }
+
+    Rule(title) {
+      fontSize: 18.0
+      fontWeight: 600
+
+      When(hovered) { color: accent }
+    }
   }
 };
 ```
 
-Keeping record-based `Style` values now and layering `Style { ... }` /
-`Stylesheet { ... }` builders on top when untagged node literals and host rules
-land preserves one property vocabulary throughout and avoids inventing a
-CSS-specific parser.
+A guest serializes any rule set's condition trees into the flat post-order
+`list<condition>` table under [Conditions](#conditions) (`flattenRules` in
+`examples/zenafx/style.zena`), ready for the host wire protocol once host rules
+land.
+
+**Step 2 — `@style` and `@cond` macros for Zena condition expressions (planned).**
+Rather than adding a bespoke selector grammar to the compiler (such as the
+earlier `rules { case Card >> Text: ... }` sketch in
+[zenafx-widget-authoring.md](./zenafx-widget-authoring.md#selectors-as-data)),
+once Zena's macro system ([macros.md](./macros.md)) lands, a purely syntactic
+macro rewrites standard Zena boolean and comparison operators inside `When(...)`,
+`Rule(...)`, and `@cond(...)` directly into the Step 1 builder functions:
+
+- `a && b` → `condAll([lower(a), lower(b)])`
+- `a || b` → `condAny([lower(a), lower(b)])`
+- `!a` → `condNot(lower(a))`
+- `a >= b`, `a > b`, `a <= b`, `a < b` → `condGte`, `condGt`, `condLte`, `condLt`
+- any leaf expression `e` → `toCondition(e)` (accepting `FlagKey | Condition`)
+
+```zena
+let wide = @cond (panelWidth >= 600.0);
+
+@style Stylesheet {
+  Rule(card) {
+    background: paper
+    cornerRadius: 8.0
+
+    Rule(title) {
+      fontSize: 18.0
+      When(hovered && !disabled && wide) { color: use(accent) }
+    }
+  }
+}
+```
+
+Because the macro only rewrites syntax into typed function calls, Zena's normal
+type checker validates every key and operand (`hovered >= 600.0` is a type
+error because `hovered` is a `FlagKey`, not a `NumberKey`). The same `@cond`
+macro works for `node.watch(...)` condition watchers, and `@style` can also
+stage dynamic `$(...)` declaration holes in standalone stylesheets outside
+`@ui`. Neither the host protocol nor the Step 1 condition representation
+changes between Step 1 and Step 2.
 
 ### Terminology
 
@@ -846,8 +896,15 @@ A condition is a test of facts on a node, a test of the nodes above it, or a
 combination of conditions.
 
 ```wit
-/// True while `min <= value < max`. A missing bound is unbounded.
-record range-test { key: key, min: option<f32>, max: option<f32> }
+/// True while `value` lies within `[min, max]` (inclusive or exclusive per
+/// bound). A missing bound is unbounded.
+record range-test {
+  key: key,
+  min: option<f32>,
+  min-inclusive: bool,
+  max: option<f32>,
+  max-inclusive: bool,
+}
 
 variant condition {
   /// A flag is set on the node.

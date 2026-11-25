@@ -34,12 +34,12 @@ import {
   InterfaceDeclaration, MethodDefinition,
 } from '../ast.zena';
 import {
-  Type, ClassType, InterfaceType, EnumType, ErrorType, FunctionType,
+  Type, ClassType, InterfaceType, EnumType, RecordType, ErrorType, FunctionType,
   FieldInfo, unwrapAliases, typeToString,
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { Symbol } from '../scope/symbol.zena';
-import { UiLowering } from '../semantic-model.zena';
+import { UiLowering, NodeLowering } from '../semantic-model.zena';
 import { CheckerContext } from './context.zena';
 import { checkExpression } from './expressions.zena';
 import { checkStatement } from './statements.zena';
@@ -95,6 +95,257 @@ export function checkDecoratedExpression(
 
   let builder = new UiSynthesizer(ctx, expr, dec, tagIdent, tagSym);
   return builder.build();
+}
+
+/**
+ * Type-check and synthesize eager lowering for an untagged `NodeLiteral`
+ * (`Type(args) { props..., ...spreads..., children... }`).
+ *
+ * Supports:
+ *   - **Class builders**: constructs `new Type(args...)`, assigns properties
+ *     and calls `.spread(arg)` in source order, appends children via
+ *     `.addChild(child)`, and evaluates to the constructed instance.
+ *   - **Record type aliases**: desugars `Point { x: 1.0, y: 2.0 }` directly
+ *     to a contextually typed `RecordLiteral` with optional commas and spread.
+ */
+export function checkNodeLiteral(
+  ctx: CheckerContext,
+  expr: NodeLiteral,
+  expectedType: Type | null
+): Type {
+  if (!(expr.type is Identifier)) {
+    ctx.error(
+      "Expected a class or record type in node literal.",
+      DiagnosticCode.TypeMismatch,
+      expr.type.loc
+    );
+    return new ErrorType();
+  }
+  let typeIdent = expr.type as Identifier;
+  var resolved = ctx.resolveTypeReference(typeIdent, typeIdent.name);
+  if (resolved == null) {
+    let val = ctx.resolveIdentifier(typeIdent);
+    if (val is ClassType) {
+      resolved = val;
+    }
+  }
+  if (resolved == null) {
+    ctx.error(
+      `Unknown type '${typeIdent.name}' in node literal.`,
+      DiagnosticCode.SymbolNotFound,
+      typeIdent.loc
+    );
+    return new ErrorType();
+  }
+
+  let unwrapped = unwrapAliases(resolved);
+
+  // Record type alias: `Point { x: 1.0, y: 2.0 }` -> contextually typed RecordLiteral.
+  if (unwrapped is RecordType) {
+    if (expr.args.length > 0) {
+      ctx.error(
+        `Record node literal '${typeIdent.name}' cannot take positional arguments.`,
+        DiagnosticCode.TypeMismatch,
+        expr.args[0].loc
+      );
+      return new ErrorType();
+    }
+    if (expr.children.length > 0) {
+      ctx.error(
+        `Record node literal '${typeIdent.name}' does not accept children.`,
+        DiagnosticCode.TypeMismatch,
+        expr.children[0].loc
+      );
+      return new ErrorType();
+    }
+    let rec = new RecordLiteral(expr.properties, expr.loc);
+    rec.id = ctx.mintNodeId();
+    ctx.model.setParent(rec, expr);
+    let emptyBlock = new BlockStatement(new GrowableArray<Statement>(), expr.loc);
+    emptyBlock.id = ctx.mintNodeId();
+    ctx.model.setParent(emptyBlock, expr);
+    let recType = checkExpression(ctx, rec, resolved);
+    ctx.model.setNodeLowering(expr, new NodeLowering(emptyBlock, rec));
+    return recType;
+  }
+
+  if (!(unwrapped is ClassType)) {
+    ctx.error(
+      `'${typeIdent.name}' is not a class or record type.`,
+      DiagnosticCode.TypeMismatch,
+      typeIdent.loc
+    );
+    return new ErrorType();
+  }
+
+  let cls = unwrapped;
+  let classSym = ctx.model.resolve(typeIdent);
+  if (classSym == null) {
+    return new ErrorType();
+  }
+
+  let synth = new NodeLiteralSynthesizer(ctx, expr, typeIdent, classSym, cls);
+  return synth.build();
+}
+
+final class NodeLiteralSynthesizer {
+  ctx: CheckerContext;
+  expr: NodeLiteral;
+  typeIdent: Identifier;
+  classSym: Symbol;
+  cls: ClassType;
+  stmts = new GrowableArray<Statement>();
+
+  new(this.ctx, this.expr, this.typeIdent, this.classSym, this.cls);
+
+  #mint<T extends Node>(node: T): T {
+    node.id = this.ctx.mintNodeId();
+    return node;
+  }
+
+  #setParent(child: Node, parent: Node): void {
+    this.ctx.model.setParent(child, parent);
+  }
+
+  #recordSym(node: Node, sym: Symbol): void {
+    let symbols = this.ctx.model.symbols;
+    if (symbols != null) {
+      symbols.record(node, sym);
+    }
+  }
+
+  #cloneSymIdent(name: String, sym: Symbol, loc: SourceLocation | null = null): Identifier {
+    let id = this.#mint(new Identifier(name, loc));
+    this.#recordSym(id, sym);
+    return id;
+  }
+
+  #member(obj: Expression, propName: String, loc: SourceLocation | null = null): MemberExpression {
+    let prop = this.#mint(new Identifier(propName, loc));
+    let m = this.#mint(new MemberExpression(obj, prop, false, false, null, loc));
+    this.#setParent(obj, m);
+    this.#setParent(prop, m);
+    return m;
+  }
+
+  #methodCall(obj: Expression, method: String, args: GrowableArray<Expression>, loc: SourceLocation | null = null): CallExpression {
+    let m = this.#member(obj, method, loc);
+    let c = this.#mint(new CallExpression(m, args, null, false, loc));
+    this.#setParent(m, c);
+    for (let arg in args) {
+      this.#setParent(arg, c);
+    }
+    return c;
+  }
+
+  #emitStmt(expr: Expression, loc: SourceLocation | null = null): void {
+    let stmt = this.#mint(new ExpressionStatement(expr, loc));
+    this.#setParent(expr, stmt);
+    this.stmts.push(stmt);
+  }
+
+  build(): Type {
+    let callee = this.#cloneSymIdent(this.typeIdent.name, this.classSym, this.typeIdent.loc);
+    let newExpr = this.#mint(new NewExpression(callee, this.expr.typeArguments, this.expr.args, null, this.expr.loc));
+    this.#setParent(callee, newExpr);
+    for (let arg in this.expr.args) {
+      this.#setParent(arg, newExpr);
+    }
+
+    let pat = this.#mint(new IdentifierPattern("__node", null));
+    let nodeSym = new Symbol("__node", pat, "", false, this.ctx.mintSymbolId());
+    this.#recordSym(pat, nodeSym);
+    let decl = this.#mint(new VariableDeclaration("let", pat, null, newExpr, false, this.expr.loc));
+    this.#setParent(pat, decl);
+    this.#setParent(newExpr, decl);
+    this.stmts.push(decl);
+
+    for (let prop in this.expr.properties) {
+      match (prop) {
+        case PropertyAssignment {name, value, loc as propLoc}: {
+          let lhs = this.#member(this.#cloneSymIdent(nodeSym.name, nodeSym, null), name.name, propLoc);
+          let assign = this.#mint(new AssignmentExpression(lhs, value, null, propLoc));
+          this.#setParent(lhs, assign);
+          this.#setParent(value, assign);
+          this.#emitStmt(assign, propLoc);
+        }
+        case SpreadElement {argument, loc as spreadLoc}: {
+          if (!this.cls.members.has("spread")) {
+            this.ctx.error(
+              `'${this.cls.name}' does not support '...spread' in node literals (no 'spread' method).`,
+              DiagnosticCode.TypeMismatch,
+              spreadLoc
+            );
+          } else {
+            let spreadArgs = new GrowableArray<Expression>();
+            spreadArgs.push(argument);
+            let call = this.#methodCall(
+              this.#cloneSymIdent(nodeSym.name, nodeSym, null),
+              "spread",
+              spreadArgs,
+              spreadLoc
+            );
+            this.#emitStmt(call, spreadLoc);
+          }
+        }
+        case _: {}
+      }
+    }
+
+    if (this.expr.children.length > 0) {
+      if (!this.cls.members.has("addChild")) {
+        this.ctx.error(
+          `'${this.cls.name}' does not accept children (no 'addChild' method).`,
+          DiagnosticCode.TypeMismatch,
+          this.expr.children[0].loc
+        );
+      } else {
+        for (let child in this.expr.children) {
+          var childExpr = child;
+          if (child is CallExpression) {
+            let childCls = resolveClassFromExpr(this.ctx, child.callee);
+            if (childCls != null && child.callee is Identifier) {
+              let childIdent = child.callee as Identifier;
+              let childSym = this.ctx.model.resolve(childIdent);
+              if (childSym != null) {
+                let cCallee = this.#cloneSymIdent(childIdent.name, childSym, childIdent.loc);
+                let ne = this.#mint(new NewExpression(cCallee, child.typeArguments, child.args, null, child.loc));
+                this.#setParent(cCallee, ne);
+                for (let arg in child.args) {
+                  this.#setParent(arg, ne);
+                }
+                childExpr = ne;
+              }
+            }
+          }
+          let addArgs = new GrowableArray<Expression>();
+          addArgs.push(childExpr);
+          let call = this.#methodCall(
+            this.#cloneSymIdent(nodeSym.name, nodeSym, null),
+            "addChild",
+            addArgs,
+            child.loc
+          );
+          this.#emitStmt(call, child.loc);
+        }
+      }
+    }
+
+    let block = this.#mint(new BlockStatement(this.stmts, this.expr.loc));
+    for (let s in this.stmts) {
+      this.#setParent(s, block);
+    }
+    let result = this.#cloneSymIdent(nodeSym.name, nodeSym, this.expr.loc);
+    this.#setParent(block, this.expr);
+    this.#setParent(result, this.expr);
+
+    for (let s in this.stmts) {
+      checkStatement(this.ctx, s);
+    }
+    let resultType = checkExpression(this.ctx, result, null);
+    this.ctx.model.setNodeLowering(this.expr, new NodeLowering(block, result));
+    return resultType;
+  }
 }
 
 function isUiTagType(t: Type): boolean {

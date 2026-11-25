@@ -22,7 +22,7 @@
 import {
   Box as OwnBox, Flex, Flow as FlowLayout, Layout, LayoutFlex, LayoutFlow,
   TextAlign, Edges, Axis, Justify, Align, Length, BoxStyle, TextStyle,
-  LengthAuto, LengthPx, LengthPercent, Overflow, Color,
+  LengthAuto, Overflow, Color,
 } from 'zenafx:ui/style';
 import {
   Node, NodeDef, NodeStyle, NodeStyleNothing, NodeStyleFill, NodeStyleText,
@@ -39,10 +39,28 @@ import {
   Answer, KeyAnswer, Handler, KeyHandler, projectChildren,
   startPointerListener, startKeyListener, runApp,
 } from './framework.zena';
+import {
+  Style, StyleProps, StyleInput, CompiledRule, CondFlag,
+  auto, noPadding, resolveInsets, hasVisualBoxProps,
+  resolveBoxStyle, mergeBoxOverride, resolveTextStyle, mergeTextOverride,
+  normalizeStyle,
+} from './style.zena';
 
 export { runApp, Answer, KeyAnswer } from './framework.zena';
 export { Axis, Justify, Align, Overflow, TextAlign, Color, Length } from 'zenafx:ui/style';
 export { Cursor } from 'zenafx:host/scene';
+export {
+  Insets, StyleProps, StyleInput,
+  Style, When, Rule, Stylesheet, StyleBlock, CompiledRule,
+  FlagKey, NumberKey, Condition, CondInput,
+  FlatCondition, FlatRule, FlatRuleSet,
+  hovered, pressed, focused, nodeWidth, nodeHeight, scrollX, scrollY,
+  flagKey, numberKey, toCondition,
+  all, any, not, gte, gt, lte, lt, between, under, within,
+  condAll, condAny, condNot, condGte, condGt, condLte, condLt, condBetween,
+  flattenRules,
+  rgb, rgba, px, pct, auto, full, noPadding,
+} from './style.zena';
 
 /**
  * Base class for signal-driven `@ui` widgets.
@@ -97,172 +115,58 @@ export abstract class Widget extends WidgetBase {
   }
 }
 
-/** Edge insets (padding) in pixels: `all`, `x`/`y`, and per-side overrides. */
-export type Insets = {
-  all?: f32,
-  x?: f32,
-  y?: f32,
-  top?: f32,
-  right?: f32,
-  bottom?: f32,
-  left?: f32,
-};
-
-/**
- * Partial visual and typography overrides applied while a host state
- * (`hovered`, `pressed`, `focused`) holds. Omitted fields inherit from the
- * node's base `Style`.
- */
-export type StateStyleProps = {
-  background?: Color,
-  borderColor?: Color,
-  borderWidth?: f32,
-  cornerRadius?: f32,
-  opacity?: f32,
-  fontFamily?: String,
-  fontSize?: f32,
-  fontWeight?: i32,
-  italic?: boolean,
-  color?: Color,
-};
-
-/**
- * Unified, composable style record for `Box`, `Flow`, and `Text`.
- *
- * Bundles box sizing, layout, visual fill/border, typography, interaction
- * (`cursor`, `unselectable`), and host-evaluated state overrides (`hovered`,
- * `pressed`, `focused`) into one value. Combine styles with record spread:
- * `{ ...baseLayout, ...cardSurface, gap: 12.0 }`.
- */
-export type Style = {
-  width?: Length,
-  height?: Length,
-  grow?: f32,
-  shrink?: f32,
-  padding?: Insets,
-  overflow?: Overflow,
-  overflowX?: Overflow,
-  overflowY?: Overflow,
-
-  axis?: Axis,
-  justify?: Justify,
-  align?: Align,
-  gap?: f32,
-
-  textAlign?: TextAlign,
-  lineHeight?: f32,
-
-  background?: Color,
-  borderColor?: Color,
-  borderWidth?: f32,
-  cornerRadius?: f32,
-  opacity?: f32,
-
-  fontFamily?: String,
-  fontSize?: f32,
-  fontWeight?: i32,
-  italic?: boolean,
-  color?: Color,
-
-  cursor?: Cursor,
-  unselectable?: boolean,
-
-  hovered?: StateStyleProps,
-  pressed?: StateStyleProps,
-  focused?: StateStyleProps,
-};
-
-/** Opaque non-premultiplied sRGB colour (channels in 0..1). */
-export function rgb(r: f32, g: f32, b: f32): Color {
-  return new Color(r, g, b, 1.0);
-}
-
-/** Non-premultiplied sRGB colour with alpha (channels in 0..1). */
-export function rgba(r: f32, g: f32, b: f32, a: f32): Color {
-  return new Color(r, g, b, a);
-}
-
-/** Fixed length in logical pixels. */
-export function px(value: f32): Length {
-  return new LengthPx(value);
-}
-
-/** Percentage of the containing block (100.0 is full). */
-export function pct(value: f32): Length {
-  return new LengthPercent(value);
-}
-
-export let auto: Length = new LengthAuto();
-export let full: Length = new LengthPercent(100.0);
-export let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
-
 let defaultInk = new Color(0.0, 0.0, 0.0, 1.0);
 let defaultTextStyle = new TextStyle('system-ui', 16.0, 400 as u16, false, defaultInk);
 
-function resolveInsets(insets: Insets) {
-  let base: f32 = insets.all ?? 0.0;
-  let vx = insets.x ?? base;
-  let vy = insets.y ?? base;
-  return new Edges(
-    insets.top ?? vy,
-    insets.right ?? vx,
-    insets.bottom ?? vy,
-    insets.left ?? vx,
-  );
+final class MergedHostState {
+  state: State;
+  decls: StyleProps;
+
+  new(this.state, this.decls);
 }
 
-function hasVisualBoxProps(s: Style): boolean {
-  if (let {background} = s) { return true; }
-  if (let {borderColor} = s) { return true; }
-  if (let {borderWidth} = s) { return true; }
-  if (let {cornerRadius} = s) { return true; }
-  if (let {opacity} = s) { return true; }
-  return false;
-}
+function collectHostStates(rules: GrowableArray<CompiledRule>) {
+  var hov: StyleProps = {};
+  var prs: StyleProps = {};
+  var foc: StyleProps = {};
+  let order = new GrowableArray<State>();
 
-function resolveBoxStyle(s: Style) {
-  let bg: Option<Color> = if (let {background} = s) { some(background) } else { none };
-  let border: Option<Color> = if (let {borderColor} = s) { some(borderColor) } else { none };
-  return new BoxStyle(
-    bg,
-    border,
-    s.borderWidth ?? 0.0,
-    s.cornerRadius ?? 0.0,
-    s.opacity ?? 1.0,
-  );
-}
+  let recordOrder = (st: State) => {
+    var i = 0;
+    while (i < order.length) {
+      if (order[i] == st) {
+        return;
+      }
+      i += 1;
+    }
+    order.push(st);
+  };
 
-function mergeBoxStateStyle(base: BoxStyle, over: StateStyleProps) {
-  let bg: Option<Color> = if (let {background} = over) { some(background) } else { base.background };
-  let border: Option<Color> = if (let {borderColor} = over) { some(borderColor) } else { base.borderColor };
-  return new BoxStyle(
-    bg,
-    border,
-    over.borderWidth ?? base.borderWidth,
-    over.cornerRadius ?? base.cornerRadius,
-    over.opacity ?? base.opacity,
-  );
-}
+  for (let r in rules) {
+    if (let Some {value as cond} = r.when) {
+      if (cond is CondFlag) {
+        if (let Some {value as st} = cond.key.hostState) {
+          recordOrder(st);
+          match (st) {
+            case State.Hovered: { hov = { ...hov, ...r.decls }; }
+            case State.Pressed: { prs = { ...prs, ...r.decls }; }
+            case State.Focused: { foc = { ...foc, ...r.decls }; }
+          }
+        }
+      }
+    }
+  }
 
-function resolveTextStyle(s: Style) {
-  return new TextStyle(
-    s.fontFamily ?? 'system-ui',
-    s.fontSize ?? 16.0,
-    (s.fontWeight ?? 400) as u16,
-    s.italic ?? false,
-    s.color ?? defaultInk,
-  );
-}
-
-function mergeTextStateStyle(base: TextStyle, over: StateStyleProps) {
-  let weight: u16 = if (let {fontWeight} = over) { fontWeight as u16 } else { base.weight };
-  return new TextStyle(
-    over.fontFamily ?? base.family,
-    over.fontSize ?? base.size,
-    weight,
-    over.italic ?? base.italic,
-    over.color ?? base.color,
-  );
+  let out = new GrowableArray<MergedHostState>();
+  for (let st in order) {
+    let decls = match (st) {
+      case State.Hovered: hov
+      case State.Pressed: prs
+      case State.Focused: foc
+    };
+    out.push(new MergedHostState(st, decls));
+  }
+  return out;
 }
 
 /**
@@ -1081,7 +985,7 @@ function makeMoveListener(handler: (event: PointerEvent) => void, pos: u32) {
  *     setters write directly to `inst.writeBinding(...)` or register listeners.
  */
 export class HostElement {
-  var _style: Style = {};
+  var _style: StyleInput = {};
 
   var _width: Length = new LengthAuto();
   var _height: Length = new LengthAuto();
@@ -1201,10 +1105,12 @@ export class HostElement {
     return new NodeStyleNothing();
   }
 
-  _applyStyle(s: Style): void {
-    this._style = s;
-    this._width = s.width ?? new LengthAuto();
-    this._height = s.height ?? new LengthAuto();
+  _applyStyle(input: StyleInput): void {
+    this._style = input;
+    let resolved = normalizeStyle(input);
+    let s = resolved._decls;
+    this._width = s.width ?? auto;
+    this._height = s.height ?? auto;
     this._grow = s.grow ?? 0.0;
     this._shrink = s.shrink ?? 1.0;
     this._padding = if (let {padding} = s) { resolveInsets(padding) } else { noPadding };
@@ -1223,14 +1129,8 @@ export class HostElement {
         target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueTextStyle(textStyle));
       } else {
         this._states = new GrowableArray<PendingState>();
-        if (let {hovered} = s) {
-          this._states.push(new PendingState(State.Hovered, new RestyleText(mergeTextStateStyle(textStyle, hovered))));
-        }
-        if (let {pressed} = s) {
-          this._states.push(new PendingState(State.Pressed, new RestyleText(mergeTextStateStyle(textStyle, pressed))));
-        }
-        if (let {focused} = s) {
-          this._states.push(new PendingState(State.Focused, new RestyleText(mergeTextStateStyle(textStyle, focused))));
+        for (let entry in collectHostStates(resolved._condRules)) {
+          this._states.push(new PendingState(entry.state, new RestyleText(mergeTextOverride(textStyle, entry.decls))));
         }
       }
       return;
@@ -1255,20 +1155,14 @@ export class HostElement {
       target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueStyle(boxStyle));
     } else {
       this._states = new GrowableArray<PendingState>();
-      if (let {hovered} = s) {
-        this._states.push(new PendingState(State.Hovered, new RestyleFill(mergeBoxStateStyle(boxStyle, hovered))));
-      }
-      if (let {pressed} = s) {
-        this._states.push(new PendingState(State.Pressed, new RestyleFill(mergeBoxStateStyle(boxStyle, pressed))));
-      }
-      if (let {focused} = s) {
-        this._states.push(new PendingState(State.Focused, new RestyleFill(mergeBoxStateStyle(boxStyle, focused))));
+      for (let entry in collectHostStates(resolved._condRules)) {
+        this._states.push(new PendingState(entry.state, new RestyleFill(mergeBoxOverride(boxStyle, entry.decls))));
       }
     }
   }
 
-  /** Unified style carrying sizing, layout, visual, typography, interaction, and state overrides. */
-  style: Style {
+  /** Unified style carrying sizing, layout, visual, typography, interaction, and conditional rules. */
+  style: StyleInput {
     get { return this._style; }
     set(v) { this._applyStyle(v); }
   }
