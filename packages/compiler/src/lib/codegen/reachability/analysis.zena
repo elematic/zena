@@ -4736,8 +4736,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   traverseDependencies(deps: SymbolDependencies, model: SemanticModel, classType: ClassType | null, typeArguments: Array<Type> | null = null, node: Node | null = null): void {
+    this.#traverseDependenciesFor(deps, model, classType, typeArguments, node, null);
+  }
+
+  #traverseDependenciesFor(deps: SymbolDependencies, model: SemanticModel, classType: ClassType | null, typeArguments: Array<Type> | null, node: Node | null, decoratorApp: ClassType | null): void {
     let ctParams: Array<TypeParameterType> | null = if (classType != null) getClassTypeParameters(classType) else null;
     let ctArgs: Array<Type> | null = if (classType != null) classType.typeArguments else null;
+    let decParams: Array<TypeParameterType> | null = if (decoratorApp != null && decoratorApp.typeArguments != null) {
+      getClassTypeParameters(decoratorApp)
+    } else {
+      null
+    };
 
     // A function's OWN type parameters, when this walk is of one
     // monomorphization of it. Both node shapes that carry them count: a
@@ -4758,7 +4767,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     };
 
     let resolveType = (t: Type) => {
-      var res = substituteTypeParamsInClassContext(this.wasm, classType, t);
+      var res = t;
+      if (decParams != null && decoratorApp != null && decoratorApp.typeArguments != null) {
+        res = substituteTypeParamsInCodegen(
+            this.wasm, decParams, decoratorApp.typeArguments, res);
+      }
+      res = substituteTypeParamsInClassContext(this.wasm, classType, res);
       if (ownTypeParams != null) {
         res = substituteTypeParamsInCodegen(
             this.wasm, ownTypeParams,
@@ -5606,58 +5620,64 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               deferredMember.checkBodyOfNode(nodeId);
             }
 
+            let ref = refItem;
             let node = if (this.nodeIdToNode.has(nodeId)) this.nodeIdToNode[nodeId] else null;
+            var handledDecoratorDeps = false;
              if (node != null) {
-              let {classType} = refItem;
+              let {classType, typeArguments as refTypeArgs} = ref;
               let {visitor} = this;
               let {specializer} = this;
-              let resolver = (t: Type) => {
-                var res = substituteTypeParamsInClassContext(this.wasm, classType, t);
-                // The parameters these arguments bind, when this
-                // referrer is one monomorphization of the walked node:
-                // the node's own — a generic arrow (FunctionExpression)
-                // or a generic METHOD (MethodDefinition) — or, for a
-                // CLOSURE specialized per enclosing instantiation, the
-                // enclosing generic function's. The same lookup
-                // traverseDependencies uses.
-                if (refItem.typeArguments != null) {
-                  let typeParameters = enclosingOwnTypeParameters(model, node);
-                  if (typeParameters != null) {
-                    res = substituteTypeParamsInCodegen(this.wasm, typeParameters, refItem.typeArguments as Array<Type>, res);
-                  }
-                }
-                return res;
-              };
-              if (!model.nodeDependencies.has(nodeId)) {
-                visitor.discoverNodeTypes(node, model, resolver);
-              } else {
-                visitor.registerLiterals(node);
-                visitor.registerInstantiations(node, model, resolver,
-                    if (refItem.classType != null) refItem.classType as ClassType else null);
-              }
               // A referrer whose class is an ERASURE registers nothing:
               // the erasure has a struct and no methods, and every value
               // it stands for belongs to some real specialization that
               // queues its own referrer.
-              let refClassIsErasure = refItem.classType != null &&
-                  containsErasedType(refItem.classType as Type);
+              let refClassIsErasure = classType != null &&
+                  containsErasedType(classType as Type);
               // A field decorator's member body is shared by every
               // application of that decorator in the class's chain, and
               // each application compiles its own copy under its own
               // name, scope key and type arguments — as the member
               // collection loops do. One node cannot say which
-              // application a referrer meant, so every one is registered.
-              let decoratorInts = if (refItem.classType != null && !refClassIsErasure) {
-                findDecoratorIntermediates(refItem.classType as ClassType, this.classDecls, node)
+              // application a referrer meant, so every one is discovered
+              // and registered under its own type arguments.
+              let decoratorInts = if (classType != null && !refClassIsErasure && !classType.isMixinIntermediate) {
+                findDecoratorIntermediates(classType, this.classDecls, node)
               } else {
                 new Array<ClassType>()
               };
               if (decoratorInts.length > 0) {
-                let ct = refItem.classType as ClassType;
+                let ct = classType as ClassType;
+                let hasNodeDeps = model.nodeDependencies.has(nodeId);
+                if (hasNodeDeps) {
+                  visitor.registerLiterals(node);
+                }
                 getClassKey(ct);
                 let lookupId = (ct.genericSource ?? ct).symbolId;
                 let cd = if (let (true, decl) = this.classDecls.get(lookupId)) decl else null;
                 for (let decInt in decoratorInts) {
+                  let decParams = if (decInt.typeArguments != null) getClassTypeParameters(decInt) else null;
+                  let decResolver = (t: Type) => {
+                    var res = t;
+                    if (decParams != null && decInt.typeArguments != null) {
+                      res = substituteTypeParamsInCodegen(this.wasm, decParams, decInt.typeArguments, res);
+                    }
+                    res = substituteTypeParamsInClassContext(this.wasm, classType, res);
+                    if (refTypeArgs != null) {
+                      let typeParameters = enclosingOwnTypeParameters(model, node);
+                      if (typeParameters != null) {
+                        res = substituteTypeParamsInCodegen(this.wasm, typeParameters, refTypeArgs, res);
+                      }
+                    }
+                    return res;
+                  };
+                  if (!hasNodeDeps) {
+                    visitor.discoverNodeTypes(node, model, decResolver);
+                  } else {
+                    visitor.registerInstantiations(node, model, decResolver, ct);
+                  }
+                  if (let (true, deps) = model.nodeDependencies.get(nodeId)) {
+                    this.#traverseDependenciesFor(deps, model, classType, refTypeArgs, node, decInt);
+                  }
                   // A `shared` method lives under the declaration's key,
                   // one copy for every application in the class.
                   let scope = if (node is MethodDefinition && node.isShared &&
@@ -5711,15 +5731,41 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                       regs.push(regS);
                     }
                   }
-                  if (refItem.isReachable && isConcrete(ct)) {
+                  if (ref.isReachable && isConcrete(ct)) {
                     for (let f in regs) {
                       this.wasm.addFunction(f);
                       this.markFunctionReached(f);
                     }
                   }
                 }
-              } else if (node is MethodDefinition && refItem.classType != null && !refClassIsErasure) {
-                let ct = refItem.classType as ClassType;
+                handledDecoratorDeps = true;
+              } else {
+                let resolver = (t: Type) => {
+                  var res = substituteTypeParamsInClassContext(this.wasm, classType, t);
+                  // The parameters these arguments bind, when this
+                  // referrer is one monomorphization of the walked node:
+                  // the node's own — a generic arrow (FunctionExpression)
+                  // or a generic METHOD (MethodDefinition) — or, for a
+                  // CLOSURE specialized per enclosing instantiation, the
+                  // enclosing generic function's. The same lookup
+                  // traverseDependencies uses.
+                  if (refTypeArgs != null) {
+                    let typeParameters = enclosingOwnTypeParameters(model, node);
+                    if (typeParameters != null) {
+                      res = substituteTypeParamsInCodegen(this.wasm, typeParameters, refTypeArgs, res);
+                    }
+                  }
+                  return res;
+                };
+                if (!model.nodeDependencies.has(nodeId)) {
+                  visitor.discoverNodeTypes(node, model, resolver);
+                } else {
+                  visitor.registerLiterals(node);
+                  visitor.registerInstantiations(node, model, resolver, classType);
+                }
+              }
+              if (decoratorInts.length == 0 && node is MethodDefinition && ref.classType != null && !refClassIsErasure) {
+                let ct = ref.classType as ClassType;
                 getClassKey(ct);
                 let lookupId = (ct.genericSource ?? ct).symbolId;
                 let cd = if (let (true, decl) = this.classDecls.get(lookupId)) decl else null;
@@ -5780,7 +5826,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 let isGenericAtErasure = typeParameters != null &&
                     typeParameters.length > 0 &&
                     regF.typeArguments == null;
-                if (refItem.isReachable && !genericStatic && !isGenericAtErasure &&
+                if (ref.isReachable && !genericStatic && !isGenericAtErasure &&
                     (isConcrete(ct) || this.#isMonomorphicStatic(node)) &&
                     !node.isConstructor && methName != "<constructor>") {
                   // The statics' backing globals hang off reaching a
@@ -5794,8 +5840,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   this.wasm.addFunction(regF);
                   this.markFunctionReached(regF);
                 }
-              } else if (node is AccessorDeclaration && refItem.classType != null && !refClassIsErasure) {
-                let ct = refItem.classType as ClassType;
+              } else if (decoratorInts.length == 0 && node is AccessorDeclaration && ref.classType != null && !refClassIsErasure) {
+                let ct = ref.classType as ClassType;
                 getClassKey(ct);
                 let accName = memberKeyOf(model, node.name as Node);
                 if (accName != "") {
@@ -5824,7 +5870,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                     let regG = specializer.registerClassMethod(ct, cd, `${accPrefix}get#${accName}`, node, false, false, null, nodeModel, null);
                     regG.declaringType = findDeclaringMixinIntermediate(ct, this.classDecls, node);
                     applyMixinPrivateScope(regG, node, mixScope);
-                    if (refItem.isReachable && (isConcrete(ct) || node.isStatic)) {
+                    if (ref.isReachable && (isConcrete(ct) || node.isStatic)) {
                       this.wasm.addFunction(regG);
                       this.markFunctionReached(regG);
                     }
@@ -5834,16 +5880,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                     let regS = specializer.registerClassMethod(ct, cd, `${accPrefix}set#${accName}`, setter, false, false, null, nodeModel, null);
                     regS.declaringType = findDeclaringMixinIntermediate(ct, this.classDecls, setter as Node);
                     applyMixinPrivateScope(regS, setter, mixScope);
-                    if (refItem.isReachable && (isConcrete(ct) || node.isStatic)) {
+                    if (ref.isReachable && (isConcrete(ct) || node.isStatic)) {
                       this.wasm.addFunction(regS);
                       this.markFunctionReached(regS);
                     }
                   }
                 }
-              } else if (node is FieldDefinition && refItem.classType != null) {
-                let ct = refItem.classType as ClassType;
+              } else if (decoratorInts.length == 0 && node is FieldDefinition && ref.classType != null) {
+                let ct = ref.classType as ClassType;
                 if (node.isStatic) {
-                  if (refItem.isReachable) {
+                  if (ref.isReachable) {
                     let lookupId = (ct.genericSource ?? ct).symbolId;
                     if (let (true, cd) = this.classDecls.get(lookupId)) {
                       if (cd is ClassDeclaration) {
@@ -5862,13 +5908,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                     let getterKey = getClassMethodKey(cKey, "get#" + propName);
                     if (let (true, f) = this.wasm.classMethodMap.get(getterKey)) {
                       this.markFunctionReached(f);
-                    } else if (refItem.isReachable) {
+                    } else if (ref.isReachable) {
                       this.#pendingMemberReaches.push(getterKey);
                     }
                     let setterKey = getClassMethodKey(cKey, "set#" + propName);
                     if (let (true, f) = this.wasm.classMethodMap.get(setterKey)) {
                       this.markFunctionReached(f);
-                    } else if (refItem.isReachable) {
+                    } else if (ref.isReachable) {
                       this.#pendingMemberReaches.push(setterKey);
                     }
                   }
@@ -5876,8 +5922,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               }
             }
             
-            if (let (true, deps) = model.nodeDependencies.get(nodeId)) {
-              this.traverseDependencies(deps, model, refItem.classType, refItem.typeArguments, node);
+            if (!handledDecoratorDeps) {
+              if (let (true, deps) = model.nodeDependencies.get(nodeId)) {
+                this.traverseDependencies(deps, model, ref.classType, ref.typeArguments, node);
+              }
             }
           }
         }

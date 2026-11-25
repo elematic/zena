@@ -1,0 +1,296 @@
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse, throws} from 'zena:assert';
+import {
+  signal, Computed, Effect, Watcher, effect, batch, untrack,
+} from 'zena:signals';
+
+class Counter {
+  @signal var count: i32 = 0;
+  @signal var label: String = '';
+  @signal var active: boolean = false;
+
+  new(this.label);
+
+  increment(): void {
+    this.count += 1;
+  }
+}
+
+class Initialized {
+  @signal var x: i32;
+  @signal var name: String;
+
+  new(x: i32, name: String) : x = x, name = name;
+}
+
+class NullableHolder {
+  @signal var badge: String | null = null;
+}
+
+class Tag {
+  id: i32;
+  new(this.id);
+}
+
+class RecordAndClassHolder {
+  @signal var point: {x: i32, y: i32} = {x: 0, y: 0};
+  @signal var tag: Tag = new Tag(1);
+}
+
+class BaseWidget {
+  @signal var visible: boolean = true;
+}
+
+class DerivedWidget extends BaseWidget {
+  @signal var title: String = 'untitled';
+}
+
+export let tests = suite('Signals: @signal decorator', () => {
+  test('reads and writes without any reactive consumer', (ctx) => {
+    let c = new Counter('a');
+    equal(c.count, 0);
+    equal(c.label, 'a');
+    isFalse(c.active);
+    c.count = 5;
+    c.label = 'b';
+    c.active = true;
+    equal(c.count, 5);
+    equal(c.label, 'b');
+    isTrue(c.active);
+  });
+
+  test('tracks reads in Computed and updates on write', (ctx) => {
+    let c = new Counter('clicks');
+    var runs = 0;
+    let summary = new Computed<String>(() => {
+      runs += 1;
+      return `${c.label}: ${c.count}`;
+    });
+
+    equal(summary.get(), 'clicks: 0');
+    equal(runs, 1);
+
+    c.increment();
+    equal(summary.get(), 'clicks: 1');
+    equal(runs, 2);
+
+    c.label = 'taps';
+    equal(summary.get(), 'taps: 1');
+    equal(runs, 3);
+  });
+
+  test('equal writes do not invalidate consumers', (ctx) => {
+    let c = new Counter('a');
+    var runs = 0;
+    let doubled = new Computed<i32>(() => {
+      runs += 1;
+      return c.count * 2;
+    });
+
+    equal(doubled.get(), 0);
+    c.count = 0;
+    equal(doubled.get(), 0);
+    equal(runs, 1);
+
+    c.count = 3;
+    equal(doubled.get(), 6);
+    equal(runs, 2);
+
+    c.count = 3;
+    equal(doubled.get(), 6);
+    equal(runs, 2);
+  });
+
+  test('triggers Effect and coalesces writes inside batch', (ctx) => {
+    let c = new Counter('init');
+    var runs = 0;
+    var last = '';
+    let e = effect(() => {
+      runs += 1;
+      last = `${c.label}=${c.count}`;
+    });
+
+    equal(runs, 1);
+    equal(last, 'init=0');
+
+    batch<void>(() => {
+      c.label = 'done';
+      c.count = 42;
+    });
+    equal(runs, 2);
+    equal(last, 'done=42');
+
+    e.dispose();
+    c.count = 99;
+    equal(runs, 2);
+  });
+
+  test('multiple fields on one class track independently', (ctx) => {
+    let c = new Counter('a');
+    var countRuns = 0;
+    var labelRuns = 0;
+    let e1 = effect(() => {
+      countRuns += 1;
+      let _ = c.count;
+    });
+    let e2 = effect(() => {
+      labelRuns += 1;
+      let _ = c.label;
+    });
+
+    equal(countRuns, 1);
+    equal(labelRuns, 1);
+
+    c.count = 1;
+    equal(countRuns, 2);
+    equal(labelRuns, 1);
+
+    c.label = 'b';
+    equal(countRuns, 2);
+    equal(labelRuns, 2);
+
+    e1.dispose();
+    e2.dispose();
+  });
+
+  test('separate instances of the same class track independently', (ctx) => {
+    let a = new Counter('a');
+    let b = new Counter('b');
+    var aRuns = 0;
+    var bRuns = 0;
+    let e1 = effect(() => {
+      aRuns += 1;
+      let _ = a.count;
+    });
+    let e2 = effect(() => {
+      bRuns += 1;
+      let _ = b.count;
+    });
+
+    a.count = 10;
+    equal(aRuns, 2);
+    equal(bRuns, 1);
+
+    b.count = 20;
+    equal(aRuns, 2);
+    equal(bRuns, 2);
+
+    e1.dispose();
+    e2.dispose();
+  });
+
+  test('supports constructor initializer list', (ctx) => {
+    let h = new Initialized(7, 'seven');
+    var seen = '';
+    let e = effect(() => {
+      seen = `${h.name}:${h.x}`;
+    });
+    equal(seen, 'seven:7');
+    h.x = 8;
+    equal(seen, 'seven:8');
+    e.dispose();
+  });
+
+  test('supports nullable types, records, and class references', (ctx) => {
+    let n = new NullableHolder();
+    var badgeLog = '';
+    let e1 = effect(() => {
+      badgeLog = `${badgeLog}${n.badge ?? '-'};`;
+    });
+    equal(badgeLog, '-;');
+    n.badge = null; // equal write: no rerun
+    equal(badgeLog, '-;');
+    n.badge = 'new';
+    equal(badgeLog, '-;new;');
+    n.badge = 'new'; // equal write: no rerun
+    equal(badgeLog, '-;new;');
+    n.badge = null;
+    equal(badgeLog, '-;new;-;');
+    e1.dispose();
+
+    let r = new RecordAndClassHolder();
+    var pointRuns = 0;
+    var tagRuns = 0;
+    let e2 = effect(() => {
+      pointRuns += 1;
+      let _ = r.point;
+    });
+    let e3 = effect(() => {
+      tagRuns += 1;
+      let _ = r.tag;
+    });
+
+    // Equal record value does not notify
+    r.point = {x: 0, y: 0};
+    equal(pointRuns, 1);
+    r.point = {x: 1, y: 2};
+    equal(pointRuns, 2);
+
+    // Same object reference does not notify; new instance does
+    let same = r.tag;
+    r.tag = same;
+    equal(tagRuns, 1);
+    r.tag = new Tag(2);
+    equal(tagRuns, 2);
+
+    e2.dispose();
+    e3.dispose();
+  });
+
+  test('works across class inheritance', (ctx) => {
+    let w = new DerivedWidget();
+    var seen = '';
+    let e = effect(() => {
+      seen = if (w.visible) w.title else 'hidden';
+    });
+    equal(seen, 'untitled');
+    w.title = 'Panel';
+    equal(seen, 'Panel');
+    w.visible = false;
+    equal(seen, 'hidden');
+    // While hidden, `title` is no longer read so changing it does not rerun
+    w.title = 'Ignored';
+    equal(seen, 'hidden');
+    w.visible = true;
+    equal(seen, 'Ignored');
+    e.dispose();
+  });
+
+  test('respects untrack', (ctx) => {
+    let c = new Counter('u');
+    var runs = 0;
+    let e = effect(() => {
+      runs += 1;
+      let _ = untrack(() => c.count);
+    });
+    equal(runs, 1);
+    c.count = 5;
+    equal(runs, 1);
+    e.dispose();
+  });
+
+  test('reading or writing inside Watcher.notify throws', (ctx) => {
+    let a = new Counter('a');
+    let b = new Counter('b');
+    let comp = new Computed<i32>(() => a.count);
+    var readThrew = false;
+    var writeThrew = false;
+    let w = new Watcher((w: Watcher) => {
+      try {
+        let _ = b.count;
+      } catch (e) {
+        readThrew = true;
+      }
+      try {
+        b.count = 1;
+      } catch (e) {
+        writeThrew = true;
+      }
+    });
+    w.watch(comp);
+    comp.get();
+    a.count = 1;
+    isTrue(readThrew);
+    isTrue(writeThrew);
+  });
+});

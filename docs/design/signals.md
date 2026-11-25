@@ -1,9 +1,9 @@
 # Signals
 
-Status: **Implemented** as `zena:signals` (`packages/stdlib/zena/signals.zena`).
-The class-field lowering in [Signals as class fields](#signals-as-class-fields)
-is a proposal: the library has the primitive it lowers to, and nothing
-generates it yet.
+Status: **Implemented** as `zena:signals` (`packages/stdlib/zena/signals.zena`),
+including the `@signal` field decorator in
+[Signals as class fields](#signals-as-class-fields). Computed getters
+([Computed getters](#computed-getters)) remain a proposal.
 
 ## Overview
 
@@ -45,6 +45,7 @@ value in an ordinary field.
 | `Computed<T>`                                                    | A cached function of other signals, run when read after a source changed. A subclass may override `compute()` instead of passing a function.                                             |
 | `Watcher`                                                        | Told synchronously, inside `set`, when a watched signal might have changed. `watch(signal)`, `watch()` to re-arm, `unwatch(signal)`, `getPending()`. A subclass may override `notify()`. |
 | `Effect`                                                         | A function run now and again after any signal it read changes. `effect(fn)` is shorthand for `new Effect(fn)`; `dispose()` stops it. A subclass may override `execute()`.                |
+| `signal`                                                         | Field decorator (`@signal var x: T = ...`): stores the value directly on the host instance and lazily allocates a `Tracker` on the first tracked read.                                   |
 | `Tracker`                                                        | The dependency-tracking half of a `State`: `reportRead()` and `reportChanged()`, for a value stored elsewhere.                                                                           |
 | `batch(fn)`                                                      | Runs `fn`, then the effects its writes caused.                                                                                                                                           |
 | `onCleanup(fn)`                                                  | Registers `fn` to run before the current effect's next run, and when it is disposed.                                                                                                     |
@@ -372,8 +373,10 @@ class Todo {
 }
 ```
 
-`packages/stdlib/tests/signals/tracker_test.zena` has this class
-written out and tested.
+`packages/stdlib/zena/signals.zena` exports `decorator signal<T>(var value: T)`
+implementing this lowering, tested in
+`packages/stdlib/tests/signals/decorator_test.zena` (and the hand-written
+equivalent in `packages/stdlib/tests/signals/tracker_test.zena`).
 
 Compared with a `State` field:
 
