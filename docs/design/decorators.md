@@ -103,7 +103,11 @@ decorator named `name`. The checker verifies:
   must be assignable to it. A decorator with a type parameter the subject
   does not name cannot be applied, since nothing binds it.
 - A field takes at most one decorator, and the field is not static,
-  abstract, declared, or a `var(#x) x` field.
+  abstract, or declared. Private fields (`@signal var #count: i32 = 0`)
+  and split-visibility fields (`@signal var(#count) count: i32 = 0`) are
+  supported: a private field installs private accessors lexical to the
+  host class, and a `var(#x) x` field installs a public getter under `x`
+  and private getter/setter under `#x`.
 
 Reads and writes of the field, anywhere, go through the accessor. The
 only writes that bypass it are the three initialization forms above,

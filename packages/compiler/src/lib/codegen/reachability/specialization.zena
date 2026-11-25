@@ -239,7 +239,8 @@ export final class Specializer implements SpecializerInterface {
       }
       let {setter} = acc;
       if (setter != null) {
-        let regS = this.registerClassMethod(classType, cd, `set#${fieldName}`, setter, false, false, null, nodeModel, null);
+        let setterFieldName = sc.decoratorSetterFieldName ?? fieldName;
+        let regS = this.registerClassMethod(classType, cd, `set#${setterFieldName}`, setter, false, false, null, nodeModel, null);
         regS.declaringType = sc;
         applyMixinPrivateScope(regS, setter, scope);
         this.pass.wasm.addFunction(regS);
@@ -739,31 +740,30 @@ export final class Specializer implements SpecializerInterface {
         }
       } else if (ms is AccessorDeclaration) {
         if (ms.isStatic) { continue; }
-        let accName = this.#registeredAccessorName(
-            memberKeyOf(sourceModel, ms.name as Node), allDeclaringTypes[vtMemberIdx]);
+        let rawAccName = memberKeyOf(sourceModel, ms.name);
+        let declType = allDeclaringTypes[vtMemberIdx];
+        let getterAccName = this.#registeredAccessorName(rawAccName, declType);
+        let setterAccName = this.#registeredSetterAccessorName(rawAccName, declType);
         // Private-named accessors are lexical, never virtual: no
         // vtable slots (like private methods).
-        if (accName != "" &&
-            !(accName.length > 0 && accName.sliceBytes(0, 1) == "#")) {
-          if (ms.getter != null) {
-            let getterName = "get#" + accName;
-            var found = false;
-            for (let existing in ctVtable) {
-              if (existing == getterName) { found = true; break; }
-            }
-            if (!found && !ct.isExtension) {
-              ctVtable.push(getterName);
-            }
+        if (ms.getter != null && getterAccName != "" && !getterAccName.startsWith("#")) {
+          let getterName = "get#" + getterAccName;
+          var found = false;
+          for (let existing in ctVtable) {
+            if (existing == getterName) { found = true; break; }
           }
-          if (ms.setter != null) {
-            let setterName = "set#" + accName;
-            var found = false;
-            for (let existing in ctVtable) {
-              if (existing == setterName) { found = true; break; }
-            }
-            if (!found && !ct.isExtension) {
-              ctVtable.push(setterName);
-            }
+          if (!found && !ct.isExtension) {
+            ctVtable.push(getterName);
+          }
+        }
+        if (ms.setter != null && setterAccName != "" && !setterAccName.startsWith("#")) {
+          let setterName = "set#" + setterAccName;
+          var found = false;
+          for (let existing in ctVtable) {
+            if (existing == setterName) { found = true; break; }
+          }
+          if (!found && !ct.isExtension) {
+            ctVtable.push(setterName);
           }
         }
       } else if (ms is FieldDefinition) {
@@ -839,26 +839,35 @@ export final class Specializer implements SpecializerInterface {
         applyMixinPrivateScope(regFn, ms as Node, memberScope);
       } else if (ms is AccessorDeclaration) {
         let declNode = allDecls[msIdx];
-        let accName = this.#registeredAccessorName(
-            memberKeyOf(sourceModel, ms.name as Node), allDeclaringTypes[msIdx]);
-        let isPrivateAcc = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
+        let declType = allDeclaringTypes[msIdx];
+        let rawAccName = memberKeyOf(sourceModel, ms.name);
+        let isSubjectRename = declType != null && declType.decoratorSubjectName != null &&
+            (declType.decoratorSubjectName as String) == rawAccName;
+        let getterAccName = this.#registeredAccessorName(rawAccName, declType);
+        let setterAccName = this.#registeredSetterAccessorName(rawAccName, declType);
+        let isOwnPrivateAcc = !isSubjectRename && rawAccName.startsWith("#");
         if (ms.getter != null) {
-          var getterRegName = "get#" + accName;
-          if (isPrivateAcc && msScope != "") {
+          var getterRegName = "get#" + getterAccName;
+          if (isOwnPrivateAcc && msScope != "") {
             getterRegName = `${msScope}::${getterRegName}`;
           }
           let regG = this.registerClassMethod(ct, declNode, getterRegName, ms as Node, false, false, null, allModels[msIdx]);
-          regG.declaringType = allDeclaringTypes[msIdx];
+          regG.declaringType = declType;
           applyMixinPrivateScope(regG, ms as Node, msScope);
+          if (isSubjectRename && setterAccName != getterAccName) {
+            let regAliasG = this.registerClassMethod(ct, declNode, "get#" + setterAccName, ms as Node, false, false, null, allModels[msIdx]);
+            regAliasG.declaringType = declType;
+            applyMixinPrivateScope(regAliasG, ms as Node, msScope);
+          }
         }
         let {setter} = ms;
         if (setter != null) {
-          var setterRegName = "set#" + accName;
-          if (isPrivateAcc && msScope != "") {
+          var setterRegName = "set#" + setterAccName;
+          if (isOwnPrivateAcc && msScope != "") {
             setterRegName = `${msScope}::${setterRegName}`;
           }
           let regS = this.registerClassMethod(ct, declNode, setterRegName, setter, false, false, null, allModels[msIdx]);
-          regS.declaringType = allDeclaringTypes[msIdx];
+          regS.declaringType = declType;
           applyMixinPrivateScope(regS, setter, msScope);
         }
       } else if (ms is FieldDefinition) {
@@ -1755,6 +1764,14 @@ export final class Specializer implements SpecializerInterface {
     return accName;
   }
 
+  #registeredSetterAccessorName(accName: String, declaringType: ClassType | null): String {
+    if (declaringType != null && declaringType.decoratorSubjectName != null &&
+        (declaringType.decoratorSubjectName as String) == accName) {
+      return declaringType.decoratorSetterFieldName ?? (declaringType.decoratorFieldName as String);
+    }
+    return accName;
+  }
+
   /**
    * The scope key a member body's private names register and resolve
    * under: the declaring intermediate's key, except a decorator's
@@ -1961,26 +1978,35 @@ export final class Specializer implements SpecializerInterface {
           }
         } else if (ms is AccessorDeclaration) {
           let declNode = allDecls[msIdx];
-          let accName = this.#registeredAccessorName(
-              memberKeyOf(sourceModel, ms.name as Node), allDeclaringTypes[msIdx]);
-          let isPrivateAcc = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
+          let declType = allDeclaringTypes[msIdx];
+          let rawAccName = memberKeyOf(sourceModel, ms.name);
+          let isSubjectRename = declType != null && declType.decoratorSubjectName != null &&
+              (declType.decoratorSubjectName as String) == rawAccName;
+          let getterAccName = this.#registeredAccessorName(rawAccName, declType);
+          let setterAccName = this.#registeredSetterAccessorName(rawAccName, declType);
+          let isOwnPrivateAcc = !isSubjectRename && rawAccName.startsWith("#");
           if (ms.getter != null) {
-            var getterRegName = "get#" + accName;
-            if (isPrivateAcc && msScope != "") {
+            var getterRegName = "get#" + getterAccName;
+            if (isOwnPrivateAcc && msScope != "") {
               getterRegName = `${msScope}::${getterRegName}`;
             }
             let regG = this.registerClassMethod(ct, declNode, getterRegName, ms as Node, false, false, null, allModels[msIdx]);
-            regG.declaringType = allDeclaringTypes[msIdx];
+            regG.declaringType = declType;
             applyMixinPrivateScope(regG, ms as Node, msScope);
+            if (isSubjectRename && setterAccName != getterAccName) {
+              let regAliasG = this.registerClassMethod(ct, declNode, "get#" + setterAccName, ms as Node, false, false, null, allModels[msIdx]);
+              regAliasG.declaringType = declType;
+              applyMixinPrivateScope(regAliasG, ms as Node, msScope);
+            }
           }
           let {setter} = ms;
           if (setter != null) {
-            var setterRegName = "set#" + accName;
-            if (isPrivateAcc && msScope != "") {
+            var setterRegName = "set#" + setterAccName;
+            if (isOwnPrivateAcc && msScope != "") {
               setterRegName = `${msScope}::${setterRegName}`;
             }
             let regS = this.registerClassMethod(ct, declNode, setterRegName, setter, false, false, null, allModels[msIdx]);
-            regS.declaringType = allDeclaringTypes[msIdx];
+            regS.declaringType = declType;
             applyMixinPrivateScope(regS, setter, msScope);
           }
         } else if (ms is FieldDefinition) {

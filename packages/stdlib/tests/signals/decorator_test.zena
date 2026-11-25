@@ -16,11 +16,40 @@ class Counter {
   }
 }
 
-class Initialized {
+class ThisParamInitialized {
+  @signal var x: i32;
+  @signal var name: String;
+
+  new(this.x, this.name);
+}
+
+class ExplicitInitializerList {
   @signal var x: i32;
   @signal var name: String;
 
   new(x: i32, name: String) : x = x, name = name;
+}
+
+class PrivateSignal {
+  @signal var #count: i32 = 0;
+
+  getCount(): i32 {
+    return this.#count;
+  }
+
+  bump(): void {
+    this.#count += 1;
+  }
+}
+
+class ReadOnlyPublicSignal {
+  @signal var(#count) count: i32;
+
+  new(this.count);
+
+  bump(): void {
+    this.#count += 1;
+  }
 }
 
 class NullableHolder {
@@ -179,15 +208,53 @@ export let tests = suite('Signals: @signal decorator', () => {
     e2.dispose();
   });
 
-  test('supports constructor initializer list', (ctx) => {
-    let h = new Initialized(7, 'seven');
-    var seen = '';
-    let e = effect(() => {
-      seen = `${h.name}:${h.x}`;
+  test('supports this.field constructor params and initializer lists', (ctx) => {
+    let a = new ThisParamInitialized(7, 'seven');
+    var seenA = '';
+    let e1 = effect(() => {
+      seenA = `${a.name}:${a.x}`;
     });
-    equal(seen, 'seven:7');
-    h.x = 8;
-    equal(seen, 'seven:8');
+    equal(seenA, 'seven:7');
+    a.x = 8;
+    equal(seenA, 'seven:8');
+    e1.dispose();
+
+    let b = new ExplicitInitializerList(1, 'one');
+    var seenB = '';
+    let e2 = effect(() => {
+      seenB = `${b.name}:${b.x}`;
+    });
+    equal(seenB, 'one:1');
+    b.x = 2;
+    equal(seenB, 'one:2');
+    e2.dispose();
+  });
+
+  test('supports private @signal fields', (ctx) => {
+    let p = new PrivateSignal();
+    var seen = -1;
+    let e = effect(() => {
+      seen = p.getCount();
+    });
+    equal(seen, 0);
+    p.bump();
+    equal(seen, 1);
+    p.bump();
+    equal(seen, 2);
+    e.dispose();
+  });
+
+  test('supports public getter / private setter var(#x) @signal fields', (ctx) => {
+    let r = new ReadOnlyPublicSignal(10);
+    var seen = -1;
+    let e = effect(() => {
+      seen = r.count;
+    });
+    equal(seen, 10);
+    r.bump();
+    equal(seen, 11);
+    r.bump();
+    equal(seen, 12);
     e.dispose();
   });
 

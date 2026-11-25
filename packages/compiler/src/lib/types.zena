@@ -788,11 +788,14 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
   }
 
   #superMember(ct: ClassType, key: String): MemberInfo | null {
-    if (isPrivateMemberKey(key)) {
-      return null;
-    }
     let parent = ct.superType;
     if (parent == null) {
+      return null;
+    }
+    // Private members do not cross real class boundaries, but a class's own
+    // decorator intermediates belong to the same lexical class (e.g., for
+    // `@signal var #count` or `@signal var(#count) count`).
+    if (isPrivateMemberKey(key) && !parent.isMixinIntermediate) {
       return null;
     }
     let member = parent.memberTable(this.isStaticTable).lookup(key);
@@ -848,10 +851,12 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
     let sourceTable = source.memberTable(this.isStaticTable);
     let subject = ct.decoratorSubjectName as String;
     let fieldName = ct.decoratorFieldName as String;
-    if (key == "get#" + fieldName) {
+    let setterFieldName = ct.decoratorSetterFieldName ?? fieldName;
+    if (key == "get#" + fieldName ||
+        (setterFieldName != fieldName && key == "get#" + setterFieldName)) {
       return sourceTable.lookup("get#" + subject);
     }
-    if (key == "set#" + fieldName) {
+    if (key == "set#" + setterFieldName) {
       return sourceTable.lookup("set#" + subject);
     }
     let shared = source.sharedMembers;
@@ -891,6 +896,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
   #decoratorStoredKey(ct: ClassType, source: MixinType, key: String): String | null {
     let subject = ct.decoratorSubjectName as String;
     let fieldName = ct.decoratorFieldName as String;
+    let setterFieldName = ct.decoratorSetterFieldName ?? fieldName;
     let shared = source.sharedMembers;
     if (shared != null && shared.has(key)) {
       if (ct.decoratorSharedPlaced) {
@@ -905,7 +911,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
       return "get#" + fieldName;
     }
     if (key == "set#" + subject) {
-      return "set#" + fieldName;
+      return "set#" + setterFieldName;
     }
     return null;
   }
@@ -934,7 +940,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
         let parent = ct.superType;
         if (parent != null) {
           for (let key in parent.memberTable(this.isStaticTable).keys()) {
-            if (!isPrivateMemberKey(key) && !seen.has(key)) {
+            if ((!isPrivateMemberKey(key) || parent.isMixinIntermediate) && !seen.has(key)) {
               seen.add(key);
               out.push(key);
             }
@@ -975,6 +981,16 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
             if (stored != null && !seen.has(stored as String)) {
               seen.add(stored as String);
               out.push(stored as String);
+            }
+            if (ct.decoratorSubjectName != null &&
+                key == "get#" + (ct.decoratorSubjectName as String) &&
+                ct.decoratorSetterFieldName != null &&
+                (ct.decoratorSetterFieldName as String) != (ct.decoratorFieldName as String)) {
+              let setterGetKey = "get#" + (ct.decoratorSetterFieldName as String);
+              if (!seen.has(setterGetKey)) {
+                seen.add(setterGetKey);
+                out.push(setterGetKey);
+              }
             }
           }
         }
@@ -1292,6 +1308,7 @@ export final class ClassType extends Type {
    */
   var decoratorSubjectName: String | null = null;
   var decoratorFieldName: String | null = null;
+  var decoratorSetterFieldName: String | null = null;
   /**
    * For a decorator application's intermediate: the declaration's own
    * scope key, under which the decorator's `shared` members live — one
@@ -2217,6 +2234,7 @@ function substituteInType(
         inst.privateScopeKey = template.privateScopeKey;
         inst.decoratorSubjectName = template.decoratorSubjectName;
         inst.decoratorFieldName = template.decoratorFieldName;
+        inst.decoratorSetterFieldName = template.decoratorSetterFieldName;
         inst.decoratorSharedScopeKey = template.decoratorSharedScopeKey;
         inst.decoratedFields = template.decoratedFields;
         inst.sealedVariants = template.sealedVariants;
@@ -2731,6 +2749,7 @@ export function instantiateClassType(
   result.privateScopeKey = source.privateScopeKey;
   result.decoratorSubjectName = source.decoratorSubjectName;
   result.decoratorFieldName = source.decoratorFieldName;
+  result.decoratorSetterFieldName = source.decoratorSetterFieldName;
   result.decoratorSharedScopeKey = source.decoratorSharedScopeKey;
   result.decoratedFields = source.decoratedFields;
   result.sourcePath = source.sourcePath;
