@@ -365,6 +365,26 @@ export class ZenaFxComponentRunner {
         view.setUint32(retptr + 4, ids.length, true);
       },
 
+      'create-node': () => {
+        return this.#engine.createNode();
+      },
+
+      '[method]node.set-slot': (node, slot, listPtr, listLen) => {
+        if (this.#guestMemory === null) {
+          throw new Error('Guest component has no linear memory');
+        }
+        const view = new DataView(this.#guestMemory.buffer);
+        const children = new Array(listLen);
+        for (let i = 0; i < listLen; i++) {
+          children[i] = view.getUint32((listPtr >>> 0) + i * 4, true);
+        }
+        const ok = this.#engine.setSlot(node, slot, children);
+        if (!ok) {
+          throw new Error(`could not set slot ${slot} on node`);
+        }
+        this.#afterSceneMutation();
+      },
+
       '[method]node.listen-pointer': (node, target, kind, scope, phase) => {
         const streamHandle = this.#allocHandle();
         const listenerId = streamHandle;
@@ -559,8 +579,12 @@ export class ZenaFxComponentRunner {
           }
         };
       }
-      // `resource.drop#...#node`: dropping a node handle is a no-op (matches native `HostNode`).
-      return () => {};
+      // `resource.drop#...#node`: frees guest-owned nodes (`create-node`), no-op for slot-owned ones.
+      return (nodeHandle) => {
+        if (this.#engine.dropNode(nodeHandle)) {
+          this.#afterSceneMutation();
+        }
+      };
     }
     if (name.startsWith('stream.read#')) {
       return (streamHandle, ptr, len) => {

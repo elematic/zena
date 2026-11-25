@@ -209,13 +209,20 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
 
     let mut scene = linker.instance("zenafx:host/scene@0.1.0")?;
 
-    // Nothing to free: the node belongs to whoever's interior it sits in, and
-    // it goes away when that interior is rebuilt. A guest letting go of a
-    // handle says only that this guest has stopped referring to the node.
+    // Slot-owned nodes (`root`, `content`) belong to their parent's interior,
+    // so dropping a handle to one is a no-op. Detached nodes created with
+    // `create-node` are owned by their handle and freed here.
     scene.resource(
         "node",
         ResourceType::host::<HostNode>(),
-        |_store, _rep| Ok(()),
+        |mut store, rep| {
+            let data = store.data_mut();
+            let (scene, text) = (data.scene.clone(), data.text.clone());
+            if scene.lock().unwrap().drop_node(rep, &mut text.lock().unwrap()) {
+                data.changed();
+            }
+            Ok(())
+        },
     )?;
 
     scene.func_wrap(
@@ -223,6 +230,14 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         |mut caller: StoreContextMut<'_, UiHostState>, (): ()| {
             let scene = caller.data_mut().scene.clone();
             let id = scene.lock().unwrap().root();
+            Ok((Resource::<HostNode>::new_own(id),))
+        },
+    )?;
+    scene.func_wrap(
+        "create-node",
+        |mut caller: StoreContextMut<'_, UiHostState>, (): ()| {
+            let scene = caller.data_mut().scene.clone();
+            let id = scene.lock().unwrap().create_node();
             Ok((Resource::<HostNode>::new_own(id),))
         },
     )?;
@@ -261,6 +276,26 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
                     .collect::<Vec<_>>(),)),
                 None => Err(wasmtime::Error::msg(format!("a node has no slot {slot}"))),
             }
+        },
+    )?;
+    scene.func_wrap(
+        "[method]node.set-slot",
+        |mut caller: StoreContextMut<'_, UiHostState>,
+         (node, slot, children): (Resource<HostNode>, u32, Vec<Resource<HostNode>>)| {
+            let data = caller.data_mut();
+            let (scene, text) = (data.scene.clone(), data.text.clone());
+            let ids: Vec<u32> = children.iter().map(Resource::rep).collect();
+            let ok = scene
+                .lock()
+                .unwrap()
+                .set_slot(node.rep(), slot, &ids, &mut text.lock().unwrap());
+            if !ok {
+                return Err(wasmtime::Error::msg(format!(
+                    "could not set slot {slot} on node"
+                )));
+            }
+            data.changed();
+            Ok(())
         },
     )?;
     scene.func_wrap(

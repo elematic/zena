@@ -144,6 +144,43 @@ pub extern "C" fn scene_root(handle: u32) -> u32 {
     .unwrap_or(0)
 }
 
+/// `zenafx:host/scene.create-node()`.
+#[unsafe(no_mangle)]
+pub extern "C" fn scene_create_node(handle: u32) -> u32 {
+    with_engine(handle, |eng| eng.scene.create_node()).unwrap_or(0)
+}
+
+/// `zenafx:host/scene.[method]node.set-slot(node, slot, children)`.
+/// `ptr` points to `len` little-endian `u32` child node ids.
+/// Returns 1 on success, 0 if the slot or any child id is invalid.
+#[unsafe(no_mangle)]
+pub extern "C" fn scene_set_slot(
+    handle: u32,
+    node: u32,
+    slot: u32,
+    ptr: *const u32,
+    len: usize,
+) -> u32 {
+    let children: &[u32] = if len == 0 {
+        &[]
+    } else if ptr.is_null() {
+        return 0;
+    } else {
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    };
+    with_engine(handle, |eng| {
+        u32::from(eng.scene.set_slot(node, slot, children, &mut eng.text))
+    })
+    .unwrap_or(0)
+}
+
+/// `resource.drop` on `zenafx:host/scene.node`.
+/// Returns 1 if a guest-owned node was freed, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn scene_drop_node(handle: u32, node: u32) -> u32 {
+    with_engine(handle, |eng| u32::from(eng.scene.drop_node(node, &mut eng.text))).unwrap_or(0)
+}
+
 /// `zenafx:host/scene.[method]node.render(...)` with binary-encoded `(TemplateRef, Vec<Hole>)`.
 /// Returns 1 on success, 0 on decode failure.
 #[unsafe(no_mangle)]

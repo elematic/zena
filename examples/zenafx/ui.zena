@@ -28,12 +28,12 @@ import {
   Node, NodeDef, Appearance, AppearanceNothing, AppearanceFill, AppearanceText,
   TextContent, Binding, BindingTarget, BindingValue, BindingValueContent,
   BindingValueStyle, BindingValueTextStyle, BindingValueBox, BindingValueLayout,
-  Hole, State, Restyle, RestyleFill, RestyleText, StateStyle, Cursor,
+  Hole, State, Restyle, RestyleFill, RestyleText, StateStyle, Cursor, createNode,
 } from 'zenafx:host/scene';
 import { PointerKind, PointerEvent, KeyEvent } from 'zenafx:host/events';
-import { Effect, hasSources } from 'zena:signals';
+import { Effect, hasSources, untrack } from 'zena:signals';
 import { HashMap } from 'zena:collections';
-import { some, none } from 'zena:core';
+import { Disposable, Hashable, some, none } from 'zena:core';
 import {
   Template, WidgetBase, Mountable, Listener, KeyListener,
   Answer, KeyAnswer, Handler, KeyHandler, projectChildren,
@@ -79,6 +79,20 @@ export abstract class Widget extends WidgetBase {
       mounted.unmount();
     }
   }
+
+  pause(): void {
+    let mounted = this.#mounted;
+    if (mounted != null) {
+      mounted.pause();
+    }
+  }
+
+  resume(): void {
+    let mounted = this.#mounted;
+    if (mounted != null) {
+      mounted.resume();
+    }
+  }
 }
 
 export let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
@@ -87,11 +101,35 @@ export let full = new LengthPercent(100.0);
 let defaultInk = new Color(0.0, 0.0, 0.0, 1.0);
 let defaultTextStyle = new TextStyle('system-ui', 16.0, 400 as u16, false, defaultInk);
 
+/**
+ * Stateful guest directive instance owned by a `SlotPart`.
+ *
+ * Directives live entirely in guest code on top of `createNode()` and
+ * `node.setSlot(...)`. `pause` and `resume` cascade when an enclosing `cache`
+ * parks or restores a subtree; `dispose` releases all owned host nodes.
+ */
+export interface Directive {
+  pause(): void;
+  resume(): void;
+  dispose(): void;
+}
+
+/**
+ * Value returned by a directive function (such as `cache(...)`, `cacheBy(...)`,
+ * or `repeat(...)`) inside a dynamic `$(...)` child slot.
+ */
+export interface DirectiveResult {
+  matches(active: Directive): boolean;
+  create(): Directive;
+  apply(active: Directive, part: SlotPart): void;
+}
+
 /** What a dynamic `$(...)` child expression may evaluate to. */
 export type Child =
   Widget
   | TemplateResult
   | Mountable
+  | DirectiveResult
   | GrowableArray<Widget>
   | GrowableArray<TemplateResult>
   | GrowableArray<Mountable>
@@ -99,6 +137,443 @@ export type Child =
   | Array<TemplateResult>
   | Array<Mountable>
   | null;
+
+final class MountedNode {
+  node: Node;
+  child: Mountable;
+
+  new(this.node, this.child);
+}
+
+/**
+ * Guest controller for one dynamic `$(...)` child slot on a mounted
+ * `TemplateResult`.
+ *
+ * Owns the slot's reactive `Effect`, any active `Directive`, and any
+ * guest-owned `Node` handles mounted into the slot.
+ */
+export final class SlotPart {
+  #parentNode: Node;
+  #bfsSlot: i32;
+  #thunk: () => Child;
+  var #effect: Effect | null = null;
+  var #isReactive: boolean = false;
+  var #activeDirective: Directive | null = null;
+  var #plainEntries = new GrowableArray<MountedNode>();
+
+  new(parentNode: Node, bfsSlot: i32, thunk: () => Child)
+    : #parentNode = parentNode, #bfsSlot = bfsSlot, #thunk = thunk;
+
+  /** Create a detached host node owned by the caller. */
+  createNode(): Node {
+    return createNode();
+  }
+
+  /** Replace this slot's children with `nodes` in order. */
+  setNodes(nodes: Array<Node>): void {
+    this.#parentNode.setSlot(this.#bfsSlot as u32, nodes);
+  }
+
+  start(): void {
+    let eff = new Effect(() => {
+      let next = this.#thunk();
+      untrack(() => {
+        this.#apply(next);
+      });
+    });
+    if (hasSources(eff)) {
+      this.#effect = eff;
+      this.#isReactive = true;
+    } else {
+      eff.dispose();
+    }
+  }
+
+  #apply(value: Child): void {
+    if (value is DirectiveResult) {
+      this.#clearPlain();
+      var active = this.#activeDirective;
+      if (active == null || !value.matches(active)) {
+        if (active != null) {
+          active.dispose();
+        }
+        active = value.create();
+        this.#activeDirective = active;
+      }
+      value.apply(active, this);
+      return;
+    }
+
+    let prevDir = this.#activeDirective;
+    if (prevDir != null) {
+      this.#activeDirective = null;
+      prevDir.dispose();
+    }
+    this.#clearPlain();
+
+    let next = flattenChild(value);
+    let handles = new GrowableArray<Node>();
+    for (let child in next) {
+      let n = createNode();
+      child.mount(n, null);
+      this.#plainEntries.push(new MountedNode(n, child));
+      handles.push(n);
+    }
+    this.#parentNode.setSlot(this.#bfsSlot as u32, handles);
+  }
+
+  #clearPlain(): void {
+    if (this.#plainEntries.length == 0) {
+      return;
+    }
+    for (let entry in this.#plainEntries) {
+      entry.child.unmount();
+      entry.node.[Disposable.dispose]();
+    }
+    this.#plainEntries = new GrowableArray<MountedNode>();
+  }
+
+  pause(): void {
+    let eff = this.#effect;
+    if (eff != null) {
+      this.#effect = null;
+      eff.dispose();
+    }
+    let dir = this.#activeDirective;
+    if (dir != null) {
+      dir.pause();
+    }
+    for (let entry in this.#plainEntries) {
+      entry.child.pause();
+    }
+  }
+
+  resume(): void {
+    let dir = this.#activeDirective;
+    if (dir != null) {
+      dir.resume();
+    }
+    for (let entry in this.#plainEntries) {
+      entry.child.resume();
+    }
+    if (this.#isReactive && this.#effect == null) {
+      this.start();
+    }
+  }
+
+  dispose(): void {
+    let eff = this.#effect;
+    if (eff != null) {
+      this.#effect = null;
+      eff.dispose();
+    }
+    let dir = this.#activeDirective;
+    if (dir != null) {
+      this.#activeDirective = null;
+      dir.dispose();
+    }
+    this.#clearPlain();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Guest directives: `cache`, `cacheBy`, `repeat`
+// ---------------------------------------------------------------------------
+
+final class ParkedBranch {
+  template: CompiledTemplate;
+  node: Node;
+  mounted: TemplateResult;
+
+  new(this.template, this.node, this.mounted);
+}
+
+final class CacheDirective implements Directive {
+  var #branches = new GrowableArray<ParkedBranch>();
+  var #active: ParkedBranch | null = null;
+
+  applyValue(value: TemplateResult | null, part: SlotPart): void {
+    if (value == null) {
+      let prev = this.#active;
+      if (prev != null) {
+        prev.mounted.pause();
+        this.#active = null;
+      }
+      part.setNodes([]);
+      return;
+    }
+
+    let prev = this.#active;
+    if (prev != null && prev.template === value.compiled) {
+      return;
+    }
+    if (prev != null) {
+      prev.mounted.pause();
+    }
+
+    for (let branch in this.#branches) {
+      if (branch.template === value.compiled) {
+        this.#active = branch;
+        branch.mounted.resume();
+        part.setNodes([branch.node]);
+        return;
+      }
+    }
+
+    let node = part.createNode();
+    value.mount(node, null);
+    let created = new ParkedBranch(value.compiled, node, value);
+    this.#branches.push(created);
+    this.#active = created;
+    part.setNodes([node]);
+  }
+
+  pause(): void {
+    let active = this.#active;
+    if (active != null) {
+      active.mounted.pause();
+    }
+  }
+
+  resume(): void {
+    let active = this.#active;
+    if (active != null) {
+      active.mounted.resume();
+    }
+  }
+
+  dispose(): void {
+    this.#active = null;
+    for (let branch in this.#branches) {
+      branch.mounted.unmount();
+      branch.node.[Disposable.dispose]();
+    }
+    this.#branches = new GrowableArray<ParkedBranch>();
+  }
+}
+
+final class CacheResult implements DirectiveResult {
+  #value: TemplateResult | null;
+
+  new(value: TemplateResult | null) : #value = value;
+
+  matches(active: Directive): boolean {
+    return active is CacheDirective;
+  }
+
+  create(): Directive {
+    return new CacheDirective();
+  }
+
+  apply(active: Directive, part: SlotPart): void {
+    (active as CacheDirective).applyValue(this.#value, part);
+  }
+}
+
+/**
+ * Park inactive branches of a conditional or `match` expression by template
+ * identity so returning to a branch reattaches its host node and shaped text
+ * runs with no rebuild and pauses its `Effect`s while parked.
+ */
+export function cache(value: TemplateResult | null): DirectiveResult {
+  return new CacheResult(value);
+}
+
+final class ParkedKeyedBranch<K> {
+  key: K;
+  node: Node;
+  mounted: Mountable;
+
+  new(this.key, this.node, this.mounted);
+}
+
+final class CacheByDirective<K extends Hashable> implements Directive {
+  var #branches = new HashMap<K, ParkedKeyedBranch<K>>();
+  var #active: ParkedKeyedBranch<K> | null = null;
+
+  applyKey(key: K, render: () => Mountable | null, part: SlotPart): void {
+    let prev = this.#active;
+    if (prev != null && prev.key == key) {
+      return;
+    }
+    if (prev != null) {
+      prev.mounted.pause();
+      this.#active = null;
+    }
+
+    if (let (true, existing) = this.#branches.get(key)) {
+      this.#active = existing;
+      existing.mounted.resume();
+      part.setNodes([existing.node]);
+      return;
+    }
+
+    let rendered = render();
+    if (rendered == null) {
+      part.setNodes([]);
+      return;
+    }
+
+    let node = part.createNode();
+    rendered.mount(node, null);
+    let created = new ParkedKeyedBranch<K>(key, node, rendered);
+    this.#branches[key] = created;
+    this.#active = created;
+    part.setNodes([node]);
+  }
+
+  pause(): void {
+    let active = this.#active;
+    if (active != null) {
+      active.mounted.pause();
+    }
+  }
+
+  resume(): void {
+    let active = this.#active;
+    if (active != null) {
+      active.mounted.resume();
+    }
+  }
+
+  dispose(): void {
+    this.#active = null;
+    for (let k in this.#branches.keys()) {
+      let branch = this.#branches[k];
+      branch.mounted.unmount();
+      branch.node.[Disposable.dispose]();
+    }
+    this.#branches = new HashMap<K, ParkedKeyedBranch<K>>();
+  }
+}
+
+final class CacheByResult<K extends Hashable> implements DirectiveResult {
+  #key: K;
+  #render: () => Mountable | null;
+
+  new(key: K, render: () => Mountable | null) : #key = key, #render = render;
+
+  matches(active: Directive): boolean {
+    return active is CacheByDirective<K>;
+  }
+
+  create(): Directive {
+    return new CacheByDirective<K>();
+  }
+
+  apply(active: Directive, part: SlotPart): void {
+    (active as CacheByDirective<K>).applyKey(this.#key, this.#render, part);
+  }
+}
+
+/**
+ * Like `cache`, but keyed by an explicit key `key` and lazy: `render` is only
+ * invoked on the first visit to each key.
+ */
+export function cacheBy<K extends Hashable>(key: K, render: () => Mountable | null): DirectiveResult {
+  return new CacheByResult<K>(key, render);
+}
+
+final class RepeatDirective<T, K extends Hashable> implements Directive {
+  var #rows = new HashMap<K, MountedNode>();
+
+  applyItems(
+    items: Array<T>,
+    keyFn: (item: T) => K,
+    renderFn: (item: T) => Mountable,
+    part: SlotPart,
+  ): void {
+    let nextRows = new HashMap<K, MountedNode>();
+    let handles = new GrowableArray<Node>();
+
+    for (let item in items) {
+      let key = keyFn(item);
+      if (let (true, existing) = this.#rows.get(key)) {
+        nextRows[key] = existing;
+        handles.push(existing.node);
+      } else {
+        let node = part.createNode();
+        let mounted = renderFn(item);
+        mounted.mount(node, null);
+        let entry = new MountedNode(node, mounted);
+        nextRows[key] = entry;
+        handles.push(node);
+      }
+    }
+
+    part.setNodes(handles);
+
+    for (let oldKey in this.#rows.keys()) {
+      if (!nextRows.has(oldKey)) {
+        let gone = this.#rows[oldKey];
+        gone.child.unmount();
+        gone.node.[Disposable.dispose]();
+      }
+    }
+
+    this.#rows = nextRows;
+  }
+
+  pause(): void {
+    for (let k in this.#rows.keys()) {
+      this.#rows[k].child.pause();
+    }
+  }
+
+  resume(): void {
+    for (let k in this.#rows.keys()) {
+      this.#rows[k].child.resume();
+    }
+  }
+
+  dispose(): void {
+    for (let k in this.#rows.keys()) {
+      let entry = this.#rows[k];
+      entry.child.unmount();
+      entry.node.[Disposable.dispose]();
+    }
+    this.#rows = new HashMap<K, MountedNode>();
+  }
+}
+
+final class RepeatResult<T, K extends Hashable> implements DirectiveResult {
+  #items: Array<T>;
+  #keyFn: (item: T) => K;
+  #renderFn: (item: T) => Mountable;
+
+  new(items: Array<T>, keyFn: (item: T) => K, renderFn: (item: T) => Mountable)
+    : #items = items, #keyFn = keyFn, #renderFn = renderFn;
+
+  matches(active: Directive): boolean {
+    return active is RepeatDirective<T, K>;
+  }
+
+  create(): Directive {
+    return new RepeatDirective<T, K>();
+  }
+
+  apply(active: Directive, part: SlotPart): void {
+    (active as RepeatDirective<T, K>).applyItems(
+      this.#items,
+      this.#keyFn,
+      this.#renderFn,
+      part,
+    );
+  }
+}
+
+/**
+ * Keyed list directive backed by `createNode()` and `node.setSlot(...)`.
+ * Reordering items permutes existing host nodes in place without rebuilding
+ * rows or re-shaping their text.
+ */
+export function repeat<T, K extends Hashable>(
+  items: Array<T>,
+  keyFn: (item: T) => K,
+  renderFn: (item: T) => Mountable,
+): DirectiveResult {
+  return new RepeatResult<T, K>(items, keyFn, renderFn);
+}
 
 final class PendingState {
   when: State;
@@ -181,11 +656,13 @@ export final class TemplateResult implements Mountable {
   var #pendingHoles = new GrowableArray<Hole>();
   #lastSent = new HashMap<i32, BindingValue>();
   var #reactThunks = new GrowableArray<() => void>();
+  #liveThunks = new GrowableArray<() => void>();
   var #effects = new GrowableArray<Effect>();
   #listeners = new GrowableArray<Listener>();
   #keyListeners = new GrowableArray<KeyListener>();
   #staticSlots = new HashMap<i32, Mountable>();
   #dynamicSlots = new GrowableArray<DynamicSlotEntry>();
+  var #slotParts = new GrowableArray<SlotPart>();
   var #mountedSlots = new HashMap<i32, GrowableArray<Mountable>>();
 
   new(this.compiled);
@@ -269,6 +746,7 @@ export final class TemplateResult implements Mountable {
       let eff = new Effect(fn);
       if (hasSources(eff)) {
         this.#effects.push(eff);
+        this.#liveThunks.push(fn);
       } else {
         eff.dispose();
       }
@@ -297,17 +775,9 @@ export final class TemplateResult implements Mountable {
     }
 
     for (let entry in this.#dynamicSlots) {
-      let slotIndex = entry.bfsSlot;
-      let thunk = entry.fn;
-      let eff = new Effect(() => {
-        let next = flattenChild(thunk());
-        this.#mountSlot(node, slotIndex, next);
-      });
-      if (hasSources(eff)) {
-        this.#effects.push(eff);
-      } else {
-        eff.dispose();
-      }
+      let part = new SlotPart(node, entry.bfsSlot, entry.fn);
+      this.#slotParts.push(part);
+      part.start();
     }
   }
 
@@ -326,11 +796,54 @@ export final class TemplateResult implements Mountable {
     this.#mountedSlots[bfsSlot] = next;
   }
 
+  pause(): void {
+    for (let eff in this.#effects) {
+      eff.dispose();
+    }
+    this.#effects = new GrowableArray<Effect>();
+    for (let part in this.#slotParts) {
+      part.pause();
+    }
+    for (let bfsSlot in this.#mountedSlots.keys()) {
+      for (let child in this.#mountedSlots[bfsSlot]) {
+        child.pause();
+      }
+    }
+  }
+
+  resume(): void {
+    if (this.#node == null) {
+      return;
+    }
+    if (this.#effects.length == 0) {
+      for (let fn in this.#liveThunks) {
+        let eff = new Effect(fn);
+        if (hasSources(eff)) {
+          this.#effects.push(eff);
+        } else {
+          eff.dispose();
+        }
+      }
+    }
+    for (let part in this.#slotParts) {
+      part.resume();
+    }
+    for (let bfsSlot in this.#mountedSlots.keys()) {
+      for (let child in this.#mountedSlots[bfsSlot]) {
+        child.resume();
+      }
+    }
+  }
+
   unmount(): void {
     for (let eff in this.#effects) {
       eff.dispose();
     }
     this.#effects = new GrowableArray<Effect>();
+    for (let part in this.#slotParts) {
+      part.dispose();
+    }
+    this.#slotParts = new GrowableArray<SlotPart>();
     for (let bfsSlot in this.#mountedSlots.keys()) {
       for (let child in this.#mountedSlots[bfsSlot]) {
         child.unmount();
