@@ -5708,24 +5708,34 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                     applyMixinPrivateScope(regF, node, scope);
                     regs.push(regF);
                   } else if (node is AccessorDeclaration) {
-                    var accName = memberKeyOf(nodeModel, node.name as Node);
-                    if ((decInt.decoratorSubjectName as String) == accName) {
-                      accName = decInt.decoratorFieldName as String;
-                    }
-                    let accPrefix = if (scope != null && accName.startsWith("#")) {
+                    let rawAccName = memberKeyOf(nodeModel, node.name);
+                    let isSubjectRename = (decInt.decoratorSubjectName as String) == rawAccName;
+                    let getterAccName = if (isSubjectRename) decInt.decoratorFieldName as String else rawAccName;
+                    let setterAccName = if (isSubjectRename) {
+                      decInt.decoratorSetterFieldName ?? (decInt.decoratorFieldName as String)
+                    } else {
+                      rawAccName
+                    };
+                    let accPrefix = if (!isSubjectRename && scope != null && rawAccName.startsWith("#")) {
                       (scope as String) + "::"
                     } else {
                       ""
                     };
                     if (node.getter != null) {
-                      let regG = specializer.registerClassMethod(ct, cd, `${accPrefix}get#${accName}`, node, false, false, null, nodeModel, null);
+                      let regG = specializer.registerClassMethod(ct, cd, `${accPrefix}get#${getterAccName}`, node, false, false, null, nodeModel, null);
                       regG.declaringType = decInt;
                       applyMixinPrivateScope(regG, node, scope);
                       regs.push(regG);
+                      if (isSubjectRename && setterAccName != getterAccName) {
+                        let regAliasG = specializer.registerClassMethod(ct, cd, `get#${setterAccName}`, node, false, false, null, nodeModel, null);
+                        regAliasG.declaringType = decInt;
+                        applyMixinPrivateScope(regAliasG, node, scope);
+                        regs.push(regAliasG);
+                      }
                     }
                     let {setter} = node;
                     if (setter != null) {
-                      let regS = specializer.registerClassMethod(ct, cd, `${accPrefix}set#${accName}`, setter, false, false, null, nodeModel, null);
+                      let regS = specializer.registerClassMethod(ct, cd, `${accPrefix}set#${setterAccName}`, setter, false, false, null, nodeModel, null);
                       regS.declaringType = decInt;
                       applyMixinPrivateScope(regS, setter, scope);
                       regs.push(regS);

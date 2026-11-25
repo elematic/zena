@@ -1,0 +1,33 @@
+// @mode: check
+import {signal} from 'zena:signals';
+
+class BadMutable {
+  @signal count: i32 = 0; // @error: Decorator '@signal' applies to 'var' fields
+}
+
+class SecretHolder {
+  @signal var #secret: i32 = 0;
+}
+
+class SubSecret extends SecretHolder {
+  leak(): i32 {
+    return this.#secret; // @error: does not exist on type 'SubSecret'
+  }
+}
+
+class ReadOnlyCounter {
+  @signal var(#count) count: i32 = 0;
+}
+
+class SubReadOnly extends ReadOnlyCounter {
+  steal(): void {
+    this.#count = 1; // @error: does not exist on type 'SubReadOnly'
+  }
+}
+
+let testAccess = (): void => {
+  let s = new SecretHolder();
+  let _ = s.#secret; // @error: Private field '#secret' can only be accessed within a class
+  let r = new ReadOnlyCounter();
+  r.count = 1; // @error: Cannot assign to read-only property
+};

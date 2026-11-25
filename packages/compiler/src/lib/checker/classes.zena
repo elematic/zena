@@ -213,9 +213,9 @@ function applyFieldDecorators(
     if (dec.args.length > 0) {
       ctx.error("Decorator arguments are not supported yet.", DiagnosticCode.TypeMismatch, dec.loc);
     }
-    if (fd.isStatic || fd.isAbstract || fd.isDeclare || fd.setterName != null) {
+    if (fd.isStatic || fd.isAbstract || fd.isDeclare) {
       ctx.error(
-        "A decorator applies to a plain instance field: not a static, abstract or declared field, and not a 'var(#x)' field.",
+        "A decorator applies to a plain instance field: not a static, abstract or declared field.",
         DiagnosticCode.TypeMismatch,
         dec.loc
       );
@@ -259,7 +259,7 @@ function applyFieldDecorator(
 ): void {
   let source = mt.genericSource ?? mt;
   let subject = source.decoratorSubjectName as String;
-  let fieldIsVar = fd.mutability != null && fd.mutability == "var";
+  let fieldIsVar = (fd.mutability != null && fd.mutability == "var") || fd.setterName != null;
   if (fieldIsVar != source.decoratorSubjectMutable) {
     let message = if (source.decoratorSubjectMutable) {
       "Decorator '@" + dec.name + "' applies to 'var' fields; declare '" +
@@ -351,8 +351,14 @@ function applyFieldDecorator(
   intermediate.decoratorSharedScopeKey = declScope;
   intermediate.onType = onType;
   intermediate.mixins = source.mixins;
+  let setterFieldName = if (fd.setterName != null) {
+    getMemberName(ctx, fd.setterName as Node)
+  } else {
+    fieldName
+  };
   intermediate.decoratorSubjectName = subject;
   intermediate.decoratorFieldName = fieldName;
+  intermediate.decoratorSetterFieldName = setterFieldName;
   // The decorator's members are read through `appliedMixin` by the
   // intermediate's member table, under the decorator's renaming
   // (MemberTable).
@@ -371,8 +377,19 @@ function applyFieldDecorator(
     classType.decoratedFields = created;
     decorated = created;
   }
-  decorated[fieldName] = new DecoratedField(
+  let df = new DecoratedField(
       fieldName, scope, `${scope}::#${subject}`, mt, fd, fieldType);
+  decorated[fieldName] = df;
+  if (setterFieldName != fieldName) {
+    decorated[setterFieldName] = df;
+    if (fd.setterName is Identifier) {
+      if (classType.fieldSetterNames == null) {
+        classType.fieldSetterNames = new Map<String, String>();
+      }
+      let m = classType.fieldSetterNames as HashMap<String, String>;
+      m[fieldName] = setterFieldName;
+    }
+  }
 }
 
 /**
