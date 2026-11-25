@@ -2,7 +2,7 @@
 
 use zenafx_render::events::{Delivery, KeyEvent, Modifiers, PointerKind};
 use zenafx_render::scene::{
-    Appearance, Binding, BindingTarget, BindingValue, Cursor, Hole, NodeDef, Restyle, State,
+    Binding, BindingTarget, BindingValue, Cursor, Hole, NodeDef, NodeStyle, Restyle, State,
     StateStyle, TemplateDef, TemplateRef, TextContent,
 };
 use zenafx_render::types::{
@@ -183,11 +183,11 @@ impl<'a> Reader<'a> {
         }
     }
 
-    pub fn appearance(&mut self) -> Option<Appearance> {
+    pub fn node_style(&mut self) -> Option<NodeStyle> {
         match self.u8()? {
-            0 => Some(Appearance::Nothing),
-            1 => Some(Appearance::Fill(self.box_style()?)),
-            2 => Some(Appearance::Text(TextContent {
+            0 => Some(NodeStyle::Nothing),
+            1 => Some(NodeStyle::Fill(self.box_style()?)),
+            2 => Some(NodeStyle::Text(TextContent {
                 content: self.string()?,
                 style: self.text_style()?,
             })),
@@ -206,7 +206,7 @@ impl<'a> Reader<'a> {
         Some(NodeDef {
             own_box: self.own_box()?,
             layout: self.layout()?,
-            appearance: self.appearance()?,
+            style: self.node_style()?,
             first_child: self.u32()?,
             child_count: self.u32()?,
             is_slot: self.bool()?,

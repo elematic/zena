@@ -69,7 +69,7 @@ a call on one, and any widget can use it.
 | Boxes laid out by flex                        | built                                                                     |
 | Text in one style                             | built                                                                     |
 | Text in several styles, links                 | proposed in [zenafx-text-flow.md](./zenafx-text-flow.md)                  |
-| Looks for hovered, pressed and focused        | built                                                                     |
+| State styles for hovered, pressed and focused | built                                                                     |
 | Rules, properties that inherit, themes        | proposed in [zenafx-styles.md](./zenafx-styles.md)                        |
 | Pointer and key listeners, pointer capture    | built                                                                     |
 | The focus, moved by `Tab` and by a press      | built                                                                     |
@@ -122,7 +122,7 @@ enum role {
 }
 
 record node-def {
-  // ... its layout, its appearance and the rest
+  // ... its layout, its style and the rest
   role: role,
   /// What assistive technology calls the node, when its own text does not
   /// say: "Close" on a button that shows a cross.
@@ -137,7 +137,7 @@ A node's state reaches assistive technology through facts. A checkbox is
 checked, a row is selected and a control is disabled by a fact the component
 sets, as [Facts](./zenafx-styles.md#facts) describes. For the states assistive
 technology knows, the host gives the keys: `checked`, `selected`, `expanded`,
-`disabled`. A component that sets `checked` on a node changes its look, by
+`disabled`. A component that sets `checked` on a node changes its style, by
 whatever rules test the fact, and what a screen reader says of it, in one
 write.
 
@@ -158,7 +158,7 @@ name it. Or nearly every application needs it and it should behave the same
 in all of them.
 
 **Text.** Each is a flow container, in the sense of
-[zenafx-text-flow.md](./zenafx-text-flow.md), with a role and a look.
+[zenafx-text-flow.md](./zenafx-text-flow.md), with a role and a style.
 
 | Element               | Role                |
 | --------------------- | ------------------- |
@@ -201,7 +201,7 @@ A table of data, a date picker and an editor for rich text are not in the
 set. An application needs one of them only sometimes, and each can be a
 library built from these.
 
-### How elements look
+### How elements are styled
 
 An element comes with rules for its own nodes: a heading's size, a button's
 fill, a ring round what has the focus.

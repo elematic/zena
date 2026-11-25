@@ -2,10 +2,15 @@
 
 ## Status
 
-Proposal. None of it is built, except the list of state styles described under
-[Styles today](#styles-today), which this would replace.
+Proposal. Two pieces are built today:
 
-It asks for nine decisions:
+- The host's list of state styles described under [Styles today](#styles-today),
+  which the rule system below would replace.
+- The unified, record-based guest `Style` surface described under
+  [Authoring surface](#authoring-surface), prototyped in
+  `examples/zenafx/ui.zena` and used by the `@ui` example widgets.
+
+The rest of this document asks for nine host-protocol decisions:
 
 1. A property is declared: a key, a type and whether it inherits. The built-in
    properties are declarations of the same form as an application's own. A
@@ -110,10 +115,11 @@ know them. Better names are an open question.
 ## Styles today
 
 Every style is written on the node it applies to, which is what CSS calls an
-inline style. A node of a template carries a `box` record and a `layout`
-with its eleven layout fields between them, and a `box-style` or `text-style`
-record with its look. A hole can replace a whole record for one instance. A node also names its cursor, in
-a `cursor` field that no hole writes.
+inline style. On the wire, a node of a template carries a `box` record and a
+`layout` with its eleven layout fields between them, and a `node-style`
+carrying a `box-style` or `text-style` record. A hole can replace a whole
+record for one instance. A node also names its cursor in a `cursor` field that
+no hole writes.
 
 A template also has a `states` list, which is the only conditional style:
 
@@ -132,15 +138,171 @@ The host applies the list when it draws. `examples/zenafx/button/` uses it for
 a hovered and a pressed fill, and [State styles](./zenafx-ui.md#state-styles)
 gives the reasons the host resolves it.
 
-Four limits of this are what the rest of the document removes.
+Four limits of the wire protocol are what the rest of the document removes.
 
-- A look replaces the whole record. When a node is hovered and pressed, the
-  later entry wins everything, and a hovered fill cannot combine with a
+- A state style replaces the whole record. When a node is hovered and pressed,
+  the later entry wins everything, and a hovered fill cannot combine with a
   pressed border.
 - The states are a closed `enum`. An application cannot add `selected`.
 - A condition is one state of one node. It cannot test a size.
 - Every text node carries its whole text style. Nothing is taken from the node
   above, so there is no way to say that everything in a panel is in one colour.
+
+## Authoring surface
+
+Even before the host protocol moves from fixed records (`box`, `layout`,
+`box-style`, `text-style`) to sparse declarations, widget authoring in Zena
+runs into two ergonomic problems when it mirrors the wire records directly.
+
+First, placing layout properties directly on `Box` and `Flow` (`width`,
+`height`, `padding`, `axis`, `justify`, `align`, `gap`, `cursor`) while
+confining `style` to visual fill and border prevents bundling and reusing
+layouts. Every full-screen page repeats `width: full`, `height: full`,
+`justify: Justify.Center`, `align: Align.Center`; every button repeats its
+padding, alignment, radius, and state styles separately.
+
+Second, constructing the WIT records directly (`new BoxStyle(some(surface),
+some(edge), 1.0, 12.0, 1.0)`, `new TextStyle('system-ui', 64.0, 600 as u16,
+false, ink)`, `new Edges(12.0, 24.0, 12.0, 24.0)`) forces positional
+arguments, `Option` wrappers, and repeated defaults for every style value.
+
+### One unified `Style`
+
+A single `Style` value bundles every style property of a node — sizing, flex
+and flow layout, visual fill and border, typography, cursor, text selection,
+and state overrides — matching the property model in [Properties](#properties).
+
+```zena
+let centeredPage: Style = {
+  width: full,
+  height: full,
+  justify: Justify.Center,
+  align: Align.Center,
+};
+
+let pageStyle: Style = {
+  ...centeredPage,
+  background: pageBg,
+  gap: 24.0,
+};
+
+let buttonStyle: Style = {
+  background: resting,
+  cornerRadius: 10.0,
+  padding: { x: 24.0, y: 12.0 },
+  justify: Justify.Center,
+  align: Align.Center,
+  hovered: { background: hovered },
+  pressed: { background: pressed },
+};
+
+let labelStyle: Style = { fontSize: 16.0, fontWeight: 600, color: paper };
+```
+
+A node then takes one `style` property alongside its structural content and
+behaviour:
+
+```zena
+@ui Box {
+  style: buttonStyle,
+  onDown: () => { this.#onPress(); },
+
+  Text(this.#label) { style: labelStyle }
+}
+```
+
+Four rules shape this boundary:
+
+- **Layout and visual properties live together in `Style`.** A library can
+  export layout bundles (`centeredPage`, `toolbarRow`), surface bundles
+  (`cardSurface`), or complete control styles (`buttonStyle`) as ordinary
+  values and compose them with record spread (`{ ...centeredPage, background:
+pageBg }`).
+- **Behaviour and structure stay on the node.** Text content, child nodes,
+  `Slot {}`, `focusable`, `editable`, and event handlers (`onDown`, `onKey`)
+  remain node properties, matching the split under
+  [The cursor and text selection](#the-cursor-and-text-selection).
+- **State overrides are partial.** `hovered`, `pressed`, and `focused` inside
+  `Style` declare only the properties that change (for example,
+  `focused: { borderColor: ring, borderWidth: 2.0 }`). Today the guest merges
+  each override onto the base visual style when lowering to `state-style`; once
+  host rules land, each override becomes a rule directly.
+- **Value constructors stay lightweight.** Edge insets use a presence-optional
+  record (`{ all: 16.0 }`, `{ x: 24.0, y: 12.0 }`,
+  `{ top: 18.0, x: 22.0, bottom: 22.0 }`), font weights take plain `i32`
+  literals, and small helpers (`rgb`, `rgba`, `px`, `pct`, `full`, `auto`)
+  replace positional class constructors.
+
+In `@ui`, module-level `Style` constants and inline template-static record
+literals (`Box { style: { axis: Axis.Row, gap: 10.0 } }`) fold directly into
+the call-site-cached `Template` with zero runtime bindings. A dynamic or
+reactive `style` expression (`style: titleStyle(this.#accent)` or
+`style: $(...)`) declares bindings for the node's underlying `box`, `layout`,
+and `style` targets and diffs per target on updates, so changing only a
+background sends only a `style` hole.
+
+### Record syntax and builder syntax
+
+The prototype in `examples/zenafx/ui.zena` defines `Style` as a
+presence-optional record type ([record-presence.md](./record-presence.md)).
+Record literals work in Zena today with no new compiler features: omitted
+properties default cleanly, closed-literal checking catches misspelled property
+names at compile time, `{ ...a, ...b }` composes styles with presence
+propagation, and inline `style: { gap: 6.0 }` requires no type name.
+
+The limitation of plain records appears once a style carries arbitrary
+conditions and nested rules rather than the three fixed host states: commas are
+required between declarations, and nested conditional blocks do not fit a flat
+key-value record.
+
+Zena's node-literal grammar ([declarative.md](./declarative.md)) already parses
+`Type { ... }` with optional commas, `...spread`, shorthand properties, and
+nested child blocks. Once untagged node literals are supported in the type
+checker and lowering, the same property names and composition model extend to
+builder syntax:
+
+```zena
+let buttonStyle = Style {
+  background: resting
+  cornerRadius: 10.0
+  padding: { x: 24.0, y: 12.0 }
+  justify: Justify.Center
+  align: Align.Center
+
+  When(State.Hovered) { background: hovered }
+  When(State.Pressed) { background: pressed }
+};
+```
+
+And stylesheets from [Stylesheets](#stylesheets) use the same block form
+instead of nested function calls and arrays:
+
+```zena
+export let cardStyles = Stylesheet {
+  Rule(card) {
+    background: paper
+    cornerRadius: 8.0
+  }
+  Rule(all([title, within(card)])) {
+    fontSize: 18.0
+  }
+  Rule(all([title, within(card), hovered])) {
+    color: use(accent)
+  }
+};
+```
+
+Keeping record-based `Style` values now and layering `Style { ... }` /
+`Stylesheet { ... }` builders on top when untagged node literals and host rules
+land preserves one property vocabulary throughout and avoids inventing a
+CSS-specific parser.
+
+### Terminology
+
+The interface and documentation use **style** (and **state style** for
+conditional overrides) uniformly rather than mixing "appearance", "look", and
+"style". On the wire, `node-def.style` holds a `node-style` variant (`nothing`,
+`fill`, `text`).
 
 ## Properties
 
@@ -462,7 +624,7 @@ its size needs a size from somewhere, and the node above is the useful place.
 
 **A theme is a set of inheriting properties.** A theme package defines
 `surface`, `ink` and `accent` as colours that inherit, with defaults that are
-its default look. An application gives them other values at its
+its default style. An application gives them other values at its
 root, and a widget uses them without knowing what they are:
 
 ```
@@ -538,7 +700,7 @@ Two built-in properties paint nothing.
 
 **`cursor`** names the cursor to show while the pointer is over the node, with
 one of CSS's `cursor` keywords. Today it is a field of `node-def`, beside
-`layout` and `appearance`. A field cannot carry a condition and no hole writes
+`layout` and `style`. A field cannot carry a condition and no hole writes
 it, so a cursor that changes with state takes a new render. As a property it
 has both. Something that can be dragged has two rules:
 
@@ -564,7 +726,7 @@ with one declaration on its own box. Today it is the `unselectable` field of
 Two other fields of `node-def` stay fields. `focusable` says that a node can
 have the keyboard focus. `editable` says that a person edits a text node's
 content. They say what a node does and not
-how it looks, as `tabindex` and `contenteditable` are attributes in HTML and
+how it is styled, as `tabindex` and `contenteditable` are attributes in HTML and
 not properties in CSS. [Open questions](#open-questions) asks whether a
 condition should be able to turn them off.
 
@@ -606,7 +768,7 @@ enum host-fact {
 A component writes its own. A template sets a fact on one of its nodes, and
 that is what a tag is: `title` on the text node that is a card's title. A hole
 writes a fact that changes: `selected` on a list row is one hole write when
-the selection moves, and the row's look follows in the host.
+the selection moves, and the row's style follows in the host.
 
 The host writes `hovered`, `pressed` and `focused` because it owns the pointer
 and the focus. Nothing else about those three is special: a condition tests
@@ -824,7 +986,7 @@ record rule-set {
 }
 
 record node-def {
-  // ... its layout, its appearance and the rest
+  // ... its layout, its style and the rest
   /// The rules attached to this node.
   rules: list<rule-set>,
 }
@@ -876,7 +1038,7 @@ that edge, a text colour or a theme, crosses by
 A node's values are the declarations of the rules that apply to it and whose
 conditions hold. A later declaration replaces an earlier one for the same
 property and leaves the other properties alone, so a hovered fill and a
-pressed border combine, which the whole-record looks cannot do. The order is:
+pressed border combine, which whole-record state styles cannot do. The order is:
 
 1. rule sets with the reach `scope`, those attached higher in the tree first
 2. within one rule set, the rules in the order they are listed
@@ -963,7 +1125,7 @@ proposes a pattern syntax for the same thing, which could be added over these
 functions and is not needed for them.
 
 A widget that tags a box `card` and a text node `title` attaches the
-stylesheet to its node and gets the card's look without being a `Card`
+stylesheet to its node and gets the card's style without being a `Card`
 widget. It can do so only if it holds the keys, so a stylesheet's tags are
 shared on purpose: exported from the library that owns the stylesheet. In the
 terms of
@@ -1495,7 +1657,7 @@ In the order they could be made, each working without the next:
   should not take the focus, and a read-only field should not be edited.
   `focusable` and `editable` are fields of a node, so today that is a new
   render. Making them properties would let a `disabled` flag do it with the
-  rest of the disabled look. Against that, they are not style anywhere else,
+  rest of the disabled style. Against that, they are not style anywhere else,
   and a rule that changes what `Tab` reaches is harder to find than a field.
 - **Names for the terms.** "Declaration" and "rule" are CSS's, and
   "definition" is this document's. Whether to keep them is open.

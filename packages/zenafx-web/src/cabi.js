@@ -194,7 +194,7 @@ const copyLayout = (view, offset, out) => {
   }
 };
 
-const copyAppearance = (memBytes, view, offset, out) => {
+const copyNodeStyle = (memBytes, view, offset, out) => {
   const tag = view.getUint8(offset);
   out.u8(tag);
   if (tag === 1) {
@@ -209,7 +209,7 @@ const copyAppearance = (memBytes, view, offset, out) => {
 const copyNodeDef = (memBytes, view, offset, out) => {
   copyBox(view, offset, out); // 0..44
   copyLayout(view, offset + 44, out); // 44..60
-  copyAppearance(memBytes, view, offset + 60, out); // 60..116
+  copyNodeStyle(memBytes, view, offset + 60, out); // 60..116
   out.u32(view.getUint32(offset + 116, true)); // first-child
   out.u32(view.getUint32(offset + 120, true)); // child-count
   out.u8(view.getUint8(offset + 124) ? 1 : 0); // is-slot

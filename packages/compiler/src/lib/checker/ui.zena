@@ -28,7 +28,7 @@ import {
   StringLiteral, BooleanLiteral, NullLiteral, UnaryExpression,
   BinaryExpression, AsExpression, NewExpression, MemberExpression,
   CallExpression, AssignmentExpression, FunctionExpression, ArrayLiteral,
-  NodeLiteral, BindingExpression, DecoratedExpression, Decorator,
+  RecordLiteral, NodeLiteral, BindingExpression, DecoratedExpression, Decorator,
   PropertyAssignment, SpreadElement, Parameter, SourceLocation,
   TypeAnnotation, Module, ClassDeclaration, EnumDeclaration,
   InterfaceDeclaration, MethodDefinition,
@@ -206,6 +206,30 @@ function isTemplateStatic(ctx: CheckerContext, expr: Expression): boolean {
           allStatic
         }
       }
+    }
+    case RecordLiteral {properties}: {
+      var allStatic = true;
+      for (let prop in properties) {
+        match (prop) {
+          case PropertyAssignment {value}: {
+            if (!isTemplateStatic(ctx, value)) {
+              allStatic = false;
+              break;
+            }
+          }
+          case SpreadElement {argument}: {
+            if (!isTemplateStatic(ctx, argument)) {
+              allStatic = false;
+              break;
+            }
+          }
+          case _: {
+            allStatic = false;
+            break;
+          }
+        }
+      }
+      allStatic
     }
     case _: false
   };

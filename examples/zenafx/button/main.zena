@@ -6,33 +6,49 @@
  * anywhere else on the page sets the count back to zero.
  */
 import {
-  Color, BoxStyle, TextStyle, Edges, Justify, Align,
-} from 'zenafx:ui/style';
-import { ui, Widget, Box, Text, TemplateResult, full, runApp } from '../ui.zena';
+  ui, Widget, Box, Text, TemplateResult, Style,
+  Justify, Align, rgb, full, runApp,
+} from '../ui.zena';
 import { signal } from 'zena:signals';
-import { some, none } from 'zena:core';
 
-let page = new Color(0.98, 0.98, 0.99, 1.0);
-let ink = new Color(0.10, 0.11, 0.13, 1.0);
-let paper = new Color(1.0, 1.0, 1.0, 1.0);
-let resting = new Color(0.20, 0.38, 0.86, 1.0);
-let hovered = new Color(0.31, 0.49, 0.95, 1.0);
-let pressed = new Color(0.13, 0.27, 0.66, 1.0);
+let pageBg = rgb(0.98, 0.98, 0.99);
+let ink = rgb(0.10, 0.11, 0.13);
+let paper = rgb(1.0, 1.0, 1.0);
+let resting = rgb(0.20, 0.38, 0.86);
+let hovered = rgb(0.31, 0.49, 0.95);
+let pressed = rgb(0.13, 0.27, 0.66);
 
-let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
-let restingStyle = new BoxStyle(some(resting), none, 0.0, 10.0, 1.0);
-let hoveredStyle = new BoxStyle(some(hovered), none, 0.0, 10.0, 1.0);
-let pressedStyle = new BoxStyle(some(pressed), none, 0.0, 10.0, 1.0);
-let countStyle = new TextStyle('system-ui', 64.0, 600 as u16, false, ink);
-let labelStyle = new TextStyle('system-ui', 16.0, 600 as u16, false, paper);
-let buttonPadding = new Edges(12.0, 24.0, 12.0, 24.0);
+let centeredPage: Style = {
+  width: full,
+  height: full,
+  justify: Justify.Center,
+  align: Align.Center,
+};
+
+let pageStyle: Style = {
+  ...centeredPage,
+  background: pageBg,
+  gap: 24.0,
+};
+
+let buttonStyle: Style = {
+  background: resting,
+  cornerRadius: 10.0,
+  padding: { x: 24.0, y: 12.0 },
+  justify: Justify.Center,
+  align: Align.Center,
+  hovered: { background: hovered },
+  pressed: { background: pressed },
+};
+
+let countStyle: Style = { fontSize: 64.0, fontWeight: 600, color: ink };
+let labelStyle: Style = { fontSize: 16.0, fontWeight: 600, color: paper };
 
 /**
  * A button: a label, and what to do when it is pressed.
  *
- * `hovered` and `pressed` fold into the template's state styles so the host
- * draws them without waking the component. `pressed` is listed after `hovered`
- * so it wins when both hold.
+ * `hovered` and `pressed` inside `buttonStyle` fold into the template's state
+ * styles so the host draws them without waking the component.
  */
 class Button extends Widget {
   #label: String;
@@ -42,12 +58,7 @@ class Button extends Widget {
 
   build(): TemplateResult {
     return @ui Box {
-      style: restingStyle,
-      hovered: hoveredStyle,
-      pressed: pressedStyle,
-      padding: buttonPadding,
-      justify: Justify.Center,
-      align: Align.Center,
+      style: buttonStyle,
       onDown: () => { this.#onPress(); },
 
       Text(this.#label) { style: labelStyle }
@@ -61,12 +72,7 @@ class Page extends Widget {
 
   build(): TemplateResult {
     return @ui Box {
-      width: full,
-      height: full,
       style: pageStyle,
-      justify: Justify.Center,
-      align: Align.Center,
-      gap: 24.0,
       onDown: () => { this.#count = 0; },
 
       Text($(`${this.#count}`)) { style: countStyle }

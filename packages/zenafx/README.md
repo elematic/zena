@@ -256,11 +256,11 @@ The handlers run on the component's thread, after the window's thread has moved
 on. When one changes the tree, the `render` that changes it wakes the window for
 a frame.
 
-### How a node looks under the pointer
+### State styles under the pointer
 
 The button has no handler for the pointer arriving or leaving, and no field
-saying whether it is hovered. Its template says how its box looks in each case,
-beside its bindings:
+saying whether it is hovered. Its template declares its state styles for each
+case, beside its bindings:
 
 ```zena
 [new StateStyle(0 as u32, State.Hovered, 0 as u32, new RestyleFill(hoveredStyle)),
@@ -277,10 +277,10 @@ record state-style {
 ```
 
 The host already knows which node the pointer is over, since it is what finds
-it, so it draws whichever look holds. A hover or a press that only changes how
-something looks costs a frame and wakes nobody: `tests/button.rs` takes the
-button from resting to hovered to pressed and back, and the only event written
-to the component is the `down` it listens for.
+it, so it draws whichever state style holds. A hover or a press that only
+changes a node's style costs a frame and wakes nobody: `tests/button.rs` takes
+the button from resting to hovered to pressed and back, and the only event
+written to the component is the `down` it listens for.
 
 `node` and `of` are separate because a label can change while the button round
 it is hovered. A state holds for a node when the pointer is over it or anything
@@ -450,7 +450,7 @@ as well as with the pointer.
 ```
 
 One node in a window has the focus, or none does. A node says whether it can
-have it, and a template says how a node looks while it does, beside its other
+have it, and a template declares its focused style, beside its other
 state styles:
 
 ```wit

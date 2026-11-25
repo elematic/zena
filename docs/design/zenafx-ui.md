@@ -16,8 +16,8 @@
   version, which is not built. Pointer events
   reach a component's listeners, driven by `examples/zenafx/button/`, and
   [Implementation status of events](#implementation-status-of-events) says how
-  that differs from the design. A template can say how a node looks hovered and
-  pressed, which the host draws without entering the component:
+  that differs from the design. A template can declare state styles for hovered
+  and pressed, which the host draws without entering the component:
   [State styles](#state-styles). Keys reach the listeners of the node that has
   the focus, and the host moves the focus:
   [The keyboard and the focus](#the-keyboard-and-the-focus). A text field is a
@@ -290,11 +290,11 @@ The host holds the node tree, in `Scene` in
 [`ui/scene.rs`](../../packages/zenafx/src/ui/scene.rs). A component holds its
 widget tree. The two are different trees and neither is a copy of the other:
 
-|              | Widget tree, in a component                                 | Node tree, in the host                                        |
-| ------------ | ----------------------------------------------------------- | ------------------------------------------------------------- |
-| Entries      | one per widget instance                                     | one per box, text run or slot                                 |
-| Holds        | state, handlers, the template shown, each hole's last value | layout, appearance, rectangles, shaped text, hover, listeners |
-| Changes when | an event or a timer runs the component's code               | a write arrives, the window resizes, or the pointer moves     |
+|              | Widget tree, in a component                                 | Node tree, in the host                                    |
+| ------------ | ----------------------------------------------------------- | --------------------------------------------------------- |
+| Entries      | one per widget instance                                     | one per box, text run or slot                             |
+| Holds        | state, handlers, the template shown, each hole's last value | layout, style, rectangles, shaped text, hover, listeners  |
+| Changes when | an event or a timer runs the component's code               | a write arrives, the window resizes, or the pointer moves |
 
 The overlap is what a component needs in order to send only changes: the last
 value of each hole, and how many children each slot has.
@@ -689,7 +689,7 @@ interface style {
 }
 ```
 
-`box` and `layout` describe geometry and `box-style` describes appearance,
+`box` and `layout` describe geometry and `box-style` describes paint style,
 with no field in one affecting the other. That separation is what lets the host skip a
 layout solve when only colours changed, and skip re-measuring text when only a
 parent's background changed.
@@ -967,7 +967,7 @@ raising events.
 
 A node is **hovered** while the pointer's target is that node or one beneath
 it, and **pressed** from the primary button going down there until it comes up.
-A template says how a node looks while one of these holds, in a `states` list
+A template specifies a node's style while one of these holds, in a `states` list
 beside its `bindings`:
 
 ```wit
@@ -999,7 +999,7 @@ are resolved where the tree is for four reasons.
 - **A slow component.** Handlers run on the component's thread, in order. A
   component that is busy, or stuck, would freeze its own hover feedback. The
   scene's is drawn on the window's thread from data.
-- **What comes next.** A transition between two looks, and the cursor's shape,
+- **What comes next.** A transition between two styles, and the cursor's shape,
   both follow these states and both have to be driven by the frame.
 
 State resolution needs the tree's parent links, its rectangles and its styles,
@@ -1019,12 +1019,12 @@ restyle only its own interior. This is the `in-state` fact from
 predicate fixed to "this node, or that node of the same template". The rule
 sets designed there would replace the list.
 
-A fill's look is drawn in the frame that finds its state. A text node's look is
-shaped before the solve, because it can change how wide the run is. When a
-frame finds a text node's state changed after it has solved, it shapes the run
-for the next frame to lay out and owes that one frame more. A frame that finds
-only fills changed owes none. A look is the same for every instance of a
-template: no hole writes one yet.
+A fill's state style is drawn in the frame that finds its state. A text node's
+state style is shaped before the solve, because it can change how wide the run
+is. When a frame finds a text node's state changed after it has solved, it
+shapes the run for the next frame to lay out and owes that one frame more. A
+frame that finds only fills changed owes none. A state style is the same for
+every instance of a template: no hole writes one yet.
 
 #### Scrolling
 
@@ -1254,8 +1254,8 @@ releasing a capture before the button comes up, and dragging a scroll thumb.
 One node in a window has the **focus**, or none does, and the keyboard goes to
 it. Which node has it is state of the same kind as which node the pointer is
 over, and the scene keeps it for the same reasons. A node says whether it can
-have the focus, as its `cursor` is a field of the node, and a template says how
-a node looks while it does:
+have the focus, as its `cursor` is a field of the node, and a template sets its
+focused style:
 
 ```wit
 record node-def {
@@ -1281,7 +1281,7 @@ The scene moves the focus on two inputs.
   none.
 
 `examples/zenafx/disclosure/` is two summaries that can have the focus. Its
-template says so and gives the focused look, and `Tab` moves a ring between
+template says so and gives the focused style, and `Tab` moves a ring between
 them with nothing written to the component, as hovering the button changes its
 fill with nothing written.
 
@@ -1377,11 +1377,11 @@ Not built:
   is open.
 - **Bringing the focused node into view.** A node can get the focus while it
   is scrolled out of sight, and stays there.
-- **A ring only for the keyboard.** A press gives a node the focused look as
+- **A ring only for the keyboard.** A press gives a node the focused style as
   `Tab` does, where a browser shows a ring only after a key.
 - **Text from an input method.** [Text fields](#text-fields) has what a field
   gets today.
-- **The window's own focus.** The focused look stays while another window is
+- **The window's own focus.** The focused style stays while another window is
   in front.
 
 #### Text fields
@@ -1599,7 +1599,7 @@ Not built:
   does.
 - **A context menu**, which is where copy and paste are found without a
   keyboard.
-- **A look for the highlight** that a template chooses.
+- **A style for the highlight** that a template chooses.
 
 [understory]: https://github.com/forest-rs/understory
 
@@ -1614,7 +1614,7 @@ record node-def {
 }
 ```
 
-It is a field of the node, beside its layout and appearance, because it is
+It is a field of the node, beside its layout and style, because it is
 part of how the node is styled. `none` leaves the choice to the node above, as
 `cursor` inherits in CSS, and the window shows `default` where no node names
 one. So the host shows the cursor named by the nearest node at or above the one
@@ -1959,8 +1959,8 @@ is free.
 
 ### Templates, nodes and bindings
 
-A **node** is an entry in the retained tree: a layout box with an appearance,
-which is `nothing`, `fill` or `text`. Appearance travels with geometry, so the
+A **node** is an entry in the retained tree: a layout box with a style,
+which is `nothing`, `fill` or `text`. Style travels with geometry, so the
 host paints the tree it solved. No component builds a display list, and none
 handles a shaped text run.
 
@@ -2128,7 +2128,7 @@ new description refers to. Two properties keep keys out of the host protocol.
 Guest-side widget state is reached by ordinary references rather than by
 position in a framework tree, so recreating a node loses no state. And the host
 holds nothing on a node that it could not rebuild: a node carries its layout,
-its appearance, its children and a shaped text run, and the run is a cache.
+its style, its children and a shaped text run, and the run is a cache.
 
 The second property has to be maintained deliberately, because a UI eventually
 needs focus, text selection, scroll offsets, animations in flight and media
@@ -2444,7 +2444,7 @@ testing and accessibility.
 **Tier 2, a 2D vector canvas.** A canvas node carries a retained list of path
 commands, and the host rasterizes it with the same renderer that draws Tier 1.
 The paths arrive the way every other node property does: a node kind whose
-appearance is a path list, written by `render` and patched by a hole. That keeps
+style is a path list, written by `render` and patched by a hole. That keeps
 the rule that a component changes what is on screen by changing its nodes, so a
 canvas is a node with richer content rather than a second way to draw.
 

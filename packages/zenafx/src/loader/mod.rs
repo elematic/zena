@@ -377,8 +377,8 @@ fn run_component(
 /// else's, because this is its own thread.
 ///
 /// A listener whose answer is to capture the pointer has it captured here,
-/// as soon as the answer arrives. Capturing the pointer can change how its
-/// node looks, which asks the window for a frame.
+/// as soon as the answer arrives. Capturing the pointer can change its node's
+/// state style, which asks the window for a frame.
 ///
 /// `enter` and `leave` are written without waiting. Nothing a listener does
 /// with one changes who else hears it.
@@ -536,8 +536,8 @@ impl Scene for GuestScene {
     /// reaches no listener ends on this thread and the component is never
     /// woken.
     ///
-    /// Answers whether the input changed how something looks, which it can
-    /// by moving a node into or out of a state a template gave a look for.
+    /// Answers whether the input changed any node's style, which it can
+    /// by moving a node into or out of a state a template styled.
     /// That needs a frame and wakes nobody. A listener that changes the tree
     /// asks for its frame itself, through the [`Wake`] the window gave this
     /// scene.
@@ -626,7 +626,7 @@ mod tests {
 
     use super::*;
     use crate::ui::events::Modifiers;
-    use crate::ui::scene::{Appearance, NodeDef, TemplateDef, TemplateRef};
+    use crate::ui::scene::{NodeDef, NodeStyle, TemplateDef, TemplateRef};
     use crate::ui::types::{Layout, OwnBox};
     use listeners::{Answer, KeyDeliveryRecord};
 
@@ -642,7 +642,7 @@ mod tests {
                 nodes: vec![NodeDef {
                     own_box: OwnBox::default(),
                     layout: Layout::default(),
-                    appearance: Appearance::Nothing,
+                    style: NodeStyle::Nothing,
                     first_child: 0,
                     child_count: 0,
                     is_slot: false,

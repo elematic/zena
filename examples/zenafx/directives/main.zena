@@ -12,28 +12,43 @@
  * - Clicking "Drop" removes the first item, releasing its owned host node.
  */
 import {
-  Color, BoxStyle, TextStyle, Edges, Axis, Justify, Align,
-} from 'zenafx:ui/style';
-import {
-  ui, Widget, Box, Text, TemplateResult, full, runApp, cache, repeat,
+  ui, Widget, Box, Text, TemplateResult, Style,
+  Axis, Justify, Align, rgb, full, runApp, cache, repeat,
 } from '../ui.zena';
 import { signal } from 'zena:signals';
-import { some, none } from 'zena:core';
 
-let pageBg = new Color(0.98, 0.98, 0.99, 1.0);
-let ink = new Color(0.10, 0.11, 0.13, 1.0);
-let paper = new Color(1.0, 1.0, 1.0, 1.0);
-let btnFill = new Color(0.20, 0.38, 0.86, 1.0);
-let panelFill = new Color(0.93, 0.95, 0.99, 1.0);
-let panelEdge = new Color(0.75, 0.80, 0.90, 1.0);
+let pageBg = rgb(0.98, 0.98, 0.99);
+let ink = rgb(0.10, 0.11, 0.13);
+let paper = rgb(1.0, 1.0, 1.0);
+let btnFill = rgb(0.20, 0.38, 0.86);
+let panelFill = rgb(0.93, 0.95, 0.99);
+let panelEdge = rgb(0.75, 0.80, 0.90);
 
-let pageStyle = new BoxStyle(some(pageBg), none, 0.0, 0.0, 1.0);
-let btnStyle = new BoxStyle(some(btnFill), none, 0.0, 8.0, 1.0);
-let panelStyle = new BoxStyle(some(panelFill), some(panelEdge), 1.0, 8.0, 1.0);
-let btnText = new TextStyle('system-ui', 14.0, 600 as u16, false, paper);
-let bodyText = new TextStyle('system-ui', 18.0, 400 as u16, false, ink);
-let btnPadding = new Edges(8.0, 16.0, 8.0, 16.0);
-let panelPadding = new Edges(10.0, 14.0, 10.0, 14.0);
+let pageStyle: Style = {
+  width: full,
+  height: full,
+  background: pageBg,
+  justify: Justify.Center,
+  align: Align.Center,
+  gap: 16.0,
+};
+
+let buttonStyle: Style = {
+  background: btnFill,
+  cornerRadius: 8.0,
+  padding: { x: 16.0, y: 8.0 },
+};
+
+let panelStyle: Style = {
+  background: panelFill,
+  borderColor: panelEdge,
+  borderWidth: 1.0,
+  cornerRadius: 8.0,
+  padding: { x: 14.0, y: 10.0 },
+};
+
+let btnText: Style = { fontSize: 14.0, fontWeight: 600, color: paper };
+let bodyText: Style = { fontSize: 18.0, color: ink };
 
 final class Item {
   id: i32;
@@ -50,8 +65,7 @@ class ActionButton extends Widget {
 
   build(): TemplateResult {
     return @ui Box {
-      style: btnStyle,
-      padding: btnPadding,
+      style: buttonStyle,
       onDown: () => { this.#onPress(); },
 
       Text(this.#label) { style: btnText }
@@ -74,16 +88,10 @@ class DirectivesPage extends Widget {
 
   build(): TemplateResult {
     return @ui Box {
-      width: full,
-      height: full,
       style: pageStyle,
-      justify: Justify.Center,
-      align: Align.Center,
-      gap: 16.0,
 
       Box {
-        axis: Axis.Row,
-        gap: 10.0,
+        style: { axis: Axis.Row, gap: 10.0 },
 
         ActionButton('Toggle', () => { this.#showDetails = !this.#showDetails; })
         ActionButton('Update', () => { this.#summary = 'Updated summary'; })
@@ -94,7 +102,6 @@ class DirectivesPage extends Widget {
       $(cache(if (this.#showDetails) {
         @ui Box {
           style: panelStyle,
-          padding: panelPadding,
 
           Text($(this.#summary)) { style: bodyText }
         }
@@ -103,7 +110,7 @@ class DirectivesPage extends Widget {
       }))
 
       Box {
-        gap: 6.0,
+        style: { gap: 6.0 },
 
         $(repeat(
           this.#items,

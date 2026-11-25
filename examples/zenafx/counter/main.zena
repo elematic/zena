@@ -8,23 +8,40 @@
  * interface of its own.
  */
 import {
-  Color, BoxStyle, TextStyle, Edges, Justify, Align,
-} from 'zenafx:ui/style';
-import { ui, Widget, Box, Text, TemplateResult, full, runApp } from '../ui.zena';
+  ui, Widget, Box, Text, TemplateResult, Style,
+  Justify, Align, rgb, full, runApp,
+} from '../ui.zena';
 import { signal } from 'zena:signals';
 import { Duration, sleep, milliseconds } from 'zena:time';
-import { some, none } from 'zena:core';
 
-let page = new Color(0.98, 0.98, 0.99, 1.0);
-let ink = new Color(0.10, 0.11, 0.13, 1.0);
-let muted = new Color(0.42, 0.45, 0.52, 1.0);
-let dial = new Color(0.93, 0.94, 0.97, 1.0);
-let edge = new Color(0.72, 0.76, 0.85, 1.0);
-let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
-let dialStyle = new BoxStyle(some(dial), some(edge), 1.0, 12.0, 1.0);
-let digitStyle = new TextStyle('system-ui', 64.0, 600 as u16, false, ink);
-let labelStyle = new TextStyle('system-ui', 14.0, 500 as u16, false, muted);
-let dialPadding = new Edges(14.0, 28.0, 18.0, 28.0);
+let pageBg = rgb(0.98, 0.98, 0.99);
+let ink = rgb(0.10, 0.11, 0.13);
+let muted = rgb(0.42, 0.45, 0.52);
+let dialBg = rgb(0.93, 0.94, 0.97);
+let edge = rgb(0.72, 0.76, 0.85);
+
+let pageStyle: Style = {
+  width: full,
+  height: full,
+  background: pageBg,
+  justify: Justify.Center,
+  align: Align.Center,
+  gap: 20.0,
+};
+
+let dialStyle: Style = {
+  background: dialBg,
+  borderColor: edge,
+  borderWidth: 1.0,
+  cornerRadius: 12.0,
+  padding: { top: 14.0, x: 28.0, bottom: 18.0 },
+  justify: Justify.Center,
+  align: Align.Center,
+  gap: 2.0,
+};
+
+let digitStyle: Style = { fontSize: 64.0, fontWeight: 600, color: ink };
+let labelStyle: Style = { fontSize: 14.0, fontWeight: 500, color: muted };
 
 /**
  * A counter: its own period, its own reactive count, and nothing else.
@@ -45,10 +62,6 @@ class Counter extends Widget {
   build(): TemplateResult {
     return @ui Box {
       style: dialStyle,
-      padding: dialPadding,
-      justify: Justify.Center,
-      align: Align.Center,
-      gap: 2.0,
 
       Text(this.#label) { style: labelStyle }
       Text($(`${this.#count}`)) { style: digitStyle }
@@ -67,12 +80,7 @@ class Counter extends Widget {
 class Page extends Widget {
   build(): TemplateResult {
     return @ui Box {
-      width: full,
-      height: full,
       style: pageStyle,
-      justify: Justify.Center,
-      align: Align.Center,
-      gap: 20.0,
 
       Counter('500ms', milliseconds(500))
       Counter('1500ms', milliseconds(1500))

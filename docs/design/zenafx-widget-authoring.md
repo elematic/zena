@@ -35,8 +35,8 @@ call site, with a binding where each instance-specific or reactive value
 arrives. [Template identity](#template-identity) gives the rules for templates,
 one-shot bindings, constant folding, and reactive `$(...)` bindings.
 
-**The scene tree** is what the host retains: nodes carrying a layout and an
-appearance, each with an id. A widget occupies exactly one node — the template's
+**The scene tree** is what the host retains: nodes carrying layout and
+style, each with an id. A widget occupies exactly one node — the template's
 node 0 is the node it is rendered into — and the rest of the template hangs
 beneath it. A node also records the widget that owns it, which is what makes input
 routable: a hit test turns a position into a node, and the node has to say who to
@@ -96,12 +96,13 @@ dynamic children. `examples/zenafx/widgets/card.zena` becomes:
 build(): TemplateResult {
   return @ui Box {
     style: cardStyle,
-    align: Align.Stretch,
-    gap: 10.0,
-    padding: cardPadding,
 
-    Text this.#title { style: titleStyle(this.#accent) }
-    Slot { style: wellStyle, padding: wellPadding }
+    Text(this.#title) { style: titleStyle(this.#accent) }
+    Box {
+      style: wellStyle,
+
+      Slot {}
+    }
   };
 }
 ```
@@ -799,7 +800,7 @@ and nobody has measured it.
 
 **How a container tells a child something** that is not a reply to an event. The
 candidate that fits is a node-level state flag the child's own rules match on —
-appearance without contact. That covers "you are selected" and not a child that
+styling without contact. That covers "you are selected" and not a child that
 must change its content, and whether that case exists is worth finding out before
 inventing a mechanism.
 
