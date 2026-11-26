@@ -2,11 +2,11 @@
 // @invoke: main
 // @result: 0
 
-// Nested rule builders (`Stylesheet` / `Rule` / `When`), boolean & range
-// condition algebra, and flat post-order condition table serialization
-// (the Step 1 pattern from docs/design/zenafx-styles.md).
+// Immutable nested rule builders (`Stylesheet` / `Rule` / `When` via
+// `new [Builder.construct]`), boolean & range condition algebra, and flat
+// post-order condition table serialization.
 
-import { some, none } from 'zena:core';
+import { Builder, some, none } from 'zena:core';
 
 final class FlagKey {
   name: String;
@@ -103,21 +103,39 @@ final class CompiledRule {
   new(this.when, this.color);
 }
 
+type RuleProps = { color?: i32 };
+
+function colorOf(props: RuleProps | null): i32 {
+  if (props != null) {
+    return props.color ?? 0;
+  }
+  return 0;
+}
+
 final class When {
   when: Condition;
-  var color: i32 = 0;
-  new(input: CondInput) : when = toCond(input);
+  color: i32;
+
+  new [Builder.construct](
+    input: CondInput,
+    desc: { props?: RuleProps },
+  ) : when = toCond(input), color = colorOf(desc.props ?? null);
 }
 
 final class Rule {
   when: Condition;
-  var color: i32 = 0;
-  children = new GrowableArray<Rule | When>();
-  new(input: CondInput) : when = toCond(input);
+  color: i32;
+  children: Array<Rule | When>;
 
-  addChild(child: Rule | When): void {
-    this.children.push(child);
-  }
+  new [Builder.construct](
+    input: CondInput,
+    desc: {
+      props?: RuleProps,
+      children?: Array<Rule | When>,
+    },
+  ) : when = toCond(input),
+      color = colorOf(desc.props ?? null),
+      children = desc.children ?? new GrowableArray<Rule | When>();
 
   collect(prefix: Option<Condition>, out: GrowableArray<CompiledRule>): void {
     let eff = if (let Some {value} = prefix) {
@@ -130,19 +148,27 @@ final class Rule {
       if (ch is Rule) {
         ch.collect(some(eff), out);
       } else {
-        let w = ch as When;
-        out.push(new CompiledRule(all([eff, w.when]), w.color));
+        out.push(new CompiledRule(all([eff, ch.when]), ch.color));
       }
     }
   }
 }
 
-final class Stylesheet {
-  rules = new GrowableArray<CompiledRule>();
-
-  addChild(rule: Rule): void {
-    rule.collect(none, this.rules);
+function collectSheet(rules: Array<Rule> | null) {
+  let out = new GrowableArray<CompiledRule>();
+  if (rules != null) {
+    for (let r in rules) {
+      r.collect(none, out);
+    }
   }
+  return out;
+}
+
+final class Stylesheet {
+  rules: GrowableArray<CompiledRule>;
+
+  new [Builder.construct](desc: { children?: Array<Rule> })
+    : rules = collectSheet(desc.children ?? null);
 }
 
 let card = new FlagKey('card');
@@ -171,12 +197,9 @@ export function main(): i32 {
   if (sheet.rules[1].color != 2) { return 3; }
   if (sheet.rules[2].color != 3) { return 4; }
 
-  // Flatten rule 2's nested condition:
-  // all([title, within(card), hovered, not(disabled), panelWidth >= 600.0])
   let table = new GrowableArray<FlatCond>();
   let rootIdx = emitCond(table, sheet.rules[2].when);
 
-  // Verify post-order: root is last entry and is FAll with 5 children, all < rootIdx.
   if (rootIdx != (table.length - 1) as u32) { return 5; }
   let root = table[rootIdx as i32];
   if (!(root is FAll)) { return 6; }
@@ -186,7 +209,6 @@ export function main(): i32 {
     if (childIdx >= rootIdx) { return 8; }
   }
 
-  // Verify each flattened child shape in order.
   if (!(table[allNode.indices[0] as i32] is FFlag)) { return 9; }
   if (!(table[allNode.indices[1] as i32] is FWithin)) { return 10; }
   if (!(table[allNode.indices[2] as i32] is FFlag)) { return 11; }

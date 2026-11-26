@@ -1,5 +1,7 @@
 // @mode: check
 
+import { Builder } from 'zena:core';
+
 class MockEl {
   bind(prop: String): void {}
 }
@@ -51,15 +53,47 @@ function badBindingOutside(): i32 {
   return $(1 + 2); // @error: Binding expressions '$(...)' can only be used inside a staged '@' expression
 }
 
+final class PropKey<T> {
+  name: String;
+  new(this.name);
+}
+
+final class Entry {
+  name: String;
+  new(this.name);
+}
+
+final class OptedIn {
+  x: f32;
+  y: f32;
+
+  static [Builder.entry]<T>(key: PropKey<T>, value: T): Entry {
+    return new Entry(key.name);
+  }
+
+  new [Builder.construct]({ props, entries = [] }: {
+    props: { x: f32, y: f32 },
+    entries?: Array<Entry>,
+  }) : x = props.x, y = props.y;
+}
+
+let colorKey = new PropKey<String>('color');
+
 function badUntagged(): void {
-  let a = Box {
-    gap: $(1.0), // @error: Binding expressions '$(...)' can only be used inside a staged '@' expression
+  let a = Box { gap: 1.0 }; // @error: no 'new [Builder.construct]' constructor
+  let b = OptedIn {
+    x: $(1.0), // @error: Binding expressions '$(...)' can only be used inside a staged '@' expression
+    y: 2.0,
   };
-  let b = Box {
-    ...new Box(), // @error: does not support '...spread' in node literals
+  let c = OptedIn {
+    x: 1.0,
+    y: 2.0,
+    colorKey => 123, // @error: Type mismatch
   };
-  let c = Text('hi') {
-    Box {} // @error: does not accept children
+  let d = OptedIn { // @error: Field 'children' is not in
+    x: 1.0,
+    y: 2.0,
+    OptedIn { x: 0.0 y: 0.0 }
   };
 }
 

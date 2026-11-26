@@ -1,17 +1,19 @@
 /**
- * Unified ZenaFX style builders, condition algebra, and flat condition
- * serializer (Step 1 of `docs/design/zenafx-styles.md#authoring-surface`).
+ * Unified, immutable ZenaFX style builders, typed custom properties,
+ * condition algebra, and flat condition serializer
+ * (Step 1 of `docs/design/zenafx-styles.md#authoring-surface`).
  *
- * Uses Zena's untagged node-literal syntax (`Style { ... }`, `When(...) { ... }`,
- * `Stylesheet { Rule(...) { ... } }`) alongside presence-optional record
- * shorthand (`{ axis: Axis.Row, gap: 10.0 }`).
+ * `Style`, `When`, `Rule`, and `Stylesheet` opt into untagged node-literal
+ * syntax explicitly via `new [Builder.construct]` and `static [Builder.entry]`,
+ * constructing immutable values in a single constructor call with zero mutable
+ * fields or setter boilerplate.
  */
 import {
   Axis, Justify, Align, Overflow, TextAlign, Color, Length, Edges,
   BoxStyle, TextStyle, LengthAuto, LengthPx, LengthPercent,
 } from 'zenafx:ui/style';
 import { Cursor, State } from 'zenafx:host/scene';
-import { some, none } from 'zena:core';
+import { Builder, some, none } from 'zena:core';
 
 /** Edge insets (padding) in pixels: `all`, `x`/`y`, and per-side overrides. */
 export type Insets = {
@@ -25,8 +27,8 @@ export type Insets = {
 };
 
 /**
- * Presence-optional declaration bag shared by inline record shorthand and the
- * `Style` / `When` / `Rule` builders.
+ * Presence-optional declaration schema shared by inline record shorthand and
+ * the immutable `Style` / `When` / `Rule` constructors.
  */
 export type StyleProps = {
   width?: Length,
@@ -87,6 +89,63 @@ export let full: Length = new LengthPercent(100.0);
 export let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
 
 let defaultInk = new Color(0.0, 0.0, 0.0, 1.0);
+let emptyCustomDecls = new GrowableArray<CustomDecl>();
+let emptyCondRules = new GrowableArray<CompiledRule>();
+
+// ---------------------------------------------------------------------------
+// Custom property keys and heterogeneous `key => value` declarations
+// ---------------------------------------------------------------------------
+
+/** Closed set of value variants a custom style property can carry (`zenafx-styles.md`). */
+export sealed class PropertyValue {
+  case PropColor(value: Color)
+  case PropNumber(value: f32)
+  case PropLength(value: Length)
+  case PropFlag(value: boolean)
+  case PropText(value: String)
+}
+
+/** Typed capability key for an application-defined style property. */
+export final class PropertyKey<T> {
+  name: String;
+  inherits: boolean;
+  wrap: (value: T) => PropertyValue;
+
+  new(this.name, this.inherits, this.wrap);
+}
+
+export function colorProperty(name: String, inherits: boolean = true): PropertyKey<Color> {
+  return new PropertyKey<Color>(name, inherits, (v: Color) => new PropColor(v));
+}
+
+export function numberProperty(name: String, inherits: boolean = false): PropertyKey<f32> {
+  return new PropertyKey<f32>(name, inherits, (v: f32) => new PropNumber(v));
+}
+
+export function lengthProperty(name: String, inherits: boolean = false): PropertyKey<Length> {
+  return new PropertyKey<Length>(name, inherits, (v: Length) => new PropLength(v));
+}
+
+export function flagProperty(name: String, inherits: boolean = false): PropertyKey<boolean> {
+  return new PropertyKey<boolean>(name, inherits, (v: boolean) => new PropFlag(v));
+}
+
+export function stringProperty(name: String, inherits: boolean = false): PropertyKey<String> {
+  return new PropertyKey<String>(name, inherits, (v: String) => new PropText(v));
+}
+
+/** One custom `propertyKey => value` declaration. */
+export final class CustomDecl {
+  name: String;
+  inherits: boolean;
+  value: PropertyValue;
+
+  new(this.name, this.inherits, this.value);
+}
+
+function makeCustomDecl<T>(key: PropertyKey<T>, value: T) {
+  return new CustomDecl(key.name, key.inherits, key.wrap(value));
+}
 
 // ---------------------------------------------------------------------------
 // Keys and condition algebra (Step 1 API; target of future `@style`/`@cond`)
@@ -271,8 +330,9 @@ export sealed class FlatCondition {
 export final class FlatRule {
   when: Option<u32>;
   decls: StyleProps;
+  custom: Array<CustomDecl>;
 
-  new(this.when, this.decls);
+  new(this.when, this.decls, this.custom);
 }
 
 /** Flat condition table paired with rules indexing into it. */
@@ -283,12 +343,13 @@ export final class FlatRuleSet {
   new(this.conditions, this.rules);
 }
 
-/** A single compiled rule (unconditional when `when` is `none`). */
+/** A single compiled immutable rule (unconditional when `when` is `none`). */
 export final class CompiledRule {
   when: Option<Condition>;
   decls: StyleProps;
+  custom: Array<CustomDecl>;
 
-  new(this.when, this.decls);
+  new(this.when, this.decls, this.custom = emptyCustomDecls);
 }
 
 function appendCondition(out: GrowableArray<FlatCondition>, cond: Condition): u32 {
@@ -355,181 +416,86 @@ export function flattenRules(rules: Array<CompiledRule>): FlatRuleSet {
     } else {
       none
     };
-    flatRules.push(new FlatRule(whenIdx, r.decls));
+    flatRules.push(new FlatRule(whenIdx, r.decls, r.custom));
   }
   return new FlatRuleSet(conditions, flatRules);
 }
 
 // ---------------------------------------------------------------------------
-// Builder classes: `StyleBlock`, `When`, `Style`, `Rule`, `Stylesheet`
+// Immutable node-literal builders: `When`, `Style`, `Rule`, `Stylesheet`
 // ---------------------------------------------------------------------------
 
-/** Shared declaration setters for `Style`, `When`, and `Rule` builders. */
-export class StyleBlock {
-  var _decls: StyleProps = {};
-
-  width: Length {
-    get { return this._decls.width ?? auto; }
-    set(v) { this._decls = { ...this._decls, width: v }; }
-  }
-  height: Length {
-    get { return this._decls.height ?? auto; }
-    set(v) { this._decls = { ...this._decls, height: v }; }
-  }
-  grow: f32 {
-    get { return this._decls.grow ?? 0.0; }
-    set(v) { this._decls = { ...this._decls, grow: v }; }
-  }
-  shrink: f32 {
-    get { return this._decls.shrink ?? 1.0; }
-    set(v) { this._decls = { ...this._decls, shrink: v }; }
-  }
-  padding: Insets {
-    get { return this._decls.padding ?? {}; }
-    set(v) { this._decls = { ...this._decls, padding: v }; }
-  }
-  overflow: Overflow {
-    get { return this._decls.overflow ?? Overflow.Clip; }
-    set(v) { this._decls = { ...this._decls, overflow: v }; }
-  }
-  overflowX: Overflow {
-    get { return this._decls.overflowX ?? Overflow.Clip; }
-    set(v) { this._decls = { ...this._decls, overflowX: v }; }
-  }
-  overflowY: Overflow {
-    get { return this._decls.overflowY ?? Overflow.Clip; }
-    set(v) { this._decls = { ...this._decls, overflowY: v }; }
-  }
-
-  axis: Axis {
-    get { return this._decls.axis ?? Axis.Column; }
-    set(v) { this._decls = { ...this._decls, axis: v }; }
-  }
-  justify: Justify {
-    get { return this._decls.justify ?? Justify.Start; }
-    set(v) { this._decls = { ...this._decls, justify: v }; }
-  }
-  align: Align {
-    get { return this._decls.align ?? Align.Start; }
-    set(v) { this._decls = { ...this._decls, align: v }; }
-  }
-  gap: f32 {
-    get { return this._decls.gap ?? 0.0; }
-    set(v) { this._decls = { ...this._decls, gap: v }; }
-  }
-
-  textAlign: TextAlign {
-    get { return this._decls.textAlign ?? TextAlign.Start; }
-    set(v) { this._decls = { ...this._decls, textAlign: v }; }
-  }
-  lineHeight: f32 {
-    get { return this._decls.lineHeight ?? 1.0; }
-    set(v) { this._decls = { ...this._decls, lineHeight: v }; }
-  }
-
-  background: Color {
-    get { return this._decls.background ?? defaultInk; }
-    set(v) { this._decls = { ...this._decls, background: v }; }
-  }
-  borderColor: Color {
-    get { return this._decls.borderColor ?? defaultInk; }
-    set(v) { this._decls = { ...this._decls, borderColor: v }; }
-  }
-  borderWidth: f32 {
-    get { return this._decls.borderWidth ?? 0.0; }
-    set(v) { this._decls = { ...this._decls, borderWidth: v }; }
-  }
-  cornerRadius: f32 {
-    get { return this._decls.cornerRadius ?? 0.0; }
-    set(v) { this._decls = { ...this._decls, cornerRadius: v }; }
-  }
-  opacity: f32 {
-    get { return this._decls.opacity ?? 1.0; }
-    set(v) { this._decls = { ...this._decls, opacity: v }; }
-  }
-
-  fontFamily: String {
-    get { return this._decls.fontFamily ?? 'system-ui'; }
-    set(v) { this._decls = { ...this._decls, fontFamily: v }; }
-  }
-  fontSize: f32 {
-    get { return this._decls.fontSize ?? 16.0; }
-    set(v) { this._decls = { ...this._decls, fontSize: v }; }
-  }
-  fontWeight: i32 {
-    get { return this._decls.fontWeight ?? 400; }
-    set(v) { this._decls = { ...this._decls, fontWeight: v }; }
-  }
-  italic: boolean {
-    get { return this._decls.italic ?? false; }
-    set(v) { this._decls = { ...this._decls, italic: v }; }
-  }
-  color: Color {
-    get { return this._decls.color ?? defaultInk; }
-    set(v) { this._decls = { ...this._decls, color: v }; }
-  }
-
-  cursor: Cursor {
-    get { return this._decls.cursor ?? Cursor.Default; }
-    set(v) { this._decls = { ...this._decls, cursor: v }; }
-  }
-  unselectable: boolean {
-    get { return this._decls.unselectable ?? false; }
-    set(v) { this._decls = { ...this._decls, unselectable: v }; }
-  }
-}
-
 /**
- * Conditional override block inside a `Style { ... }` or `Rule(...) { ... }`.
+ * Immutable conditional override block inside `Style { ... }` or `Rule(...) { ... }`.
  *
  * ```zena
  * When(hovered) { background: hoveredBg }
- * When(all([selected, not(disabled)])) { color: accent }
+ * When(all([selected, not(disabled)])) { color: accent  surface => activeBg }
  * ```
  */
-export final class When extends StyleBlock {
+export final class When {
   condition: Condition;
+  decls: StyleProps;
+  custom: Array<CustomDecl>;
 
-  new(when: CondInput) : condition = toCondition(when), super();
-
-  spread(other: StyleProps): void {
-    this._decls = { ...this._decls, ...other };
+  static [Builder.entry]<T>(key: PropertyKey<T>, value: T): CustomDecl {
+    return makeCustomDecl(key, value);
   }
+
+  new(when: CondInput, decls: StyleProps = {}, custom: Array<CustomDecl> = emptyCustomDecls)
+    : condition = toCondition(when), decls = decls, custom = custom;
+
+  new [Builder.construct](
+    when: CondInput,
+    desc: {
+      props?: StyleProps,
+      entries?: Array<CustomDecl>,
+    },
+  ) : condition = toCondition(when),
+      decls = desc.props ?? {},
+      custom = desc.entries ?? emptyCustomDecls;
 }
 
 /**
- * Node-local unified style builder carrying base declarations and an ordered
- * list of conditional `When(...)` rules.
+ * Immutable node-local unified style carrying base declarations, custom
+ * `key => value` property declarations, and an ordered list of conditional
+ * `When(...)` rules.
  *
- * Spreading `...base` merges `base`'s base declarations and appends `base`'s
- * conditional rules in order, so derived styles preserve and refine state
- * overrides rather than replacing them wholesale.
+ * Spreading `...base` merges `base`'s declarations and preserves `base`'s
+ * conditional rules in order so derived styles refine state overrides rather
+ * than clobbering them.
  */
-export final class Style extends StyleBlock {
-  _condRules = new GrowableArray<CompiledRule>();
+export final class Style {
+  decls: StyleProps;
+  custom: GrowableArray<CustomDecl>;
+  condRules: GrowableArray<CompiledRule>;
 
-  new() : super();
-
-  spread(other: Style | StyleProps): void {
-    if (other is Style) {
-      this._decls = { ...this._decls, ...other._decls };
-      for (let r in other._condRules) {
-        this._condRules.push(r);
-      }
-    } else {
-      this._decls = { ...this._decls, ...other };
-    }
+  static [Builder.entry]<T>(key: PropertyKey<T>, value: T): CustomDecl {
+    return makeCustomDecl(key, value);
   }
 
-  addChild(child: When): void {
-    this._condRules.push(new CompiledRule(some(child.condition), child._decls));
-  }
+  new(
+    decls: StyleProps = {},
+    custom: GrowableArray<CustomDecl> = emptyCustomDecls,
+    condRules: GrowableArray<CompiledRule> = emptyCondRules,
+  ) : decls = decls, custom = custom, condRules = condRules;
+
+  new [Builder.construct](
+    desc: {
+      spreads?: Array<Style>,
+      props?: StyleProps,
+      entries?: Array<CustomDecl>,
+      children?: Array<When>,
+    },
+  ) : decls = mergeSpreadDecls(desc.spreads ?? null, desc.props ?? {}),
+      custom = mergeSpreadCustom(desc.spreads ?? null, desc.entries ?? null),
+      condRules = mergeSpreadRules(desc.spreads ?? null, desc.children ?? null);
 
   /** Ordered rules: unconditional base rule followed by conditional rules. */
   compiledRules(): GrowableArray<CompiledRule> {
     let out = new GrowableArray<CompiledRule>();
-    out.push(new CompiledRule(none, this._decls));
-    for (let r in this._condRules) {
+    out.push(new CompiledRule(none, this.decls, this.custom));
+    for (let r in this.condRules) {
       out.push(r);
     }
     return out;
@@ -541,35 +507,86 @@ export final class Style extends StyleBlock {
   }
 }
 
+function mergeSpreadDecls(
+  spreads: Array<Style> | null = null,
+  props: StyleProps = {},
+): StyleProps {
+  var out: StyleProps = {};
+  if (spreads != null) {
+    for (let item in spreads) {
+      out = { ...out, ...item.decls };
+    }
+  }
+  return { ...out, ...props };
+}
+
+function mergeSpreadCustom(
+  spreads: Array<Style> | null = null,
+  entries: Array<CustomDecl> | null = null,
+) {
+  let out = new GrowableArray<CustomDecl>();
+  if (spreads != null) {
+    for (let item in spreads) {
+      for (let c in item.custom) {
+        out.push(c);
+      }
+    }
+  }
+  if (entries != null) {
+    for (let e in entries) {
+      out.push(e);
+    }
+  }
+  return out;
+}
+
+function mergeSpreadRules(
+  spreads: Array<Style> | null = null,
+  children: Array<When> | null = null,
+) {
+  let out = new GrowableArray<CompiledRule>();
+  if (spreads != null) {
+    for (let item in spreads) {
+      for (let r in item.condRules) {
+        out.push(r);
+      }
+    }
+  }
+  if (children != null) {
+    for (let w in children) {
+      out.push(new CompiledRule(some(w.condition), w.decls, w.custom));
+    }
+  }
+  return out;
+}
+
 /**
- * Scoped stylesheet rule with CSS-style nesting:
+ * Immutable scoped stylesheet rule with CSS-style nesting:
  * - nested `Rule(child)` conjoins with `within(parentCondition)`
  * - nested `When(state)` conjoins with `all([parentCondition, state])`
  */
-export final class Rule extends StyleBlock {
+export final class Rule {
   condition: Condition;
-  _children = new GrowableArray<Rule | When>();
+  decls: StyleProps;
+  custom: GrowableArray<CustomDecl>;
+  children: GrowableArray<Rule | When>;
 
-  new(when: CondInput) : condition = toCondition(when), super();
-
-  spread(other: Style | StyleProps): void {
-    if (other is Style) {
-      this._decls = { ...this._decls, ...other._decls };
-      for (let r in other._condRules) {
-        if (let Some {value} = r.when) {
-          let w = new When(value);
-          w._decls = r.decls;
-          this._children.push(w);
-        }
-      }
-    } else {
-      this._decls = { ...this._decls, ...other };
-    }
+  static [Builder.entry]<T>(key: PropertyKey<T>, value: T): CustomDecl {
+    return makeCustomDecl(key, value);
   }
 
-  addChild(child: Rule | When): void {
-    this._children.push(child);
-  }
+  new [Builder.construct](
+    when: CondInput,
+    desc: {
+      spreads?: Array<Style>,
+      props?: StyleProps,
+      entries?: Array<CustomDecl>,
+      children?: Array<Rule | When>,
+    },
+  ) : condition = toCondition(when),
+      decls = mergeSpreadDecls(desc.spreads ?? null, desc.props ?? {}),
+      custom = mergeSpreadCustom(desc.spreads ?? null, desc.entries ?? null),
+      children = collectRuleChildren(desc.spreads ?? null, desc.children ?? null);
 
   _collectInto(prefix: Option<Condition>, out: GrowableArray<CompiledRule>): void {
     let effective = if (let Some {value} = prefix) {
@@ -577,39 +594,78 @@ export final class Rule extends StyleBlock {
     } else {
       this.condition
     };
-    out.push(new CompiledRule(some(effective), this._decls));
-    for (let child in this._children) {
+    out.push(new CompiledRule(some(effective), this.decls, this.custom));
+    for (let child in this.children) {
       if (child is Rule) {
         child._collectInto(some(effective), out);
       } else {
         let combined = condAll([effective, child.condition]);
-        out.push(new CompiledRule(some(combined), child._decls));
+        out.push(new CompiledRule(some(combined), child.decls, child.custom));
       }
     }
   }
 }
 
-/** Scoped collection of rules (`reach: scope`), supporting `...spread` and nested `Rule`s. */
-export final class Stylesheet {
-  _rules = new GrowableArray<CompiledRule>();
-
-  spread(other: Stylesheet): void {
-    for (let r in other._rules) {
-      this._rules.push(r);
+function collectRuleChildren(
+  spreads: Array<Style> | null = null,
+  children: Array<Rule | When> | null = null,
+) {
+  let out = new GrowableArray<Rule | When>();
+  if (spreads != null) {
+    for (let item in spreads) {
+      for (let r in item.condRules) {
+        if (let Some {value} = r.when) {
+          out.push(new When(value, r.decls, r.custom));
+        }
+      }
     }
   }
-
-  addChild(rule: Rule): void {
-    rule._collectInto(none, this._rules);
+  if (children != null) {
+    for (let ch in children) {
+      out.push(ch);
+    }
   }
+  return out;
+}
+
+/** Immutable scoped collection of rules (`reach: scope`), supporting `...spread` and nested `Rule`s. */
+export final class Stylesheet {
+  rules: GrowableArray<CompiledRule>;
+
+  new [Builder.construct](
+    desc: {
+      spreads?: Array<Stylesheet>,
+      children?: Array<Rule>,
+    },
+  ) : rules = collectSheetRules(desc.spreads ?? null, desc.children ?? null);
 
   compiledRules(): GrowableArray<CompiledRule> {
-    return this._rules;
+    return this.rules;
   }
 
   flatten(): FlatRuleSet {
-    return flattenRules(this._rules);
+    return flattenRules(this.rules);
   }
+}
+
+function collectSheetRules(
+  spreads: Array<Stylesheet> | null = null,
+  children: Array<Rule> | null = null,
+) {
+  let out = new GrowableArray<CompiledRule>();
+  if (spreads != null) {
+    for (let s in spreads) {
+      for (let r in s.rules) {
+        out.push(r);
+      }
+    }
+  }
+  if (children != null) {
+    for (let rule in children) {
+      rule._collectInto(none, out);
+    }
+  }
+  return out;
 }
 
 /** Accepted by `Box.style`, `Flow.style`, and `Text.style`. */
@@ -690,13 +746,16 @@ export function normalizeStyle(input: StyleInput): Style {
   if (input is Style) {
     return input;
   }
-  let combined = new Style();
   if (input is Array<Style>) {
+    var decls: StyleProps = {};
+    let custom = new GrowableArray<CustomDecl>();
+    let condRules = new GrowableArray<CompiledRule>();
     for (let s in input) {
-      combined.spread(s);
+      decls = { ...decls, ...s.decls };
+      for (let c in s.custom) { custom.push(c); }
+      for (let r in s.condRules) { condRules.push(r); }
     }
-  } else {
-    combined.spread(input);
+    return new Style(decls, custom, condRules);
   }
-  return combined;
+  return new Style(input);
 }

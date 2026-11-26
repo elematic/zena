@@ -2,47 +2,147 @@
 // @invoke: main
 // @result: 0
 
-// Untagged node literals (`Type(args) { props..., ...spreads..., children... }`):
-// - class builders with optional commas, property setters, `spread`, and `addChild`
-// - nested child node literals and class-call shorthand (`Leaf('x')`)
-// - record type alias literals (`Point { x: 1.0 y: 2.0 }`)
+// Untagged node literals via explicit `new [Builder.construct]` and
+// `static [Builder.entry]`:
+// - immutable class with normal `new(x, y)` AND `new [Builder.construct]`
+// - record type alias literal with optional commas and spread
+// - homogeneous map builder (`Headers { 'Content-Type' => '...' }`)
+// - heterogeneous typed entries (`PropKey<T>` via `static [Builder.entry]<T>`)
+// - immutable nested rule builder with `spreads`, `props`, `entries`, `children`
 
-type Point = { x: f32, y: f32 };
+import { Builder } from 'zena:core';
+import { HashMap } from 'zena:collections';
+
+type PointRec = { x: f32, y: f32 };
 type Insets = { x?: f32, y?: f32 };
+
+final class Point {
+  x: f32;
+  y: f32;
+
+  new(this.x, this.y);
+
+  new [Builder.construct]({ props }: { props: { x: f32, y: f32 } })
+    : x = props.x, y = props.y;
+}
+
+final class Headers {
+  entries: HashMap<String, String>;
+
+  new [Builder.construct]({ entries = new HashMap<String, String>() }: {
+    entries?: HashMap<String, String>,
+  }) : entries = entries;
+}
+
+sealed class EntryVal {
+  case IntVal(value: i32)
+  case StrVal(value: String)
+}
+
+final class PropKey<T> {
+  name: String;
+  wrap: (v: T) => EntryVal;
+  new(this.name, this.wrap);
+}
+
+final class CustomEntry {
+  name: String;
+  value: EntryVal;
+  new(this.name, this.value);
+}
+
+let accentKey = new PropKey<i32>('accent', (v: i32) => new IntVal(v));
+let labelKey = new PropKey<String>('label', (v: String) => new StrVal(v));
+
+type StyleProps = { bg?: i32, gap?: f32, padding?: Insets };
+let noEntries = new GrowableArray<CustomEntry>();
 
 final class Rule {
   cond: String;
-  var bg: i32 = 0;
+  props: StyleProps;
+  entries: Array<CustomEntry>;
 
-  new(this.cond);
+  static [Builder.entry]<T>(key: PropKey<T>, value: T): CustomEntry {
+    return new CustomEntry(key.name, key.wrap(value));
+  }
+
+  new [Builder.construct](
+    cond: String,
+    desc: {
+      props?: StyleProps,
+      entries?: Array<CustomEntry>,
+    },
+  ) : cond = cond, props = desc.props ?? {}, entries = desc.entries ?? noEntries;
+}
+
+function mergeProps(spreads: Array<StyleBuilder> | null, props: StyleProps): StyleProps {
+  var acc: StyleProps = {};
+  if (spreads != null) {
+    for (let s in spreads) {
+      acc = { ...acc, ...s.props };
+    }
+  }
+  return { ...acc, ...props };
+}
+
+function mergeEntries(spreads: Array<StyleBuilder> | null, entries: Array<CustomEntry> | null) {
+  let out = new GrowableArray<CustomEntry>();
+  if (spreads != null) {
+    for (let s in spreads) {
+      for (let e in s.entries) { out.push(e); }
+    }
+  }
+  if (entries != null) {
+    for (let e in entries) { out.push(e); }
+  }
+  return out;
+}
+
+function mergeRules(spreads: Array<StyleBuilder> | null, children: Array<Rule> | null) {
+  let out = new GrowableArray<Rule>();
+  if (spreads != null) {
+    for (let s in spreads) {
+      for (let r in s.rules) { out.push(r); }
+    }
+  }
+  if (children != null) {
+    for (let c in children) { out.push(c); }
+  }
+  return out;
 }
 
 final class StyleBuilder {
-  var bg: i32 = 0;
-  var gap: f32 = 0.0;
-  var padding: Insets = {};
-  rules = new GrowableArray<Rule>();
+  props: StyleProps;
+  entries: GrowableArray<CustomEntry>;
+  rules: GrowableArray<Rule>;
 
-  spread(other: StyleBuilder): void {
-    if (other.bg != 0) { this.bg = other.bg; }
-    if (other.gap != 0.0) { this.gap = other.gap; }
-    this.padding = { ...this.padding, ...other.padding };
-    for (let r in other.rules) {
-      this.rules.push(r);
-    }
+  static [Builder.entry]<T>(key: PropKey<T>, value: T): CustomEntry {
+    return new CustomEntry(key.name, key.wrap(value));
   }
 
-  addChild(rule: Rule): void {
-    this.rules.push(rule);
-  }
+  new [Builder.construct](
+    desc: {
+      spreads?: Array<StyleBuilder>,
+      props?: StyleProps,
+      entries?: Array<CustomEntry>,
+      children?: Array<Rule>,
+    },
+  ) : props = mergeProps(desc.spreads ?? null, desc.props ?? {}),
+      entries = mergeEntries(desc.spreads ?? null, desc.entries ?? null),
+      rules = mergeRules(desc.spreads ?? null, desc.children ?? null);
 }
 
 let base = StyleBuilder {
   bg: 10
   gap: 8.0
   padding: Insets { x: 12.0 y: 6.0 }
+  accentKey => 77
+  labelKey => 'primary'
 
-  Rule('hovered') { bg: 20 }
+  Rule('hovered') {
+    bg: 20
+    accentKey => 88
+  }
 };
 
 let derived = StyleBuilder {
@@ -54,27 +154,48 @@ let derived = StyleBuilder {
 };
 
 export function main(): i32 {
-  // Record alias node literal (comma-free + spread)
-  let p = Point { x: 3.0 y: 4.0 };
-  if (p.x != 3.0 || p.y != 4.0) { return 1; }
+  // 1. Record alias node literal (comma-free + spread)
+  let r = PointRec { x: 3.0 y: 4.0 };
+  if (r.x != 3.0 || r.y != 4.0) { return 1; }
+  let r2 = PointRec { ...r x: 9.0 };
+  if (r2.x != 9.0 || r2.y != 4.0) { return 2; }
 
-  let p2 = Point { ...p x: 9.0 };
-  if (p2.x != 9.0 || p2.y != 4.0) { return 2; }
+  // 2. Immutable class with normal constructor + `new [Builder.construct]`
+  let p0 = new Point(1.0, 2.0);
+  let p1 = Point { x: 5.0 y: 6.0 };
+  let p2 = Point { ...r x: 7.0 };
+  if (p0.x != 1.0 || p1.x != 5.0 || p1.y != 6.0 || p2.x != 7.0 || p2.y != 4.0) { return 3; }
 
-  // Base class builder
-  if (base.bg != 10 || base.gap != 8.0) { return 3; }
-  let padX: f32 = base.padding.x ?? 0.0;
-  let padY: f32 = base.padding.y ?? 0.0;
-  if (padX != 12.0 || padY != 6.0) { return 4; }
-  if (base.rules.length != 1) { return 5; }
-  if (base.rules[0].cond != 'hovered' || base.rules[0].bg != 20) { return 6; }
+  // 3. Homogeneous map builder (`key => value` -> HashMap)
+  let h = Headers {
+    'Content-Type' => 'application/json'
+    'X-Test' => 'ok'
+  };
+  if (h.entries['Content-Type'] != 'application/json' || h.entries['X-Test'] != 'ok') { return 4; }
 
-  // Derived class builder preserves spread rules and overrides bg
-  if (derived.bg != 30 || derived.gap != 8.0) { return 7; }
-  if (derived.rules.length != 3) { return 8; }
-  if (derived.rules[0].cond != 'hovered' || derived.rules[0].bg != 20) { return 9; }
-  if (derived.rules[1].cond != 'pressed' || derived.rules[1].bg != 40) { return 10; }
-  if (derived.rules[2].cond != 'empty' || derived.rules[2].bg != 0) { return 11; }
+  // 4. Immutable StyleBuilder with heterogeneous `PropKey<T>` entries
+  if ((base.props.bg ?? 0) != 10) { return 5; }
+  let baseGap: f32 = base.props.gap ?? 0.0;
+  if (baseGap != 8.0) { return 6; }
+  let pad: Insets = base.props.padding ?? {};
+  let padX: f32 = pad.x ?? 0.0;
+  let padY: f32 = pad.y ?? 0.0;
+  if (padX != 12.0 || padY != 6.0) { return 7; }
+  if (base.entries.length != 2) { return 8; }
+  if (base.entries[0].name != 'accent' || !(base.entries[0].value is IntVal) || (base.entries[0].value as IntVal).value != 77) { return 9; }
+  if (base.entries[1].name != 'label' || !(base.entries[1].value is StrVal) || (base.entries[1].value as StrVal).value != 'primary') { return 10; }
+  if (base.rules.length != 1 || base.rules[0].entries.length != 1) { return 11; }
+  if (!(base.rules[0].entries[0].value is IntVal) || (base.rules[0].entries[0].value as IntVal).value != 88) { return 12; }
+
+  // 5. Derived immutable StyleBuilder preserves spread rules & custom entries
+  if ((derived.props.bg ?? 0) != 30) { return 13; }
+  let derivedGap: f32 = derived.props.gap ?? 0.0;
+  if (derivedGap != 8.0) { return 14; }
+  if (derived.entries.length != 2) { return 15; }
+  if (derived.rules.length != 3) { return 16; }
+  if (derived.rules[0].cond != 'hovered' || (derived.rules[0].props.bg ?? 0) != 20) { return 17; }
+  if (derived.rules[1].cond != 'pressed' || (derived.rules[1].props.bg ?? 0) != 40) { return 18; }
+  if (derived.rules[2].cond != 'empty' || (derived.rules[2].props.bg ?? 0) != 0) { return 19; }
 
   return 0;
 }

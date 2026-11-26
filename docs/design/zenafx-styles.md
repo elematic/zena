@@ -264,10 +264,22 @@ soon as styles carry rules:
   per rule and a `scope` reach rather than one flat property bag.
 
 Zena's untagged node-literal grammar ([declarative.md](./declarative.md))
-handles all four without adding a CSS parser. An untagged node literal
-`Type(args) { props..., ...spreads..., children... }` constructs `new
-Type(args...)`, assigns properties and calls `.spread(arg)` in source order,
-and appends child blocks via `.addChild(child)` — with optional commas.
+handles all four without adding a CSS parser. A class opts into untagged
+node-literal syntax explicitly with a symbol-named constructor
+`new [Builder.construct](args..., desc)` (`Builder` in `zena:core`), accepting
+leading positional arguments and a descriptor record declaring whichever of the
+four slots (`spreads`, `props`, `entries`, `children`) the class supports.
+Because construction happens in a single constructor call, `Style`, `When`,
+`Rule`, and `Stylesheet` are immutable classes with no `var` fields and no
+setter boilerplate.
+
+Custom properties (`PropertyKey<T>`, from [Keys](#keys)) use Zena's existing
+`key => value` map-entry syntax inside the same block. A class declaring a
+generic `static [Builder.entry]<T>(key: PropertyKey<T>, value: T)` wraps each
+`key => value` entry with per-key static type checking (so `surface => 600.0`
+is a type error when `surface` is `PropertyKey<Color>`), while a homogeneous
+map builder without `static [Builder.entry]` receives a `HashMap` literal in
+`entries`.
 
 **Step 1 — untagged builder nodes with typed condition builders (built).**
 Most styles live at module level (`let buttonStyle = Style { ... };`), so they
@@ -279,13 +291,17 @@ Conditions are built with typed functions (`all`, `any`, `not`, `gte`, `gt`,
 `Rule` conjoins with `all(...)`:
 
 ```zena
+let surface = colorProperty('surface', true);
+let panelWidth = numberProperty('panel-width', true);
+
 let rowStyle = Style {
   padding: { x: 14.0, y: 10.0 }
   cursor: Cursor.Pointer
+  surface => rgb(0.09, 0.10, 0.11)
 
   When(hovered) { background: rowHover }
   When(all([selected, not(disabled)])) { background: accentSoft color: accent }
-  When(gte(panelWidth, 600.0)) { axis: Axis.Row gap: 16.0 }
+  When(gte(panelWidthKey, 600.0)) { axis: Axis.Row gap: 16.0 }
 };
 
 export let cardStyles = Stylesheet {
