@@ -48,7 +48,7 @@ import {
   isNumericOrNumericTypeParam, unwrapBigIntTarget
 } from './literals.zena';
 import { checkMatchCaseBody, checkMatchExpr } from './match.zena';
-import { checkDecoratedExpression } from './ui.zena';
+import { checkDecoratedExpression, checkNodeLiteral } from './ui.zena';
 import {
   accessMemberKey, checkIndexExpression, discriminatedRecordMember, checkIndexWrite, checkMemberExpression, displayMemberName, isStaticReceiver, resolveArrayBackingClass, staticAccessMismatch, staticMemberHint
 } from './members.zena';
@@ -1873,9 +1873,8 @@ function checkExpressionInner(
       pipeType
     }
   }
-  case NodeLiteral {loc}: {
-    ctx.error("Untagged node literals are not yet supported in the type checker.", DiagnosticCode.TypeMismatch, loc);
-    new ErrorType()
+  case NodeLiteral as nl: {
+    checkNodeLiteral(ctx, nl, expectedType)
   }
   case BindingExpression {loc}: {
     ctx.error("Binding expressions '$(...)' can only be used inside a staged '@' expression such as '@ui'.", DiagnosticCode.TypeMismatch, loc);

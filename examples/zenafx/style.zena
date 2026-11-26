@@ -1,0 +1,761 @@
+/**
+ * Unified, immutable ZenaFX style builders, typed custom properties,
+ * condition algebra, and flat condition serializer
+ * (Step 1 of `docs/design/zenafx-styles.md#authoring-surface`).
+ *
+ * `Style`, `When`, `Rule`, and `Stylesheet` opt into untagged node-literal
+ * syntax explicitly via `new [Builder.construct]` and `static [Builder.entry]`,
+ * constructing immutable values in a single constructor call with zero mutable
+ * fields or setter boilerplate.
+ */
+import {
+  Axis, Justify, Align, Overflow, TextAlign, Color, Length, Edges,
+  BoxStyle, TextStyle, LengthAuto, LengthPx, LengthPercent,
+} from 'zenafx:ui/style';
+import { Cursor, State } from 'zenafx:host/scene';
+import { Builder, some, none } from 'zena:core';
+
+/** Edge insets (padding) in pixels: `all`, `x`/`y`, and per-side overrides. */
+export type Insets = {
+  all?: f32,
+  x?: f32,
+  y?: f32,
+  top?: f32,
+  right?: f32,
+  bottom?: f32,
+  left?: f32,
+};
+
+/**
+ * Presence-optional declaration schema shared by inline record shorthand and
+ * the immutable `Style` / `When` / `Rule` constructors.
+ */
+export type StyleProps = {
+  width?: Length,
+  height?: Length,
+  grow?: f32,
+  shrink?: f32,
+  padding?: Insets,
+  overflow?: Overflow,
+  overflowX?: Overflow,
+  overflowY?: Overflow,
+
+  axis?: Axis,
+  justify?: Justify,
+  align?: Align,
+  gap?: f32,
+
+  textAlign?: TextAlign,
+  lineHeight?: f32,
+
+  background?: Color,
+  borderColor?: Color,
+  borderWidth?: f32,
+  cornerRadius?: f32,
+  opacity?: f32,
+
+  fontFamily?: String,
+  fontSize?: f32,
+  fontWeight?: i32,
+  italic?: boolean,
+  color?: Color,
+
+  cursor?: Cursor,
+  unselectable?: boolean,
+};
+
+/** Opaque non-premultiplied sRGB colour (channels in 0..1). */
+export function rgb(r: f32, g: f32, b: f32): Color {
+  return new Color(r, g, b, 1.0);
+}
+
+/** Non-premultiplied sRGB colour with alpha (channels in 0..1). */
+export function rgba(r: f32, g: f32, b: f32, a: f32): Color {
+  return new Color(r, g, b, a);
+}
+
+/** Fixed length in logical pixels. */
+export function px(value: f32): Length {
+  return new LengthPx(value);
+}
+
+/** Percentage of the containing block (100.0 is full). */
+export function pct(value: f32): Length {
+  return new LengthPercent(value);
+}
+
+export let auto: Length = new LengthAuto();
+export let full: Length = new LengthPercent(100.0);
+export let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
+
+let defaultInk = new Color(0.0, 0.0, 0.0, 1.0);
+let emptyCustomDecls = new GrowableArray<CustomDecl>();
+let emptyCondRules = new GrowableArray<CompiledRule>();
+
+// ---------------------------------------------------------------------------
+// Custom property keys and heterogeneous `key => value` declarations
+// ---------------------------------------------------------------------------
+
+/** Closed set of value variants a custom style property can carry (`zenafx-styles.md`). */
+export sealed class PropertyValue {
+  case PropColor(value: Color)
+  case PropNumber(value: f32)
+  case PropLength(value: Length)
+  case PropFlag(value: boolean)
+  case PropText(value: String)
+}
+
+/** Typed capability key for an application-defined style property. */
+export final class PropertyKey<T> {
+  name: String;
+  inherits: boolean;
+  wrap: (value: T) => PropertyValue;
+
+  new(this.name, this.inherits, this.wrap);
+}
+
+export function colorProperty(name: String, inherits: boolean = true): PropertyKey<Color> {
+  return new PropertyKey<Color>(name, inherits, (v: Color) => new PropColor(v));
+}
+
+export function numberProperty(name: String, inherits: boolean = false): PropertyKey<f32> {
+  return new PropertyKey<f32>(name, inherits, (v: f32) => new PropNumber(v));
+}
+
+export function lengthProperty(name: String, inherits: boolean = false): PropertyKey<Length> {
+  return new PropertyKey<Length>(name, inherits, (v: Length) => new PropLength(v));
+}
+
+export function flagProperty(name: String, inherits: boolean = false): PropertyKey<boolean> {
+  return new PropertyKey<boolean>(name, inherits, (v: boolean) => new PropFlag(v));
+}
+
+export function stringProperty(name: String, inherits: boolean = false): PropertyKey<String> {
+  return new PropertyKey<String>(name, inherits, (v: String) => new PropText(v));
+}
+
+/** One custom `propertyKey => value` declaration. */
+export final class CustomDecl {
+  name: String;
+  inherits: boolean;
+  value: PropertyValue;
+
+  new(this.name, this.inherits, this.value);
+}
+
+function makeCustomDecl<T>(key: PropertyKey<T>, value: T) {
+  return new CustomDecl(key.name, key.inherits, key.wrap(value));
+}
+
+// ---------------------------------------------------------------------------
+// Keys and condition algebra (Step 1 API; target of future `@style`/`@cond`)
+// ---------------------------------------------------------------------------
+
+/** Identity of a boolean fact or tag tested by style conditions. */
+export final class FlagKey {
+  name: String;
+  hostState: Option<State>;
+
+  new(this.name, this.hostState = none);
+}
+
+/** Identity of a numeric fact or inheriting numeric property. */
+export final class NumberKey {
+  name: String;
+
+  new(this.name);
+}
+
+/** Built-in host interaction states. */
+export let hovered = new FlagKey('hovered', some(State.Hovered));
+export let pressed = new FlagKey('pressed', some(State.Pressed));
+export let focused = new FlagKey('focused', some(State.Focused));
+
+/** Built-in host measured numeric facts. */
+export let nodeWidth = new NumberKey('width');
+export let nodeHeight = new NumberKey('height');
+export let scrollX = new NumberKey('scroll-x');
+export let scrollY = new NumberKey('scroll-y');
+
+/** Create a unique application-owned flag/tag key. */
+export function flagKey(name: String): FlagKey {
+  return new FlagKey(name, none);
+}
+
+/** Create a unique application-owned numeric key. */
+export function numberKey(name: String): NumberKey {
+  return new NumberKey(name);
+}
+
+/**
+ * Serializable condition AST matching `variant condition` in
+ * `docs/design/zenafx-styles.md`.
+ */
+export sealed class Condition {
+  case CondFlag(key: FlagKey)
+  case CondRange(
+    key: NumberKey,
+    min: Option<f32>,
+    minInclusive: boolean,
+    max: Option<f32>,
+    maxInclusive: boolean,
+  )
+  case CondUnder(inner: Condition)
+  case CondWithin(inner: Condition)
+  case CondAll(parts: GrowableArray<Condition>)
+  case CondAny(parts: GrowableArray<Condition>)
+  case CondNot(inner: Condition)
+}
+
+export type CondInput = FlagKey | Condition;
+
+/** Lift a `FlagKey` or existing `Condition` into a `Condition`. */
+export function toCondition(input: CondInput): Condition {
+  if (input is Condition) {
+    return input;
+  }
+  return new CondFlag(input);
+}
+
+/** Boolean conjunction (`a && b && ...`), flattening nested `all`. */
+export function condAll(parts: Array<CondInput>): Condition {
+  let flat = new GrowableArray<Condition>();
+  for (let p in parts) {
+    let c = toCondition(p);
+    if (c is CondAll) {
+      for (let sub in c.parts) {
+        flat.push(sub);
+      }
+    } else {
+      flat.push(c);
+    }
+  }
+  if (flat.length == 1) {
+    return flat[0];
+  }
+  return new CondAll(flat);
+}
+
+/** Boolean disjunction (`a || b || ...`), flattening nested `any`. */
+export function condAny(parts: Array<CondInput>): Condition {
+  let flat = new GrowableArray<Condition>();
+  for (let p in parts) {
+    let c = toCondition(p);
+    if (c is CondAny) {
+      for (let sub in c.parts) {
+        flat.push(sub);
+      }
+    } else {
+      flat.push(c);
+    }
+  }
+  if (flat.length == 1) {
+    return flat[0];
+  }
+  return new CondAny(flat);
+}
+
+/** Boolean negation (`!c`). */
+export function condNot(input: CondInput): Condition {
+  return new CondNot(toCondition(input));
+}
+
+/** Numeric range test `key >= value`. */
+export function condGte(key: NumberKey, value: f32): Condition {
+  return new CondRange(key, some(value), true, none, false);
+}
+
+/** Numeric range test `key > value`. */
+export function condGt(key: NumberKey, value: f32): Condition {
+  return new CondRange(key, some(value), false, none, false);
+}
+
+/** Numeric range test `key <= value`. */
+export function condLte(key: NumberKey, value: f32): Condition {
+  return new CondRange(key, none, false, some(value), true);
+}
+
+/** Numeric range test `key < value`. */
+export function condLt(key: NumberKey, value: f32): Condition {
+  return new CondRange(key, none, false, some(value), false);
+}
+
+/** Numeric range test `min <= key < max`. */
+export function condBetween(key: NumberKey, min: f32, max: f32): Condition {
+  return new CondRange(key, some(min), true, some(max), false);
+}
+
+/** Direct-parent combinator (`parent > child`). */
+export function under(parent: CondInput): Condition {
+  return new CondUnder(toCondition(parent));
+}
+
+/** Scoped-ancestor combinator (`ancestor >> descendant`). */
+export function within(ancestor: CondInput): Condition {
+  return new CondWithin(toCondition(ancestor));
+}
+
+// Concise Step 1 aliases.
+export function all(parts: Array<CondInput>): Condition { return condAll(parts); }
+export function any(parts: Array<CondInput>): Condition { return condAny(parts); }
+export function not(input: CondInput): Condition { return condNot(input); }
+export function gte(key: NumberKey, value: f32): Condition { return condGte(key, value); }
+export function gt(key: NumberKey, value: f32): Condition { return condGt(key, value); }
+export function lte(key: NumberKey, value: f32): Condition { return condLte(key, value); }
+export function lt(key: NumberKey, value: f32): Condition { return condLt(key, value); }
+export function between(key: NumberKey, min: f32, max: f32): Condition { return condBetween(key, min, max); }
+
+// ---------------------------------------------------------------------------
+// Flat post-order condition serialization (WIT wire format)
+// ---------------------------------------------------------------------------
+
+/** One entry in a flat post-order condition table ready for WIT transfer. */
+export sealed class FlatCondition {
+  case FlatFlag(key: FlagKey)
+  case FlatRange(
+    key: NumberKey,
+    min: Option<f32>,
+    minInclusive: boolean,
+    max: Option<f32>,
+    maxInclusive: boolean,
+  )
+  case FlatUnder(index: u32)
+  case FlatWithin(index: u32)
+  case FlatAll(indices: GrowableArray<u32>)
+  case FlatAny(indices: GrowableArray<u32>)
+  case FlatNot(index: u32)
+}
+
+/** One rule in a flattened rule set: optional condition index + declarations. */
+export final class FlatRule {
+  when: Option<u32>;
+  decls: StyleProps;
+  custom: Array<CustomDecl>;
+
+  new(this.when, this.decls, this.custom);
+}
+
+/** Flat condition table paired with rules indexing into it. */
+export final class FlatRuleSet {
+  conditions: GrowableArray<FlatCondition>;
+  rules: GrowableArray<FlatRule>;
+
+  new(this.conditions, this.rules);
+}
+
+/** A single compiled immutable rule (unconditional when `when` is `none`). */
+export final class CompiledRule {
+  when: Option<Condition>;
+  decls: StyleProps;
+  custom: Array<CustomDecl>;
+
+  new(this.when, this.decls, this.custom = emptyCustomDecls);
+}
+
+function appendCondition(out: GrowableArray<FlatCondition>, cond: Condition): u32 {
+  return match (cond) {
+    case CondFlag {key}: {
+      let idx = out.length as u32;
+      out.push(new FlatFlag(key));
+      idx
+    }
+    case CondRange {key, min, minInclusive, max, maxInclusive}: {
+      let idx = out.length as u32;
+      out.push(new FlatRange(key, min, minInclusive, max, maxInclusive));
+      idx
+    }
+    case CondUnder {inner}: {
+      let innerIdx = appendCondition(out, inner);
+      let idx = out.length as u32;
+      out.push(new FlatUnder(innerIdx));
+      idx
+    }
+    case CondWithin {inner}: {
+      let innerIdx = appendCondition(out, inner);
+      let idx = out.length as u32;
+      out.push(new FlatWithin(innerIdx));
+      idx
+    }
+    case CondAll {parts}: {
+      let indices = new GrowableArray<u32>();
+      for (let p in parts) {
+        indices.push(appendCondition(out, p));
+      }
+      let idx = out.length as u32;
+      out.push(new FlatAll(indices));
+      idx
+    }
+    case CondAny {parts}: {
+      let indices = new GrowableArray<u32>();
+      for (let p in parts) {
+        indices.push(appendCondition(out, p));
+      }
+      let idx = out.length as u32;
+      out.push(new FlatAny(indices));
+      idx
+    }
+    case CondNot {inner}: {
+      let innerIdx = appendCondition(out, inner);
+      let idx = out.length as u32;
+      out.push(new FlatNot(innerIdx));
+      idx
+    }
+  };
+}
+
+/**
+ * Flatten a list of `CompiledRule`s into a post-order `FlatRuleSet` whose
+ * `FlatCondition` indices satisfy `childIndex < parentIndex`.
+ */
+export function flattenRules(rules: Array<CompiledRule>): FlatRuleSet {
+  let conditions = new GrowableArray<FlatCondition>();
+  let flatRules = new GrowableArray<FlatRule>();
+  for (let r in rules) {
+    let whenIdx: Option<u32> = if (let Some {value} = r.when) {
+      some(appendCondition(conditions, value))
+    } else {
+      none
+    };
+    flatRules.push(new FlatRule(whenIdx, r.decls, r.custom));
+  }
+  return new FlatRuleSet(conditions, flatRules);
+}
+
+// ---------------------------------------------------------------------------
+// Immutable node-literal builders: `When`, `Style`, `Rule`, `Stylesheet`
+// ---------------------------------------------------------------------------
+
+/**
+ * Immutable conditional override block inside `Style { ... }` or `Rule(...) { ... }`.
+ *
+ * ```zena
+ * When(hovered) { background: hoveredBg }
+ * When(all([selected, not(disabled)])) { color: accent  surface => activeBg }
+ * ```
+ */
+export final class When {
+  condition: Condition;
+  decls: StyleProps;
+  custom: Array<CustomDecl>;
+
+  static [Builder.entry]<T>(key: PropertyKey<T>, value: T): CustomDecl {
+    return makeCustomDecl(key, value);
+  }
+
+  new(when: CondInput, decls: StyleProps = {}, custom: Array<CustomDecl> = emptyCustomDecls)
+    : condition = toCondition(when), decls = decls, custom = custom;
+
+  new [Builder.construct](
+    when: CondInput,
+    desc: {
+      props?: StyleProps,
+      entries?: Array<CustomDecl>,
+    },
+  ) : condition = toCondition(when),
+      decls = desc.props ?? {},
+      custom = desc.entries ?? emptyCustomDecls;
+}
+
+/**
+ * Immutable node-local unified style carrying base declarations, custom
+ * `key => value` property declarations, and an ordered list of conditional
+ * `When(...)` rules.
+ *
+ * Spreading `...base` merges `base`'s declarations and preserves `base`'s
+ * conditional rules in order so derived styles refine state overrides rather
+ * than clobbering them.
+ */
+export final class Style {
+  decls: StyleProps;
+  custom: GrowableArray<CustomDecl>;
+  condRules: GrowableArray<CompiledRule>;
+
+  static [Builder.entry]<T>(key: PropertyKey<T>, value: T): CustomDecl {
+    return makeCustomDecl(key, value);
+  }
+
+  new(
+    decls: StyleProps = {},
+    custom: GrowableArray<CustomDecl> = emptyCustomDecls,
+    condRules: GrowableArray<CompiledRule> = emptyCondRules,
+  ) : decls = decls, custom = custom, condRules = condRules;
+
+  new [Builder.construct](
+    desc: {
+      spreads?: Array<Style>,
+      props?: StyleProps,
+      entries?: Array<CustomDecl>,
+      children?: Array<When>,
+    },
+  ) : decls = mergeSpreadDecls(desc.spreads ?? null, desc.props ?? {}),
+      custom = mergeSpreadCustom(desc.spreads ?? null, desc.entries ?? null),
+      condRules = mergeSpreadRules(desc.spreads ?? null, desc.children ?? null);
+
+  /** Ordered rules: unconditional base rule followed by conditional rules. */
+  compiledRules(): GrowableArray<CompiledRule> {
+    let out = new GrowableArray<CompiledRule>();
+    out.push(new CompiledRule(none, this.decls, this.custom));
+    for (let r in this.condRules) {
+      out.push(r);
+    }
+    return out;
+  }
+
+  /** Serialize this style's rules and conditions into a flat post-order table. */
+  flatten(): FlatRuleSet {
+    return flattenRules(this.compiledRules());
+  }
+}
+
+function mergeSpreadDecls(
+  spreads: Array<Style> | null = null,
+  props: StyleProps = {},
+): StyleProps {
+  var out: StyleProps = {};
+  if (spreads != null) {
+    for (let item in spreads) {
+      out = { ...out, ...item.decls };
+    }
+  }
+  return { ...out, ...props };
+}
+
+function mergeSpreadCustom(
+  spreads: Array<Style> | null = null,
+  entries: Array<CustomDecl> | null = null,
+) {
+  let out = new GrowableArray<CustomDecl>();
+  if (spreads != null) {
+    for (let item in spreads) {
+      for (let c in item.custom) {
+        out.push(c);
+      }
+    }
+  }
+  if (entries != null) {
+    for (let e in entries) {
+      out.push(e);
+    }
+  }
+  return out;
+}
+
+function mergeSpreadRules(
+  spreads: Array<Style> | null = null,
+  children: Array<When> | null = null,
+) {
+  let out = new GrowableArray<CompiledRule>();
+  if (spreads != null) {
+    for (let item in spreads) {
+      for (let r in item.condRules) {
+        out.push(r);
+      }
+    }
+  }
+  if (children != null) {
+    for (let w in children) {
+      out.push(new CompiledRule(some(w.condition), w.decls, w.custom));
+    }
+  }
+  return out;
+}
+
+/**
+ * Immutable scoped stylesheet rule with CSS-style nesting:
+ * - nested `Rule(child)` conjoins with `within(parentCondition)`
+ * - nested `When(state)` conjoins with `all([parentCondition, state])`
+ */
+export final class Rule {
+  condition: Condition;
+  decls: StyleProps;
+  custom: GrowableArray<CustomDecl>;
+  children: GrowableArray<Rule | When>;
+
+  static [Builder.entry]<T>(key: PropertyKey<T>, value: T): CustomDecl {
+    return makeCustomDecl(key, value);
+  }
+
+  new [Builder.construct](
+    when: CondInput,
+    desc: {
+      spreads?: Array<Style>,
+      props?: StyleProps,
+      entries?: Array<CustomDecl>,
+      children?: Array<Rule | When>,
+    },
+  ) : condition = toCondition(when),
+      decls = mergeSpreadDecls(desc.spreads ?? null, desc.props ?? {}),
+      custom = mergeSpreadCustom(desc.spreads ?? null, desc.entries ?? null),
+      children = collectRuleChildren(desc.spreads ?? null, desc.children ?? null);
+
+  _collectInto(prefix: Option<Condition>, out: GrowableArray<CompiledRule>): void {
+    let effective = if (let Some {value} = prefix) {
+      condAll([this.condition, new CondWithin(value)])
+    } else {
+      this.condition
+    };
+    out.push(new CompiledRule(some(effective), this.decls, this.custom));
+    for (let child in this.children) {
+      if (child is Rule) {
+        child._collectInto(some(effective), out);
+      } else {
+        let combined = condAll([effective, child.condition]);
+        out.push(new CompiledRule(some(combined), child.decls, child.custom));
+      }
+    }
+  }
+}
+
+function collectRuleChildren(
+  spreads: Array<Style> | null = null,
+  children: Array<Rule | When> | null = null,
+) {
+  let out = new GrowableArray<Rule | When>();
+  if (spreads != null) {
+    for (let item in spreads) {
+      for (let r in item.condRules) {
+        if (let Some {value} = r.when) {
+          out.push(new When(value, r.decls, r.custom));
+        }
+      }
+    }
+  }
+  if (children != null) {
+    for (let ch in children) {
+      out.push(ch);
+    }
+  }
+  return out;
+}
+
+/** Immutable scoped collection of rules (`reach: scope`), supporting `...spread` and nested `Rule`s. */
+export final class Stylesheet {
+  rules: GrowableArray<CompiledRule>;
+
+  new [Builder.construct](
+    desc: {
+      spreads?: Array<Stylesheet>,
+      children?: Array<Rule>,
+    },
+  ) : rules = collectSheetRules(desc.spreads ?? null, desc.children ?? null);
+
+  compiledRules(): GrowableArray<CompiledRule> {
+    return this.rules;
+  }
+
+  flatten(): FlatRuleSet {
+    return flattenRules(this.rules);
+  }
+}
+
+function collectSheetRules(
+  spreads: Array<Stylesheet> | null = null,
+  children: Array<Rule> | null = null,
+) {
+  let out = new GrowableArray<CompiledRule>();
+  if (spreads != null) {
+    for (let s in spreads) {
+      for (let r in s.rules) {
+        out.push(r);
+      }
+    }
+  }
+  if (children != null) {
+    for (let rule in children) {
+      rule._collectInto(none, out);
+    }
+  }
+  return out;
+}
+
+/** Accepted by `Box.style`, `Flow.style`, and `Text.style`. */
+export type StyleInput = Style | StyleProps | Array<Style>;
+
+// ---------------------------------------------------------------------------
+// Lowering helpers to today's WIT `OwnBox`, `BoxStyle`, `TextStyle`
+// ---------------------------------------------------------------------------
+
+export function resolveInsets(insets: Insets): Edges {
+  let base: f32 = insets.all ?? 0.0;
+  let vx = insets.x ?? base;
+  let vy = insets.y ?? base;
+  return new Edges(
+    insets.top ?? vy,
+    insets.right ?? vx,
+    insets.bottom ?? vy,
+    insets.left ?? vx,
+  );
+}
+
+export function hasVisualBoxProps(s: StyleProps): boolean {
+  if (let {background} = s) { return true; }
+  if (let {borderColor} = s) { return true; }
+  if (let {borderWidth} = s) { return true; }
+  if (let {cornerRadius} = s) { return true; }
+  if (let {opacity} = s) { return true; }
+  return false;
+}
+
+export function resolveBoxStyle(s: StyleProps): BoxStyle {
+  let bg: Option<Color> = if (let {background} = s) { some(background) } else { none };
+  let border: Option<Color> = if (let {borderColor} = s) { some(borderColor) } else { none };
+  return new BoxStyle(
+    bg,
+    border,
+    s.borderWidth ?? 0.0,
+    s.cornerRadius ?? 0.0,
+    s.opacity ?? 1.0,
+  );
+}
+
+export function mergeBoxOverride(base: BoxStyle, over: StyleProps): BoxStyle {
+  let bg: Option<Color> = if (let {background} = over) { some(background) } else { base.background };
+  let border: Option<Color> = if (let {borderColor} = over) { some(borderColor) } else { base.borderColor };
+  return new BoxStyle(
+    bg,
+    border,
+    over.borderWidth ?? base.borderWidth,
+    over.cornerRadius ?? base.cornerRadius,
+    over.opacity ?? base.opacity,
+  );
+}
+
+export function resolveTextStyle(s: StyleProps): TextStyle {
+  return new TextStyle(
+    s.fontFamily ?? 'system-ui',
+    s.fontSize ?? 16.0,
+    (s.fontWeight ?? 400) as u16,
+    s.italic ?? false,
+    s.color ?? defaultInk,
+  );
+}
+
+export function mergeTextOverride(base: TextStyle, over: StyleProps): TextStyle {
+  let weight: u16 = if (let {fontWeight} = over) { fontWeight as u16 } else { base.weight };
+  return new TextStyle(
+    over.fontFamily ?? base.family,
+    over.fontSize ?? base.size,
+    weight,
+    over.italic ?? base.italic,
+    over.color ?? base.color,
+  );
+}
+
+/** Combine a `StyleInput` (single `Style`, inline `StyleProps`, or `Array<Style>`) into one `Style`. */
+export function normalizeStyle(input: StyleInput): Style {
+  if (input is Style) {
+    return input;
+  }
+  if (input is Array<Style>) {
+    var decls: StyleProps = {};
+    let custom = new GrowableArray<CustomDecl>();
+    let condRules = new GrowableArray<CompiledRule>();
+    for (let s in input) {
+      decls = { ...decls, ...s.decls };
+      for (let c in s.custom) { custom.push(c); }
+      for (let r in s.condRules) { condRules.push(r); }
+    }
+    return new Style(decls, custom, condRules);
+  }
+  return new Style(input);
+}

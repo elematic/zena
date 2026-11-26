@@ -2809,21 +2809,35 @@ export final class Parser {
           this.#advance(); // consume ':'
           let propValue = this.#parseExpression();
           properties.push(new PropertyAssignment(propName, propValue, this.#makeLocation(propStart)));
+        } else if (nextKind == TokenType.Arrow) {
+          let entryStart = this.#peek();
+          let key = this.#parseIdentifier();
+          this.#advance(); // consume '=>'
+          let entryValue = this.#parseExpression();
+          properties.push(new MapEntry(key, entryValue, this.#makeLocation(entryStart)));
         } else if (nextKind == TokenType.LBrace || nextKind == TokenType.LParen ||
                    nextKind == TokenType.Dot || nextKind == TokenType.Less) {
           let childStart = this.#peek();
           let child = this.#parseCall();
-          if (!(child is NodeLiteral) && !(child is CallExpression)) {
-            throw this.#error("Expected a node, call, binding '$(...)', or property in node body", childStart);
+          if (this.#match(TokenType.Arrow)) {
+            let entryValue = this.#parseExpression();
+            properties.push(new MapEntry(child, entryValue, this.#makeLocation(childStart)));
+          } else if (child is NodeLiteral || child is CallExpression) {
+            children.push(child);
+          } else {
+            throw this.#error("Expected a node, call, binding '$(...)', entry 'key => value', or property in node body", childStart);
           }
-          children.push(child);
         } else {
           let propStart = this.#peek();
           let propName = this.#parseIdentifier();
           properties.push(new PropertyAssignment(propName, propName, this.#makeLocation(propStart)));
         }
       } else {
-        throw this.#error("Expected a property, child node, or binding '$(...)' in node body");
+        let entryStart = this.#peek();
+        let key = this.#parseExpression();
+        this.#consume(TokenType.Arrow, "Expected '=>' in node map entry");
+        let entryValue = this.#parseExpression();
+        properties.push(new MapEntry(key, entryValue, this.#makeLocation(entryStart)));
       }
 
       this.#match(TokenType.Comma);
@@ -4436,6 +4450,12 @@ export final class Parser {
       this.#consume(TokenType.RBracket, "Expected ']' after symbol name");
       let symPropName = new SymbolPropertyName(symbolExpr, this.#makeLocation(symStart));
       
+      // Generic symbol-keyed method: [name]<T>(params) { ... }
+      if (this.#check(TokenType.Less) && this.#isGenericMethodStart()) {
+        this.#advance(); // consume '<'
+        let typeParams = this.#parseTypeParameterList();
+        return this.#parseMethodBody(symPropName, typeParams, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false, false, isShared);
+      }
       // Symbol-keyed method: [name](params) { ... }
       if (this.#check(TokenType.LParen)) {
         return this.#parseMethodBody(symPropName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false, false, isShared);

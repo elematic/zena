@@ -9,6 +9,10 @@ import { some, none } from 'zena:core';
 
 enum Align { Start, Center, Stretch }
 
+type MockStyle = { gap?: f32, align?: Align };
+
+let baseStyle: MockStyle = { align: Align.Stretch };
+
 var compileCount = 0;
 
 class MockElement {
@@ -63,6 +67,18 @@ final class Box extends MockElement {
       let t = this.patchTarget;
       if (t != null) {
         t.recordPatch(this.nodeIdx, 'align');
+      }
+    }
+  }
+
+  style: MockStyle {
+    get { return { gap: this.gap, align: this.align }; }
+    set(v) {
+      this.gap = v.gap ?? 0.0;
+      this.align = v.align ?? Align.Start;
+      let t = this.patchTarget;
+      if (t != null) {
+        t.recordPatch(this.nodeIdx, `style=${this.gap}`);
       }
     }
   }
@@ -240,6 +256,20 @@ class HostPage extends MockWidget {
   }
 }
 
+class StyledWidget extends MockWidget {
+  dynamicGap: f32;
+
+  new(this.dynamicGap) : super();
+
+  build(): MockInstance {
+    return @ui Box {
+      style: { ...baseStyle, gap: 12.0 },
+
+      Box { style: { ...baseStyle, gap: this.dynamicGap } }
+    };
+  }
+}
+
 export function main(): i32 {
   // 1. Call-site caching & constant folding
   let c1 = new Card('One');
@@ -292,6 +322,15 @@ export function main(): i32 {
   if (badge.count != 7) { return 23; }
   let proj = badge.projected;
   if (proj == null || proj.length != 2) { return 24; }
+
+  // 5. Static vs dynamic record literal (including spread) folding
+  let sw = new StyledWidget(20.0);
+  let si = sw.build();
+  let sroot = si.template.root;
+  if (sroot.gap != 12.0 || sroot.align != Align.Stretch) { return 25; }
+  if (sroot.binds.length != 0) { return 26; }
+  if (sroot.children[0].binds.length != 1) { return 27; }
+  if (si.patches.length != 1) { return 28; }
 
   return 0;
 }

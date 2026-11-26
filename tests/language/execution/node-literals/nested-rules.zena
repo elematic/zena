@@ -1,0 +1,222 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+
+// Immutable nested rule builders (`Stylesheet` / `Rule` / `When` via
+// `new [Builder.construct]`), boolean & range condition algebra, and flat
+// post-order condition table serialization.
+
+import { Builder, some, none } from 'zena:core';
+
+final class FlagKey {
+  name: String;
+  new(this.name);
+}
+
+final class NumberKey {
+  name: String;
+  new(this.name);
+}
+
+sealed class Condition {
+  case CondFlag(key: FlagKey)
+  case CondRange(key: NumberKey, min: Option<f32>, minInc: boolean, max: Option<f32>, maxInc: boolean)
+  case CondWithin(inner: Condition)
+  case CondAll(parts: GrowableArray<Condition>)
+  case CondNot(inner: Condition)
+}
+
+type CondInput = FlagKey | Condition;
+
+function toCond(x: CondInput): Condition {
+  if (x is Condition) { return x; }
+  return new CondFlag(x);
+}
+
+function all(parts: Array<CondInput>): Condition {
+  let flat = new GrowableArray<Condition>();
+  for (let p in parts) {
+    let c = toCond(p);
+    if (c is CondAll) {
+      for (let sub in c.parts) { flat.push(sub); }
+    } else {
+      flat.push(c);
+    }
+  }
+  return new CondAll(flat);
+}
+
+function not(x: CondInput): Condition {
+  return new CondNot(toCond(x));
+}
+
+function gte(k: NumberKey, v: f32): Condition {
+  return new CondRange(k, some(v), true, none, false);
+}
+
+sealed class FlatCond {
+  case FFlag(name: String)
+  case FRange(name: String, min: f32, minInc: boolean)
+  case FWithin(idx: u32)
+  case FAll(indices: GrowableArray<u32>)
+  case FNot(idx: u32)
+}
+
+function emitCond(out: GrowableArray<FlatCond>, c: Condition): u32 {
+  return match (c) {
+    case CondFlag {key}: {
+      let i = out.length as u32;
+      out.push(new FFlag(key.name));
+      i
+    }
+    case CondRange {key, min, minInc}: {
+      let m: f32 = if (let Some {value} = min) { value } else { 0.0 };
+      let i = out.length as u32;
+      out.push(new FRange(key.name, m, minInc));
+      i
+    }
+    case CondWithin {inner}: {
+      let child = emitCond(out, inner);
+      let i = out.length as u32;
+      out.push(new FWithin(child));
+      i
+    }
+    case CondAll {parts}: {
+      let ids = new GrowableArray<u32>();
+      for (let p in parts) { ids.push(emitCond(out, p)); }
+      let i = out.length as u32;
+      out.push(new FAll(ids));
+      i
+    }
+    case CondNot {inner}: {
+      let child = emitCond(out, inner);
+      let i = out.length as u32;
+      out.push(new FNot(child));
+      i
+    }
+  };
+}
+
+final class CompiledRule {
+  when: Condition;
+  color: i32;
+  new(this.when, this.color);
+}
+
+type RuleProps = { color?: i32 };
+
+function colorOf(props: RuleProps | null): i32 {
+  if (props != null) {
+    return props.color ?? 0;
+  }
+  return 0;
+}
+
+final class When {
+  when: Condition;
+  color: i32;
+
+  new [Builder.construct](
+    input: CondInput,
+    desc: { props?: RuleProps },
+  ) : when = toCond(input), color = colorOf(desc.props ?? null);
+}
+
+final class Rule {
+  when: Condition;
+  color: i32;
+  children: Array<Rule | When>;
+
+  new [Builder.construct](
+    input: CondInput,
+    desc: {
+      props?: RuleProps,
+      children?: Array<Rule | When>,
+    },
+  ) : when = toCond(input),
+      color = colorOf(desc.props ?? null),
+      children = desc.children ?? new GrowableArray<Rule | When>();
+
+  collect(prefix: Option<Condition>, out: GrowableArray<CompiledRule>): void {
+    let eff = if (let Some {value} = prefix) {
+      all([this.when, new CondWithin(value)])
+    } else {
+      this.when
+    };
+    out.push(new CompiledRule(eff, this.color));
+    for (let ch in this.children) {
+      if (ch is Rule) {
+        ch.collect(some(eff), out);
+      } else {
+        out.push(new CompiledRule(all([eff, ch.when]), ch.color));
+      }
+    }
+  }
+}
+
+function collectSheet(rules: Array<Rule> | null) {
+  let out = new GrowableArray<CompiledRule>();
+  if (rules != null) {
+    for (let r in rules) {
+      r.collect(none, out);
+    }
+  }
+  return out;
+}
+
+final class Stylesheet {
+  rules: GrowableArray<CompiledRule>;
+
+  new [Builder.construct](desc: { children?: Array<Rule> })
+    : rules = collectSheet(desc.children ?? null);
+}
+
+let card = new FlagKey('card');
+let title = new FlagKey('title');
+let hovered = new FlagKey('hovered');
+let disabled = new FlagKey('disabled');
+let panelWidth = new NumberKey('panel-width');
+
+let sheet = Stylesheet {
+  Rule(card) {
+    color: 1
+
+    Rule(title) {
+      color: 2
+
+      When(all([hovered, not(disabled), gte(panelWidth, 600.0)])) {
+        color: 3
+      }
+    }
+  }
+};
+
+export function main(): i32 {
+  if (sheet.rules.length != 3) { return 1; }
+  if (sheet.rules[0].color != 1) { return 2; }
+  if (sheet.rules[1].color != 2) { return 3; }
+  if (sheet.rules[2].color != 3) { return 4; }
+
+  let table = new GrowableArray<FlatCond>();
+  let rootIdx = emitCond(table, sheet.rules[2].when);
+
+  if (rootIdx != (table.length - 1) as u32) { return 5; }
+  let root = table[rootIdx as i32];
+  if (!(root is FAll)) { return 6; }
+  let allNode = root as FAll;
+  if (allNode.indices.length != 5) { return 7; }
+  for (let childIdx in allNode.indices) {
+    if (childIdx >= rootIdx) { return 8; }
+  }
+
+  if (!(table[allNode.indices[0] as i32] is FFlag)) { return 9; }
+  if (!(table[allNode.indices[1] as i32] is FWithin)) { return 10; }
+  if (!(table[allNode.indices[2] as i32] is FFlag)) { return 11; }
+  if (!(table[allNode.indices[3] as i32] is FNot)) { return 12; }
+  if (!(table[allNode.indices[4] as i32] is FRange)) { return 13; }
+
+  let rangeNode = table[allNode.indices[4] as i32] as FRange;
+  if (rangeNode.min != 600.0 || !rangeNode.minInc) { return 14; }
+
+  return 0;
+}

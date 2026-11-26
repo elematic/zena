@@ -22,10 +22,10 @@
 import {
   Box as OwnBox, Flex, Flow as FlowLayout, Layout, LayoutFlex, LayoutFlow,
   TextAlign, Edges, Axis, Justify, Align, Length, BoxStyle, TextStyle,
-  LengthAuto, LengthPercent, Overflow, Color,
+  LengthAuto, Overflow, Color,
 } from 'zenafx:ui/style';
 import {
-  Node, NodeDef, Appearance, AppearanceNothing, AppearanceFill, AppearanceText,
+  Node, NodeDef, NodeStyle, NodeStyleNothing, NodeStyleFill, NodeStyleText,
   TextContent, Binding, BindingTarget, BindingValue, BindingValueContent,
   BindingValueStyle, BindingValueTextStyle, BindingValueBox, BindingValueLayout,
   Hole, State, Restyle, RestyleFill, RestyleText, StateStyle, Cursor, createNode,
@@ -39,8 +39,30 @@ import {
   Answer, KeyAnswer, Handler, KeyHandler, projectChildren,
   startPointerListener, startKeyListener, runApp,
 } from './framework.zena';
+import {
+  Style, StyleProps, StyleInput, CompiledRule, CondFlag,
+  auto, noPadding, resolveInsets, hasVisualBoxProps,
+  resolveBoxStyle, mergeBoxOverride, resolveTextStyle, mergeTextOverride,
+  normalizeStyle,
+} from './style.zena';
 
 export { runApp, Answer, KeyAnswer } from './framework.zena';
+export { Axis, Justify, Align, Overflow, TextAlign, Color, Length } from 'zenafx:ui/style';
+export { Cursor } from 'zenafx:host/scene';
+export {
+  Insets, StyleProps, StyleInput,
+  Style, When, Rule, Stylesheet, CompiledRule,
+  PropertyKey, PropertyValue, CustomDecl,
+  colorProperty, numberProperty, lengthProperty, flagProperty, stringProperty,
+  FlagKey, NumberKey, Condition, CondInput,
+  FlatCondition, FlatRule, FlatRuleSet,
+  hovered, pressed, focused, nodeWidth, nodeHeight, scrollX, scrollY,
+  flagKey, numberKey, toCondition,
+  all, any, not, gte, gt, lte, lt, between, under, within,
+  condAll, condAny, condNot, condGte, condGt, condLte, condLt, condBetween,
+  flattenRules,
+  rgb, rgba, px, pct, auto, full, noPadding,
+} from './style.zena';
 
 /**
  * Base class for signal-driven `@ui` widgets.
@@ -95,11 +117,59 @@ export abstract class Widget extends WidgetBase {
   }
 }
 
-export let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
-export let full = new LengthPercent(100.0);
-
 let defaultInk = new Color(0.0, 0.0, 0.0, 1.0);
 let defaultTextStyle = new TextStyle('system-ui', 16.0, 400 as u16, false, defaultInk);
+
+final class MergedHostState {
+  state: State;
+  decls: StyleProps;
+
+  new(this.state, this.decls);
+}
+
+function collectHostStates(rules: GrowableArray<CompiledRule>) {
+  var hov: StyleProps = {};
+  var prs: StyleProps = {};
+  var foc: StyleProps = {};
+  let order = new GrowableArray<State>();
+
+  let recordOrder = (st: State) => {
+    var i = 0;
+    while (i < order.length) {
+      if (order[i] == st) {
+        return;
+      }
+      i += 1;
+    }
+    order.push(st);
+  };
+
+  for (let r in rules) {
+    if (let Some {value as cond} = r.when) {
+      if (cond is CondFlag) {
+        if (let Some {value as st} = cond.key.hostState) {
+          recordOrder(st);
+          match (st) {
+            case State.Hovered: { hov = { ...hov, ...r.decls }; }
+            case State.Pressed: { prs = { ...prs, ...r.decls }; }
+            case State.Focused: { foc = { ...foc, ...r.decls }; }
+          }
+        }
+      }
+    }
+  }
+
+  let out = new GrowableArray<MergedHostState>();
+  for (let st in order) {
+    let decls = match (st) {
+      case State.Hovered: hov
+      case State.Pressed: prs
+      case State.Focused: foc
+    };
+    out.push(new MergedHostState(st, decls));
+  }
+  return out;
+}
 
 /**
  * Stateful guest directive instance owned by a `SlotPart`.
@@ -917,6 +987,8 @@ function makeMoveListener(handler: (event: PointerEvent) => void, pos: u32) {
  *     setters write directly to `inst.writeBinding(...)` or register listeners.
  */
 export class HostElement {
+  var _style: StyleInput = {};
+
   var _width: Length = new LengthAuto();
   var _height: Length = new LengthAuto();
   var _grow: f32 = 0.0;
@@ -951,7 +1023,7 @@ export class HostElement {
   var _boundBox: boolean = false;
   var _boundLayout: boolean = false;
 
-  _states = new GrowableArray<PendingState>();
+  var _states = new GrowableArray<PendingState>();
   _children = new GrowableArray<HostElement>();
 
   /** Non-null when this object is a Phase 2 per-instance patcher. */
@@ -967,17 +1039,10 @@ export class HostElement {
       this._boundContent = true;
     } else if (propName == 'style') {
       this._boundStyle = true;
-    } else if (
-      propName == 'width' || propName == 'height' || propName == 'grow' ||
-      propName == 'shrink' || propName == 'padding' ||
-      propName == 'overflowX' || propName == 'overflowY'
-    ) {
       this._boundBox = true;
-    } else if (
-      propName == 'axis' || propName == 'justify' || propName == 'align' ||
-      propName == 'gap' || propName == 'textAlign' || propName == 'lineHeight'
-    ) {
-      this._boundLayout = true;
+      if (!this._isText) {
+        this._boundLayout = true;
+      }
     }
   }
 
@@ -1007,14 +1072,14 @@ export class HostElement {
         this._lineHeight = value.lineHeight;
       }
     }
-    match (def.appearance) {
-      case AppearanceFill {value}: { this._boxStyle = some(value); }
-      case AppearanceText {value}: {
+    match (def.style) {
+      case NodeStyleFill {value}: { this._boxStyle = some(value); }
+      case NodeStyleText {value}: {
         this._isText = true;
         this._textContent = value.content;
         this._textStyle = value.style;
       }
-      case AppearanceNothing: {}
+      case NodeStyleNothing: {}
     }
   }
 
@@ -1032,73 +1097,82 @@ export class HostElement {
     return new LayoutFlex(new Flex(this._axis, this._justify, this._align, this._gap));
   }
 
-  _appearance(): Appearance {
+  _nodeStyle(): NodeStyle {
     if (this._isText) {
-      return new AppearanceText(new TextContent(this._textContent, this._textStyle));
+      return new NodeStyleText(new TextContent(this._textContent, this._textStyle));
     }
     if (let Some {value} = this._boxStyle) {
-      return new AppearanceFill(value);
+      return new NodeStyleFill(value);
     }
-    return new AppearanceNothing();
+    return new NodeStyleNothing();
   }
 
-  _flushBox(): void {
+  _applyStyle(input: StyleInput): void {
+    this._style = input;
+    let resolved = normalizeStyle(input);
+    let s = resolved.decls;
+    this._width = s.width ?? auto;
+    this._height = s.height ?? auto;
+    this._grow = s.grow ?? 0.0;
+    this._shrink = s.shrink ?? 1.0;
+    this._padding = if (let {padding} = s) { resolveInsets(padding) } else { noPadding };
+    let ov = s.overflow ?? Overflow.Clip;
+    this._overflowX = s.overflowX ?? ov;
+    this._overflowY = s.overflowY ?? ov;
+    this._cursor = if (let {cursor} = s) { some(cursor) } else { none };
+    this._unselectable = s.unselectable ?? false;
+
+    if (this._isText) {
+      let textStyle = resolveTextStyle(s);
+      this._textStyle = textStyle;
+      let target = this._patchTarget;
+      if (target != null) {
+        target.writeBinding(this._bfsNodeIndex, BindingTarget.Box, new BindingValueBox(this._ownBox()));
+        target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueTextStyle(textStyle));
+      } else {
+        this._states = new GrowableArray<PendingState>();
+        for (let entry in collectHostStates(resolved.condRules)) {
+          this._states.push(new PendingState(entry.state, new RestyleText(mergeTextOverride(textStyle, entry.decls))));
+        }
+      }
+      return;
+    }
+
+    if (this._isFlow) {
+      this._textAlign = s.textAlign ?? TextAlign.Start;
+      this._lineHeight = if (let {lineHeight} = s) { some(lineHeight) } else { none };
+    } else {
+      this._axis = s.axis ?? Axis.Column;
+      this._justify = s.justify ?? Justify.Start;
+      this._align = s.align ?? Align.Start;
+      this._gap = s.gap ?? 0.0;
+    }
+
+    let boxStyle = resolveBoxStyle(s);
+    this._boxStyle = if (hasVisualBoxProps(s)) { some(boxStyle) } else { none };
     let target = this._patchTarget;
     if (target != null) {
       target.writeBinding(this._bfsNodeIndex, BindingTarget.Box, new BindingValueBox(this._ownBox()));
-    }
-  }
-
-  _flushLayout(): void {
-    let target = this._patchTarget;
-    if (target != null) {
       target.writeBinding(this._bfsNodeIndex, BindingTarget.Layout, new BindingValueLayout(this._layout()));
+      target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueStyle(boxStyle));
+    } else {
+      this._states = new GrowableArray<PendingState>();
+      for (let entry in collectHostStates(resolved.condRules)) {
+        this._states.push(new PendingState(entry.state, new RestyleFill(mergeBoxOverride(boxStyle, entry.decls))));
+      }
     }
   }
 
-  // Common box / node properties shared by Box, Flow, and Text.
-  width: Length {
-    get { return this._width; }
-    set(v) { this._width = v; this._flushBox(); }
+  /** Unified style carrying sizing, layout, visual, typography, interaction, and conditional rules. */
+  style: StyleInput {
+    get { return this._style; }
+    set(v) { this._applyStyle(v); }
   }
-  height: Length {
-    get { return this._height; }
-    set(v) { this._height = v; this._flushBox(); }
-  }
-  grow: f32 {
-    get { return this._grow; }
-    set(v) { this._grow = v; this._flushBox(); }
-  }
-  shrink: f32 {
-    get { return this._shrink; }
-    set(v) { this._shrink = v; this._flushBox(); }
-  }
-  padding: Edges {
-    get { return this._padding; }
-    set(v) { this._padding = v; this._flushBox(); }
-  }
-  overflowX: Overflow {
-    get { return this._overflowX; }
-    set(v) { this._overflowX = v; this._flushBox(); }
-  }
-  overflowY: Overflow {
-    get { return this._overflowY; }
-    set(v) { this._overflowY = v; this._flushBox(); }
-  }
-  cursor: Cursor {
-    get {
-      if (let Some {value} = this._cursor) { return value; }
-      return Cursor.Default;
-    }
-    set(v) { this._cursor = some(v); }
-  }
+
+  /** Behavioral node capability: whether this node can receive keyboard focus. */
   focusable: boolean {
     get { return this._focusable; }
     set(v) { this._focusable = v; }
-  }
-  unselectable: boolean {
-    get { return this._unselectable; }
-    set(v) { this._unselectable = v; }
   }
 
   // Event listeners (always registered per-instance in Phase 2).
@@ -1167,8 +1241,6 @@ export class HostElement {
   }
 }
 
-let defaultBoxStyle = new BoxStyle(none, none, 0.0, 0.0, 1.0);
-
 /** A flex container box. */
 export final class Box extends HostElement {
   new() : super();
@@ -1181,50 +1253,6 @@ export final class Box extends HostElement {
 
   addChild(child: HostElement): void {
     this._children.push(child);
-  }
-
-  style: BoxStyle {
-    get {
-      if (let Some {value} = this._boxStyle) { return value; }
-      return defaultBoxStyle;
-    }
-    set(v) {
-      this._boxStyle = some(v);
-      let target = this._patchTarget;
-      if (target != null) {
-        target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueStyle(v));
-      }
-    }
-  }
-
-  axis: Axis {
-    get { return this._axis; }
-    set(v) { this._axis = v; this._flushLayout(); }
-  }
-  justify: Justify {
-    get { return this._justify; }
-    set(v) { this._justify = v; this._flushLayout(); }
-  }
-  align: Align {
-    get { return this._align; }
-    set(v) { this._align = v; this._flushLayout(); }
-  }
-  gap: f32 {
-    get { return this._gap; }
-    set(v) { this._gap = v; this._flushLayout(); }
-  }
-
-  hovered: BoxStyle {
-    get { return defaultBoxStyle; }
-    set(v) { this._states.push(new PendingState(State.Hovered, new RestyleFill(v))); }
-  }
-  pressed: BoxStyle {
-    get { return defaultBoxStyle; }
-    set(v) { this._states.push(new PendingState(State.Pressed, new RestyleFill(v))); }
-  }
-  focused: BoxStyle {
-    get { return defaultBoxStyle; }
-    set(v) { this._states.push(new PendingState(State.Focused, new RestyleFill(v))); }
   }
 }
 
@@ -1242,45 +1270,6 @@ export final class Flow extends HostElement {
 
   addChild(child: HostElement): void {
     this._children.push(child);
-  }
-
-  style: BoxStyle {
-    get {
-      if (let Some {value} = this._boxStyle) { return value; }
-      return defaultBoxStyle;
-    }
-    set(v) {
-      this._boxStyle = some(v);
-      let target = this._patchTarget;
-      if (target != null) {
-        target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueStyle(v));
-      }
-    }
-  }
-
-  textAlign: TextAlign {
-    get { return this._textAlign; }
-    set(v) { this._textAlign = v; this._flushLayout(); }
-  }
-  lineHeight: f32 {
-    get {
-      if (let Some {value} = this._lineHeight) { return value; }
-      return 1.0;
-    }
-    set(v) { this._lineHeight = some(v); this._flushLayout(); }
-  }
-
-  hovered: BoxStyle {
-    get { return defaultBoxStyle; }
-    set(v) { this._states.push(new PendingState(State.Hovered, new RestyleFill(v))); }
-  }
-  pressed: BoxStyle {
-    get { return defaultBoxStyle; }
-    set(v) { this._states.push(new PendingState(State.Pressed, new RestyleFill(v))); }
-  }
-  focused: BoxStyle {
-    get { return defaultBoxStyle; }
-    set(v) { this._states.push(new PendingState(State.Focused, new RestyleFill(v))); }
   }
 }
 
@@ -1308,33 +1297,9 @@ export final class Text extends HostElement {
     }
   }
 
-  style: TextStyle {
-    get { return this._textStyle; }
-    set(v) {
-      this._textStyle = v;
-      let target = this._patchTarget;
-      if (target != null) {
-        target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueTextStyle(v));
-      }
-    }
-  }
-
   editable: boolean {
     get { return this._editable; }
     set(v) { this._editable = v; }
-  }
-
-  hovered: TextStyle {
-    get { return defaultTextStyle; }
-    set(v) { this._states.push(new PendingState(State.Hovered, new RestyleText(v))); }
-  }
-  pressed: TextStyle {
-    get { return defaultTextStyle; }
-    set(v) { this._states.push(new PendingState(State.Pressed, new RestyleText(v))); }
-  }
-  focused: TextStyle {
-    get { return defaultTextStyle; }
-    set(v) { this._states.push(new PendingState(State.Focused, new RestyleText(v))); }
   }
 }
 
@@ -1433,7 +1398,7 @@ export final class UiTag {
       let def = new NodeDef(
         el._ownBox(),
         el._layout(),
-        el._appearance(),
+        el._nodeStyle(),
         firstChildOf[n] as u32,
         el._children.length as u32,
         el._isSlot,

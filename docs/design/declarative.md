@@ -134,10 +134,10 @@ Node literals (`Type [arg] { ... }`) and standalone `.zconf` files share one syn
 
 1. **Typed Constructors**: A node begins with a type identifier naming a Zena class, record alias, or schema type.
 2. **Positional Argument**: An optional positional argument carries leaf content (`Text 'Hello' { style: titleStyle }`).
-3. **Named Properties**: `key: value` entries initialize fields and default through presence-optional records ([record-presence.md](./record-presence.md)).
+3. **Named Properties & Custom Entries**: `key: value` entries initialize fields through presence-optional records ([record-presence.md](./record-presence.md)); `key => value` entries supply dynamic or custom-keyed values (such as map entries or typed custom style properties).
 4. **Implicit Child Appending**: Nested node entries inside `{ ... }` append to the parent node's children without array brackets.
 
-Property-only construction (`Point { x: 1.0, y: 2.0 }`) and child-bearing trees (`Box { style: cardStyle, Text 'Hello' }`) are the same syntax. Whether a type accepts children is checked by the type checker. Because Zena parenthesizes `if (...)`, `while (...)`, `for (...)`, and `match (...)` conditions, `Type { ... }` in expression position is unambiguous.
+Property-only construction (`Point { x: 1.0 y: 2.0 }`), map builders (`Headers { 'Accept' => 'text/html' }`), and child-bearing trees (`Box { style: cardStyle, Text('Hello') }`) share the same syntax. Record type aliases desugar directly to contextually typed record literals. Classes opt into untagged node-literal syntax explicitly via a symbol-named constructor `new [Builder.construct](args..., desc)` (`Builder` in `zena:core`) taking a descriptor record with any subset of `{ spreads?, props?, entries?, children? }` (plus an optional generic `static [Builder.entry]<T>(key, value)` for heterogeneous `key => value` entries), so constructed values remain immutable and require no construct-then-set mutation. Because Zena parenthesizes `if (...)`, `while (...)`, `for (...)`, and `match (...)` conditions, `Type { ... }` in expression position is unambiguous.
 
 Untagged node literals evaluate eagerly in ordinary Zena code and construct their objects directly. `.zconf` files use the same syntax restricted to constant data, so build tools can parse them without running code.
 

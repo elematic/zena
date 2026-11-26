@@ -47,7 +47,7 @@ pub struct TextContent {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
 #[cfg_attr(feature = "wasmtime", component(variant))]
-pub enum Appearance {
+pub enum NodeStyle {
     #[cfg_attr(feature = "wasmtime", component(name = "nothing"))]
     Nothing,
     #[cfg_attr(feature = "wasmtime", component(name = "fill"))]
@@ -72,7 +72,7 @@ pub struct NodeDef {
     /// container: its text children are joined and laid out as one piece
     /// of text.
     pub layout: Layout,
-    pub appearance: Appearance,
+    pub style: NodeStyle,
     #[cfg_attr(feature = "wasmtime", component(name = "first-child"))]
     pub first_child: u32,
     #[cfg_attr(feature = "wasmtime", component(name = "child-count"))]
@@ -176,7 +176,7 @@ pub enum State {
     Focused,
 }
 
-/// How a node looks while a state holds.
+/// How a node is styled while a state holds.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
 #[cfg_attr(feature = "wasmtime", component(variant))]
@@ -187,7 +187,7 @@ pub enum Restyle {
     Text(TextStyle),
 }
 
-/// One node's look while a state holds, as a template describes it: `node`
+/// One node's style while a state holds, as a template describes it: `node`
 /// changes, `of` is the node whose state is read, and both are positions in
 /// the template.
 #[derive(Clone, Debug, PartialEq)]
@@ -427,7 +427,7 @@ struct Solved {
 
 /// A [`StateStyle`] on the node it changes, with `of` resolved to the scene
 /// node whose state is read.
-struct Look {
+struct StateOverride {
     when: State,
     of: u32,
     style: Restyle,
@@ -452,7 +452,7 @@ struct Retained {
     /// container: its `run` is then the texts of its text children shaped
     /// as one, and those children have no run of their own.
     layout: Layout,
-    appearance: Appearance,
+    style: NodeStyle,
     /// The shaped run for a text node, owned by this node and released when
     /// it is replaced.
     run: Option<u32>,
@@ -475,15 +475,15 @@ struct Retained {
     key_listeners: Vec<KeyListener>,
     /// Whether this node can have the focus.
     focusable: bool,
-    /// The looks this node takes while a state holds, in the template's
+    /// The state styles this node takes while a state holds, in the template's
     /// order. The last one whose state holds is the one drawn.
-    looks: Vec<Look>,
-    /// Whether some node's look depends on this node being hovered, and on
+    state_styles: Vec<StateOverride>,
+    /// Whether some node's style depends on this node being hovered, and on
     /// its being pressed. The pointer coming or going here is then worth a
     /// frame, and anywhere else it is not.
     watched: [bool; 3],
     /// The style a text node's run is shaped with when that is one of its
-    /// `looks`. `None` when it is the node's own.
+    /// `state_styles`. `None` when it is the node's own.
     shaped_as: Option<TextStyle>,
     /// How far this node's content is scrolled, right and down. Moved by the
     /// wheel on an axis whose overflow is `scroll`, and kept within how far
@@ -518,7 +518,7 @@ impl Retained {
         Self {
             own_box: OwnBox::default(),
             layout: Layout::default(),
-            appearance: Appearance::Nothing,
+            style: NodeStyle::Nothing,
             run: None,
             children: Vec::new(),
             is_slot: false,
@@ -527,7 +527,7 @@ impl Retained {
             listeners: Vec::new(),
             key_listeners: Vec::new(),
             focusable: false,
-            looks: Vec::new(),
+            state_styles: Vec::new(),
             watched: [false; 3],
             shaped_as: None,
             scroll: (0.0, 0.0),
@@ -937,7 +937,7 @@ impl Scene {
         }
         if let Some(held) = self.get_mut(node) {
             let gone = held.run.take();
-            // Its listeners and looks go with the rest: they came with the
+            // Its listeners and state styles go with the rest: they came with the
             // template that is being replaced. Where it hangs does not change.
             let listeners = held.listener_ids();
             *held = Retained {
@@ -984,7 +984,7 @@ impl Scene {
             ids.push(self.alloc(Retained {
                 own_box: def.own_box,
                 layout: def.layout,
-                appearance: def.appearance.clone(),
+                style: def.style.clone(),
                 run,
                 is_slot: def.is_slot,
                 cursor: def.cursor,
@@ -999,7 +999,7 @@ impl Scene {
         if let Some(held) = self.get_mut(node) {
             held.own_box = filled[0].own_box;
             held.layout = filled[0].layout;
-            held.appearance = filled[0].appearance.clone();
+            held.style = filled[0].style.clone();
             held.run = run;
             held.cursor = filled[0].cursor;
             held.focusable = filled[0].focusable;
@@ -1030,7 +1030,7 @@ impl Scene {
         }
 
         // A state style names two positions in the template. Both are nodes
-        // of this interior now: the one that changes keeps the look, and the
+        // of this interior now: the one that changes keeps the override, and the
         // one whose state is read is marked, so that the pointer coming or
         // going there is known to need a frame.
         for state in states {
@@ -1041,7 +1041,7 @@ impl Scene {
                 continue;
             };
             if let Some(held) = self.get_mut(changes) {
-                held.looks.push(Look {
+                held.state_styles.push(StateOverride {
                     when: state.when,
                     of: read,
                     style: state.style.clone(),
@@ -1064,8 +1064,8 @@ impl Scene {
     /// Shape a node's text, if it has any. The run belongs to the node from
     /// here on, and is released when the node goes away.
     fn shape(&self, def: &NodeDef, text: &mut TextEngine) -> Option<u32> {
-        match &def.appearance {
-            Appearance::Text(t) => Some(text.register_run(&t.content, &t.style)),
+        match &def.style {
+            NodeStyle::Text(t) => Some(text.register_run(&t.content, &t.style)),
             _ => None,
         }
     }
@@ -1083,8 +1083,8 @@ impl Scene {
         let parts: Vec<&TextContent> = held
             .children
             .iter()
-            .filter_map(|child| match &self.get(*child)?.appearance {
-                Appearance::Text(shown) => Some(shown),
+            .filter_map(|child| match &self.get(*child)?.style {
+                NodeStyle::Text(shown) => Some(shown),
                 _ => None,
             })
             .collect();
@@ -1121,8 +1121,8 @@ impl Scene {
     /// flow container.
     fn content_of(&self, node: u32) -> Option<&str> {
         let held = self.get(node)?;
-        match &held.appearance {
-            Appearance::Text(shown) => Some(&shown.content),
+        match &held.style {
+            NodeStyle::Text(shown) => Some(&shown.content),
             _ if held.layout.flow().is_some() => Some(&held.joined),
             _ => None,
         }
@@ -1158,10 +1158,10 @@ impl Scene {
         let mut realigned = false;
         match (target, &hole.value) {
             (BindingTarget::Content, BindingValue::Content(content)) => {
-                if let Appearance::Text(text_content) = &mut held.appearance {
+                if let NodeStyle::Text(text_content) = &mut held.style {
                     rewrote = true;
                     text_content.content = content.clone();
-                    // The style the run has now, which is a look's while a
+                    // The style the run has now, which is a state style while a
                     // state holds.
                     let style = held
                         .shaped_as
@@ -1175,14 +1175,14 @@ impl Scene {
                 }
             }
             (BindingTarget::Style, BindingValue::Style(style)) => {
-                held.appearance = Appearance::Fill(*style);
+                held.style = NodeStyle::Fill(*style);
             }
             (BindingTarget::Style, BindingValue::TextStyle(style)) => {
-                if let Appearance::Text(text_content) = &mut held.appearance {
+                if let NodeStyle::Text(text_content) = &mut held.style {
                     restyled = true;
                     text_content.style = style.clone();
                     let content = text_content.content.clone();
-                    // A run that is showing a look keeps it: this is the
+                    // A run that is showing a state style keeps it: this is the
                     // style for when no state holds.
                     if let (Some(run), None) = (held.run, &held.shaped_as) {
                         text.update_run(run, &content, style);
@@ -1876,8 +1876,8 @@ impl Scene {
             let inner_shift = (shift.0 + held.scroll.0, shift.1 + held.scroll.1);
             // Content is cut off inside the border, so a list's rows scroll
             // under its border and not over it.
-            let border = match &held.appearance {
-                Appearance::Fill(style) if style.border_color.is_some() => style.border_width,
+            let border = match &held.style {
+                NodeStyle::Fill(style) if style.border_color.is_some() => style.border_width,
                 _ => 0.0,
             };
             let inside = Rect {
@@ -1922,8 +1922,8 @@ impl Scene {
             let (x, y) = self.pointer;
             self.hover(self.hit(x, y))
         };
-        // A fill's look is drawn below, in this frame, from the states as
-        // they now are. A text node's look can change how wide its run is,
+        // A fill's state style is drawn below, in this frame, from the states as
+        // they now are. A text node's state style can change how wide its run is,
         // so it is shaped before the solve, and one that changed just now is
         // shaped here for the next frame to lay out. Only then is another
         // frame owed: a list of rows with hovered fills scrolls in one frame
@@ -1952,16 +1952,16 @@ impl Scene {
                 continue;
             }
             let node = self.get(*id).expect("a live node");
-            let look = node.looks.iter().rev().find_map(|l| match &l.style {
-                Restyle::Fill(style) if holding.holds(l) => Some(style),
+            let state_style = node.state_styles.iter().rev().find_map(|s| match &s.style {
+                Restyle::Fill(style) if holding.holds(s) => Some(style),
                 _ => None,
             });
             let mut drawn: Vec<Command> = Vec::new();
-            // A box's fill, in the look that holds for it. A flow container
+            // A box's fill, in the state style that holds for it. A flow container
             // can have one, behind its text.
-            let fill = match (look, &node.appearance) {
-                (Some(style), Appearance::Fill(_) | Appearance::Nothing) => Some(style),
-                (None, Appearance::Fill(style)) => Some(style),
+            let fill = match (state_style, &node.style) {
+                (Some(style), NodeStyle::Fill(_) | NodeStyle::Nothing) => Some(style),
+                (None, NodeStyle::Fill(style)) => Some(style),
                 _ => None,
             };
             if let Some(style) = fill {
@@ -2005,7 +2005,7 @@ impl Scene {
                         .filter(|_| node.editable)
                         .and_then(|(_, _, caret)| caret)
                         .and_then(|at| text.caret(run, at, CARET_WIDTH));
-                    if let (Some(caret), Appearance::Text(own)) = (caret, &node.appearance) {
+                    if let (Some(caret), NodeStyle::Text(own)) = (caret, &node.style) {
                         let ink = node.shaped_as.as_ref().unwrap_or(&own.style).color;
                         drawn.push(plain(placed(caret), ink));
                     }
@@ -2083,8 +2083,8 @@ impl Scene {
         commands
     }
 
-    /// Shape each text node's run with the look that holds for it, or with
-    /// its own style when none does. Only a node whose look changed since it
+    /// Shape each text node's run with the state style that holds for it, or with
+    /// its own style when none does. Only a node whose active style changed since it
     /// was last shaped costs anything. Returns whether any did.
     fn reshape_for_states(&mut self, order: &[u32], text: &mut TextEngine) -> bool {
         let holding = self.holding();
@@ -2093,16 +2093,16 @@ impl Scene {
             let Some(held) = self.get_mut(*id) else {
                 continue;
             };
-            let (Some(run), Appearance::Text(own)) = (held.run, &held.appearance) else {
+            let (Some(run), NodeStyle::Text(own)) = (held.run, &held.style) else {
                 continue;
             };
-            let look = held.looks.iter().rev().find_map(|l| match &l.style {
-                Restyle::Text(style) if holding.holds(l) => Some(style.clone()),
+            let active = held.state_styles.iter().rev().find_map(|s| match &s.style {
+                Restyle::Text(style) if holding.holds(s) => Some(style.clone()),
                 _ => None,
             });
-            if look != held.shaped_as {
-                text.update_run(run, &own.content, look.as_ref().unwrap_or(&own.style));
-                held.shaped_as = look;
+            if active != held.shaped_as {
+                text.update_run(run, &own.content, active.as_ref().unwrap_or(&own.style));
+                held.shaped_as = active;
                 reshaped = true;
             }
         }
@@ -2149,7 +2149,7 @@ impl Scene {
         }
     }
 
-    /// Whether some look depends on `state` at a node that is on the path
+    /// Whether some state style depends on `state` at a node that is on the path
     /// from one of these targets and not the other, which are the nodes the
     /// state starts or stops holding for.
     fn watched_between(&self, old: Option<u32>, new: Option<u32>, state: State) -> bool {
@@ -2775,14 +2775,14 @@ struct Holding {
 }
 
 impl Holding {
-    /// Whether a look's state holds.
-    fn holds(&self, look: &Look) -> bool {
-        let path = match look.when {
+    /// Whether a state override's condition holds.
+    fn holds(&self, override_style: &StateOverride) -> bool {
+        let path = match override_style.when {
             State::Hovered => &self.hovered,
             State::Pressed => &self.pressed,
             State::Focused => &self.focused,
         };
-        path.contains(&look.of)
+        path.contains(&override_style.of)
     }
 }
 
@@ -2915,15 +2915,15 @@ pub const PAGE: Color = Color::rgb(1.0, 1.0, 1.0);
 fn apply(node: &mut NodeDef, target: BindingTarget, value: &BindingValue) {
     match (target, value) {
         (BindingTarget::Content, BindingValue::Content(content)) => {
-            if let Appearance::Text(held) = &mut node.appearance {
+            if let NodeStyle::Text(held) = &mut node.style {
                 held.content = content.clone();
             }
         }
         (BindingTarget::Style, BindingValue::Style(style)) => {
-            node.appearance = Appearance::Fill(*style);
+            node.style = NodeStyle::Fill(*style);
         }
         (BindingTarget::Style, BindingValue::TextStyle(style)) => {
-            if let Appearance::Text(held) = &mut node.appearance {
+            if let NodeStyle::Text(held) = &mut node.style {
                 held.style = style.clone();
             }
         }
@@ -2952,7 +2952,7 @@ mod tests {
         NodeDef {
             own_box: OwnBox::default(),
             layout: Layout::default(),
-            appearance: Appearance::Nothing,
+            style: NodeStyle::Nothing,
             first_child: 0,
             child_count: 0,
             is_slot: false,
@@ -2965,7 +2965,7 @@ mod tests {
 
     fn text_node(s: &str) -> NodeDef {
         NodeDef {
-            appearance: Appearance::Text(TextContent {
+            style: NodeStyle::Text(TextContent {
                 content: s.to_owned(),
                 style: TextStyle::default(),
             }),
@@ -3351,7 +3351,7 @@ mod tests {
                         height: Length::Px(40.0),
                         ..OwnBox::default()
                     },
-                    appearance: Appearance::Fill(BoxStyle {
+                    style: NodeStyle::Fill(BoxStyle {
                         background: Some(Color::rgb(1.0, 0.0, 0.0)),
                         ..BoxStyle::default()
                     }),
@@ -3846,7 +3846,7 @@ mod tests {
     const HOVERED: f32 = 0.5;
     const PRESSED: f32 = 0.9;
 
-    fn look(node: u32, when: State, of: u32, style: Restyle) -> StateStyle {
+    fn state_style(node: u32, when: State, of: u32, style: Restyle) -> StateStyle {
         StateStyle {
             node,
             when,
@@ -3855,12 +3855,12 @@ mod tests {
         }
     }
 
-    /// [`two_buttons`] with a fill on each button, a look for each while it
+    /// [`two_buttons`] with a fill on each button, a state style for each while it
     /// is hovered and another while it is pressed, and a hole for the left
     /// button's layout.
     fn two_styled_buttons(text: &mut TextEngine) -> (Scene, u32) {
         let button = || NodeDef {
-            appearance: Appearance::Fill(filled(PLAIN)),
+            style: NodeStyle::Fill(filled(PLAIN)),
             ..sized(100.0, 40.0)
         };
         let mut scene = Scene::new();
@@ -3888,10 +3888,10 @@ mod tests {
                     target: BindingTarget::Box,
                 }],
                 vec![
-                    look(1, State::Hovered, 1, Restyle::Fill(filled(HOVERED))),
-                    look(1, State::Pressed, 1, Restyle::Fill(filled(PRESSED))),
-                    look(2, State::Hovered, 2, Restyle::Fill(filled(HOVERED))),
-                    look(2, State::Pressed, 2, Restyle::Fill(filled(PRESSED))),
+                    state_style(1, State::Hovered, 1, Restyle::Fill(filled(HOVERED))),
+                    state_style(1, State::Pressed, 1, Restyle::Fill(filled(PRESSED))),
+                    state_style(2, State::Hovered, 2, Restyle::Fill(filled(HOVERED))),
+                    state_style(2, State::Pressed, 2, Restyle::Fill(filled(PRESSED))),
                 ],
             ),
             &[],
@@ -3983,7 +3983,7 @@ mod tests {
                     text_node("go"),
                 ],
                 vec![content_binding(1)],
-                vec![look(1, State::Hovered, 0, Restyle::Text(loud.clone()))],
+                vec![state_style(1, State::Hovered, 0, Restyle::Text(loud.clone()))],
             ),
             &[],
             &mut text,
@@ -4091,7 +4091,7 @@ mod tests {
                     node: 1,
                     target: BindingTarget::Box,
                 }],
-                vec![look(2, State::Hovered, 2, Restyle::Text(loud.clone()))],
+                vec![state_style(2, State::Hovered, 2, Restyle::Text(loud.clone()))],
             ),
             &[],
             &mut text,
@@ -4219,7 +4219,7 @@ mod tests {
                 shrink: 0.0,
                 ..sized(100.0, 40.0).own_box
             },
-            appearance: Appearance::Fill(filled(red)),
+            style: NodeStyle::Fill(filled(red)),
             ..blank()
         }
     }
@@ -4247,10 +4247,10 @@ mod tests {
             },
         ];
         nodes.extend((0..5).map(|_| list_row(PLAIN)));
-        let looks = (2..7)
-            .map(|at| look(at, State::Hovered, at, Restyle::Fill(filled(HOVERED))))
+        let state_styles = (2..7)
+            .map(|at| state_style(at, State::Hovered, at, Restyle::Fill(filled(HOVERED))))
             .collect();
-        scene.render(root, &with_states(LIST, nodes, vec![], looks), &[], text);
+        scene.render(root, &with_states(LIST, nodes, vec![], state_styles), &[], text);
         scene.draw(window(), text);
         (scene, root)
     }
@@ -4858,7 +4858,7 @@ mod tests {
 
     fn two_focusable_buttons(text: &mut TextEngine) -> (Scene, u32) {
         let button = || NodeDef {
-            appearance: Appearance::Fill(filled(PLAIN)),
+            style: NodeStyle::Fill(filled(PLAIN)),
             focusable: true,
             ..sized(100.0, 40.0)
         };
@@ -4884,9 +4884,9 @@ mod tests {
                 ],
                 vec![],
                 vec![
-                    look(1, State::Hovered, 1, Restyle::Fill(filled(HOVERED))),
-                    look(1, State::Focused, 1, Restyle::Fill(filled(FOCUSED))),
-                    look(2, State::Focused, 2, Restyle::Fill(filled(FOCUSED))),
+                    state_style(1, State::Hovered, 1, Restyle::Fill(filled(HOVERED))),
+                    state_style(1, State::Focused, 1, Restyle::Fill(filled(FOCUSED))),
+                    state_style(2, State::Focused, 2, Restyle::Fill(filled(FOCUSED))),
                 ],
             ),
             &[],
@@ -5551,7 +5551,7 @@ mod tests {
         }];
         for (index, part) in parts.iter().enumerate() {
             let mut node = text_node(part);
-            if let (1, Appearance::Text(shown)) = (index, &mut node.appearance) {
+            if let (1, NodeStyle::Text(shown)) = (index, &mut node.style) {
                 shown.style.weight = 700;
             }
             nodes.push(node);
@@ -5662,7 +5662,7 @@ mod tests {
         let mut scene = Scene::new();
         let root = scene.root();
         let tile = || NodeDef {
-            appearance: Appearance::Fill(filled(PLAIN)),
+            style: NodeStyle::Fill(filled(PLAIN)),
             ..sized(40.0, 20.0)
         };
         scene.render(

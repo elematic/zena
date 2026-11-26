@@ -28,18 +28,18 @@ import {
   StringLiteral, BooleanLiteral, NullLiteral, UnaryExpression,
   BinaryExpression, AsExpression, NewExpression, MemberExpression,
   CallExpression, AssignmentExpression, FunctionExpression, ArrayLiteral,
-  NodeLiteral, BindingExpression, DecoratedExpression, Decorator,
-  PropertyAssignment, SpreadElement, Parameter, SourceLocation,
-  TypeAnnotation, Module, ClassDeclaration, EnumDeclaration,
-  InterfaceDeclaration, MethodDefinition,
+  RecordLiteral, MapLiteral, MapEntry, NodeLiteral, BindingExpression,
+  DecoratedExpression, Decorator, PropertyAssignment, SpreadElement,
+  SymbolPropertyName, Parameter, SourceLocation, TypeAnnotation, Module,
+  ClassDeclaration, EnumDeclaration, InterfaceDeclaration, MethodDefinition,
 } from '../ast.zena';
 import {
-  Type, ClassType, InterfaceType, EnumType, ErrorType, FunctionType,
+  Type, ClassType, InterfaceType, EnumType, RecordType, ErrorType, FunctionType,
   FieldInfo, unwrapAliases, typeToString,
 } from '../types.zena';
 import { DiagnosticCode } from '../diagnostics.zena';
 import { Symbol } from '../scope/symbol.zena';
-import { UiLowering } from '../semantic-model.zena';
+import { UiLowering, NodeLowering } from '../semantic-model.zena';
 import { CheckerContext } from './context.zena';
 import { checkExpression } from './expressions.zena';
 import { checkStatement } from './statements.zena';
@@ -95,6 +95,351 @@ export function checkDecoratedExpression(
 
   let builder = new UiSynthesizer(ctx, expr, dec, tagIdent, tagSym);
   return builder.build();
+}
+
+/**
+ * Type-check and synthesize eager lowering for an untagged `NodeLiteral`
+ * (`Type(args) { props..., ...spreads..., key => value..., children... }`).
+ *
+ * Supports:
+ *   - **Record type aliases**: desugars `Point { x: 1.0 y: 2.0 }` directly
+ *     to a contextually typed `RecordLiteral` with optional commas and spread.
+ *   - **Classes opting in via `new [Builder.construct]`**: lowers to a single
+ *     immutable constructor call `new Type.[Builder.construct](args..., {
+ *     spreads?, props?, entries?, children? })`. Custom `key => value` entries
+ *     wrap in `Type.[Builder.entry](key, value)` if the class declares a static
+ *     `[Builder.entry]` method, or lower as a `MapLiteral` otherwise.
+ */
+export function checkNodeLiteral(
+  ctx: CheckerContext,
+  expr: NodeLiteral,
+  expectedType: Type | null
+): Type {
+  if (!(expr.type is Identifier)) {
+    ctx.error(
+      "Expected a class or record type in node literal.",
+      DiagnosticCode.TypeMismatch,
+      expr.type.loc
+    );
+    return new ErrorType();
+  }
+  let typeIdent = expr.type as Identifier;
+  var resolved = ctx.resolveTypeReference(typeIdent, typeIdent.name);
+  if (resolved == null) {
+    let val = ctx.resolveIdentifier(typeIdent);
+    if (val is ClassType) {
+      resolved = val;
+    }
+  }
+  if (resolved == null) {
+    ctx.error(
+      `Unknown type '${typeIdent.name}' in node literal.`,
+      DiagnosticCode.SymbolNotFound,
+      typeIdent.loc
+    );
+    return new ErrorType();
+  }
+
+  let unwrapped = unwrapAliases(resolved);
+
+  // Record type alias: `Point { x: 1.0 y: 2.0 }` -> contextually typed RecordLiteral.
+  if (unwrapped is RecordType) {
+    if (expr.args.length > 0) {
+      ctx.error(
+        `Record node literal '${typeIdent.name}' cannot take positional arguments.`,
+        DiagnosticCode.TypeMismatch,
+        expr.args[0].loc
+      );
+      return new ErrorType();
+    }
+    if (expr.children.length > 0) {
+      ctx.error(
+        `Record node literal '${typeIdent.name}' does not accept children.`,
+        DiagnosticCode.TypeMismatch,
+        expr.children[0].loc
+      );
+      return new ErrorType();
+    }
+    for (let prop in expr.properties) {
+      if (prop is MapEntry) {
+        ctx.error(
+          `Record node literal '${typeIdent.name}' does not accept 'key => value' entries.`,
+          DiagnosticCode.TypeMismatch,
+          prop.loc
+        );
+        return new ErrorType();
+      }
+    }
+    let rec = new RecordLiteral(expr.properties, expr.loc);
+    rec.id = ctx.mintNodeId();
+    ctx.model.setParent(rec, expr);
+    let emptyBlock = new BlockStatement(new GrowableArray<Statement>(), expr.loc);
+    emptyBlock.id = ctx.mintNodeId();
+    ctx.model.setParent(emptyBlock, expr);
+    let recType = checkExpression(ctx, rec, resolved);
+    ctx.model.setNodeLowering(expr, new NodeLowering(emptyBlock, rec));
+    return recType;
+  }
+
+  if (!(unwrapped is ClassType)) {
+    ctx.error(
+      `'${typeIdent.name}' is not a class or record type.`,
+      DiagnosticCode.TypeMismatch,
+      typeIdent.loc
+    );
+    return new ErrorType();
+  }
+
+  let cls = unwrapped;
+  if (!cls.constructors.has(":construct")) {
+    ctx.error(
+      `Class '${cls.name}' cannot be constructed with node-literal syntax (no 'new [Builder.construct]' constructor).`,
+      DiagnosticCode.TypeMismatch,
+      typeIdent.loc
+    );
+    return new ErrorType();
+  }
+
+  let classSym = ctx.model.resolve(typeIdent);
+  if (classSym == null) {
+    return new ErrorType();
+  }
+
+  let synth = new NodeLiteralSynthesizer(ctx, expr, typeIdent, classSym, cls, expectedType);
+  return synth.build();
+}
+
+final class NodeLiteralSynthesizer {
+  ctx: CheckerContext;
+  expr: NodeLiteral;
+  typeIdent: Identifier;
+  classSym: Symbol;
+  cls: ClassType;
+  expectedType: Type | null;
+
+  new(this.ctx, this.expr, this.typeIdent, this.classSym, this.cls, this.expectedType);
+
+  #mint<T extends Node>(node: T): T {
+    node.id = this.ctx.mintNodeId();
+    return node;
+  }
+
+  #setParent(child: Node, parent: Node): void {
+    this.ctx.model.setParent(child, parent);
+  }
+
+  #recordSym(node: Node, sym: Symbol): void {
+    let symbols = this.ctx.model.symbols;
+    if (symbols != null) {
+      symbols.record(node, sym);
+    }
+  }
+
+  #cloneSymIdent(name: String, sym: Symbol, loc: SourceLocation | null = null): Identifier {
+    let id = this.#mint(new Identifier(name, loc));
+    this.#recordSym(id, sym);
+    return id;
+  }
+
+  #propAssign(name: String, value: Expression, loc: SourceLocation | null): PropertyAssignment {
+    let key = this.#mint(new Identifier(name, loc));
+    let pa = this.#mint(new PropertyAssignment(key, value, loc));
+    this.#setParent(key, pa);
+    this.#setParent(value, pa);
+    return pa;
+  }
+
+  #descriptorRecordType(): RecordType | null {
+    if (!this.cls.constructors.has(":construct")) {
+      return null;
+    }
+    let ctor = this.cls.constructors[":construct"];
+    if (ctor.parameters.length == 0) {
+      return null;
+    }
+    let lastParam = unwrapAliases(ctor.parameters[ctor.parameters.length - 1]);
+    if (lastParam is RecordType) {
+      return lastParam;
+    }
+    return null;
+  }
+
+  #descriptorHasField(rec: RecordType | null, field: String): boolean {
+    if (rec == null) {
+      return false;
+    }
+    if (rec.properties.has(field)) {
+      return true;
+    }
+    let opt = rec.optionalProperties;
+    return opt != null && opt.has(field);
+  }
+
+  #wrapEntryCall(entry: MapEntry): Expression {
+    let recv = this.#cloneSymIdent(this.typeIdent.name, this.classSym, entry.loc);
+    let prop = this.#mint(new Identifier("entry", entry.loc));
+    let member = this.#mint(new MemberExpression(recv, prop, false, true, null, entry.loc));
+    this.#setParent(recv, member);
+    this.#setParent(prop, member);
+    this.ctx.model.setMemberKey(member, ":entry");
+    let callArgs = new GrowableArray<Expression>();
+    callArgs.push(entry.key);
+    callArgs.push(entry.value);
+    let call = this.#mint(new CallExpression(member, callArgs, null, false, entry.loc));
+    this.#setParent(member, call);
+    this.#setParent(entry.key, call);
+    this.#setParent(entry.value, call);
+    return call;
+  }
+
+  #lowerChildExpr(child: Expression): Expression {
+    if (child is CallExpression) {
+      let childCls = resolveClassFromExpr(this.ctx, child.callee);
+      if (childCls != null && child.callee is Identifier) {
+        let childIdent = child.callee as Identifier;
+        let childSym = this.ctx.model.resolve(childIdent);
+        if (childSym != null) {
+          let cCallee = this.#cloneSymIdent(childIdent.name, childSym, childIdent.loc);
+          if (childCls.constructors.has(":construct")) {
+            let ctorArgs = new GrowableArray<Expression>();
+            for (let arg in child.args) {
+              ctorArgs.push(arg);
+            }
+            let emptyDesc = this.#mint(new RecordLiteral(new GrowableArray<Node>(), child.loc));
+            ctorArgs.push(emptyDesc);
+            let symIdent = this.#mint(new Identifier("construct", child.loc));
+            let ctorName = this.#mint(new SymbolPropertyName(symIdent, child.loc));
+            this.#setParent(symIdent, ctorName);
+            this.ctx.model.setMemberKey(ctorName, ":construct");
+            let ne = this.#mint(new NewExpression(cCallee, child.typeArguments, ctorArgs, ctorName, child.loc));
+            this.#setParent(cCallee, ne);
+            this.#setParent(ctorName, ne);
+            for (let arg in ctorArgs) {
+              this.#setParent(arg, ne);
+            }
+            return ne;
+          }
+          let ne = this.#mint(new NewExpression(cCallee, child.typeArguments, child.args, null, child.loc));
+          this.#setParent(cCallee, ne);
+          for (let arg in child.args) {
+            this.#setParent(arg, ne);
+          }
+          return ne;
+        }
+      }
+    }
+    return child;
+  }
+
+  build(): Type {
+    let descType = this.#descriptorRecordType();
+    let hasSpreadsSlot = this.#descriptorHasField(descType, "spreads");
+    let hasPropsSlot = this.#descriptorHasField(descType, "props");
+
+    let propNodes = new GrowableArray<Node>();
+    let spreadArgs = new GrowableArray<Expression>();
+    let mapEntries = new GrowableArray<MapEntry>();
+
+    for (let prop in this.expr.properties) {
+      match (prop) {
+        case PropertyAssignment: {
+          propNodes.push(prop);
+        }
+        case SpreadElement {argument, loc as spreadLoc}: {
+          if (hasSpreadsSlot) {
+            spreadArgs.push(argument);
+          } else if (hasPropsSlot) {
+            propNodes.push(prop);
+          } else {
+            this.ctx.error(
+              `'${this.cls.name}' does not accept '...spread' in node literals.`,
+              DiagnosticCode.TypeMismatch,
+              spreadLoc
+            );
+          }
+        }
+        case MapEntry as me: {
+          mapEntries.push(me);
+        }
+        case _: {}
+      }
+    }
+
+    let descProps = new GrowableArray<Node>();
+    if (spreadArgs.length > 0) {
+      let arr = this.#mint(new ArrayLiteral(spreadArgs, this.expr.loc));
+      for (let a in spreadArgs) {
+        this.#setParent(a, arr);
+      }
+      descProps.push(this.#propAssign("spreads", arr, this.expr.loc));
+    }
+    if (propNodes.length > 0) {
+      let propsRec = this.#mint(new RecordLiteral(propNodes, this.expr.loc));
+      descProps.push(this.#propAssign("props", propsRec, this.expr.loc));
+    }
+    if (mapEntries.length > 0) {
+      if (this.cls.staticMembers.has(":entry")) {
+        let calls = new GrowableArray<Expression>();
+        for (let me in mapEntries) {
+          calls.push(this.#wrapEntryCall(me));
+        }
+        let arr = this.#mint(new ArrayLiteral(calls, this.expr.loc));
+        for (let c in calls) {
+          this.#setParent(c, arr);
+        }
+        descProps.push(this.#propAssign("entries", arr, this.expr.loc));
+      } else {
+        let mapLit = this.#mint(new MapLiteral(mapEntries, this.expr.loc));
+        for (let me in mapEntries) {
+          this.#setParent(me, mapLit);
+        }
+        descProps.push(this.#propAssign("entries", mapLit, this.expr.loc));
+      }
+    }
+    if (this.expr.children.length > 0) {
+      let childExprs = new GrowableArray<Expression>();
+      for (let ch in this.expr.children) {
+        childExprs.push(this.#lowerChildExpr(ch));
+      }
+      let arr = this.#mint(new ArrayLiteral(childExprs, this.expr.loc));
+      for (let c in childExprs) {
+        this.#setParent(c, arr);
+      }
+      descProps.push(this.#propAssign("children", arr, this.expr.loc));
+    }
+
+    let descRec = this.#mint(new RecordLiteral(descProps, this.expr.loc));
+    for (let dp in descProps) {
+      this.#setParent(dp, descRec);
+    }
+
+    let ctorArgs = new GrowableArray<Expression>();
+    for (let arg in this.expr.args) {
+      ctorArgs.push(arg);
+    }
+    ctorArgs.push(descRec);
+
+    let callee = this.#cloneSymIdent(this.typeIdent.name, this.classSym, this.typeIdent.loc);
+    let symIdent = this.#mint(new Identifier("construct", this.expr.loc));
+    let ctorName = this.#mint(new SymbolPropertyName(symIdent, this.expr.loc));
+    this.#setParent(symIdent, ctorName);
+    this.ctx.model.setMemberKey(ctorName, ":construct");
+
+    let newExpr = this.#mint(new NewExpression(callee, this.expr.typeArguments, ctorArgs, ctorName, this.expr.loc));
+    this.#setParent(callee, newExpr);
+    this.#setParent(ctorName, newExpr);
+    for (let arg in ctorArgs) {
+      this.#setParent(arg, newExpr);
+    }
+    this.#setParent(newExpr, this.expr);
+
+    let emptyBlock = this.#mint(new BlockStatement(new GrowableArray<Statement>(), this.expr.loc));
+    this.#setParent(emptyBlock, this.expr);
+
+    let resultType = checkExpression(this.ctx, newExpr, this.expectedType);
+    this.ctx.model.setNodeLowering(this.expr, new NodeLowering(emptyBlock, newExpr));
+    return resultType;
+  }
 }
 
 function isUiTagType(t: Type): boolean {
@@ -206,6 +551,30 @@ function isTemplateStatic(ctx: CheckerContext, expr: Expression): boolean {
           allStatic
         }
       }
+    }
+    case RecordLiteral {properties}: {
+      var allStatic = true;
+      for (let prop in properties) {
+        match (prop) {
+          case PropertyAssignment {value}: {
+            if (!isTemplateStatic(ctx, value)) {
+              allStatic = false;
+              break;
+            }
+          }
+          case SpreadElement {argument}: {
+            if (!isTemplateStatic(ctx, argument)) {
+              allStatic = false;
+              break;
+            }
+          }
+          case _: {
+            allStatic = false;
+            break;
+          }
+        }
+      }
+      allStatic
     }
     case _: false
   };

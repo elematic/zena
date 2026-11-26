@@ -428,6 +428,21 @@ export final class UiLowering {
 }
 
 /**
+ * Eager lowering of an untagged node literal (`Type(args) { props..., children... }`).
+ *
+ * For a class builder, `block` constructs the instance, applies properties,
+ * spreads, and child additions in source order, and `result` evaluates to the
+ * constructed instance. For a record type alias, `block` is empty and `result`
+ * is the contextually typed `RecordLiteral`.
+ */
+export final class NodeLowering {
+  block: BlockStatement;
+  result: Expression;
+
+  new(this.block, this.result);
+}
+
+/**
  * The bodies of a module that are checked when something reaches
  * them, rather than when the module is checked. The checker implements
  * this; reachability calls it from its walk, through the model, so that
@@ -618,6 +633,7 @@ export final class SemanticModel {
    */
   #boxAdaptations = new NodeMap<ClassType>();
   #uiLowerings = new NodeMap<UiLowering>();
+  #nodeLowerings = new NodeMap<NodeLowering>();
 
   setUiLowering(node: Node, lowering: UiLowering): void {
     this.#uiLowerings[node] = lowering;
@@ -637,6 +653,29 @@ export final class SemanticModel {
       let owner = (this.index as ModelIndex).ownerOfNode(node.id);
       if (owner != null && owner != this) {
         return owner.getUiLoweringDirect(node);
+      }
+    }
+    return null;
+  }
+
+  setNodeLowering(node: Node, lowering: NodeLowering): void {
+    this.#nodeLowerings[node] = lowering;
+  }
+
+  getNodeLoweringDirect(node: Node): NodeLowering | null {
+    if (let (true, l) = this.#nodeLowerings.get(node)) {
+      return l;
+    }
+    return null;
+  }
+
+  getNodeLowering(node: Node): NodeLowering | null {
+    let l = this.getNodeLoweringDirect(node);
+    if (l != null) return l;
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner != this) {
+        return owner.getNodeLoweringDirect(node);
       }
     }
     return null;

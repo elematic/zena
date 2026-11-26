@@ -58,7 +58,7 @@ text.
 
 ## Text today
 
-A node's appearance is nothing, a fill or text. Text is one string and one
+A node's style is nothing, a fill or text. Text is one string and one
 `text-style`: a family, a size, a weight, italic or not, and a colour.
 
 - The host's text engine, `packages/zenafx-render/src/text.rs`, shapes each text
@@ -284,7 +284,7 @@ layout.
   from flow to a column, under a condition.
 - **A paragraph as a kind of node.** What a paragraph needs from the host is
   what any flow container has. A paragraph, a heading and a list item differ
-  in role and in look, which belong to the widgets that make them.
+  in role and in style, which belong to the widgets that make them.
 - **Collapsing white space as HTML does.** It serves a source format written
   by hand. An importer for such a format can do it before it writes a run.
 
@@ -301,7 +301,7 @@ Each step works without the next.
    layout, in the case the node already has.
 
    What this step leaves out: a text child is not a node the pointer can be
-   over, so it has no hovered look, no listener and no cursor of its own. It
+   over, so it has no hovered style, no listener and no cursor of its own. It
    cannot be left out of selecting by itself. A child that is not text is not
    shown. `text-indent` is not built.
 

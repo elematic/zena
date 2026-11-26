@@ -2,13 +2,13 @@
 //!
 //! `examples/zenafx/button/` is a count, a button that adds one to it, and a
 //! page that sets it back to zero. The button and the page each listen for
-//! `down`, and the button's template says how its box looks hovered and
-//! pressed. These tests feed the loader the inputs a window would and look at
+//! `down`, and the button's template styles its box when hovered and
+//! pressed. These tests feed the loader the inputs a window would and inspect
 //! what the next frame draws.
 //!
 //! What they cover is the path between the two halves that have unit tests of
 //! their own: `ui::scene` works out which listeners an input reaches and which
-//! looks hold, and this checks that each listener's stream carries its events
+//! state styles hold, and this checks that each listener's stream carries its events
 //! to the handler the component gave it, that what the handler changes is on
 //! the next frame, that a listener's answer decides whether the next one hears
 //! the event, and that hovering and pressing change the button without waking
@@ -190,7 +190,7 @@ fn a_press_the_button_stops_does_not_reach_the_page() {
 /// The button's fill follows the pointer onto it, through a press, and off
 /// again, and the component is not woken for any of it but the press.
 ///
-/// The template says how the box looks hovered and pressed, and the host is
+/// The template styles the box when hovered and pressed, and the host is
 /// the one that knows where the pointer is, so each change is a frame the
 /// input itself asks for. The one event written is the `down` the button
 /// listens for.
@@ -203,7 +203,7 @@ fn the_fill_follows_the_pointer_without_the_component() {
 
     assert!(
         app.pointer(PointerInput::Moved { x, y }),
-        "coming onto the button changes its look, so the input owes a frame"
+        "coming onto the button changes its style, so the input owes a frame"
     );
     assert_eq!(button_quad(&frame(&mut app)).background, Some(HOVERED));
     assert!(
@@ -246,7 +246,7 @@ fn the_fill_follows_the_pointer_without_the_component() {
     );
 }
 
-/// The pointer moving over the page reaches no listener and changes no look,
+/// The pointer moving over the page reaches no listener and changes no style,
 /// so it does nothing at all: no event, and no frame.
 #[test]
 fn the_pointer_moving_over_the_page_costs_nothing() {

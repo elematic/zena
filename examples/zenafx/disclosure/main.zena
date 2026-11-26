@@ -3,33 +3,56 @@
  * keyboard as well as with the pointer.
  */
 import {
-  Color, BoxStyle, TextStyle, Edges, Justify, Align, LengthPx,
-} from 'zenafx:ui/style';
-import { Cursor } from 'zenafx:host/scene';
-import { ui, Widget, Box, Text, TemplateResult, full, KeyAnswer, runApp } from '../ui.zena';
+  ui, Widget, Box, Text, TemplateResult,
+  Style, When, hovered, pressed, focused,
+  Justify, Align, Cursor, rgb, px, full, KeyAnswer, runApp,
+} from '../ui.zena';
 import { signal } from 'zena:signals';
-import { some, none } from 'zena:core';
 
-let page = new Color(0.98, 0.98, 0.99, 1.0);
-let ink = new Color(0.10, 0.11, 0.13, 1.0);
-let muted = new Color(0.36, 0.39, 0.46, 1.0);
-let paper = new Color(1.0, 1.0, 1.0, 1.0);
-let edge = new Color(0.80, 0.83, 0.89, 1.0);
-let hovered = new Color(0.94, 0.96, 1.0, 1.0);
-let pressed = new Color(0.88, 0.92, 1.0, 1.0);
-let ring = new Color(0.20, 0.38, 0.86, 1.0);
+let pageBg = rgb(0.98, 0.98, 0.99);
+let ink = rgb(0.10, 0.11, 0.13);
+let muted = rgb(0.36, 0.39, 0.46);
+let paper = rgb(1.0, 1.0, 1.0);
+let edge = rgb(0.80, 0.83, 0.89);
+let hoveredBg = rgb(0.94, 0.96, 1.0);
+let pressedBg = rgb(0.88, 0.92, 1.0);
+let ring = rgb(0.20, 0.38, 0.86);
 
-let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
-let summaryStyle = new BoxStyle(some(paper), some(edge), 1.0, 8.0, 1.0);
-let hoveredStyle = new BoxStyle(some(hovered), some(edge), 1.0, 8.0, 1.0);
-let pressedStyle = new BoxStyle(some(pressed), some(edge), 1.0, 8.0, 1.0);
-let focusedStyle = new BoxStyle(some(paper), some(ring), 2.0, 8.0, 1.0);
-let summaryText = new TextStyle('system-ui', 16.0, 600 as u16, false, ink);
-let lineText = new TextStyle('system-ui', 15.0, 400 as u16, false, muted);
+let pageStyle = Style {
+  width: full
+  height: full
+  background: pageBg
+  justify: Justify.Center
+  align: Align.Center
+  gap: 16.0
+};
 
-let disclosureWidth = new LengthPx(320.0);
-let summaryPadding = new Edges(12.0, 16.0, 12.0, 16.0);
-let bodyPadding = new Edges(0.0, 16.0, 0.0, 16.0);
+let disclosureStyle = Style {
+  width: px(320.0)
+  align: Align.Stretch
+  gap: 6.0
+};
+
+let summaryStyle = Style {
+  background: paper
+  borderColor: edge
+  borderWidth: 1.0
+  cornerRadius: 8.0
+  padding: { x: 16.0, y: 12.0 }
+  cursor: Cursor.Pointer
+
+  When(hovered) { background: hoveredBg }
+  When(pressed) { background: pressedBg }
+  When(focused) { borderColor: ring borderWidth: 2.0 }
+};
+
+let bodyStyle = Style {
+  gap: 4.0
+  padding: { x: 16.0 }
+};
+
+let summaryText = Style { fontSize: 16.0 fontWeight: 600 color: ink };
+let lineText = Style { fontSize: 15.0 color: muted };
 
 /** One line of the content under a summary. */
 class Line extends Widget {
@@ -52,17 +75,10 @@ class Disclosure extends Widget {
 
   build(): TemplateResult {
     return @ui Box {
-      align: Align.Stretch,
-      gap: 6.0,
-      width: disclosureWidth,
+      style: disclosureStyle,
 
       Box {
         style: summaryStyle,
-        hovered: hoveredStyle,
-        pressed: pressedStyle,
-        focused: focusedStyle,
-        padding: summaryPadding,
-        cursor: Cursor.Pointer,
         focusable: true,
         onDown: () => { this.#toggle(); },
         onKey: (event) => {
@@ -79,8 +95,7 @@ class Disclosure extends Widget {
       }
 
       Box {
-        gap: 4.0,
-        padding: bodyPadding,
+        style: bodyStyle,
 
         $(if (this.#open) { this.#lines } else { null })
       }
@@ -95,12 +110,7 @@ class Disclosure extends Widget {
 class Page extends Widget {
   build(): TemplateResult {
     return @ui Box {
-      width: full,
-      height: full,
       style: pageStyle,
-      justify: Justify.Center,
-      align: Align.Center,
-      gap: 16.0,
 
       Disclosure('Shipping', [
         new Line('Sent within two working days.'),
