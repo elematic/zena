@@ -29,7 +29,10 @@ The rest of this document asks for nine host-protocol decisions:
    See [Rules](#rules).
 5. The host evaluates conditions, and there is no separate selector language.
    The part of a condition that a template fixes is evaluated once for each
-   template. See [Conditions](#conditions) and
+   template; dynamic predicates can be declarative tests or pure functions
+   compiled into a window component with declared inputs
+   ([isolated-functions.md](./isolated-functions.md)). See
+   [Conditions](#conditions) and
    [One condition, tested in two stages](#one-condition-tested-in-two-stages).
 6. Inheritance is decided for each property by its declaration. A theme is a
    set of inheriting properties. See [Inheritance](#inheritance).
@@ -41,9 +44,10 @@ The rest of this document asks for nine host-protocol decisions:
    where a node is in the tree. See
    [What is left to the language](#what-is-left-to-the-language).
 9. Styling and layout are extended with WebAssembly. Code that has to run
-   during a frame is a component of its own that the host runs on the window's
-   thread, and a declaration's value can be a call to a function it exports.
-   See [Window components](#window-components).
+   during a frame — a style value function, a dynamic condition predicate, or a
+   custom layout — is a component of its own that the host runs on the window's
+   thread, and a declaration or condition can call a function it exports. See
+   [Window components](#window-components).
 
 [Layout extension](#layout-extension) says how a custom layout algorithm would
 fit the same constraints. It is a direction and not yet a design.
@@ -325,43 +329,49 @@ A guest serializes any rule set's condition trees into the flat post-order
 `examples/zenafx/style.zena`), ready for the host wire protocol once host rules
 land.
 
-**Step 2 — `@style` and `@cond` macros for Zena condition expressions (planned).**
-Rather than adding a bespoke selector grammar to the compiler (such as the
-earlier `rules { case Card >> Text: ... }` sketch in
-[zenafx-widget-authoring.md](./zenafx-widget-authoring.md#selectors-as-data)),
-once Zena's macro system ([macros.md](./macros.md)) lands, a purely syntactic
-macro rewrites standard Zena boolean and comparison operators inside `When(...)`,
-`Rule(...)`, and `@cond(...)` directly into the Step 1 builder functions:
-
-- `a && b` → `condAll([lower(a), lower(b)])`
-- `a || b` → `condAny([lower(a), lower(b)])`
-- `!a` → `condNot(lower(a))`
-- `a >= b`, `a > b`, `a <= b`, `a < b` → `condGte`, `condGt`, `condLte`, `condLt`
-- any leaf expression `e` → `toCondition(e)` (accepting `FlagKey | Condition`)
+**Step 2 — Isolated window-component functions with lifted inputs (planned).**
+Once Zena's isolated-function extraction
+([isolated-functions.md](./isolated-functions.md)) lands, dynamic conditions
+and computed style values can be written as ordinary pure Zena functions taking
+a virtual `StyleNode` parameter:
 
 ```zena
-let wide = @cond (panelWidth >= 600.0);
+let isWide = (node: StyleNode) => node.use(panelWidth) >= 600.0;
 
-@style Stylesheet {
+Stylesheet {
   Rule(card) {
     background: paper
     cornerRadius: 8.0
 
     Rule(title) {
       fontSize: 18.0
-      When(hovered && !disabled && wide) { color: use(accent) }
+      When((node) => node.hovered && !node.disabled && isWide(node)) {
+        color: (node) => lighten(node.use(accent), 0.2)
+      }
     }
   }
 }
 ```
 
-Because the macro only rewrites syntax into typed function calls, Zena's normal
-type checker validates every key and operand (`hovered >= 600.0` is a type
-error because `hovered` is a `FlagKey`, not a `NumberKey`). The same `@cond`
-macro works for `node.watch(...)` condition watchers, and `@style` can also
-stage dynamic `$(...)` declaration holes in standalone stylesheets outside
-`@ui`. Neither the host protocol nor the Step 1 condition representation
-changes between Step 1 and Step 2.
+Structural nesting (`Rule(card) { Rule(title) { ... } }`) stays declarative
+data evaluated once per template. For each lambda passed to `When(...)` or to a
+style property, the compiler walks the body and any pure helper callees (such
+as `isWide`), collects the host facts and inheriting properties read on `node`
+(`[hovered, disabled, panelWidth]` for the condition; `[accent]` for `color`),
+erases `StyleNode`, and extracts a flat pure function into the application's
+companion window component. At the call site, the lambda lowers to a `call`
+record carrying the export index, the lifted host inputs, and any captured
+immutable values from the enclosing scope.
+
+Because the compiler extracts ordinary Zena expressions into the window
+component, predicates are not limited to a fixed WIT condition grammar: modulo
+(`node.index % 2 == 0`), aspect ratios (`node.width / node.height > 1.5`), and
+comparisons between two live facts (`node.scrollY >= node.scrollRangeY - 500.0`)
+work without protocol changes. The same mechanism lets color and layout
+libraries export a single pure `lighten(color, amount)` function instead of
+maintaining a second `Value`-building overload. Simple conditions can still be
+built directly with the Step 1 combinators (`all`, `not`, `gte`) or lowered to
+declarative `flag` / `range` tests by the compiler.
 
 ### Terminology
 
@@ -927,6 +937,9 @@ variant condition {
   flag(key),
   /// A number on the node is in a range.
   range(range-test),
+  /// A pure predicate exported by a window component, returning `flag`.
+  /// Uses the same `call` record as style value functions.
+  predicate(call),
   /// The node's parent satisfies condition `n`.
   under(u32),
   /// Some node above it, inside the rule's scope, satisfies condition `n`.
@@ -991,14 +1004,23 @@ each node it is used on. Two indexes keep that cheap.
 - **Flags.** A table from a flag's key to the conditions that test it. When a
   flag changes on a node, the host evaluates those conditions again for that
   node and for the nodes whose conditions read it through `under` or `within`.
-- **Numbers.** The bounds that conditions give for one key on one node, sorted,
-  divide the number line into intervals. The host remembers which interval the
-  current value is in. A new value is compared with that interval's two ends,
-  and no condition is evaluated unless it has left the interval.
+- **Numbers.** The bounds that `range` conditions give for one key on one node,
+  sorted, divide the number line into intervals. The host remembers which
+  interval the current value is in. A new value is compared with that
+  interval's two ends, and no `range` condition is evaluated unless it has left
+  the interval.
+- **Window-component predicates.** A `predicate(call)` declares every fact and
+  inheriting property it reads in its `arguments` list. The host indexes it
+  under those keys (so it is only re-evaluated when one of its inputs changes)
+  and caches results by `(function, argument values)` (so a thousand rows
+  sharing an inherited `panel-width` invoke the export once per distinct input
+  tuple). Simple numeric comparisons can be lowered by the compiler directly to
+  `range` so resize drags stay inside the interval table without calling into
+  WebAssembly.
 
 A window dragged from 801 to 802 pixels wide therefore costs two comparisons
-for each width that has conditions on it. This is the property that makes a
-size condition usable during a resize.
+for each width that has `range` conditions on it. This is the property that
+makes a size condition usable during a resize.
 
 ### Facts that depend on layout
 
@@ -1220,9 +1242,9 @@ Two things a stylesheet cannot do, both for reasons already given.
   inside of a widget it uses. A widget offers what it wants restyled as
   properties.
 - **Count the children of a slot.** "Every second row" depends on which row a
-  node is in. The host would write an `index` number on each child of a slot.
-  That needs a remainder test beside the range test, or `even` and `odd`
-  flags.
+  node is in. The host writes an `index` number fact on each child of a slot;
+  a compiled window-component predicate (`node.index % 2 == 0`) tests it
+  directly without adding a `remainder` case to the WIT condition grammar.
 
 ## What is left to the language
 
@@ -1261,36 +1283,43 @@ their inputs are known.
   function goes in a component the host runs on the window's thread, which is
   what [Window components](#window-components) are.
 
-**A condition is data and cannot be a function**, because the host tests it
-when no component is running. It is still built by ordinary functions, as the
-sketch under [Stylesheets](#stylesheets) shows, and a test the algebra lacks
-is a fact the component computes and sets.
+**Structural attachment is data; dynamic predicates can be compiled window
+functions.** The first stage of a condition — matching fixed template tags,
+`under`, `within`, and widget scope boundaries — is declarative data so the
+host resolves it once per template without calling guest code. The second stage
+can use either the small declarative tests (`flag`, `range`) or a pure function
+compiled into a window component with declared inputs
+([isolated-functions.md](./isolated-functions.md)), just like a style value
+function.
 
 ## Window components
 
 Styling and layout are extended with WebAssembly. Code that has to run during
-a frame, such as a function over style values or a layout algorithm, is a
-component of its own that the host runs on the window's thread. An application
-is several components already, and one for the window's thread is one more.
+a frame — a function over style values, a dynamic condition predicate, or a
+layout algorithm — is a component of its own that the host runs on the window's
+thread. An application is several components already, and one for the window's
+thread is one more.
 
 It is apart from the application's component because the window's thread
 never waits for the application, which
 [Alternatives considered](#alternatives-considered) goes into. Four rules
 follow from where it runs.
 
-- **It imports only the interface it serves.** A style function takes values
-  and returns a value. A layout algorithm measures and places children. It has
-  no scene, no files and no clock.
+- **It imports only the interface it serves.** A style function or condition
+  predicate takes flat ZenaFX values and returns a value (`flag` for a
+  predicate). A layout algorithm measures and places children. It has no scene,
+  no files and no clock.
 - **The host calls it directly**, on the window's thread, with no message and
   no wait.
 - **Its functions are pure**: a result depends on the arguments alone. The
   host keeps each result by its arguments, calls in any order, and may make a
   second instance or a fresh one. Zena checks this
-  ([pure-functions.md](./pure-functions.md)). In another language it is the
-  author's promise, as it is for a worklet in CSS Houdini, which is the same
-  arrangement.
-- **A call that runs too long is cut off**, and the declaration that made it
-  does not apply.
+  ([pure-functions.md](./pure-functions.md),
+  [isolated-functions.md](./isolated-functions.md)). In another language it is
+  the author's promise, as it is for a worklet in CSS Houdini, which is the
+  same arrangement.
+- **A call that runs too long is cut off**, and the declaration or condition
+  that made it does not apply.
 
 ### The flow of a value
 
@@ -1339,11 +1368,17 @@ result are of the types a property can have. An argument is any value: one
 sent as it is, a `use`, a `fact`, or another call. The host checks a call
 against the export's signature when the template arrives.
 
-In source a call reads as a call, `background(lighten(use(accent), 0.2))`. The
-library that exports `lighten` gives it two forms: the function itself, which
-runs in the application's component when its arguments are constants, and one
-that takes a value read from the tree and builds the record above. The Zena
-surface for that is not designed.
+In source, a computed value or condition predicate is written as an isolated
+function taking a virtual `StyleNode` parameter:
+`background: (node) => lighten(node.use(accent), 0.2)` or
+`When((node) => node.hovered && !node.disabled)`. The compiler lifts every
+property and fact read on `node` into the `arguments` list above, erases
+`StyleNode`, and extracts the function and its pure callees into the
+application's window component
+([isolated-functions.md](./isolated-functions.md#virtual-context-parameters-and-input-lifting)).
+A color library exports one pure `lighten(color, amount)` function, which runs
+in the application component on constant colors and in the window component
+when called inside a `(node) => ...` style function.
 
 ### What is not designed
 
@@ -1352,9 +1387,10 @@ surface for that is not designed.
   the bytes come from is the question
   [zenafx-navigation-and-assets.md](./zenafx-navigation-and-assets.md) asks of
   every asset.
-- **Building one from an application's own source.** The toolchain could
-  compile the pure functions a style names into a window component, so that an
-  author who needs one function does not make a component by hand.
+- **Packaging compiler-generated window components.** [isolated-functions.md](./isolated-functions.md)
+  designs how the compiler extracts pure style functions and predicates into a
+  window component; whether those bytes ship as a sidecar component or bundled
+  inside the application component is still open.
 - **The cost of a call** from the host into a component on its own thread,
   with a few values copied each way. Nothing has measured it, and it decides
   how small a function is worth calling.
@@ -1664,13 +1700,24 @@ one of an application's own.
   host is sent their results. The one thing they cannot do, a function of a
   value known only in the host, is a function of that same language run by
   the host.
-- **Selector functions supplied by the component.** The host would call a
-  function to ask whether a node matches. The host cannot tell what such a
-  function reads, so it would have to call it again after any change nearby. A
-  function that walks the tree would read content that belongs to other
-  widgets. And a component that is busy would hold up its own hover feedback.
-  A function with declared inputs and no state avoids the first two, and that
-  is what [A custom algorithm](#a-custom-algorithm) describes for layout.
+- **Opaque selector functions supplied by the application component.** The host
+  would call a function in the application's instance with a node handle to ask
+  whether a node matches. The host cannot tell what such a function reads, so
+  it would have to call it again after any change nearby. A function that walks
+  the tree would read content that belongs to other widgets, and a busy
+  application component would hold up hover feedback. Stage-2 predicates in a
+  window component ([isolated-functions.md](./isolated-functions.md)) avoid all
+  three: the function runs on the window thread, receives flat lifted inputs
+  rather than a node handle, and declares every key it reads for indexing and
+  memoization.
+- **A `@cond` macro serializing Zena expressions to a WIT condition AST.** A
+  syntactic macro could rewrite `hovered && !disabled && panelWidth >= 600.0`
+  into `all` / `negate` / `range` records. That removes builder verbosity for
+  the operations in the fixed WIT grammar, while still requiring protocol
+  additions for modulo, aspect ratios, or comparisons between two facts, and
+  cannot look inside helper functions across modules. Extracting pure
+  predicates into the window component handles arbitrary expressions and helper
+  functions with the same machinery already needed for style value functions.
 - **More cases on the `states` list.** Adding `selected`, then sizes, then
   combinations to the list in [Styles today](#styles-today) arrives at
   conditions one special case at a time.
@@ -1734,8 +1781,10 @@ In the order they could be made, each working without the next:
   and a rule that changes what `Tab` reaches is harder to find than a field.
 - **Names for the terms.** "Declaration" and "rule" are CSS's, and
   "definition" is this document's. Whether to keep them is open.
-- **Remainder tests.** Whether "every second row" is common enough to add a
-  test, or whether `even` and `odd` flags written by the host are enough.
+- **Remainder tests.** With compiled window-component predicates, a host
+  `index` fact lets authors write `node.index % 2 == 0` without a bespoke
+  `remainder` test in WIT. Whether to add `even` and `odd` convenience flags
+  for non-Zena guests that do not compile a window component is open.
 - **A size condition on a node that sizes to its content.** The containment
   rules refuse it. Whether the template is rejected when it is defined, or the
   condition is treated as never holding, is undecided.

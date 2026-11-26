@@ -145,8 +145,10 @@ These features would solve both security (selective propagation to dependencies)
 and abstraction (interface over implementation) problems that plague existing
 ecosystems.
 
-**See also**: `docs/design/capabilities.md` (planned) for the full design of
-capability-based I/O and isolated libraries.
+**See also**: [isolated-functions.md](./isolated-functions.md) for the shared
+extraction and isolation model spanning macros, worker tasks, ZenaFX window
+components, and shaders, and `docs/design/capabilities.md` (planned) for the
+full design of capability-based I/O and isolated libraries.
 
 ## 3. Data Transfer (ASTs)
 
