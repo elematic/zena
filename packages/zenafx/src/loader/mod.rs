@@ -31,6 +31,9 @@
 
 pub mod link;
 pub mod listeners;
+pub mod platform;
+
+pub use platform::PlatformRuntime;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -44,13 +47,14 @@ use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
 
 use crate::ui::clipboard::{Clipboard, Memory};
-use crate::ui::events::{Delivery, KeyDefault, KeyDelivery, KeyEvent, PointerInput};
-use crate::ui::scene::{Cursor, Scene as RetainedScene};
+use crate::ui::events::{Delivery, KeyDelivery, KeyEvent, PointerInput};
+use crate::ui::scene::Cursor;
 use crate::ui::surface::{Scene, Wake};
 use crate::ui::text::TextEngine;
 use crate::ui::types::{Color, Command, FrameEvent, Size};
 use link::{UiHostState, add_host_to_linker};
 use listeners::{Heard, Listeners, Offered};
+use zenafx_render::core::RenderCore;
 
 /// The interface a component exports to hand over what it draws.
 const APP: &str = "zenafx:host/app@0.1.0";
@@ -81,11 +85,16 @@ pub fn engine(debug: bool) -> Result<Engine> {
 
 /// The component a window shows, and the tree it installed.
 ///
-/// Holds no store: the worker thread owns it for the component's lifetime.
+/// Holds no store for the app component: the worker thread owns it for the
+/// component's lifetime. The Zena platform component runs synchronously over
+/// [`RenderCore`] behind `platform`.
 pub struct GuestScene {
-    /// The same tree the component writes, read here without the store.
-    scene: Arc<Mutex<RetainedScene>>,
+    /// The Zena platform component sitting above [`RenderCore`].
+    platform: Arc<Mutex<PlatformRuntime>>,
+    /// The flat native render core owned by the platform component.
+    core: Arc<Mutex<RenderCore>>,
     text: Arc<Mutex<TextEngine>>,
+    writes: Arc<AtomicU32>,
     entries: Arc<AtomicU32>,
     background: Color,
     /// Where the window thread hands the worker what an input leads to. The
@@ -109,17 +118,36 @@ pub struct GuestScene {
 }
 
 impl GuestScene {
-    /// Compile and instantiate the component at `path`, run its entry, and
-    /// return once it has installed its tree.
-    ///
-    /// The entry runs on a worker thread and stays there: `main` returning is
-    /// not the end of it, because the work `main` started continues on the
-    /// callback re-entries that the worker's `run_concurrent` delivers.
+    /// Compile and instantiate the app component at `path` above the default
+    /// platform component, run its entry, and return once it has installed its
+    /// tree.
     pub fn load(engine: &Engine, path: &Path) -> Result<Self> {
-        let state = UiHostState::new();
-        let (scene, text, entries, ready, wake, listeners) = (
-            state.scene.clone(),
+        let platform = PlatformRuntime::load_default(engine)?;
+        Self::load_with_runtime(engine, path, platform)
+    }
+
+    /// As [`GuestScene::load`], using an explicit platform component `.wasm`
+    /// file instead of the bundled/default one.
+    pub fn load_with_platform(
+        engine: &Engine,
+        app_path: &Path,
+        platform_path: &Path,
+    ) -> Result<Self> {
+        let platform = PlatformRuntime::load(engine, platform_path)?;
+        Self::load_with_runtime(engine, app_path, platform)
+    }
+
+    fn load_with_runtime(
+        engine: &Engine,
+        path: &Path,
+        platform: PlatformRuntime,
+    ) -> Result<Self> {
+        let core = platform.core().clone();
+        let state = UiHostState::new(platform);
+        let (platform, text, writes, entries, ready, wake, listeners) = (
+            state.platform.clone(),
             state.text.clone(),
+            state.writes.clone(),
             state.guest_entries.clone(),
             state.ready.clone(),
             state.wake.clone(),
@@ -154,11 +182,6 @@ impl GuestScene {
             })
             .map_err(|e| anyhow!("could not start the component thread: {e}"))?;
 
-        // Wait for the component's `ready` rather than for the entry call: the
-        // call resolves when the task finishes, which for a component that
-        // keeps working is never. `ready` is the component saying the tree it
-        // has built is worth drawing, so it is also the point at which the
-        // first frame is complete.
         let deadline = std::time::Instant::now() + INSTALL_TIMEOUT;
         loop {
             if let Ok(e) = failed_rx.try_recv() {
@@ -178,8 +201,10 @@ impl GuestScene {
         }
 
         Ok(Self {
-            scene,
+            platform,
+            core,
             text,
+            writes,
             entries,
             background: Color::rgb(1.0, 1.0, 1.0),
             deliveries: deliveries_tx,
@@ -193,14 +218,13 @@ impl GuestScene {
     /// Give one key to the listeners it reaches, or act on it here if it
     /// reaches none. Returns whether a frame is owed.
     fn dispatch(&self, event: KeyEvent) -> bool {
-        let mut scene = self.scene.lock().unwrap();
-        scene.notice(&event);
-        let delivery = scene.key(event);
-        if delivery.listeners.is_empty() {
-            return act_on(&delivery.event, &mut scene);
+        let mut platform = self.platform.lock().unwrap();
+        let listeners = platform.route_key(&event).unwrap_or_default();
+        if listeners.is_empty() {
+            return platform.act_on_key(&event).unwrap_or(false);
         }
-        drop(scene);
-        self.send(Input::Key(delivery));
+        drop(platform);
+        self.send(Input::Key(KeyDelivery { event, listeners }));
         false
     }
 
@@ -232,10 +256,10 @@ impl GuestScene {
         self.listeners.offered()
     }
 
-    /// How many times the component has written the tree, with a `render`
-    /// or a `content`.
+    /// How many times the component has written the tree, with a `render`,
+    /// `content`, or `set-slot`.
     pub fn writes(&self) -> u32 {
-        self.scene.lock().unwrap().writes
+        self.writes.load(Ordering::Relaxed)
     }
 
     /// How many inputs have been handed to the component's thread and not
@@ -300,7 +324,7 @@ fn run_component(
 
     let entries = state.guest_entries.clone();
     let listeners = state.listeners.clone();
-    let (scene, wake) = (state.scene.clone(), state.wake.clone());
+    let (platform, wake) = (state.platform.clone(), state.wake.clone());
     let mut store = Store::new(engine, state);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -346,9 +370,11 @@ fn run_component(
                     while let Some(input) = deliveries.recv().await {
                         match input {
                             Input::Pointer(input) => {
-                                deliver(&listeners, &scene, &wake, &input).await
+                                deliver(&listeners, &platform, &wake, &input).await
                             }
-                            Input::Key(key) => deliver_key(&listeners, &scene, &wake, key).await,
+                            Input::Key(key) => {
+                                deliver_key(&listeners, &platform, &wake, key).await
+                            }
                         }
                         undelivered.fetch_sub(1, Ordering::Relaxed);
                     }
@@ -384,7 +410,7 @@ fn run_component(
 /// with one changes who else hears it.
 async fn deliver(
     listeners: &Listeners,
-    scene: &Mutex<RetainedScene>,
+    platform: &Mutex<PlatformRuntime>,
     wake: &Mutex<Option<Wake>>,
     input: &[Delivery],
 ) {
@@ -412,15 +438,11 @@ async fn deliver(
             }
             let answer = answer.await.unwrap_or_default();
             if answer.capture {
-                let restyled = {
-                    let mut scene = scene.lock().unwrap();
-                    scene.capture(call.listener);
-                    // A listener that captures the pointer is starting a drag
-                    // of its own. The press began a selection before any
-                    // listener had answered, so that is put back.
-                    scene.cancel_selecting();
-                    scene.dirty
-                };
+                let restyled = platform
+                    .lock()
+                    .unwrap()
+                    .capture_listener(call.listener)
+                    .unwrap_or(false);
                 if let (true, Some(wake)) = (restyled, wake.lock().unwrap().as_ref()) {
                     wake();
                 }
@@ -432,19 +454,9 @@ async fn deliver(
     }
 }
 
-/// Offer a key to the listeners it reaches, one at a time, and then do what
-/// the scene does with the key, unless a listener called `prevent-default`.
-///
-/// `Tab` moves the focus, and it is done here and not when the key arrives
-/// because a listener may want the key for itself: an editor that indents
-/// with `Tab` prevents the default, and the focus stays where it is.
-///
-/// Stopping propagation and preventing the default are separate answers, as
-/// they are in the DOM. A listener that stops propagation keeps later
-/// listeners from hearing the key, and the focus still moves.
 async fn deliver_key(
     listeners: &Listeners,
-    scene: &Mutex<RetainedScene>,
+    platform: &Mutex<PlatformRuntime>,
     wake: &Mutex<Option<Wake>>,
     key: KeyDelivery,
 ) {
@@ -467,26 +479,13 @@ async fn deliver_key(
     if prevented {
         return;
     }
-    if act_on(&key.event, &mut scene.lock().unwrap()) {
-        if let Some(wake) = wake.lock().unwrap().as_ref() {
-            wake();
-        }
-    }
-}
-
-/// Do what the scene does with a key whose default no listener prevented.
-/// Returns whether a frame is owed for it.
-fn act_on(key: &KeyEvent, scene: &mut RetainedScene) -> bool {
-    match key.default_action() {
-        KeyDefault::None => false,
-        KeyDefault::MoveFocus { backwards } => {
-            scene.move_focus(backwards);
-            scene.dirty
-        }
-        KeyDefault::SelectAll => {
-            scene.select_all_text();
-            scene.dirty
-        }
+    let owed = platform
+        .lock()
+        .unwrap()
+        .act_on_key(&key.event)
+        .unwrap_or(false);
+    if owed && let Some(wake) = wake.lock().unwrap().as_ref() {
+        wake();
     }
 }
 
@@ -512,11 +511,15 @@ impl Scene for GuestScene {
             width: frame.width as f32,
             height: frame.height as f32,
         };
-        let (commands, owed) = {
-            let mut scene = self.scene.lock().unwrap();
-            let commands = scene.draw(size, &mut self.text.lock().unwrap());
-            (commands, scene.take_owed())
-        };
+        let (commands, owed) = self
+            .platform
+            .lock()
+            .unwrap()
+            .draw_with_owed(size)
+            .unwrap_or_else(|e| {
+                log::error!("platform draw failed: {e:?}");
+                (Vec::new(), Vec::new())
+            });
         self.hand_over(owed);
         commands
     }
@@ -529,49 +532,20 @@ impl Scene for GuestScene {
         self.background
     }
 
-    /// Work out which listeners the input reaches and hand them to the
-    /// component's thread to write to.
-    ///
-    /// Working it out needs only the tree, which is here, so an input that
-    /// reaches no listener ends on this thread and the component is never
-    /// woken.
-    ///
-    /// Answers whether the input changed any node's style, which it can
-    /// by moving a node into or out of a state a template styled.
-    /// That needs a frame and wakes nobody. A listener that changes the tree
-    /// asks for its frame itself, through the [`Wake`] the window gave this
-    /// scene.
     fn pointer(&mut self, input: PointerInput) -> bool {
-        let (deliveries, restyled) = {
-            let mut scene = self.scene.lock().unwrap();
-            let deliveries = scene.pointer(input);
-            // What the pointer does to the selection is the scene's too, and
-            // needs the shaped text to find a place in it.
-            scene.select_with(input, &self.text.lock().unwrap());
-            (deliveries, scene.dirty)
-        };
+        let (deliveries, restyled) = self
+            .platform
+            .lock()
+            .unwrap()
+            .pointer(input)
+            .unwrap_or_else(|e| {
+                log::error!("platform pointer failed: {e:?}");
+                (Vec::new(), false)
+            });
         self.hand_over(deliveries);
         restyled
     }
 
-    /// Work out which listeners a key reaches and hand them to the
-    /// component's thread, which does what the scene does with the key
-    /// afterwards unless one of them prevented it.
-    ///
-    /// A key that reaches no listener is acted on here, and the answer says
-    /// whether that owes a frame: `Tab` moves the focus in a component that
-    /// listens for no keys at all without waking it.
-    ///
-    /// The clipboard's three shortcuts are the host's, and are done here
-    /// before any listener hears the key:
-    ///
-    /// - Control or Meta with `c` copies what is selected, wherever it is.
-    /// - With `x` it copies too. Removing what was cut is left to the text
-    ///   field that hears the key, since the text is the field's.
-    /// - With `v`, the key is followed by a second one named `Paste` whose
-    ///   `text` is what is on the clipboard. A text field inserts a key's
-    ///   text whatever the key, so a field needs nothing more to be pasted
-    ///   into, and no component is ever handed the clipboard.
     fn key(&mut self, event: KeyEvent) -> bool {
         let copies = event.is_shortcut('c') || event.is_shortcut('x');
         let pasted = match event.is_shortcut('v') {
@@ -579,7 +553,7 @@ impl Scene for GuestScene {
             false => None,
         };
         if copies {
-            let selected = self.scene.lock().unwrap().selected_text();
+            let selected = self.core.lock().unwrap().selected_text();
             if let Some(selected) = selected {
                 self.clipboard.write(&selected);
             }
@@ -602,21 +576,14 @@ impl Scene for GuestScene {
         *self.wake.lock().unwrap() = Some(wake);
     }
 
-    /// The cursor the tree names for what the pointer is over. The scene
-    /// knows, so nothing is asked of the component.
+    /// The cursor the tree names for what the pointer is over.
     fn cursor(&self) -> Cursor {
-        self.scene.lock().unwrap().cursor()
+        self.core.lock().unwrap().cursor()
     }
 
     /// A component owes another frame while its tree is dirty.
-    ///
-    /// A component that is still running owes nothing on that account. It can
-    /// write the tree at any time, and the write is what asks for a frame,
-    /// through the [`Wake`]. A component reading a listener's stream is
-    /// always still running, so asking for frames while it runs would redraw
-    /// an idle window without pause.
     fn wants_another_frame(&self) -> bool {
-        self.scene.lock().unwrap().dirty
+        self.core.lock().unwrap().dirty
     }
 }
 
@@ -630,14 +597,14 @@ mod tests {
     use crate::ui::types::{Layout, OwnBox};
     use listeners::{Answer, KeyDeliveryRecord};
 
-    /// A scene of one node, which can have the focus and has not got it.
-    fn focusable_scene() -> Arc<Mutex<RetainedScene>> {
-        let mut text = TextEngine::new();
-        let mut scene = RetainedScene::new();
-        let root = scene.root();
-        scene.render(
+    /// A platform runtime with one focusable node that does not yet have focus.
+    fn focusable_platform() -> Arc<Mutex<PlatformRuntime>> {
+        let eng = engine(false).expect("engine");
+        let mut rt = PlatformRuntime::load_default(&eng).expect("platform.wasm");
+        let root = rt.root().unwrap();
+        rt.render(
             root,
-            &TemplateRef::Fresh(TemplateDef {
+            TemplateRef::Fresh(TemplateDef {
                 id: 1,
                 nodes: vec![NodeDef {
                     own_box: OwnBox::default(),
@@ -654,10 +621,10 @@ mod tests {
                 bindings: vec![],
                 states: vec![],
             }),
-            &[],
-            &mut text,
-        );
-        Arc::new(Mutex::new(scene))
+            vec![],
+        )
+        .unwrap();
+        Arc::new(Mutex::new(rt))
     }
 
     /// Deliver `Tab` to one key listener for each of `answers`, in that
@@ -668,16 +635,16 @@ mod tests {
             .build()
             .expect("a runtime");
         runtime.block_on(async {
-            let scene = focusable_scene();
+            let platform = focusable_platform();
+            let core = platform.lock().unwrap().core().clone();
             let listeners = Listeners::default();
             let mut ids = Vec::new();
             let mut heard = Vec::new();
             for answer in answers.iter().copied() {
-                let (id, mut stream) = listeners.open::<KeyDeliveryRecord>(scene.clone());
+                let (id, mut stream) = listeners.open::<KeyDeliveryRecord>(platform.clone());
                 let count = Arc::new(AtomicU32::new(0));
                 ids.push(id);
                 heard.push(count.clone());
-                // What a component does: read the stream, and answer.
                 tokio::spawn(async move {
                     while let Some(offered) = stream.next_offered().await {
                         count.fetch_add(1, Ordering::Relaxed);
@@ -699,8 +666,8 @@ mod tests {
                 event: tab,
                 listeners: ids,
             };
-            deliver_key(&listeners, &scene, &Mutex::new(None), key).await;
-            let moved = scene.lock().unwrap().has_focus();
+            deliver_key(&listeners, &platform, &Mutex::new(None), key).await;
+            let moved = core.lock().unwrap().has_focus();
             let heard = heard.iter().map(|n| n.load(Ordering::Relaxed)).collect();
             (moved, heard)
         })

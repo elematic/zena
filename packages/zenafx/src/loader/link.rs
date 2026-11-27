@@ -16,8 +16,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::listeners::{DeliveryRecord, HostReply, KeyDeliveryRecord, Listeners, Replies};
-use crate::ui::events::{KeyListener, Listener, Phase, PointerKind, Scope};
-use crate::ui::scene::{Hole, Scene, TemplateRef, TextSelection};
+use super::platform::PlatformRuntime;
+use crate::ui::events::{Phase, PointerKind, Scope};
+use crate::ui::scene::{Hole, TemplateRef, TextSelection};
 use crate::ui::surface::Wake;
 use crate::ui::text::TextEngine;
 use crate::ui::types::{Content, Measured, Node, Rect, Size, TextStyle};
@@ -46,9 +47,11 @@ pub struct HostNode;
 /// the same tree the guest is writing.
 pub struct UiHostState {
     pub text: Arc<Mutex<TextEngine>>,
-    /// The retained tree. The component installs one when it starts, and a
-    /// frame after that is a solve and a paint over this and nothing else.
-    pub scene: Arc<Mutex<Scene>>,
+    /// The Zena platform component running synchronously over [`RenderCore`].
+    pub platform: Arc<Mutex<PlatformRuntime>>,
+    /// How many times the widget component has written the tree (`render`,
+    /// `content`, or `set-slot`).
+    pub writes: Arc<AtomicU32>,
     /// Every entry into the component since the scene was created. A
     /// retained tree should leave this at one while the window resizes.
     /// Shared for the same reason the scene is: the store it lives in is
@@ -71,7 +74,7 @@ pub struct UiHostState {
     /// linker either way, and an unused import costs nothing.
     clocks: WasiClocksCtx,
     /// For `wasi:clocks`' own resources. The `node` resource needs none: its
-    /// handles carry a scene id and nothing else — see [`HostNode`].
+    /// handles carry a logical node id and nothing else — see [`HostNode`].
     table: ResourceTable,
 }
 
@@ -85,10 +88,12 @@ impl WasiClocksView for UiHostState {
 }
 
 impl UiHostState {
-    pub fn new() -> Self {
+    pub fn new(platform: PlatformRuntime) -> Self {
+        let text = platform.text().clone();
         Self {
-            text: Arc::new(Mutex::new(TextEngine::new())),
-            scene: Arc::new(Mutex::new(Scene::new())),
+            text,
+            platform: Arc::new(Mutex::new(platform)),
+            writes: Arc::new(AtomicU32::new(0)),
             guest_entries: Arc::new(AtomicU32::new(0)),
             ready: Arc::new(AtomicBool::new(false)),
             wake: Arc::new(Mutex::new(None)),
@@ -103,17 +108,12 @@ impl UiHostState {
     /// of listeners whose nodes the write dropped are ended, and the window
     /// is asked for a frame, if there is a window.
     fn changed(&self) {
-        let ended = self.scene.lock().unwrap().take_ended();
-        self.listeners.end(&ended);
+        if let Ok(ended) = self.platform.lock().unwrap().take_ended_listeners() {
+            self.listeners.end(&ended);
+        }
         if let Some(wake) = self.wake.lock().unwrap().as_ref() {
             wake();
         }
-    }
-}
-
-impl Default for UiHostState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -217,8 +217,13 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         ResourceType::host::<HostNode>(),
         |mut store, rep| {
             let data = store.data_mut();
-            let (scene, text) = (data.scene.clone(), data.text.clone());
-            if scene.lock().unwrap().drop_node(rep, &mut text.lock().unwrap()) {
+            let dropped = data
+                .platform
+                .lock()
+                .unwrap()
+                .drop_node(rep)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            if dropped {
                 data.changed();
             }
             Ok(())
@@ -228,16 +233,26 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
     scene.func_wrap(
         "root",
         |mut caller: StoreContextMut<'_, UiHostState>, (): ()| {
-            let scene = caller.data_mut().scene.clone();
-            let id = scene.lock().unwrap().root();
+            let id = caller
+                .data_mut()
+                .platform
+                .lock()
+                .unwrap()
+                .root()
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
             Ok((Resource::<HostNode>::new_own(id),))
         },
     )?;
     scene.func_wrap(
         "create-node",
         |mut caller: StoreContextMut<'_, UiHostState>, (): ()| {
-            let scene = caller.data_mut().scene.clone();
-            let id = scene.lock().unwrap().create_node();
+            let id = caller
+                .data_mut()
+                .platform
+                .lock()
+                .unwrap()
+                .create_node()
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
             Ok((Resource::<HostNode>::new_own(id),))
         },
     )?;
@@ -246,11 +261,12 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         |mut caller: StoreContextMut<'_, UiHostState>,
          (node, template, holes): (Resource<HostNode>, TemplateRef, Vec<Hole>)| {
             let data = caller.data_mut();
-            let (scene, text) = (data.scene.clone(), data.text.clone());
-            scene
+            data.platform
                 .lock()
                 .unwrap()
-                .render(node.rep(), &template, &holes, &mut text.lock().unwrap());
+                .render(node.rep(), template, holes)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            data.writes.fetch_add(1, Ordering::Relaxed);
             data.changed();
             Ok(())
         },
@@ -260,15 +276,14 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         |mut caller: StoreContextMut<'_, UiHostState>,
          (node, slot, count): (Resource<HostNode>, u32, u32)| {
             let data = caller.data_mut();
-            let (scene, text) = (data.scene.clone(), data.text.clone());
-            let children =
-                scene
-                    .lock()
-                    .unwrap()
-                    .content(node.rep(), slot, count, &mut text.lock().unwrap());
+            let children = data
+                .platform
+                .lock()
+                .unwrap()
+                .content(node.rep(), slot, count)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            data.writes.fetch_add(1, Ordering::Relaxed);
             data.changed();
-            // A slot a template never declared is a guest bug, and there is
-            // nothing to hand back that would be less wrong than a trap.
             match children {
                 Some(ids) => Ok((ids
                     .into_iter()
@@ -283,17 +298,19 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         |mut caller: StoreContextMut<'_, UiHostState>,
          (node, slot, children): (Resource<HostNode>, u32, Vec<Resource<HostNode>>)| {
             let data = caller.data_mut();
-            let (scene, text) = (data.scene.clone(), data.text.clone());
             let ids: Vec<u32> = children.iter().map(Resource::rep).collect();
-            let ok = scene
+            let ok = data
+                .platform
                 .lock()
                 .unwrap()
-                .set_slot(node.rep(), slot, &ids, &mut text.lock().unwrap());
+                .set_slot(node.rep(), slot, ids)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
             if !ok {
                 return Err(wasmtime::Error::msg(format!(
                     "could not set slot {slot} on node"
                 )));
             }
+            data.writes.fetch_add(1, Ordering::Relaxed);
             data.changed();
             Ok(())
         },
@@ -309,19 +326,14 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
             Phase,
         )| {
             let data = caller.data_mut();
-            let scene = data.scene.clone();
-            let (id, stream) = data.listeners.open::<DeliveryRecord>(scene.clone());
-            let listener = Listener {
-                kind,
-                scope,
-                phase,
-                id,
-            };
-            // The same reasoning as a slot that was never declared: a
-            // listener on a node that is not there would never hear anything,
-            // and the guest would not find out why. Dropping `stream` on the
-            // way out takes the listener's channel with it.
-            if !scene.lock().unwrap().listen(node.rep(), target, listener) {
+            let platform = data.platform.clone();
+            let (id, stream) = data.listeners.open::<DeliveryRecord>(platform.clone());
+            let ok = platform
+                .lock()
+                .unwrap()
+                .listen_pointer(node.rep(), target, id, kind, scope, phase)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            if !ok {
                 return Err(wasmtime::Error::msg(format!(
                     "a node shows no template with a position {target} to listen at"
                 )));
@@ -334,14 +346,14 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         |mut caller: StoreContextMut<'_, UiHostState>,
          (node, target, phase): (Resource<HostNode>, u32, Phase)| {
             let data = caller.data_mut();
-            let scene = data.scene.clone();
-            let (id, stream) = data.listeners.open::<KeyDeliveryRecord>(scene.clone());
-            let listener = KeyListener { phase, id };
-            if !scene
+            let platform = data.platform.clone();
+            let (id, stream) = data.listeners.open::<KeyDeliveryRecord>(platform.clone());
+            let ok = platform
                 .lock()
                 .unwrap()
-                .listen_keys(node.rep(), target, listener)
-            {
+                .listen_keys(node.rep(), target, id, phase)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            if !ok {
                 return Err(wasmtime::Error::msg(format!(
                     "a node shows no template with a position {target} to listen at"
                 )));
@@ -352,8 +364,14 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
     scene.func_wrap(
         "[method]node.selection",
         |caller: StoreContextMut<'_, UiHostState>, (node, target): (Resource<HostNode>, u32)| {
-            let scene = caller.data().scene.lock().unwrap();
-            Ok((scene.selection_in(node.rep(), target),))
+            let sel = caller
+                .data()
+                .platform
+                .lock()
+                .unwrap()
+                .selection(node.rep(), target)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            Ok((sel,))
         },
     )?;
     scene.func_wrap(
@@ -361,10 +379,13 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         |mut caller: StoreContextMut<'_, UiHostState>,
          (node, target, to): (Resource<HostNode>, u32, TextSelection)| {
             let data = caller.data_mut();
-            // The same reasoning as a listener at a position that is not
-            // there: a caret put in no text would never show, and the guest
-            // would not find out why.
-            if !data.scene.lock().unwrap().select(node.rep(), target, to) {
+            let ok = data
+                .platform
+                .lock()
+                .unwrap()
+                .select(node.rep(), target, to)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            if !ok {
                 return Err(wasmtime::Error::msg(format!(
                     "a node shows no template with text at position {target} to select in"
                 )));

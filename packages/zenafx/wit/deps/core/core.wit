@@ -1,0 +1,316 @@
+// Native core interface for ZenaFX (`zfx` and `zenafx-render`).
+//
+// This package sits at the bottom of the three-layer ZenaFX stack:
+//   App / widget components  -->  Platform component (Zena/Wasm)  -->  Native core (Rust)
+//
+// `zenafx:core` is intentionally self-contained with no upward imports from
+// `zenafx:ui` or `zenafx:platform`, so platform components of different
+// versions can target the same stable native core ABI.
+//
+// The native core holds only a flat retained render tree of boxes and text
+// runs with already-resolved built-in layout and paint properties. It knows
+// nothing about slots, templates, holes, custom properties, inheritance,
+// stylesheets, or style rules.
+//
+// Designed in docs/design/zenafx-platform-core.md.
+
+package zenafx:core@0.1.0;
+
+interface render {
+  record size {
+    width: f32,
+    height: f32,
+  }
+
+  record rect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+  }
+
+  /// Non-premultiplied sRGB; each channel runs 0..1.
+  record color {
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+  }
+
+  record box-style {
+    background: option<color>,
+    border-color: option<color>,
+    border-width: f32,
+    corner-radius: f32,
+    opacity: f32,
+  }
+
+  record text-style {
+    family: string,
+    size: f32,
+    weight: u16,
+    italic: bool,
+    color: color,
+  }
+
+  record text-content {
+    content: string,
+    style: text-style,
+  }
+
+  variant node-style {
+    nothing,
+    fill(box-style),
+    text(text-content),
+  }
+
+  variant length {
+    auto,
+    px(f32),
+    percent(f32),
+  }
+
+  enum axis {
+    row,
+    column,
+  }
+
+  enum justify {
+    start,
+    center,
+    end,
+    space-between,
+  }
+
+  enum align {
+    start,
+    center,
+    end,
+    stretch,
+  }
+
+  record edges {
+    top: f32,
+    right: f32,
+    bottom: f32,
+    left: f32,
+  }
+
+  enum overflow {
+    clip,
+    hidden,
+    scroll,
+  }
+
+  record box {
+    width: length,
+    height: length,
+    grow: f32,
+    shrink: f32,
+    padding: edges,
+    overflow-x: overflow,
+    overflow-y: overflow,
+  }
+
+  record flex {
+    axis: axis,
+    justify-content: justify,
+    align-items: align,
+    gap: f32,
+  }
+
+  enum text-align {
+    start,
+    center,
+    end,
+    justify,
+  }
+
+  record flow {
+    align: text-align,
+    line-height: option<f32>,
+  }
+
+  variant layout {
+    flex(flex),
+    flow(flow),
+  }
+
+  enum cursor {
+    default,
+    context-menu,
+    help,
+    pointer,
+    progress,
+    wait,
+    cell,
+    crosshair,
+    text,
+    vertical-text,
+    alias,
+    copy,
+    move,
+    no-drop,
+    not-allowed,
+    grab,
+    grabbing,
+    e-resize,
+    n-resize,
+    ne-resize,
+    nw-resize,
+    s-resize,
+    se-resize,
+    sw-resize,
+    w-resize,
+    ew-resize,
+    ns-resize,
+    nesw-resize,
+    nwse-resize,
+    col-resize,
+    row-resize,
+    all-scroll,
+    zoom-in,
+    zoom-out,
+  }
+
+  record text-selection {
+    anchor: u32,
+    focus: u32,
+  }
+
+  /// Render node identity chosen by the platform component so creation,
+  /// child wiring, and property patches can be batched in one `apply` call.
+  type render-id = u32;
+
+  /// Which host-driven state transitions on this node should notify the
+  /// platform component. Leaving bits clear keeps idle pointer moves,
+  /// scrolling, and resizing inside the native core with zero WIT calls.
+  flags watch-flags {
+    hovered,
+    pressed,
+    focused,
+    size,
+    scroll,
+  }
+
+  record render-node-def {
+    box: box,
+    layout: layout,
+    style: node-style,
+    cursor: cursor,
+    focusable: bool,
+    editable: bool,
+    unselectable: bool,
+    watched: watch-flags,
+  }
+
+  record create-op {
+    id: render-id,
+    def: render-node-def,
+  }
+
+  record children-op {
+    parent: render-id,
+    children: list<render-id>,
+  }
+
+  record box-op {
+    id: render-id,
+    box: box,
+  }
+
+  record layout-op {
+    id: render-id,
+    layout: layout,
+  }
+
+  record style-op {
+    id: render-id,
+    style: node-style,
+  }
+
+  record content-op {
+    id: render-id,
+    content: string,
+  }
+
+  record text-style-op {
+    id: render-id,
+    style: text-style,
+  }
+
+  record cursor-op {
+    id: render-id,
+    cursor: cursor,
+  }
+
+  record interaction-op {
+    id: render-id,
+    focusable: bool,
+    editable: bool,
+    unselectable: bool,
+  }
+
+  record watched-op {
+    id: render-id,
+    watched: watch-flags,
+  }
+
+  variant render-op {
+    create(create-op),
+    remove(render-id),
+    set-root(option<render-id>),
+    set-children(children-op),
+    set-box(box-op),
+    set-layout(layout-op),
+    set-style(style-op),
+    set-content(content-op),
+    set-text-style(text-style-op),
+    set-cursor(cursor-op),
+    set-interaction(interaction-op),
+    set-watched(watched-op),
+  }
+
+  record node-size {
+    id: render-id,
+    width: f32,
+    height: f32,
+  }
+
+  record node-scroll {
+    id: render-id,
+    scroll-x: f32,
+    scroll-y: f32,
+    reach-x: f32,
+    reach-y: f32,
+  }
+
+  /// Batched notifications emitted by the native core back to the platform
+  /// component on the window thread when watched states change.
+  variant core-event {
+    hover-target(option<render-id>),
+    press-target(option<render-id>),
+    focus-target(option<render-id>),
+    sizes-changed(list<node-size>),
+    scroll-changed(list<node-scroll>),
+  }
+
+  /// Apply a batch of flat render-tree mutations in order.
+  apply: func(ops: list<render-op>);
+
+  /// Query the current selection in an editable text render node.
+  selection: func(id: render-id) -> option<text-selection>;
+
+  /// Set the caret or selection in an editable text render node and reveal
+  /// the caret on the next frame.
+  select: func(id: render-id, to: text-selection);
+
+  /// Capture the pointer for `id` (or release capture when `none`).
+  capture-pointer: func(id: option<render-id>);
+
+  /// Move keyboard focus to `id` (or clear focus when `none`).
+  focus: func(id: option<render-id>);
+
+  /// Last solved bounding box of `id` in window coordinates, if placed.
+  bounds: func(id: render-id) -> option<rect>;
+}

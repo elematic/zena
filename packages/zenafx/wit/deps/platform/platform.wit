@@ -1,0 +1,205 @@
+// Platform / scene runtime component for ZenaFX.
+//
+// Sits between user-authored app/widget components and the minimal Rust
+// native core (`zenafx:core/render@0.1.0`). Owns templates, holes, slots,
+// detached nodes, style resolution (stopgap state-styles first, then the full
+// property/rule engine from docs/design/zenafx-styles.md), and logical event
+// routing.
+//
+// Designed in docs/design/zenafx-platform-core.md.
+
+package zenafx:platform@0.1.0;
+
+interface runtime {
+  use zenafx:core/render@0.1.0.{
+    box,
+    box-style,
+    core-event,
+    cursor,
+    layout,
+    node-style,
+    text-selection,
+    text-style,
+  };
+
+  record node-def {
+    box: box,
+    layout: layout,
+    style: node-style,
+    first-child: u32,
+    child-count: u32,
+    is-slot: bool,
+    cursor: option<cursor>,
+    focusable: bool,
+    editable: bool,
+    unselectable: bool,
+  }
+
+  enum binding-target {
+    content,
+    style,
+    box,
+    layout,
+  }
+
+  record binding {
+    node: u32,
+    target: binding-target,
+  }
+
+  variant binding-value {
+    content(string),
+    style(box-style),
+    text-style(text-style),
+    box(box),
+    layout(layout),
+  }
+
+  record hole {
+    binding: u32,
+    value: binding-value,
+  }
+
+  enum state {
+    hovered,
+    pressed,
+    focused,
+  }
+
+  variant restyle {
+    fill(box-style),
+    text(text-style),
+  }
+
+  record state-style {
+    node: u32,
+    when: state,
+    of: u32,
+    style: restyle,
+  }
+
+  record template-def {
+    id: u32,
+    nodes: list<node-def>,
+    bindings: list<binding>,
+    states: list<state-style>,
+  }
+
+  variant template-ref {
+    known(u32),
+    fresh(template-def),
+  }
+
+  enum pointer-kind {
+    down,
+    up,
+    move,
+    enter,
+    leave,
+  }
+
+  enum scope {
+    node,
+    subtree,
+    captured,
+  }
+
+  enum phase {
+    bubble,
+    intercept,
+  }
+
+  record pointer-event {
+    kind: pointer-kind,
+    x: f32,
+    y: f32,
+    button: u8,
+  }
+
+  record call {
+    listener: u32,
+    event: pointer-event,
+  }
+
+  record delivery {
+    calls: list<call>,
+    stops-when-handled: bool,
+  }
+
+  /// Return the scene's root logical node ID (creating it on first call).
+  root: func() -> u32;
+
+  /// Create a detached logical node owned by the caller's handle.
+  create-node: func() -> u32;
+
+  /// Drop a detached logical node handle. Returns whether the tree changed.
+  drop-node: func(id: u32) -> bool;
+
+  /// Render `template` with sparse `holes` into logical node `id`.
+  render: func(id: u32, template: template-ref, holes: list<hole>);
+
+  /// Resize slot `slot` of `id`'s interior to `count` children and return
+  /// their logical node IDs, or `none` if `id` has no such slot.
+  content: func(id: u32, slot: u32, count: u32) -> option<list<u32>>;
+
+  /// Replace slot `slot` of `id`'s interior with `children`, in order.
+  set-slot: func(id: u32, slot: u32, children: list<u32>) -> bool;
+
+  /// Drain listener IDs whose logical nodes were dropped since the last call.
+  take-ended-listeners: func() -> list<u32>;
+
+  /// Register a pointer listener on template position `target` of `id`.
+  listen-pointer: func(
+    id: u32,
+    target: u32,
+    listener-id: u32,
+    kind: pointer-kind,
+    in-scope: scope,
+    at: phase,
+  ) -> bool;
+
+  /// Register a keyboard listener on template position `target` of `id`.
+  listen-keys: func(
+    id: u32,
+    target: u32,
+    listener-id: u32,
+    at: phase,
+  ) -> bool;
+
+  /// Remove a previously registered pointer or keyboard listener.
+  unlisten: func(listener-id: u32);
+
+  /// Query text selection inside template position `target` of `id`.
+  selection: func(id: u32, target: u32) -> option<text-selection>;
+
+  /// Set text selection inside template position `target` of `id`.
+  select: func(id: u32, target: u32, to: text-selection) -> bool;
+
+  /// Process watched-state notifications from `zenafx:core/render` on the
+  /// window thread, recompute resolved styles, and flush ops to the core.
+  /// Returns whether any style or layout changed.
+  on-core-events: func(events: list<core-event>) -> bool;
+
+  /// Route a pointer input at window `(x, y)` hitting `target` (a render ID)
+  /// across the logical tree (slots included) and return listener deliveries.
+  route-pointer: func(
+    kind: pointer-kind,
+    target: option<u32>,
+    x: f32,
+    y: f32,
+    button: u8,
+    captured: bool,
+  ) -> list<delivery>;
+
+  /// Route a keyboard event along the logical path from root to `focused`.
+  route-key: func(focused: option<u32>) -> list<u32>;
+
+  /// Return the render ID associated with `listener-id` for pointer capture.
+  capture-target: func(listener-id: u32) -> option<u32>;
+}
+
+world platform {
+  import zenafx:core/render@0.1.0;
+
+  export runtime;
+}

@@ -115,6 +115,8 @@ pub enum PointerInput {
 
 /// One event for one listener.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct Call {
     pub listener: u32,
     pub event: PointerEvent,
@@ -122,6 +124,8 @@ pub struct Call {
 
 /// The calls one input leads to, in the order to make them.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "wasmtime", derive(ComponentType, Lift, Lower))]
+#[cfg_attr(feature = "wasmtime", component(record))]
 pub struct Delivery {
     pub calls: Vec<Call>,
     /// Whether a listener can stop the delivery, which makes the calls
@@ -129,6 +133,7 @@ pub struct Delivery {
     /// `down`, `up` and `move`, which travel a path. False for `enter` and
     /// `leave`, where each call reports a change to that listener's own scope
     /// and another listener's answer says nothing about this one.
+    #[cfg_attr(feature = "wasmtime", component(name = "stops-when-handled"))]
     pub stops_when_handled: bool,
 }
 

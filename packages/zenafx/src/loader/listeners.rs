@@ -29,8 +29,8 @@ use wasmtime::component::{
 };
 
 use super::link::UiHostState;
+use super::platform::PlatformRuntime;
 use crate::ui::events::{KeyEvent, PointerEvent};
-use crate::ui::scene::Scene;
 
 /// What a `reply` handle names. Its representation is a key into
 /// [`Replies`].
@@ -186,16 +186,19 @@ pub struct Listeners {
 impl Listeners {
     /// A new listener: its id, and the stream to hand the component.
     ///
-    /// `scene` is where the stream removes the listener from when the
+    /// `platform` is where the stream removes the listener from when the
     /// component drops it.
-    pub fn open<R: Carried>(&self, scene: Arc<Mutex<Scene>>) -> (u32, ListenerStream<R>) {
+    pub fn open<R: Carried>(
+        &self,
+        platform: Arc<Mutex<PlatformRuntime>>,
+    ) -> (u32, ListenerStream<R>) {
         let id = self.last.fetch_add(1, Ordering::Relaxed) + 1;
         let (sender, events) = mpsc::unbounded_channel();
         self.streams.lock().unwrap().insert(id, sender);
         let stream = ListenerStream {
             id,
             events,
-            scene,
+            platform,
             listeners: self.clone(),
             carries: PhantomData,
         };
@@ -234,7 +237,7 @@ impl Listeners {
 pub struct ListenerStream<R> {
     id: u32,
     events: mpsc::UnboundedReceiver<Offered>,
-    scene: Arc<Mutex<Scene>>,
+    platform: Arc<Mutex<PlatformRuntime>>,
     listeners: Listeners,
     carries: PhantomData<fn() -> R>,
 }
@@ -291,7 +294,9 @@ impl<R> Drop for ListenerStream<R> {
     /// The component dropped the stream, or the store is going away. Either
     /// way nothing reads this listener's events any more.
     fn drop(&mut self) {
-        self.scene.lock().unwrap().unlisten(self.id);
+        if let Ok(mut rt) = self.platform.lock() {
+            let _ = rt.unlisten(self.id);
+        }
         self.listeners.end(&[self.id]);
     }
 }
