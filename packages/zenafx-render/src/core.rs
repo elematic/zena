@@ -419,6 +419,7 @@ pub struct RenderCore {
     pressed_last: Option<Press>,
     reveal: bool,
     pending_events: Vec<CoreEvent>,
+    draw_hover: Option<Option<u32>>,
 }
 
 impl RenderCore {
@@ -456,6 +457,20 @@ impl RenderCore {
 
     pub fn bounds(&self, id: u32) -> Option<Rect> {
         self.rects.get(&id).copied()
+    }
+
+    pub fn has_focus(&self) -> bool {
+        self.focused.is_some()
+    }
+
+    pub fn pointer_pos(&self) -> (f32, f32) {
+        self.pointer
+    }
+
+    /// If the last [`RenderCore::draw`] moved a different node under a
+    /// stationary pointer, returns `Some(new_target)`.
+    pub fn take_draw_hover(&mut self) -> Option<Option<u32>> {
+        self.draw_hover.take()
     }
 
     /// Take watched-state notifications produced during the last `draw` or
@@ -1012,10 +1027,14 @@ impl RenderCore {
         self.painted = order;
 
         // Re-check what is under a stationary pointer after layout moved boxes.
+        self.draw_hover = None;
         if self.inside && self.captured.is_none() {
             let (x, y) = self.pointer;
             let under = self.hit(x, y);
-            self.set_hover(under);
+            if under != self.hovered {
+                self.draw_hover = Some(under);
+                self.set_hover(under);
+            }
         }
 
         let selected = self.selected_ranges();
@@ -1257,7 +1276,13 @@ impl RenderCore {
     }
 
     pub fn notice_key(&mut self, key: &KeyEvent) {
-        self.shift = key.modifiers.shift;
+        // The Shift key event reports modifiers as they were before the key,
+        // so its own down/up state determines whether Shift is held.
+        self.shift = if key.key == "Shift" {
+            key.down
+        } else {
+            key.modifiers.shift
+        };
     }
 
     pub fn cursor(&self) -> Cursor {

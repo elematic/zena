@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposal, with Steps A1 and A2 implemented:
+Proposal, with Steps A1–A3 implemented:
 
 - **Step A1 (done):** `packages/zenafx/wit/deps/core/core.wit` defines the
   self-contained `zenafx:core@0.1.0` native-core WIT package (`render`), and
@@ -15,9 +15,13 @@ Proposal, with Steps A1 and A2 implemented:
   `state-style` restyling, and logical event routing, driven in Wasmtime by
   `packages/zenafx/src/loader/platform.rs` and tested end-to-end in
   `packages/zenafx/tests/platform.rs`.
-- **Step A3 (planned):** Bundle `platform.wasm` into `zfx`, route app and
-  widget components through it, and retire the monolithic
-  `packages/zenafx-render/src/scene.rs`.
+- **Step A3 (done):** `GuestScene` (`packages/zenafx/src/loader/`) routes all
+  app and widget components through the Zena platform component into
+  `RenderCore`, `packages/zenafx/build.rs` supports `--features bundled`
+  embedding of `out/platform.wasm`, and `zfx --platform <FILE>` allows testing
+  an upgraded platform component independently of the native binary.
+  (`packages/zenafx-render/src/scene.rs` remains temporarily for `zenafx-web`
+  until the browser runtime migrates to `RenderCore` + `platform.wasm`.)
 
 ## Overview
 

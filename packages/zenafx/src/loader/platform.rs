@@ -8,7 +8,7 @@
 //!
 //! Designed in `docs/design/zenafx-platform-core.md`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
@@ -16,10 +16,14 @@ use wasmtime::component::{Component, Instance, Linker, TypedFunc};
 use wasmtime::{Engine, Store, StoreContextMut};
 
 use zenafx_render::core::{CoreEvent, RenderCore, RenderOp};
-use zenafx_render::events::{Delivery, KeyEvent, Phase, PointerInput, PointerKind, Scope};
+use zenafx_render::events::{Delivery, KeyDefault, KeyEvent, Phase, PointerInput, PointerKind, Scope};
 use zenafx_render::scene::{Hole, TemplateRef, TextSelection};
 use zenafx_render::text::TextEngine;
 use zenafx_render::types::{Command, Rect, Size};
+
+mod platform_bundle {
+    include!(concat!(env!("OUT_DIR"), "/platform_bundle.rs"));
+}
 
 const RUNTIME_IFACE: &str = "zenafx:platform/runtime@0.1.0";
 
@@ -140,6 +144,20 @@ where
 }
 
 impl PlatformRuntime {
+    /// Load the default platform component: `ZENAFX_PLATFORM_WASM` if set,
+    /// otherwise the bundled bytes (with `--features bundled`), otherwise
+    /// `packages/zenafx/out/platform.wasm` in the repository.
+    pub fn load_default(engine: &Engine) -> Result<Self> {
+        if let Ok(path) = std::env::var("ZENAFX_PLATFORM_WASM") {
+            return Self::load(engine, Path::new(&path));
+        }
+        if let Some(bytes) = platform_bundle::BUNDLED_PLATFORM {
+            return Self::from_bytes(engine, bytes);
+        }
+        let repo_wasm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out/platform.wasm");
+        Self::load(engine, &repo_wasm)
+    }
+
     /// Load and instantiate the compiled platform component at `path`.
     pub fn load(engine: &Engine, path: &Path) -> Result<Self> {
         let component = Component::from_file(engine, path).map_err(|e| {
@@ -317,14 +335,17 @@ impl PlatformRuntime {
     }
 
     /// Solve and draw one frame in [`RenderCore`], flushing any watched core
-    /// events into the platform component and re-drawing if styles changed.
-    pub fn draw(&mut self, available: Size) -> Result<Vec<Command>> {
-        let (mut cmds, events) = {
+    /// events into the platform component and returning any `enter`/`leave`
+    /// deliveries owed because layout moved nodes under a stationary pointer.
+    pub fn draw_with_owed(&mut self, available: Size) -> Result<(Vec<Command>, Vec<Delivery>)> {
+        let (mut cmds, events, draw_hover, pos) = {
             let mut core = self.core.lock().unwrap();
             let mut text = self.text.lock().unwrap();
             let cmds = core.draw(available, &mut text);
             let events = core.take_events();
-            (cmds, events)
+            let draw_hover = core.take_draw_hover();
+            let pos = core.pointer_pos();
+            (cmds, events, draw_hover, pos)
         };
         if !events.is_empty() && self.on_core_events(events)? {
             let mut core = self.core.lock().unwrap();
@@ -332,18 +353,34 @@ impl PlatformRuntime {
             cmds = core.draw(available, &mut text);
             let _ = core.take_events();
         }
+        let owed = match draw_hover {
+            Some(under) => {
+                let (deliveries,) = self.f_route_pointer.call(
+                    &mut self.store,
+                    (PointerKind::Enter, under, pos.0, pos.1, 0, false),
+                )?;
+                deliveries
+            }
+            None => Vec::new(),
+        };
+        Ok((cmds, owed))
+    }
+
+    /// Solve and draw one frame in [`RenderCore`], discarding owed deliveries.
+    pub fn draw(&mut self, available: Size) -> Result<Vec<Command>> {
+        let (cmds, _) = self.draw_with_owed(available)?;
         Ok(cmds)
     }
 
     /// Process a pointer input through [`RenderCore`], forward watched state
     /// changes to `on-core-events`, and route logical listener deliveries.
     pub fn pointer(&mut self, input: PointerInput) -> Result<(Vec<Delivery>, bool)> {
-        let (outcome, captured) = {
+        let (outcome, was_captured) = {
             let mut core = self.core.lock().unwrap();
             let text = self.text.lock().unwrap();
+            let was_captured = core.captured().is_some();
             let outcome = core.pointer(input, &text);
-            let captured = core.captured().is_some();
-            (outcome, captured)
+            (outcome, was_captured)
         };
         let restyled = self.on_core_events(outcome.events)?;
         let (kind, x, y, button) = match input {
@@ -365,9 +402,42 @@ impl PlatformRuntime {
         };
         let (deliveries,) = self.f_route_pointer.call(
             &mut self.store,
-            (kind, outcome.target, x, y, button, captured),
+            (kind, outcome.target, x, y, button, was_captured),
         )?;
         Ok((deliveries, outcome.needs_redraw || restyled))
+    }
+
+    /// Capture the pointer for the node owning `listener_id`, restoring any
+    /// text selection started by the press and restyling if needed.
+    pub fn capture_listener(&mut self, listener_id: u32) -> Result<bool> {
+        let target = self.capture_target(listener_id)?;
+        let events = {
+            let mut core = self.core.lock().unwrap();
+            core.capture_pointer(target);
+            core.take_events()
+        };
+        let restyled = self.on_core_events(events)?;
+        let dirty = self.core.lock().unwrap().dirty;
+        Ok(restyled || dirty)
+    }
+
+    /// Perform the native default action for a key whose default was not
+    /// prevented by any listener. Returns whether a redraw is owed.
+    pub fn act_on_key(&mut self, event: &KeyEvent) -> Result<bool> {
+        match event.default_action() {
+            KeyDefault::None => Ok(false),
+            KeyDefault::MoveFocus { backwards } => {
+                let events = self.core.lock().unwrap().move_focus(backwards);
+                let restyled = self.on_core_events(events)?;
+                let dirty = self.core.lock().unwrap().dirty;
+                Ok(restyled || dirty)
+            }
+            KeyDefault::SelectAll => {
+                let mut core = self.core.lock().unwrap();
+                core.select_all_text();
+                Ok(core.dirty)
+            }
+        }
     }
 
     /// Route a keyboard event across the logical focus path.

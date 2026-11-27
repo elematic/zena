@@ -47,6 +47,10 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     app: Option<String>,
 
+    /// Override the bundled ZenaFX platform component (.wasm) used with --app.
+    #[arg(long, value_name = "FILE")]
+    platform: Option<String>,
+
     /// The .wasm component file to run
     file: Option<String>,
 
@@ -197,7 +201,16 @@ fn main() -> Result<()> {
             anyhow::bail!("File not found: {app}");
         }
         let engine = zenafx::loader::engine(cli.debug)?;
-        let mut scene = zenafx::loader::GuestScene::load(&engine, path)?;
+        let mut scene = match cli.platform {
+            Some(ref plat) => {
+                let plat_path = Path::new(plat);
+                if !plat_path.exists() {
+                    anyhow::bail!("Platform component not found: {plat}");
+                }
+                zenafx::loader::GuestScene::load_with_platform(&engine, path, plat_path)?
+            }
+            None => zenafx::loader::GuestScene::load(&engine, path)?,
+        };
         // A window copies to and pastes from the platform's clipboard. Where
         // there is none to reach, the scene keeps the one it started with,
         // and copying and pasting work within the window.

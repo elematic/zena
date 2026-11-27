@@ -8,7 +8,7 @@
  * and logical pointer/keyboard event routing.
  */
 import {
-  Box, BoxStyle, Cursor, Edges, Flex, Layout, LayoutFlex, LayoutFlow,
+  Box, BoxStyle, Color, Cursor, Edges, Flex, Layout, LayoutFlex, LayoutFlow,
   LengthAuto, NodeStyle, NodeStyleNothing, NodeStyleFill, NodeStyleText,
   Overflow, Axis, Justify, Align, Rect, TextContent, TextSelection, TextStyle,
   WatchFlags, watchFlagsHovered, watchFlagsPressed, watchFlagsFocused,
@@ -368,6 +368,46 @@ function computeActiveStyle(node: LogicalNode): NodeStyle {
   return node.baseStyle;
 }
 
+function colorEqual(a: Color, b: Color) {
+  return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
+function optColorEqual(a: Option<Color>, b: Option<Color>) {
+  if (a is Some<Color> && b is Some<Color>) {
+    return colorEqual(a.value, b.value);
+  }
+  return !(a is Some<Color>) && !(b is Some<Color>);
+}
+
+function boxStyleEqual(a: BoxStyle, b: BoxStyle) {
+  return optColorEqual(a.background, b.background)
+    && optColorEqual(a.borderColor, b.borderColor)
+    && a.borderWidth == b.borderWidth
+    && a.cornerRadius == b.cornerRadius
+    && a.opacity == b.opacity;
+}
+
+function textStyleEqual(a: TextStyle, b: TextStyle) {
+  return a.family == b.family
+    && a.size == b.size
+    && a.weight == b.weight
+    && a.italic == b.italic
+    && colorEqual(a.color, b.color);
+}
+
+function nodeStyleEqual(a: NodeStyle, b: NodeStyle): boolean {
+  if (a is NodeStyleNothing && b is NodeStyleNothing) {
+    return true;
+  }
+  if (a is NodeStyleFill && b is NodeStyleFill) {
+    return boxStyleEqual(a.value, b.value);
+  }
+  if (a is NodeStyleText && b is NodeStyleText) {
+    return a.value.content == b.value.content && textStyleEqual(a.value.style, b.value.style);
+  }
+  return false;
+}
+
 function refreshStyledNodes(ops: GrowableArray<RenderOp>) {
   var changed = false;
   let live = new GrowableArray<u32>();
@@ -385,15 +425,16 @@ function refreshStyledNodes(ops: GrowableArray<RenderOp>) {
       continue;
     }
     let next = computeActiveStyle(node);
-    // Emit style op whenever state-derived style differs or may have changed.
-    node.activeStyle = next;
-    ops.push(new RenderOpSetStyle(new StyleOp(node.renderId, next)));
-    changed = true;
+    if (!nodeStyleEqual(next, node.activeStyle)) {
+      node.activeStyle = next;
+      ops.push(new RenderOpSetStyle(new StyleOp(node.renderId, next)));
+      changed = true;
+    }
   }
   // Keep `styledNodes` compacted.
   styledNodes.clear();
-  for (var i = 0; i < live.length; i += 1) {
-    styledNodes.push(live[i]);
+  for (let id in live) {
+    styledNodes.push(id);
   }
   return changed;
 }
@@ -438,11 +479,17 @@ function dropSubtree(id: u32, forceDropGuestOwned: boolean, ops: GrowableArray<R
 
 function clearInterior(host: LogicalNode, ops: GrowableArray<RenderOp>) {
   let kids = host.children;
-  for (var i = 0; i < kids.length; i += 1) {
-    dropSubtree(kids[i], false, ops);
+  for (let kid in kids) {
+    dropSubtree(kid, false, ops);
   }
   host.children.clear();
   host.stateStyles.clear();
+  if (host.watchedFlags != (0 as u32)) {
+    host.watchedFlags = 0 as u32;
+    if (!host.isSlot && host.renderId != (0 as u32)) {
+      ops.push(new RenderOpSetWatched(new WatchedOp(host.renderId, 0 as WatchFlags)));
+    }
+  }
   recordEndedListeners(host);
   host.interior = null;
 }
@@ -770,10 +817,11 @@ export function render(id: u32, template: TemplateRef, holes: Array<Hole>): void
     }
   }
 
-  // Emit flattened concrete render children for every non-slot node in interior.
+  // Emit flattened concrete render children for every non-slot node in interior
+  // (always for node 0 so rebuilding into a childless template clears old children).
   for (var i = 0; i < count; i += 1) {
     let n = getNode(intNodes[i]) as LogicalNode;
-    if (!n.isSlot && n.children.length > 0) {
+    if (!n.isSlot && (i == 0 || n.children.length > 0)) {
       emitFlatChildren(n, ops);
     }
   }
@@ -1054,7 +1102,7 @@ export function select(id: u32, target: u32, to: TextSelection): boolean {
     return false;
   }
   let tn = getNode(intNodes[idx]);
-  if (tn == null || tn.renderId == (0 as u32)) {
+  if (tn == null || tn.renderId == (0 as u32) || !(tn.baseStyle is NodeStyleText)) {
     return false;
   }
   coreSelect(tn.renderId, to);
