@@ -411,6 +411,11 @@ case.
   function, as contracts.md says, and nothing checks for effects. A
   lint can suggest `pure` on a function that every clause calls and
   that satisfies the rule.
+- **Isolated functions.** Functions extracted to run in another
+  execution context — ZenaFX window components, worker tasks, macros,
+  and GPU shaders — require `pure` or `effect-free` together with
+  capture and target-profile checks; see
+  [isolated-functions.md](./isolated-functions.md).
 
 ## Evaluation and proof
 

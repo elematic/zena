@@ -12,50 +12,77 @@ Proposal. Two pieces are built today:
   serialization in `examples/zenafx/style.zena` and `examples/zenafx/ui.zena`,
   and the updated `@ui` example widgets.
 
-The rest of this document asks for nine host-protocol decisions:
+The rest of this document asks for nine platform-protocol decisions:
 
 1. A property is declared: a key, a type and whether it inherits. The built-in
-   properties are declarations of the same form as an application's own. A
-   property has one definition, made with its key, so two definitions cannot
-   conflict. See [Properties](#properties).
-2. A fact is a flag or a number on a node that the host or a component writes
-   and a condition tests. See [Facts](#facts).
+   properties are declarations of the same form as an application's own, and
+   all property resolution (built-in and custom, inheritance and defaults) runs
+   in one place inside the platform component. A property has one definition,
+   made with its key, so two definitions cannot conflict. See
+   [Properties](#properties).
+2. A fact is a flag or a number on a node that the runtime or a component
+   writes and a condition tests. See [Facts](#facts).
 3. The key of a property or a fact is a symbol: only code that holds it can
    set, read or test it. Between components it is shared by handing over a
    handle, and never by a name. See [Keys](#keys).
 4. A rule is a condition and a set of declarations. Rules are attached to a
-   node, and apply to that node alone or to it and the nodes beneath it that
-   the same widget placed. They never reach into another widget's interior.
-   See [Rules](#rules).
-5. The host evaluates conditions, and there is no separate selector language.
-   The part of a condition that a template fixes is evaluated once for each
-   template. See [Conditions](#conditions) and
+   node, and apply to that node alone or to the subtree rooted at that node,
+   stopping at the interior boundary of any nested widget. Only inheriting
+   properties cross widget boundaries. See [Rules](#rules).
+5. The platform component evaluates conditions, and there is no separate
+   selector language. Fixed structural facts are resolved once per static
+   fragment; dynamic predicates can be declarative tests or pure functions
+   compiled into a window component reading a `borrow<style-node>` resource
+   ([isolated-functions.md](./isolated-functions.md)). See
+   [Conditions](#conditions) and
    [One condition, tested in two stages](#one-condition-tested-in-two-stages).
 6. Inheritance is decided for each property by its declaration. A theme is a
    set of inheriting properties. See [Inheritance](#inheritance).
 7. A component can watch a condition and be told when it starts or stops
    holding. See [Condition watchers](#condition-watchers).
-8. The host has no variables, imports, functions or expressions. A constant is
-   imported in the guest language and sent as a value, and a function is a
-   function of that language. A property is only for a value that depends on
-   where a node is in the tree. See
+8. The platform component has no variables, imports, functions or expressions.
+   A constant is imported in the guest language and sent as a value, and a
+   function is a function of that language. A property is only for a value that
+   depends on where a node is in the tree. See
    [What is left to the language](#what-is-left-to-the-language).
 9. Styling and layout are extended with WebAssembly. Code that has to run
-   during a frame is a component of its own that the host runs on the window's
-   thread, and a declaration's value can be a call to a function it exports.
-   See [Window components](#window-components).
+   during a frame — a style value function, a dynamic condition predicate, or a
+   custom layout — is a component of its own that the platform component runs
+   on the window's thread, and a declaration or condition can call a function
+   it exports. See [Window components](#window-components).
 
 [Layout extension](#layout-extension) says how a custom layout algorithm would
 fit the same constraints. It is a direction and not yet a design.
 
 ## Overview
 
-A ZenaFX window has two programs in it. The **host** is the Rust process: it
-holds the tree of nodes, lays it out, paints it and reads input. A
-**component** is the application, a WebAssembly component that describes the
-tree and writes values into it through the interface in
-`packages/zenafx/wit/zenafx.wit`. The two run on different threads, and a call
-from one to the other copies its arguments.
+A ZenaFX window is structured in three layers:
+
+1. **The native core (`zfx`, Rust).** Owns the OS window and input (`winit`),
+   layout (`taffy`), text shaping (`parley`), compositing and painting
+   (`vello`), hit testing, and scrolling over a minimal retained **render
+   tree**. Each node in the render tree holds only flat, already-resolved
+   built-in layout and paint properties plus a small bitmask of host states
+   (`hovered`, `focused`, `pressed`, `size`, `scroll`) that the platform
+   component asked to be notified about. The native core has no knowledge of
+   slots, custom properties, inheritance, stylesheets, or rules.
+2. **The platform component (WebAssembly, written in Zena).** Bundled with
+   `zfx` and independently versioned and upgradeable, running on the window
+   thread directly above the native core. It exposes the component-facing UI
+   API to apps and widgets written in any language, resolves slots (including
+   future multi-slot projection) into the flat render tree, and owns all
+   styling — built-in and custom properties, inheritance, defaults, facts,
+   stylesheets, Stage-1/Stage-2 rules, `style-node` resources, and caches. On
+   watched state transitions or app updates it flushes flat resolved style
+   diffs down to the native core in batches. _(In today's prototype,
+   `packages/zenafx-render/src/scene.rs` still holds `Scene` directly in Rust;
+   splitting the platform component out is part of the target architecture. In
+   the sections below, "host" refers to this platform/scene layer unless
+   "native core" is named explicitly.)_
+3. **App and widget components (user-authored, loaded on the fly in any
+   language).** The root app component and any child widget components it
+   loads. They run on their own thread(s), hold widget state and event
+   handlers, and talk to the platform component.
 
 A button that changes colour under the pointer is styled by a condition: this
 fill while the pointer is over the button, that one otherwise. So is a layout
@@ -65,15 +92,19 @@ selectors, pseudo-classes and media or container queries.
 
 Three constraints shape the answer here.
 
-- **A resize, a scroll, a hover and an animation frame must not call the
-  component.** Each can happen sixty or more times a second, and the window's
-  thread does not wait for a component.
-- **The host stays small.** A feature belongs in the host when it cannot work
-  anywhere else.
+- **A resize, a scroll, a hover and an animation frame must not call an app or
+  widget component.** Each can happen sixty or more times a second, and the
+  window's thread does not wait for app or widget threads.
+- **The native core stays small, and the platform layer stays upgradeable.**
+  Layout, text shaping, paint, hit testing, and scrolling stay in Rust over a
+  flat resolved render tree; slots, styling, inheritance, and caches live in
+  the WebAssembly platform component so the UI layer can evolve independently
+  of the native binary.
 - **Built-in behaviour and an application's own behaviour use one mechanism.**
-  The host's `hovered` should be the same kind of thing as an application's
-  `selected`, and the host's `background` the same kind of thing as a theme's
-  `accent`.
+  `hovered` is the same kind of thing as an application's `selected`, and
+  `background` is resolved by the same property, inheritance, and default rules
+  as a theme's `accent` before flat resolved built-ins are flushed to the
+  native core.
 
 The proposal has four parts. A **property** is a declared value a node has,
 such as a background or a theme's accent colour. A **fact** is something true
@@ -81,11 +112,11 @@ of a node, such as being hovered, being 600 wide or being tagged as a title. A
 **condition** tests facts. A **rule** is a condition and the property values
 to use where it holds.
 
-The host evaluates all of it, and divides the work by when a fact can change.
-A node's tags and its place in a template are fixed when the template is
-built, so the part of a condition that tests them is evaluated once for each
-template. Hover, focus, sizes and scroll positions change with no component
-involved, so the rest is tested by the host as they change.
+The platform component evaluates all of it, and divides the work by when a fact
+can change. Fixed structural facts (tags, node kinds, and static nesting) are
+evaluated once when a subtree or static template fragment is attached. Hover,
+focus, sizes, scroll positions, and dynamic fact holes change afterwards and
+are evaluated on demand as those inputs change.
 
 ## Terms
 
@@ -325,43 +356,51 @@ A guest serializes any rule set's condition trees into the flat post-order
 `examples/zenafx/style.zena`), ready for the host wire protocol once host rules
 land.
 
-**Step 2 — `@style` and `@cond` macros for Zena condition expressions (planned).**
-Rather than adding a bespoke selector grammar to the compiler (such as the
-earlier `rules { case Card >> Text: ... }` sketch in
-[zenafx-widget-authoring.md](./zenafx-widget-authoring.md#selectors-as-data)),
-once Zena's macro system ([macros.md](./macros.md)) lands, a purely syntactic
-macro rewrites standard Zena boolean and comparison operators inside `When(...)`,
-`Rule(...)`, and `@cond(...)` directly into the Step 1 builder functions:
-
-- `a && b` → `condAll([lower(a), lower(b)])`
-- `a || b` → `condAny([lower(a), lower(b)])`
-- `!a` → `condNot(lower(a))`
-- `a >= b`, `a > b`, `a <= b`, `a < b` → `condGte`, `condGt`, `condLte`, `condLt`
-- any leaf expression `e` → `toCondition(e)` (accepting `FlagKey | Condition`)
+**Step 2 — Isolated window-component functions over `StyleNode` (planned).**
+Once Zena's isolated-function extraction
+([isolated-functions.md](./isolated-functions.md)) lands, dynamic conditions
+and computed style values can be written as ordinary pure Zena functions taking
+a borrowed `StyleNode` WIT resource:
 
 ```zena
-let wide = @cond (panelWidth >= 600.0);
+let isWide = (node: StyleNode) => node.use(panelWidth) >= 600.0;
 
-@style Stylesheet {
+Stylesheet {
   Rule(card) {
     background: paper
     cornerRadius: 8.0
 
     Rule(title) {
       fontSize: 18.0
-      When(hovered && !disabled && wide) { color: use(accent) }
+      When((node) => node.hovered && !node.fact(disabled) && isWide(node)) {
+        color: (node) => lighten(node.use(accent), 0.2)
+      }
     }
   }
 }
 ```
 
-Because the macro only rewrites syntax into typed function calls, Zena's normal
-type checker validates every key and operand (`hovered >= 600.0` is a type
-error because `hovered` is a `FlagKey`, not a `NumberKey`). The same `@cond`
-macro works for `node.watch(...)` condition watchers, and `@style` can also
-stage dynamic `$(...)` declaration holes in standalone stylesheets outside
-`@ui`. Neither the host protocol nor the Step 1 condition representation
-changes between Step 1 and Step 2.
+Structural nesting (`Rule(card) { Rule(title) { ... } }`) stays declarative
+data evaluated across the attached node's subtree (stopping at nested widget
+boundaries). For each lambda passed to `When(...)` or to a style property —
+typed via `ConditionFn = Isolated<Window, (node: StyleNode) => boolean>` and
+`StyleValueFn<T>` so ordinary closures are rejected — the compiler checks
+purity and captures and extracts the function and its pure callees (such as
+`isWide` and `lighten`) into the widget's companion window component. At the
+call site, the lambda lowers to a `call` record carrying the export index and
+any captured immutable values from the enclosing scope.
+
+Because `StyleNode` is a fixed WIT resource (`borrow<style-node>`) with runtime
+dependency recording in the platform component, no compiler access-analysis or
+body rewriting is needed: `isWide` compiles as an ordinary helper function, and
+widgets written in Rust or other languages implement the exact same WIT
+interface without compiler or macro support. Predicates can express modulo
+(`node.index % 2 == 0`), aspect ratios (`node.width / node.height > 1.5`), and
+comparisons between two live facts (`node.scrollY >= node.scrollRangeY - 500.0`)
+without protocol changes, and color/layout libraries export a single pure
+`lighten(color, amount)` function instead of maintaining a second
+`Value`-building overload. Step 1 combinators (`all`, `not`, `gte`) remain
+available for simple declarative `flag` and `range` conditions.
 
 ### Terminology
 
@@ -444,8 +483,9 @@ applies to a node and uses it as its value, a condition that tests it, and a
 component that asks for it. So a theme with fifty properties costs nothing on
 a node that uses none of them. The work is in proportion to the declarations
 that set a property and the places that use it, and not to the number of
-nodes times the number of properties. [What the host keeps](#what-the-host-keeps)
-has the tables that make it so.
+nodes times the number of properties.
+[What the platform component keeps](#what-the-platform-component-keeps) has the
+tables that make it so.
 
 ### Defaults
 
@@ -927,6 +967,9 @@ variant condition {
   flag(key),
   /// A number on the node is in a range.
   range(range-test),
+  /// A pure predicate exported by a window component, returning `flag`.
+  /// Uses the same `call` record as style value functions.
+  predicate(call),
   /// The node's parent satisfies condition `n`.
   under(u32),
   /// Some node above it, inside the rule's scope, satisfies condition `n`.
@@ -964,41 +1007,64 @@ A rule applies to every node in its scope for which its condition holds. No
 node is tested against every rule each time something changes, because facts
 differ in when they can change.
 
-A fact a template sets with no hole is fixed for that template, and so are a
-node's kind and its place among the template's nodes. A state, a size, a
-scroll position and a fact written by a hole change afterwards. So the host
-evaluates a condition in two stages.
+Static facts set directly on a node (not via a dynamic hole), a node's kind,
+and static structural relationships are fixed once the subtree is built.
+Interactive states (`hovered`, `focused`, `pressed`), layout sizes, scroll
+positions, slot `index`, and facts written through dynamic holes change
+afterwards. So the platform component evaluates a condition in two stages:
 
-1. When a template arrives, the host evaluates the part of each condition that
-   reads only fixed facts, against each node of the template in the rule's
-   scope. The answer is the list of nodes the rule can apply to. The host
-   finds candidates through a table from a flag to the rules that require it,
-   so a node is tested against the rules that name one of its tags.
-2. What is left stays as a condition on those nodes, which the host tests when
-   a fact it reads changes.
+1. When nodes are attached in a rule's scope (stopping at nested widget
+   boundaries), the platform component evaluates the part of each condition
+   that reads only fixed facts, producing the candidate rules that can apply to
+   each node. When a subtree comes from a reusable static template fragment,
+   this first-stage answer can be cached once for that static fragment (or
+   `(stylesheet, fragment)` pair) as an internal optimization.
+2. What is left stays as a dynamic condition on those nodes, tested only when a
+   fact or inherited property it reads changes.
 
-The first stage runs once for each template, whatever the number of instances
-on screen, and nothing is evaluated again for it when the pointer moves or the
-window changes size. The condition evaluator is the only matcher there is: a
-component in any language sends conditions, and no language needs a library
-that matches selectors.
+The first stage runs once per static fragment or node attachment, whatever the
+number of instances on screen, and never re-runs when the pointer moves or the
+window changes size. The platform component's condition evaluator is shared by
+all apps and widgets regardless of guest language.
 
 ### Evaluation
 
-For the second stage the host keeps, for each condition, whether it holds for
-each node it is used on. Two indexes keep that cheap.
+For the second stage the platform component keeps, for each dynamic condition
+on a node, its last result and the keys it depends on. Three mechanisms keep
+re-evaluation cheap:
 
-- **Flags.** A table from a flag's key to the conditions that test it. When a
-  flag changes on a node, the host evaluates those conditions again for that
-  node and for the nodes whose conditions read it through `under` or `within`.
-- **Numbers.** The bounds that conditions give for one key on one node, sorted,
-  divide the number line into intervals. The host remembers which interval the
-  current value is in. A new value is compared with that interval's two ends,
-  and no condition is evaluated unless it has left the interval.
+- **Flags.** A table from a flag's key to the declarative conditions that test
+  it. When a flag changes on a node, only those conditions re-evaluate (plus
+  descendants in the same scope whose conditions read it through `under` or
+  `within`).
+- **Numbers.** The bounds that declarative `range` conditions give for one key
+  on one node, sorted, divide the number line into intervals. The platform
+  component remembers which interval the current value is in; a new value is
+  compared against the two ends, and no `range` condition re-evaluates unless
+  it has crossed a bound.
+- **Window-component predicates.** When the platform component evaluates a
+  `predicate(call)` against `borrow<style-node>`, every getter called on
+  `style-node` records that key in the read-set for that run (a `u16` bitmask
+  for built-in host states plus a small list of custom fact/property keys).
+  Only predicates subscribed to a changed key re-evaluate; when a re-run takes
+  a different branch, its recorded read-set replaces the old one (so
+  short-circuited reads like `node.hovered && node.use(panelWidth) >= 600.0`
+  unsubscribe from `panelWidth` while unhovered). Results are memoized per
+  `(function, captures)` in a bounded read-check trie (with an LRU or per-frame
+  cap on continuous float values like `width` and `scrollY`), so a thousand
+  rows sharing an inherited `panelWidth` enter WebAssembly once per distinct
+  input tuple and hit the cache in the platform component for the rest.
+
+The native core keeps a small `watched_states` bitmask per render node derived
+from those subscriptions. Pointer moves over unwatched nodes or scrolling in
+containers with no scroll-watching rules stay entirely in Rust with zero WIT
+calls; watched transitions flush in one batched call to the platform component,
+which returns one batched diff of resolved built-in styles.
 
 A window dragged from 801 to 802 pixels wide therefore costs two comparisons
-for each width that has conditions on it. This is the property that makes a
-size condition usable during a resize.
+for each width that has `range` conditions on it (and at most one batched
+size-change notification for containers that publish size facts). This is the
+property that makes a size condition usable during a resize.
 
 ### Facts that depend on layout
 
@@ -1049,7 +1115,8 @@ has, an inline style and a stylesheet in a scope.
 enum reach {
   /// The node the rules are attached to, and no other.
   node,
-  /// That node, and the nodes beneath it that the same widget placed.
+  /// The subtree rooted at that node, stopping at the interior boundary of
+  /// any nested widget.
   scope,
 }
 
@@ -1065,15 +1132,17 @@ record node-def {
 }
 ```
 
-A node carries its rules as it carries its layout. `node-def` is the
-description of one node in a template, so a rule set is written there, on the
-node it is attached to.
+A node carries its rules directly. Whether a node was created from a single
+template, from several composed templates, or through a widget-independent node
+API, the scope rule is the same: rules with reach `scope` attached to a node
+apply throughout that node's subtree and stop at the lower boundary of any
+nested widget. Only inheriting properties cross widget boundaries.
 
-**Which nodes a widget placed.** A widget places the nodes of its own
-templates. It also places the node of each child widget it uses, whether it
-puts the child in a slot of its own or hands it to another widget as content.
-It does not place what is inside a child: that is the child's interior, and
-the child placed it.
+**Subtree and widget boundaries.** A widget owns the nodes it places (whether
+from its root template, composed sub-templates, or direct node calls),
+including the outer node of each child widget it instantiates or passes into a
+slot. It does not reach into a child widget's interior: that interior belongs
+to the child widget's scope.
 
 So rules a page attaches to its own node, with the reach `scope`, apply to the
 page's boxes and text, to the node of a card the page uses, and to the node of
@@ -1206,9 +1275,13 @@ terms of
 a rule on a widget class's own tag is like naming a class, and a rule on an
 exported tag is like naming an interface: any node can opt in.
 
-The host is sent a stylesheet once, as it is sent a template once, and a node
-that attaches it names it by an id in place of a list of rules. The first
-stage's answer is kept for each pair of a stylesheet and a template.
+The platform component is sent a stylesheet once, independently of any
+template, and gets an ID that any node across the app can attach. There is no
+structural coupling between a stylesheet and a template: a stylesheet applies
+to the subtree rooted at the node it is attached to, stopping at nested widget
+boundaries. When a subtree happens to come from a reusable static template
+fragment, the platform component caches the Stage-1 static-tag matches per
+`(stylesheet, fragment)` pair purely as an internal optimization.
 
 A stylesheet is data, so a component written in Rust can attach one that a
 Zena library defined, given the same records and handles to the same keys.
@@ -1220,9 +1293,9 @@ Two things a stylesheet cannot do, both for reasons already given.
   inside of a widget it uses. A widget offers what it wants restyled as
   properties.
 - **Count the children of a slot.** "Every second row" depends on which row a
-  node is in. The host would write an `index` number on each child of a slot.
-  That needs a remainder test beside the range test, or `even` and `odd`
-  flags.
+  node is in. The host writes an `index` number fact on each child of a slot;
+  a compiled window-component predicate (`node.index % 2 == 0`) tests it
+  directly without adding a `remainder` case to the WIT condition grammar.
 
 ## What is left to the language
 
@@ -1261,62 +1334,72 @@ their inputs are known.
   function goes in a component the host runs on the window's thread, which is
   what [Window components](#window-components) are.
 
-**A condition is data and cannot be a function**, because the host tests it
-when no component is running. It is still built by ordinary functions, as the
-sketch under [Stylesheets](#stylesheets) shows, and a test the algebra lacks
-is a fact the component computes and sets.
+**Structural attachment is data; dynamic predicates can be compiled window
+functions.** The first stage of a condition — matching fixed tags, `under`,
+`within`, and widget scope boundaries — is declarative data so the platform
+component resolves it without calling guest code. The second stage can use
+either the small declarative tests (`flag`, `range`) or a pure function
+compiled into a window component reading `borrow<style-node>`
+([isolated-functions.md](./isolated-functions.md)), just like a style value
+function.
 
 ## Window components
 
 Styling and layout are extended with WebAssembly. Code that has to run during
-a frame, such as a function over style values or a layout algorithm, is a
-component of its own that the host runs on the window's thread. An application
-is several components already, and one for the window's thread is one more.
+a frame — a function over style values, a dynamic condition predicate, or a
+layout algorithm — is a component of its own that the platform component runs
+on the window's thread.
 
-It is apart from the application's component because the window's thread
-never waits for the application, which
+It is apart from the app or widget component because the window's thread never
+waits for widget threads, which
 [Alternatives considered](#alternatives-considered) goes into. Four rules
 follow from where it runs.
 
-- **It imports only the interface it serves.** A style function takes values
-  and returns a value. A layout algorithm measures and places children. It has
-  no scene, no files and no clock.
-- **The host calls it directly**, on the window's thread, with no message and
-  no wait.
-- **Its functions are pure**: a result depends on the arguments alone. The
-  host keeps each result by its arguments, calls in any order, and may make a
-  second instance or a fresh one. Zena checks this
-  ([pure-functions.md](./pure-functions.md)). In another language it is the
-  author's promise, as it is for a worklet in CSS Houdini, which is the same
-  arrangement.
-- **A call that runs too long is cut off**, and the declaration that made it
-  does not apply.
+- **It imports only the interface it serves.** A style function or condition
+  predicate receives a `borrow<style-node>` resource exposing only the current
+  node's facts and inherited properties (no `parent` or `children`), plus any
+  captured immutable values, and returns a value (`bool` for a predicate). A
+  layout algorithm measures and places children. It has no scene mutation, no
+  files and no clock.
+- **The platform component calls it directly**, on the window's thread, with no
+  message and no wait.
+- **Its functions are pure**: a result depends solely on the values read from
+  `style-node` and the captures. The platform component records every getter
+  read on `style-node` for invalidation indexing and memoizes results in a
+  bounded read-check trie, may call in any order, and may make a second
+  instance or a fresh one. Zena checks purity and captures at compile time
+  ([pure-functions.md](./pure-functions.md),
+  [isolated-functions.md](./isolated-functions.md)). In another language it is
+  the author's promise, as it is for a worklet in CSS Houdini.
+- **A call that runs too long is cut off**, and the declaration or condition
+  that made it does not apply.
 
 ### The flow of a value
 
-1. The application's component writes a value into the host. A value that is
-   the same for every instance of a widget is in the widget's template. A
-   value that belongs to one instance, or that changes, is written through a
-   hole. A hole write is the call that sets a value, and no other is needed.
-2. The host keeps the value on the node. If its property inherits, every node
-   beneath can read it.
-3. A declaration on some node reads it, with `use` or as an argument to a
-   function.
-4. The host works the declaration out. For a function it looks for the result
-   under the function and its arguments, and calls the window component only
-   if there is none.
-5. The result is the declaration's value, and the frame goes on to lay out or
-   paint as the property needs.
-6. When a value changes, the host works out again the declarations that read
-   it. A function is called only for arguments it has not been given before,
-   so a theme that changes costs one call for each distinct use of a function
-   and not one for each node.
+1. A widget component writes a value into the platform component (statically on
+   a node or dynamically through a hole).
+2. The platform component keeps the value on the node. If its property
+   inherits, every node beneath can read it (crossing widget boundaries).
+3. A declaration or condition on some node reads it, with `use` or via
+   `node.use(key)` inside a window-component function.
+4. The platform component resolves all properties — built-in and custom,
+   inheritance and defaults — consistently in one place. For a window-component
+   call it checks its bounded read-check trie and enters the window component
+   only on a cache miss.
+5. The platform component flushes the final flat resolved built-in property
+   values down to the native core's render tree in a batch, and the native core
+   lays out or paints as needed.
+6. When a value changes, the platform component re-evaluates only the
+   declarations and predicates subscribed to that key, hitting its memoization
+   trie across nodes with equal inputs.
 
-The application's component runs in step 1 and in no later step.
+The widget component runs in step 1 and in no later step.
 
-### Calling a function from a declaration
+### Calling a function from a declaration or condition
 
-A call is one more kind of value.
+A call is one more kind of value (and condition predicate), targeting a fixed
+WIT world (`window-component` in
+[isolated-functions.md](./isolated-functions.md#context-resources-and-runtime-dependency-tracking)):
 
 ```wit
 variant value {
@@ -1326,78 +1409,85 @@ variant value {
 }
 
 record call {
-  /// An index into the template's list of functions.
+  /// Entry ID dispatched by the window component's `eval-value` or
+  /// `eval-predicate` export.
   function: u32,
-  /// Indexes into the template's list of values, which is flat for the
-  /// reason its list of conditions is.
-  arguments: list<u32>,
+  /// Immutable values (including key IDs) captured when the rule was built.
+  captures: list<value>,
 }
 ```
 
-A function is one export of one window component, and its parameters and
-result are of the types a property can have. An argument is any value: one
-sent as it is, a `use`, a `fact`, or another call. The host checks a call
-against the export's signature when the template arrives.
-
-In source a call reads as a call, `background(lighten(use(accent), 0.2))`. The
-library that exports `lighten` gives it two forms: the function itself, which
-runs in the application's component when its arguments are constants, and one
-that takes a value read from the tree and builds the record above. The Zena
-surface for that is not designed.
+In source, a computed value or condition predicate is written as an isolated
+function over `StyleNode`:
+`background: (node) => lighten(node.use(accent), 0.2)` or
+`When((node) => node.hovered && !node.fact(disabled))`. The compiler verifies
+purity and captures, extracts the function and its pure callees into the
+widget's window component, and emits the `call` record above
+([isolated-functions.md](./isolated-functions.md#type-representation)). A color
+library exports one pure `lighten(color, amount)` function, which runs in the
+widget component on constant colors and in the window component when called
+inside a `(node) => ...` style function. Non-Zena guests implement the same
+`window-component` WIT world directly without any compiler plugin or macro.
 
 ### What is not designed
 
-- **How a window component reaches the host.** An application names the ones
-  it uses, and two components that name the same one share an instance. Where
+- **How a window component reaches the platform component.** A widget names the
+  ones it uses, and two widgets that name the same one share an instance. Where
   the bytes come from is the question
   [zenafx-navigation-and-assets.md](./zenafx-navigation-and-assets.md) asks of
   every asset.
-- **Building one from an application's own source.** The toolchain could
-  compile the pure functions a style names into a window component, so that an
-  author who needs one function does not make a component by hand.
-- **The cost of a call** from the host into a component on its own thread,
-  with a few values copied each way. Nothing has measured it, and it decides
-  how small a function is worth calling.
+- **Packaging compiler-generated window components.**
+  [isolated-functions.md](./isolated-functions.md) designs how the compiler
+  extracts pure style functions and predicates into a window component; whether
+  those bytes ship as a sidecar component or bundled inside the widget
+  component is still open.
+- **The cost of a call** from the platform component into a window component on
+  its own thread, including `borrow<style-node>` getter reads on cache misses.
+  Nothing has measured it, and it decides how small a predicate is worth
+  running in a window component versus a declarative `flag`/`range` test.
 
-## What the host keeps
+## What the platform component keeps
 
 A window can hold a thousand instances of one widget, each mentioning the same
 properties and carrying the same rules. A further instance should cost a few
 table lookups and no new copy of anything that is the same as before. Five
-tables do that, each keyed by what its entries have in common.
+tables (plus the Stage-2 predicate subscription/memoization tables under
+[Evaluation](#evaluation)) do that, each keyed by what its entries have in
+common.
 
 1. **Keys, once for a window.** The table of keys described under
    [Where definitions live](#where-definitions-live), each with its
    definition. A component's `declare` makes or finds each of its keys once,
    which gives a table from the component's positions to the window's
-   numbers. Templates and stylesheets are rewritten to the window's numbers
+   numbers. Rules and stylesheets are rewritten to the window's numbers
    when they arrive. No instance and no node holds anything about a
    definition.
-2. **Rules, once for a template.** The first stage's answer: for each node of
-   a template, the rules that can apply to it, in order. A stylesheet's answer
-   is kept for each pair of a stylesheet and a template. Each rule's
-   declarations are one block, held once and referred to by every node the
-   rule applies to.
+2. **Rules, cached per static fragment.** When a subtree comes from a reusable
+   static template fragment, the first stage's answer — which rules can apply
+   to each slot in that fragment, in order — is cached once for that fragment
+   (or `(stylesheet, fragment)` pair). Each rule's declarations are one block,
+   held once and referred to by every node the rule applies to.
 3. **Inheriting values, once for each distinct set.** The inheriting values
    in force at a node, ordinary and default, are a set that is never changed
    after it is made. A node that declares none of them uses its parent's set.
-   A node that declares some gets a set made from its parent's, and the host
-   keeps a table from a parent's set and a block of declarations to the set
-   that results. So the buttons of one toolbar share one set, and two sets
-   are compared by comparing two pointers.
+   A node that declares some gets a set made from its parent's, and the
+   platform component keeps a table from a parent's set and a block of
+   declarations to the set that results. So the buttons of one toolbar share
+   one set, and two sets are compared by comparing two pointers.
 4. **A node's values, once for each distinct outcome.** What a node's values
    are depends on two things: the blocks of the rules that apply to it and
-   hold, and the set of inheriting values it starts from. The host keeps a
-   table from that pair to the worked-out values. Two buttons in the same
-   state under the same theme get the same entry, and the second is a lookup.
-   Browsers keep the same table and call it a matched-properties cache.
-5. **An instance, once for each situation.** Every instance of a template has
-   the same nodes and the same rules. So the values of all of an instance's
-   nodes can be kept together, under the template, the set of inheriting
-   values at its root, what its parent declares for its node, and which of its
-   conditions hold. A list of a thousand rows in the same state is then one
-   entry, and each row after the first is one lookup. This last table is worth
-   building only if a measurement of the fourth says so.
+   hold, and the set of inheriting values it starts from. The platform
+   component keeps a table from that pair to the worked-out built-in values
+   flushed to the native core. Two buttons in the same state under the same
+   theme get the same entry, and the second is a lookup. Browsers keep the same
+   table and call it a matched-properties cache.
+5. **A subtree instance, once for each situation.** Every instance of a static
+   fragment has the same nodes and the same rules. So the values of all of an
+   instance's nodes can be kept together, under the fragment, the set of
+   inheriting values at its root, what its parent declares for its node, and
+   which of its conditions hold. A list of a thousand rows in the same state is
+   then one entry, and each row after the first is one lookup. This last table
+   is worth building only if a measurement of the fourth says so.
 
 What is left for each node is a pointer to its values. A hole that writes
 declarations for one instance gives that instance a block of its own, and the
@@ -1664,13 +1754,32 @@ one of an application's own.
   host is sent their results. The one thing they cannot do, a function of a
   value known only in the host, is a function of that same language run by
   the host.
-- **Selector functions supplied by the component.** The host would call a
-  function to ask whether a node matches. The host cannot tell what such a
-  function reads, so it would have to call it again after any change nearby. A
-  function that walks the tree would read content that belongs to other
-  widgets. And a component that is busy would hold up its own hover feedback.
-  A function with declared inputs and no state avoids the first two, and that
-  is what [A custom algorithm](#a-custom-algorithm) describes for layout.
+- **Opaque selector functions supplied by the widget component.** The platform
+  component would call a function in the widget's instance with a navigable
+  node handle to ask whether a node matches. The platform cannot tell what such
+  a function reads, so it would have to call it again after any change nearby.
+  A function that walks the tree would read content that belongs to other
+  widgets, and a busy widget component would hold up hover feedback. Stage-2
+  predicates in a window component
+  ([isolated-functions.md](./isolated-functions.md)) avoid all three: the
+  function runs on the window thread, receives a `borrow<style-node>` resource
+  with no parent/child navigation, and records every key it reads on the
+  resource for invalidation indexing and memoization.
+- **Flat-parameter lifting and compiler read masks.** Scanning Zena predicates
+  at compile time to rewrite them into per-predicate flat signatures or emit
+  static built-in read masks avoids `borrow<style-node>` getter crossings on
+  cache misses, but requires custom compiler analysis that non-Zena guest
+  languages lack. Keeping `borrow<style-node>` as a single static WIT resource
+  works uniformly for every language; see
+  [isolated-functions.md](./isolated-functions.md#alternatives-considered).
+- **A `@cond` macro serializing Zena expressions to a WIT condition AST.** A
+  syntactic macro could rewrite `hovered && !disabled && panelWidth >= 600.0`
+  into `all` / `negate` / `range` records. That removes builder verbosity for
+  the operations in the fixed WIT grammar, while still requiring protocol
+  additions for modulo, aspect ratios, or comparisons between two facts, and
+  cannot look inside helper functions across modules. Extracting pure
+  predicates into the window component handles arbitrary expressions and helper
+  functions with the same machinery already needed for style value functions.
 - **More cases on the `states` list.** Adding `selected`, then sizes, then
   combinations to the list in [Styles today](#styles-today) arrives at
   conditions one special case at a time.
@@ -1734,11 +1843,20 @@ In the order they could be made, each working without the next:
   and a rule that changes what `Tab` reaches is harder to find than a field.
 - **Names for the terms.** "Declaration" and "rule" are CSS's, and
   "definition" is this document's. Whether to keep them is open.
-- **Remainder tests.** Whether "every second row" is common enough to add a
-  test, or whether `even` and `odd` flags written by the host are enough.
+- **Remainder tests.** With compiled window-component predicates, a host
+  `index` fact lets authors write `node.index % 2 == 0` without a bespoke
+  `remainder` test in WIT. Whether to add `even` and `odd` convenience flags
+  for non-Zena guests that do not compile a window component is open.
 - **A size condition on a node that sizes to its content.** The containment
   rules refuse it. Whether the template is rejected when it is defined, or the
   condition is treated as never holding, is undecided.
+- **Platform component versioning and discovery.** The native binary bundles
+  one or more platform components, and an app may declare the platform version
+  it targets (loading a bundled version or downloading one on the fly), while
+  each platform component declares the native core WIT version it requires. WIT
+  package imports express exact semver versions (with semver-compatible
+  matching in the linker) rather than arbitrary version ranges; how an app
+  manifest or loader resolves compatible platform/core version ranges is open.
 - **The cost of a call into a layout module**, as under
   [A custom algorithm](#a-custom-algorithm). It decides whether that design is
   worth making.
