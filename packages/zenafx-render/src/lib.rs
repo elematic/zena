@@ -15,6 +15,7 @@
 //! `system-fonts` features) and to `wasm32-unknown-unknown` (linked into
 //! `packages/zenafx-web` for running ZenaFX in the browser).
 
+pub mod core;
 pub mod demo;
 pub mod events;
 pub mod layout;
