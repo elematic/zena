@@ -2,17 +2,21 @@
 
 ## Status
 
-Proposal, with Step A1 implemented:
+Proposal, with Steps A1 and A2 implemented:
 
-- **Step A1 (done):** `packages/zenafx-render/wit/core.wit` defines the
-  self-contained `zenafx:core@0.1.0` native-core WIT package (`types` and
-  `render`), and `packages/zenafx-render/src/core.rs` implements `RenderCore`
-  over a flat, slot-free, template-free render tree.
-- **Step A2 (planned):** Minimal Zena platform component
-  (`packages/zenafx-platform/`) implementing templates, slots, state styles,
-  and logical event routing above `zenafx:core/render@0.1.0`.
-- **Step A3 (planned):** Bundle the compiled platform component into `zfx`,
-  route app and widget components through it, and retire the monolithic
+- **Step A1 (done):** `packages/zenafx/wit/deps/core/core.wit` defines the
+  self-contained `zenafx:core@0.1.0` native-core WIT package (`render`), and
+  `packages/zenafx-render/src/core.rs` implements `RenderCore` over a flat,
+  slot-free, template-free render tree.
+- **Step A2 (done):** `packages/zenafx-platform/` implements the Zena platform
+  component (`packages/zenafx/wit/deps/platform/platform.wit`,
+  `zenafx:platform@0.1.0` over `zenafx:core/render@0.1.0`) covering templates,
+  holes, slots, detached nodes, inherited `cursor`/`unselectable`, stopgap
+  `state-style` restyling, and logical event routing, driven in Wasmtime by
+  `packages/zenafx/src/loader/platform.rs` and tested end-to-end in
+  `packages/zenafx/tests/platform.rs`.
+- **Step A3 (planned):** Bundle `platform.wasm` into `zfx`, route app and
+  widget components through it, and retire the monolithic
   `packages/zenafx-render/src/scene.rs`.
 
 ## Overview
@@ -80,7 +84,7 @@ Two design rules follow from this split:
 
 ## The `zenafx:core@0.1.0` interface
 
-`packages/zenafx-render/wit/core.wit` defines `zenafx:core@0.1.0` as a
+`packages/zenafx/wit/deps/core/core.wit` defines `zenafx:core@0.1.0` as a
 self-contained package with no upward imports from `zenafx:ui` or
 `zenafx:platform`, so platform components of different versions can target the
 same core ABI.
@@ -172,7 +176,7 @@ such as `--platform <path>` for development and testing).
 ## Incremental migration
 
 1. **Step A1 (`core.wit` and `RenderCore`):** Define `zenafx:core@0.1.0` in
-   `packages/zenafx-render/wit/core.wit` and implement `RenderCore` in
+   `packages/zenafx/wit/deps/core/core.wit` and implement `RenderCore` in
    `packages/zenafx-render/src/core.rs` with unit tests covering batched ops,
    flex/flow layout, hit testing, scrolling, selection, focus, and
    `watch-flags` event emission. Existing `scene.rs` and tests stay unchanged.

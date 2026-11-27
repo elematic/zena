@@ -31,6 +31,9 @@
 
 pub mod link;
 pub mod listeners;
+pub mod platform;
+
+pub use platform::PlatformRuntime;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
