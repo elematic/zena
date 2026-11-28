@@ -15,6 +15,10 @@ use anyhow::{Result, anyhow};
 use wasmtime::component::{Component, Instance, Linker, TypedFunc};
 use wasmtime::{Engine, Store, StoreContextMut};
 
+use super::style::{
+    Condition, Declaration, FactKind, PropertyDef, Reach, StyleKey, StyleValue, StylesheetDef,
+    WatcherUpdate,
+};
 use zenafx_render::core::{CoreEvent, RenderCore, RenderOp};
 use zenafx_render::events::{Delivery, KeyDefault, KeyEvent, Phase, PointerInput, PointerKind, Scope};
 use zenafx_render::scene::{Hole, TemplateRef, TextSelection};
@@ -123,6 +127,21 @@ pub struct PlatformRuntime {
     f_route_pointer: TypedFunc<(PointerKind, Option<u32>, f32, f32, u8, bool), (Vec<Delivery>,)>,
     f_route_key: TypedFunc<(Option<u32>,), (Vec<u32>,)>,
     f_capture_target: TypedFunc<(u32,), (Option<u32>,)>,
+    // Style engine exports
+    f_define_property: TypedFunc<(PropertyDef,), (u32,)>,
+    f_define_fact: TypedFunc<(FactKind,), (u32,)>,
+    f_define_stylesheet: TypedFunc<(StylesheetDef,), ()>,
+    f_attach_stylesheet: TypedFunc<(u32, u32, u32, Reach), (bool,)>,
+    f_detach_stylesheet: TypedFunc<(u32, u32, u32), (bool,)>,
+    f_set_flag: TypedFunc<(u32, u32, u32, bool), (bool,)>,
+    f_set_number: TypedFunc<(u32, u32, u32, Option<f32>), (bool,)>,
+    f_set_declarations: TypedFunc<(u32, u32, Vec<Declaration>), (bool,)>,
+    f_set_scope_owner: TypedFunc<(u32, u32), (bool,)>,
+    f_resolved_property: TypedFunc<(u32, u32, StyleKey), (Option<StyleValue>,)>,
+    f_watch_condition: TypedFunc<(u32, u32, u32, Vec<Condition>, u32), (Option<bool>,)>,
+    f_watch_property: TypedFunc<(u32, u32, u32, StyleKey), (Option<StyleValue>,)>,
+    f_unwatch: TypedFunc<(u32,), ()>,
+    f_take_watcher_updates: TypedFunc<(), (Vec<WatcherUpdate>,)>,
 }
 
 fn export_func<Params, Results>(
@@ -210,6 +229,21 @@ impl PlatformRuntime {
         let f_route_pointer = export_func(&instance, &mut store, &iface, "route-pointer")?;
         let f_route_key = export_func(&instance, &mut store, &iface, "route-key")?;
         let f_capture_target = export_func(&instance, &mut store, &iface, "capture-target")?;
+        let f_define_property = export_func(&instance, &mut store, &iface, "define-property")?;
+        let f_define_fact = export_func(&instance, &mut store, &iface, "define-fact")?;
+        let f_define_stylesheet = export_func(&instance, &mut store, &iface, "define-stylesheet")?;
+        let f_attach_stylesheet = export_func(&instance, &mut store, &iface, "attach-stylesheet")?;
+        let f_detach_stylesheet = export_func(&instance, &mut store, &iface, "detach-stylesheet")?;
+        let f_set_flag = export_func(&instance, &mut store, &iface, "set-flag")?;
+        let f_set_number = export_func(&instance, &mut store, &iface, "set-number")?;
+        let f_set_declarations = export_func(&instance, &mut store, &iface, "set-declarations")?;
+        let f_set_scope_owner = export_func(&instance, &mut store, &iface, "set-scope-owner")?;
+        let f_resolved_property = export_func(&instance, &mut store, &iface, "resolved-property")?;
+        let f_watch_condition = export_func(&instance, &mut store, &iface, "watch-condition")?;
+        let f_watch_property = export_func(&instance, &mut store, &iface, "watch-property")?;
+        let f_unwatch = export_func(&instance, &mut store, &iface, "unwatch")?;
+        let f_take_watcher_updates =
+            export_func(&instance, &mut store, &iface, "take-watcher-updates")?;
 
         Ok(Self {
             store,
@@ -231,6 +265,20 @@ impl PlatformRuntime {
             f_route_pointer,
             f_route_key,
             f_capture_target,
+            f_define_property,
+            f_define_fact,
+            f_define_stylesheet,
+            f_attach_stylesheet,
+            f_detach_stylesheet,
+            f_set_flag,
+            f_set_number,
+            f_set_declarations,
+            f_set_scope_owner,
+            f_resolved_property,
+            f_watch_condition,
+            f_watch_property,
+            f_unwatch,
+            f_take_watcher_updates,
         })
     }
 
@@ -332,6 +380,131 @@ impl PlatformRuntime {
     pub fn capture_target(&mut self, listener_id: u32) -> Result<Option<u32>> {
         let (rid,) = self.f_capture_target.call(&mut self.store, (listener_id,))?;
         Ok(rid)
+    }
+
+    // ------------------------------------------------------------------------
+    // Style Engine API (`docs/design/zenafx-styles.md`)
+    // ------------------------------------------------------------------------
+
+    pub fn define_property(&mut self, def: PropertyDef) -> Result<u32> {
+        let (id,) = self.f_define_property.call(&mut self.store, (def,))?;
+        Ok(id)
+    }
+
+    pub fn define_fact(&mut self, kind: FactKind) -> Result<u32> {
+        let (id,) = self.f_define_fact.call(&mut self.store, (kind,))?;
+        Ok(id)
+    }
+
+    pub fn define_stylesheet(&mut self, def: StylesheetDef) -> Result<()> {
+        self.f_define_stylesheet.call(&mut self.store, (def,))?;
+        Ok(())
+    }
+
+    pub fn attach_stylesheet(
+        &mut self,
+        node: u32,
+        target: u32,
+        stylesheet: u32,
+        reach: Reach,
+    ) -> Result<bool> {
+        let (ok,) = self
+            .f_attach_stylesheet
+            .call(&mut self.store, (node, target, stylesheet, reach))?;
+        Ok(ok)
+    }
+
+    pub fn detach_stylesheet(&mut self, node: u32, target: u32, stylesheet: u32) -> Result<bool> {
+        let (ok,) = self
+            .f_detach_stylesheet
+            .call(&mut self.store, (node, target, stylesheet))?;
+        Ok(ok)
+    }
+
+    pub fn set_flag(&mut self, node: u32, target: u32, key: u32, value: bool) -> Result<bool> {
+        let (ok,) = self
+            .f_set_flag
+            .call(&mut self.store, (node, target, key, value))?;
+        Ok(ok)
+    }
+
+    pub fn set_number(
+        &mut self,
+        node: u32,
+        target: u32,
+        key: u32,
+        value: Option<f32>,
+    ) -> Result<bool> {
+        let (ok,) = self
+            .f_set_number
+            .call(&mut self.store, (node, target, key, value))?;
+        Ok(ok)
+    }
+
+    pub fn set_declarations(
+        &mut self,
+        node: u32,
+        target: u32,
+        decls: Vec<Declaration>,
+    ) -> Result<bool> {
+        let (ok,) = self
+            .f_set_declarations
+            .call(&mut self.store, (node, target, decls))?;
+        Ok(ok)
+    }
+
+    pub fn set_scope_owner(&mut self, node: u32, owner: u32) -> Result<bool> {
+        let (ok,) = self.f_set_scope_owner.call(&mut self.store, (node, owner))?;
+        Ok(ok)
+    }
+
+    pub fn resolved_property(
+        &mut self,
+        node: u32,
+        target: u32,
+        key: StyleKey,
+    ) -> Result<Option<StyleValue>> {
+        let (val,) = self
+            .f_resolved_property
+            .call(&mut self.store, (node, target, key))?;
+        Ok(val)
+    }
+
+    pub fn watch_condition(
+        &mut self,
+        node: u32,
+        target: u32,
+        watcher_id: u32,
+        conditions: Vec<Condition>,
+        root: u32,
+    ) -> Result<Option<bool>> {
+        let (holds,) = self
+            .f_watch_condition
+            .call(&mut self.store, (node, target, watcher_id, conditions, root))?;
+        Ok(holds)
+    }
+
+    pub fn watch_property(
+        &mut self,
+        node: u32,
+        target: u32,
+        watcher_id: u32,
+        key: StyleKey,
+    ) -> Result<Option<StyleValue>> {
+        let (val,) = self
+            .f_watch_property
+            .call(&mut self.store, (node, target, watcher_id, key))?;
+        Ok(val)
+    }
+
+    pub fn unwatch(&mut self, watcher_id: u32) -> Result<()> {
+        self.f_unwatch.call(&mut self.store, (watcher_id,))?;
+        Ok(())
+    }
+
+    pub fn take_watcher_updates(&mut self) -> Result<Vec<WatcherUpdate>> {
+        let (updates,) = self.f_take_watcher_updates.call(&mut self.store, ())?;
+        Ok(updates)
     }
 
     /// Solve and draw one frame in [`RenderCore`], flushing any watched core

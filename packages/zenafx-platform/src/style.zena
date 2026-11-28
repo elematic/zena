@@ -1,0 +1,1518 @@
+/**
+ * ZenaFX Platform Style Engine (`docs/design/zenafx-styles.md`).
+ *
+ * Implements unified property resolution (built-in and custom properties,
+ * inheritance, default priority, `use-prop`, `use-fact`, cycle detection),
+ * declarative flat post-order conditions (`flag`, `range`, `under`, `within`,
+ * `all`, `any`, `negate`), standalone scoped stylesheets with widget-boundary
+ * isolation, automatic `WatchFlags` derivation for `zenafx:core/render`, and
+ * condition/property watchers.
+ */
+import {
+  Axis, Align, Box, BoxStyle, Color, Cursor, Edges, Flex, Flow, Justify,
+  Layout, LayoutFlex, LayoutFlow, Length, NodeStyle, NodeStyleNothing,
+  NodeStyleFill, NodeStyleText, Overflow, TextAlign, TextContent, TextStyle,
+  watchFlagsHovered, watchFlagsPressed, watchFlagsFocused, watchFlagsSize,
+  watchFlagsScroll,
+  RenderOp, RenderOpSetBox, RenderOpSetLayout, RenderOpSetStyle,
+  RenderOpSetTextStyle, RenderOpSetCursor, RenderOpSetInteraction,
+  BoxOp, LayoutOp, StyleOp, TextStyleOp, CursorOp, InteractionOp,
+} from 'zenafx:core/render';
+import {
+  BuiltinProperty, Condition, ConditionFlag, ConditionRange, ConditionUnder,
+  ConditionWithin, ConditionAll, ConditionAny, ConditionNegate,
+  ConditionUpdate, Declaration, FactKind, HostFact, PropertyDef,
+  PropertyUpdate, RangeTest, Reach, Rule, StyleKey, StyleKeyHost,
+  StyleKeyBuiltin, StyleKeyCustom, StyleValue, StyleValueFlag,
+  StyleValueNumber, StyleValueLength, StyleValueColor, StyleValueKeyword,
+  StyleValueText, StyleValueUseProp, StyleValueUseFact, StylesheetDef,
+  ValueType, WatcherUpdate, WatcherUpdateCondition, WatcherUpdateProperty,
+  WatcherUpdateEnded,
+} from 'zenafx:platform/runtime';
+import { GrowableArray, HashMap } from 'zena:collections';
+import { Option, Some, some, none } from 'zena:core';
+import {
+  AttachedSheet, LogicalNode, rootLogicalId, hoveredLogical, pressedLogical,
+  focusedLogical, getNode, effectiveParent, isAtOrBeneath, addWatchFlag,
+  computeLegacyActiveStyle, boxEqual, layoutEqual, nodeStyleEqual,
+  textStyleEqual, optStyleValueEqual, defaultColor,
+} from './tree.zena';
+
+// ============================================================================
+// Property & Fact Registry
+// ============================================================================
+
+/** Base offset separating custom key IDs from built-in property IDs (1..28). */
+let CUSTOM_KEY_BASE = 1000 as u32;
+
+let BP_WIDTH = 1 as u32;
+let BP_HEIGHT = 2 as u32;
+let BP_GROW = 3 as u32;
+let BP_SHRINK = 4 as u32;
+let BP_PADDING_TOP = 5 as u32;
+let BP_PADDING_RIGHT = 6 as u32;
+let BP_PADDING_BOTTOM = 7 as u32;
+let BP_PADDING_LEFT = 8 as u32;
+let BP_OVERFLOW_X = 9 as u32;
+let BP_OVERFLOW_Y = 10 as u32;
+let BP_AXIS = 11 as u32;
+let BP_JUSTIFY = 12 as u32;
+let BP_ALIGN = 13 as u32;
+let BP_GAP = 14 as u32;
+let BP_TEXT_ALIGN = 15 as u32;
+let BP_LINE_HEIGHT = 16 as u32;
+let BP_BACKGROUND = 17 as u32;
+let BP_BORDER_COLOR = 18 as u32;
+let BP_BORDER_WIDTH = 19 as u32;
+let BP_CORNER_RADIUS = 20 as u32;
+let BP_OPACITY = 21 as u32;
+let BP_TEXT_FAMILY = 22 as u32;
+let BP_TEXT_SIZE = 23 as u32;
+let BP_TEXT_WEIGHT = 24 as u32;
+let BP_TEXT_ITALIC = 25 as u32;
+let BP_TEXT_COLOR = 26 as u32;
+let BP_CURSOR = 27 as u32;
+let BP_USER_SELECT = 28 as u32;
+
+var nextCustomKeyId = 1 as u32;
+let customProperties = new HashMap<u32, PropertyDef>();
+let customFacts = new HashMap<u32, FactKind>();
+let stylesheets = new HashMap<u32, StylesheetDef>();
+
+/** Set to true once any stylesheet, inline declaration, fact, or watcher is used. */
+export var styleEngineActive = false;
+
+export function markStyleEngineActive() {
+  styleEngineActive = true;
+}
+
+export function definePropertyDef(def: PropertyDef): u32 {
+  let id = nextCustomKeyId;
+  nextCustomKeyId += 1 as u32;
+  customProperties[id] = def;
+  styleEngineActive = true;
+  return id;
+}
+
+export function defineFactKind(kind: FactKind): u32 {
+  let id = nextCustomKeyId;
+  nextCustomKeyId += 1 as u32;
+  customFacts[id] = kind;
+  styleEngineActive = true;
+  return id;
+}
+
+export function defineStylesheetDef(def: StylesheetDef): void {
+  stylesheets[def.id] = def;
+  styleEngineActive = true;
+}
+
+function builtinId(bp: BuiltinProperty) {
+  if (bp == BuiltinProperty.Width) { return BP_WIDTH; }
+  if (bp == BuiltinProperty.Height) { return BP_HEIGHT; }
+  if (bp == BuiltinProperty.Grow) { return BP_GROW; }
+  if (bp == BuiltinProperty.Shrink) { return BP_SHRINK; }
+  if (bp == BuiltinProperty.PaddingTop) { return BP_PADDING_TOP; }
+  if (bp == BuiltinProperty.PaddingRight) { return BP_PADDING_RIGHT; }
+  if (bp == BuiltinProperty.PaddingBottom) { return BP_PADDING_BOTTOM; }
+  if (bp == BuiltinProperty.PaddingLeft) { return BP_PADDING_LEFT; }
+  if (bp == BuiltinProperty.OverflowX) { return BP_OVERFLOW_X; }
+  if (bp == BuiltinProperty.OverflowY) { return BP_OVERFLOW_Y; }
+  if (bp == BuiltinProperty.Axis) { return BP_AXIS; }
+  if (bp == BuiltinProperty.Justify) { return BP_JUSTIFY; }
+  if (bp == BuiltinProperty.Align) { return BP_ALIGN; }
+  if (bp == BuiltinProperty.Gap) { return BP_GAP; }
+  if (bp == BuiltinProperty.TextAlign) { return BP_TEXT_ALIGN; }
+  if (bp == BuiltinProperty.LineHeight) { return BP_LINE_HEIGHT; }
+  if (bp == BuiltinProperty.Background) { return BP_BACKGROUND; }
+  if (bp == BuiltinProperty.BorderColor) { return BP_BORDER_COLOR; }
+  if (bp == BuiltinProperty.BorderWidth) { return BP_BORDER_WIDTH; }
+  if (bp == BuiltinProperty.CornerRadius) { return BP_CORNER_RADIUS; }
+  if (bp == BuiltinProperty.Opacity) { return BP_OPACITY; }
+  if (bp == BuiltinProperty.TextFamily) { return BP_TEXT_FAMILY; }
+  if (bp == BuiltinProperty.TextSize) { return BP_TEXT_SIZE; }
+  if (bp == BuiltinProperty.TextWeight) { return BP_TEXT_WEIGHT; }
+  if (bp == BuiltinProperty.TextItalic) { return BP_TEXT_ITALIC; }
+  if (bp == BuiltinProperty.TextColor) { return BP_TEXT_COLOR; }
+  if (bp == BuiltinProperty.Cursor) { return BP_CURSOR; }
+  return BP_USER_SELECT;
+}
+
+function propertyIdOf(key: StyleKey) {
+  if (key is StyleKeyBuiltin) {
+    return builtinId(key.value);
+  }
+  if (key is StyleKeyCustom) {
+    if (customProperties.has(key.value)) {
+      return CUSTOM_KEY_BASE + key.value;
+    }
+  }
+  return 0 as u32;
+}
+
+function isInheritingPropId(pid: u32): boolean {
+  if (pid >= BP_TEXT_FAMILY && pid <= BP_USER_SELECT) {
+    return true;
+  }
+  if (pid >= CUSTOM_KEY_BASE) {
+    let cid = pid - CUSTOM_KEY_BASE;
+    if (let (true, def) = customProperties.get(cid)) {
+      return def.inherits;
+    }
+  }
+  return false;
+}
+
+function propValueType(pid: u32): Option<ValueType> {
+  if (pid == BP_WIDTH || pid == BP_HEIGHT) { return some(ValueType.Length); }
+  if (
+    pid == BP_GROW || pid == BP_SHRINK
+    || pid == BP_PADDING_TOP || pid == BP_PADDING_RIGHT
+    || pid == BP_PADDING_BOTTOM || pid == BP_PADDING_LEFT
+    || pid == BP_GAP || pid == BP_LINE_HEIGHT
+    || pid == BP_BORDER_WIDTH || pid == BP_CORNER_RADIUS
+    || pid == BP_OPACITY || pid == BP_TEXT_SIZE || pid == BP_TEXT_WEIGHT
+  ) {
+    return some(ValueType.Number);
+  }
+  if (
+    pid == BP_OVERFLOW_X || pid == BP_OVERFLOW_Y
+    || pid == BP_AXIS || pid == BP_JUSTIFY || pid == BP_ALIGN
+    || pid == BP_TEXT_ALIGN || pid == BP_CURSOR || pid == BP_USER_SELECT
+  ) {
+    return some(ValueType.Keyword);
+  }
+  if (pid == BP_BACKGROUND || pid == BP_BORDER_COLOR || pid == BP_TEXT_COLOR) {
+    return some(ValueType.Color);
+  }
+  if (pid == BP_TEXT_FAMILY) { return some(ValueType.Text); }
+  if (pid == BP_TEXT_ITALIC) { return some(ValueType.Flag); }
+  if (pid >= CUSTOM_KEY_BASE) {
+    let cid = pid - CUSTOM_KEY_BASE;
+    if (let (true, def) = customProperties.get(cid)) {
+      return some(def.kind);
+    }
+  }
+  return none;
+}
+
+function valueMatchesType(val: StyleValue, expected: ValueType): boolean {
+  if (expected == ValueType.Flag) { return val is StyleValueFlag; }
+  if (expected == ValueType.Number) { return val is StyleValueNumber; }
+  if (expected == ValueType.Length) { return val is StyleValueLength; }
+  if (expected == ValueType.Color) { return val is StyleValueColor; }
+  if (expected == ValueType.Keyword) { return val is StyleValueKeyword; }
+  if (expected == ValueType.Text) { return val is StyleValueText; }
+  return false;
+}
+
+// ============================================================================
+// Keyword Conversions
+// ============================================================================
+
+function decodeOverflow(k: u32) {
+  if (k == (1 as u32)) { return Overflow.Hidden; }
+  if (k == (2 as u32)) { return Overflow.Scroll; }
+  return Overflow.Clip;
+}
+
+function decodeAxis(k: u32) {
+  if (k == (0 as u32)) { return Axis.Row; }
+  return Axis.Column;
+}
+
+function decodeJustify(k: u32) {
+  if (k == (1 as u32)) { return Justify.Center; }
+  if (k == (2 as u32)) { return Justify.End; }
+  if (k == (3 as u32)) { return Justify.SpaceBetween; }
+  return Justify.Start;
+}
+
+function decodeAlign(k: u32) {
+  if (k == (1 as u32)) { return Align.Center; }
+  if (k == (2 as u32)) { return Align.End; }
+  if (k == (3 as u32)) { return Align.Stretch; }
+  return Align.Start;
+}
+
+function decodeTextAlign(k: u32) {
+  if (k == (1 as u32)) { return TextAlign.Center; }
+  if (k == (2 as u32)) { return TextAlign.End; }
+  if (k == (3 as u32)) { return TextAlign.Justify; }
+  return TextAlign.Start;
+}
+
+function decodeCursor(k: u32) {
+  let n = k as i32;
+  if (n == 1) { return Cursor.ContextMenu; }
+  if (n == 2) { return Cursor.Help; }
+  if (n == 3) { return Cursor.Pointer; }
+  if (n == 4) { return Cursor.Progress; }
+  if (n == 5) { return Cursor.Wait; }
+  if (n == 6) { return Cursor.Cell; }
+  if (n == 7) { return Cursor.Crosshair; }
+  if (n == 8) { return Cursor.Text; }
+  if (n == 9) { return Cursor.VerticalText; }
+  if (n == 10) { return Cursor.Alias; }
+  if (n == 11) { return Cursor.Copy; }
+  if (n == 12) { return Cursor.Move; }
+  if (n == 13) { return Cursor.NoDrop; }
+  if (n == 14) { return Cursor.NotAllowed; }
+  if (n == 15) { return Cursor.Grab; }
+  if (n == 16) { return Cursor.Grabbing; }
+  if (n == 17) { return Cursor.EResize; }
+  if (n == 18) { return Cursor.NResize; }
+  if (n == 19) { return Cursor.NeResize; }
+  if (n == 20) { return Cursor.NwResize; }
+  if (n == 21) { return Cursor.SResize; }
+  if (n == 22) { return Cursor.SeResize; }
+  if (n == 23) { return Cursor.SwResize; }
+  if (n == 24) { return Cursor.WResize; }
+  if (n == 25) { return Cursor.EwResize; }
+  if (n == 26) { return Cursor.NsResize; }
+  if (n == 27) { return Cursor.NeswResize; }
+  if (n == 28) { return Cursor.NwseResize; }
+  if (n == 29) { return Cursor.ColResize; }
+  if (n == 30) { return Cursor.RowResize; }
+  if (n == 31) { return Cursor.AllScroll; }
+  if (n == 32) { return Cursor.ZoomIn; }
+  if (n == 33) { return Cursor.ZoomOut; }
+  return Cursor.Default;
+}
+
+function encodeCursor(c: Cursor) {
+  if (c == Cursor.ContextMenu) { return 1 as u32; }
+  if (c == Cursor.Help) { return 2 as u32; }
+  if (c == Cursor.Pointer) { return 3 as u32; }
+  if (c == Cursor.Progress) { return 4 as u32; }
+  if (c == Cursor.Wait) { return 5 as u32; }
+  if (c == Cursor.Cell) { return 6 as u32; }
+  if (c == Cursor.Crosshair) { return 7 as u32; }
+  if (c == Cursor.Text) { return 8 as u32; }
+  if (c == Cursor.VerticalText) { return 9 as u32; }
+  if (c == Cursor.Alias) { return 10 as u32; }
+  if (c == Cursor.Copy) { return 11 as u32; }
+  if (c == Cursor.Move) { return 12 as u32; }
+  if (c == Cursor.NoDrop) { return 13 as u32; }
+  if (c == Cursor.NotAllowed) { return 14 as u32; }
+  if (c == Cursor.Grab) { return 15 as u32; }
+  if (c == Cursor.Grabbing) { return 16 as u32; }
+  if (c == Cursor.EResize) { return 17 as u32; }
+  if (c == Cursor.NResize) { return 18 as u32; }
+  if (c == Cursor.NeResize) { return 19 as u32; }
+  if (c == Cursor.NwResize) { return 20 as u32; }
+  if (c == Cursor.SResize) { return 21 as u32; }
+  if (c == Cursor.SeResize) { return 22 as u32; }
+  if (c == Cursor.SwResize) { return 23 as u32; }
+  if (c == Cursor.WResize) { return 24 as u32; }
+  if (c == Cursor.EwResize) { return 25 as u32; }
+  if (c == Cursor.NsResize) { return 26 as u32; }
+  if (c == Cursor.NeswResize) { return 27 as u32; }
+  if (c == Cursor.NwseResize) { return 28 as u32; }
+  if (c == Cursor.ColResize) { return 29 as u32; }
+  if (c == Cursor.RowResize) { return 30 as u32; }
+  if (c == Cursor.AllScroll) { return 31 as u32; }
+  if (c == Cursor.ZoomIn) { return 32 as u32; }
+  if (c == Cursor.ZoomOut) { return 33 as u32; }
+  return 0 as u32;
+}
+
+// ============================================================================
+// Watch-Flag Derivation for `zenafx:core/render`
+// ============================================================================
+
+function hostFactWatchBit(hf: HostFact) {
+  if (hf == HostFact.Hovered) { return watchFlagsHovered as u32; }
+  if (hf == HostFact.Pressed) { return watchFlagsPressed as u32; }
+  if (hf == HostFact.Focused) { return watchFlagsFocused as u32; }
+  if (hf == HostFact.Width || hf == HostFact.Height) { return watchFlagsSize as u32; }
+  if (
+    hf == HostFact.ScrollX || hf == HostFact.ScrollY
+    || hf == HostFact.ScrollRangeX || hf == HostFact.ScrollRangeY
+  ) {
+    return watchFlagsScroll as u32;
+  }
+  return 0 as u32;
+}
+
+function keyWatchBit(key: StyleKey) {
+  if (key is StyleKeyHost) {
+    return hostFactWatchBit(key.value);
+  }
+  return 0 as u32;
+}
+
+export function conditionsWatchBits(conds: Array<Condition>): u32 {
+  var bits = 0 as u32;
+  for (let c in conds) {
+    if (c is ConditionFlag) {
+      bits = bits | keyWatchBit(c.value);
+    } else if (c is ConditionRange) {
+      bits = bits | keyWatchBit(c.value.key);
+    }
+  }
+  return bits;
+}
+
+export function declsWatchBits(decls: Array<Declaration>): u32 {
+  var bits = 0 as u32;
+  for (let d in decls) {
+    if (d.value is StyleValueUseFact) {
+      bits = bits | keyWatchBit((d.value as StyleValueUseFact).value);
+    }
+  }
+  return bits;
+}
+
+export function sheetWatchBits(sheet: StylesheetDef): u32 {
+  var bits = conditionsWatchBits(sheet.conditions);
+  for (let r in sheet.rules) {
+    bits = bits | declsWatchBits(r.then);
+  }
+  return bits;
+}
+
+/** Apply watch bits to a node and (for `reach: scope`) all nodes in its scope. */
+export function propagateWatchBits(
+  node: LogicalNode,
+  reach: Reach,
+  bits: u32,
+  ops: GrowableArray<RenderOp>,
+): void {
+  if (bits == (0 as u32)) {
+    return;
+  }
+  addWatchFlag(node.id, bits, ops);
+  if (reach == Reach.Node) {
+    return;
+  }
+  let owner = scopeWidgetOf(node);
+  propagateWatchBitsInScope(node, owner, bits, ops);
+}
+
+function propagateWatchBitsInScope(
+  cur: LogicalNode,
+  ownerWidget: u32,
+  bits: u32,
+  ops: GrowableArray<RenderOp>,
+): void {
+  for (var i = 0; i < cur.children.length; i += 1) {
+    let c = getNode(cur.children[i]);
+    if (c == null) {
+      continue;
+    }
+    let child = c;
+    if (child.isSlot) {
+      // Slot itself is transparent; visit its children (which are in `ownerWidget`'s scope
+      // unless projected with another `scopeOwner`).
+      for (var j = 0; j < child.children.length; j += 1) {
+        let sc = getNode(child.children[j]);
+        if (sc != null) {
+          let effOwner = if (sc.scopeOwner != (0 as u32)) { sc.scopeOwner } else { ownerWidget };
+          if (effOwner == ownerWidget) {
+            addWatchFlag(sc.id, bits, ops);
+          }
+        }
+      }
+    } else if (child.interiorOwner == ownerWidget) {
+      addWatchFlag(child.id, bits, ops);
+      propagateWatchBitsInScope(child, ownerWidget, bits, ops);
+    }
+  }
+}
+
+// ============================================================================
+// Widget Scope Boundaries
+// ============================================================================
+
+/** The widget root that owns `node`'s interior (`node.id` if `node` is a widget root). */
+function scopeWidgetOf(node: LogicalNode): u32 {
+  if (node.interiorOwner != (0 as u32)) {
+    return node.interiorOwner;
+  }
+  return node.id;
+}
+
+/**
+ * Return the enclosing widget's slot ancestor if `node` is a slot child
+ * (placed in a parent's slot), or `null` if `node` is an interior child or root.
+ */
+function enclosingSlot(node: LogicalNode): LogicalNode | null {
+  if (node.parent == (0 as u32)) {
+    return null;
+  }
+  let p = getNode(node.parent);
+  if (p != null && p.isSlot) {
+    return p;
+  }
+  return null;
+}
+
+/**
+ * Collect `reach: scope` attachments from `widgetRoot` down to `leaf` along
+ * the interior chain, outermost first.
+ */
+final class ScopeAttachment {
+  attachNode: u32;
+  sheet: StylesheetDef;
+  new(this.attachNode, this.sheet);
+}
+
+function collectInteriorScopeSheets(
+  leaf: LogicalNode,
+  out: GrowableArray<ScopeAttachment>,
+) {
+  // Walk up inside the same widget interior (stop at the widget root where
+  // `interiorOwner == 0`).
+  let chain = new GrowableArray<LogicalNode>();
+  var cur: LogicalNode | null = leaf;
+  while (cur != null) {
+    let n = cur;
+    chain.push(n);
+    if (n.interiorOwner == (0 as u32)) {
+      break;
+    }
+    cur = getNode(n.parent);
+  }
+  var i = chain.length - 1;
+  while (i >= 0) {
+    let anc = chain[i];
+    for (let att in anc.attachedSheets) {
+      if (att.reach == Reach.Scope) {
+        if (let (true, def) = stylesheets.get(att.sheetId)) {
+          out.push(new ScopeAttachment(anc.id, def));
+        }
+      }
+    }
+    i -= 1;
+  }
+}
+
+/**
+ * Collect parent/owner widget's `reach: scope` attachments that reach a slot
+ * child `node`.
+ */
+function collectOwnerScopeSheets(
+  node: LogicalNode,
+  out: GrowableArray<ScopeAttachment>,
+) {
+  let slot = enclosingSlot(node);
+  if (slot == null) {
+    return;
+  }
+  if (node.scopeOwner != (0 as u32)) {
+    let owner = getNode(node.scopeOwner);
+    if (owner != null) {
+      collectInteriorScopeSheets(owner, out);
+    }
+    return;
+  }
+  // Default: the slot belongs to the enclosing widget's interior.
+  collectInteriorScopeSheets(slot, out);
+}
+
+// ============================================================================
+// Fact & Inherited Property Reads (for Conditions and `use-fact`)
+// ============================================================================
+
+function readHostFlagFact(node: LogicalNode, hf: HostFact): boolean {
+  if (hf == HostFact.Text) {
+    return node.baseStyle is NodeStyleText;
+  }
+  if (hf == HostFact.Box) {
+    return !node.isSlot && !(node.baseStyle is NodeStyleText);
+  }
+  if (hf == HostFact.Hovered) {
+    return isAtOrBeneath(hoveredLogical, node.id);
+  }
+  if (hf == HostFact.Pressed) {
+    return isAtOrBeneath(pressedLogical, node.id);
+  }
+  if (hf == HostFact.Focused) {
+    return isAtOrBeneath(focusedLogical, node.id);
+  }
+  return false;
+}
+
+function someVal(v: StyleValue): Option<StyleValue> {
+  return some(v);
+}
+
+function readHostNumberFact(node: LogicalNode, hf: HostFact): Option<f32> {
+  let zero: f32 = 0.0;
+  if (hf == HostFact.Width) {
+    return if (node.hasSize) { some(node.measuredWidth) } else { none };
+  }
+  if (hf == HostFact.Height) {
+    return if (node.hasSize) { some(node.measuredHeight) } else { none };
+  }
+  if (hf == HostFact.ScrollX) {
+    return if (node.hasScroll) { some(node.scrollX) } else { some(zero) };
+  }
+  if (hf == HostFact.ScrollY) {
+    return if (node.hasScroll) { some(node.scrollY) } else { some(zero) };
+  }
+  if (hf == HostFact.ScrollRangeX) {
+    return if (node.hasScroll) { some(node.scrollRangeX) } else { some(zero) };
+  }
+  if (hf == HostFact.ScrollRangeY) {
+    return if (node.hasScroll) { some(node.scrollRangeY) } else { some(zero) };
+  }
+  if (hf == HostFact.Index) {
+    return if (node.slotIndex >= 0) { some(node.slotIndex as f32) } else { none };
+  }
+  return none;
+}
+
+function readFactAsValue(node: LogicalNode, key: StyleKey): Option<StyleValue> {
+  if (key is StyleKeyHost) {
+    let hf = key.value;
+    if (
+      hf == HostFact.Text || hf == HostFact.Box
+      || hf == HostFact.Hovered || hf == HostFact.Pressed || hf == HostFact.Focused
+    ) {
+      return someVal(new StyleValueFlag(readHostFlagFact(node, hf)));
+    }
+    let num = readHostNumberFact(node, hf);
+    if (let Some { value } = num) {
+      return someVal(new StyleValueNumber(value));
+    }
+    return none;
+  }
+  if (key is StyleKeyCustom) {
+    let cid = key.value;
+    if (let (true, fk) = customFacts.get(cid)) {
+      if (fk == FactKind.Flag) {
+        if (let (true, v) = node.flags.get(cid)) {
+          return someVal(new StyleValueFlag(v));
+        }
+        return someVal(new StyleValueFlag(false));
+      }
+      if (let (true, n) = node.numbers.get(cid)) {
+        return someVal(new StyleValueNumber(n));
+      }
+    }
+  }
+  return none;
+}
+
+/** Read an inherited property as it arrives from `node`'s parent (before `node`'s own rules). */
+function readInheritedFromParent(node: LogicalNode, pid: u32): Option<StyleValue> {
+  if (!isInheritingPropId(pid)) {
+    return none;
+  }
+  let parent = getNode(node.parent);
+  if (parent == null) {
+    return none;
+  }
+  if (let (true, ord) = parent.effectiveOrdinary.get(pid)) {
+    return some(ord);
+  }
+  if (let (true, def) = parent.effectiveDefault.get(pid)) {
+    return some(def);
+  }
+  return none;
+}
+
+function readConditionFlag(node: LogicalNode, key: StyleKey): boolean {
+  if (key is StyleKeyHost) {
+    return readHostFlagFact(node, key.value);
+  }
+  if (key is StyleKeyCustom) {
+    let cid = key.value;
+    if (let (true, fk) = customFacts.get(cid)) {
+      if (fk == FactKind.Flag) {
+        if (let (true, v) = node.flags.get(cid)) {
+          return v;
+        }
+      }
+      return false;
+    }
+  }
+  // Inheriting property tested by the value arriving from above.
+  let pid = propertyIdOf(key);
+  if (pid != (0 as u32)) {
+    if (let Some { value } = readInheritedFromParent(node, pid)) {
+      if (value is StyleValueFlag) {
+        return value.value;
+      }
+    }
+  }
+  return false;
+}
+
+function readConditionNumber(node: LogicalNode, key: StyleKey): Option<f32> {
+  if (key is StyleKeyHost) {
+    return readHostNumberFact(node, key.value);
+  }
+  if (key is StyleKeyCustom) {
+    let cid = key.value;
+    if (let (true, fk) = customFacts.get(cid)) {
+      if (fk == FactKind.Number) {
+        if (let (true, v) = node.numbers.get(cid)) {
+          return some(v);
+        }
+      }
+      return none;
+    }
+  }
+  let pid = propertyIdOf(key);
+  if (pid != (0 as u32)) {
+    if (let Some { value } = readInheritedFromParent(node, pid)) {
+      if (value is StyleValueNumber) {
+        return some(value.value);
+      }
+    }
+  }
+  return none;
+}
+
+function matchesRange(val: f32, rt: RangeTest): boolean {
+  if (let Some { value as lo } = rt.min) {
+    if (rt.minInclusive) {
+      if (val < lo) { return false; }
+    } else if (val <= lo) {
+      return false;
+    }
+  }
+  if (let Some { value as hi } = rt.max) {
+    if (rt.maxInclusive) {
+      if (val > hi) { return false; }
+    } else if (val >= hi) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// ============================================================================
+// Condition Evaluator
+// ============================================================================
+
+/**
+ * Determine the next ancestor inside the scope rooted at `scopeRootId`.
+ * Returns `null` if `cur` is already `scopeRootId` or stepping up leaves the scope.
+ */
+function scopeParentOf(cur: LogicalNode, scopeRootId: u32): LogicalNode | null {
+  if (scopeRootId == (0 as u32) || cur.id == scopeRootId) {
+    return null;
+  }
+  // If `cur` is a slot child with explicit `scopeOwner`, its scope parent is `scopeOwner`
+  // (when inside that scope).
+  let slot = enclosingSlot(cur);
+  if (slot != null && cur.scopeOwner != (0 as u32)) {
+    let owner = getNode(cur.scopeOwner);
+    if (owner != null && isAtOrBeneath(owner.id, scopeRootId)) {
+      return owner;
+    }
+    return null;
+  }
+  let p = effectiveParent(cur);
+  if (p == null) {
+    return null;
+  }
+  if (!isAtOrBeneath(p.id, scopeRootId)) {
+    return null;
+  }
+  return p;
+}
+
+export function evalCondition(
+  node: LogicalNode,
+  scopeRootId: u32,
+  conds: Array<Condition>,
+  idx: u32,
+): boolean {
+  let i = idx as i32;
+  if (i < 0 || i >= conds.length) {
+    return false;
+  }
+  let c = conds[i];
+  if (c is ConditionFlag) {
+    return readConditionFlag(node, c.value);
+  }
+  if (c is ConditionRange) {
+    let rt = c.value;
+    if (let Some { value } = readConditionNumber(node, rt.key)) {
+      return matchesRange(value, rt);
+    }
+    return false;
+  }
+  if (c is ConditionUnder) {
+    let p = scopeParentOf(node, scopeRootId);
+    if (p == null) {
+      return false;
+    }
+    return evalCondition(p, scopeRootId, conds, c.value);
+  }
+  if (c is ConditionWithin) {
+    var anc = scopeParentOf(node, scopeRootId);
+    while (anc != null) {
+      let a = anc;
+      if (evalCondition(a, scopeRootId, conds, c.value)) {
+        return true;
+      }
+      anc = scopeParentOf(a, scopeRootId);
+    }
+    return false;
+  }
+  if (c is ConditionAll) {
+    let parts = c.value;
+    for (var k = 0; k < parts.length; k += 1) {
+      if (!evalCondition(node, scopeRootId, conds, parts[k])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (c is ConditionAny) {
+    let parts = c.value;
+    for (var k = 0; k < parts.length; k += 1) {
+      if (evalCondition(node, scopeRootId, conds, parts[k])) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (c is ConditionNegate) {
+    return !evalCondition(node, scopeRootId, conds, c.value);
+  }
+  return false;
+}
+
+// ============================================================================
+// Unified 5-Step Property Resolver
+// ============================================================================
+
+function recordDeclaration(
+  decl: Declaration,
+  ownOrdinary: HashMap<u32, StyleValue>,
+  ownDefault: HashMap<u32, StyleValue>,
+) {
+  let pid = propertyIdOf(decl.property);
+  if (pid == (0 as u32)) {
+    return;
+  }
+  if (decl.isDefault) {
+    ownDefault[pid] = decl.value;
+  } else {
+    ownOrdinary[pid] = decl.value;
+  }
+}
+
+function applySheetRules(
+  node: LogicalNode,
+  scopeRootId: u32,
+  sheet: StylesheetDef,
+  ownOrdinary: HashMap<u32, StyleValue>,
+  ownDefault: HashMap<u32, StyleValue>,
+) {
+  for (let r in sheet.rules) {
+    let holds = if (let Some { value as condIdx } = r.when) {
+      evalCondition(node, scopeRootId, sheet.conditions, condIdx)
+    } else {
+      true
+    };
+    if (holds) {
+      for (let d in r.then) {
+        recordDeclaration(d, ownOrdinary, ownDefault);
+      }
+    }
+  }
+}
+
+function evalDeclValue(
+  node: LogicalNode,
+  pid: u32,
+  raw: StyleValue,
+  visiting: HashMap<u32, boolean>,
+): Option<StyleValue> {
+  let expectedOpt = propValueType(pid);
+  if (!(expectedOpt is Some<ValueType>)) {
+    return none;
+  }
+  let expected = expectedOpt.value;
+
+  var resolved: Option<StyleValue> = none;
+  if (raw is StyleValueUseProp) {
+    let targetPid = propertyIdOf(raw.value);
+    if (targetPid != (0 as u32)) {
+      resolved = resolvePropIdOnNode(node, targetPid, visiting);
+    }
+  } else if (raw is StyleValueUseFact) {
+    resolved = readFactAsValue(node, raw.value);
+  } else {
+    resolved = some(raw);
+  }
+
+  if (let Some { value } = resolved) {
+    if (valueMatchesType(value, expected)) {
+      return some(value);
+    }
+  }
+  return none;
+}
+
+/**
+ * Resolve `pid` on `node` using the 5-step precedence order:
+ * 1. ordinary declaration on `node`
+ * 2. if inheriting, ordinary declaration on nearest ancestor (`parent.effectiveOrdinary`)
+ * 3. default declaration on `node`
+ * 4. if inheriting, default declaration on nearest ancestor (`parent.effectiveDefault`)
+ * 5. none (built-in initial/base values are applied during materialization)
+ */
+function resolvePropIdOnNode(
+  node: LogicalNode,
+  pid: u32,
+  visiting: HashMap<u32, boolean>,
+): Option<StyleValue> {
+  if (visiting.has(pid)) {
+    // Cycle detected: neither declaration applies.
+    return none;
+  }
+  visiting[pid] = true;
+
+  var result: Option<StyleValue> = none;
+
+  // 1. Ordinary declaration on this node.
+  if (let (true, rawOrd) = node.ownOrdinary.get(pid)) {
+    result = evalDeclValue(node, pid, rawOrd, visiting);
+  }
+
+  let inherits = isInheritingPropId(pid);
+  let parent = getNode(node.parent);
+
+  // 2. Inherited ordinary declaration from nearest ancestor.
+  if (!(result is Some<StyleValue>) && inherits && parent != null) {
+    if (let (true, inhOrd) = parent.effectiveOrdinary.get(pid)) {
+      result = some(inhOrd);
+    }
+  }
+
+  // 3. Default declaration on this node.
+  if (!(result is Some<StyleValue>)) {
+    if (let (true, rawDef) = node.ownDefault.get(pid)) {
+      result = evalDeclValue(node, pid, rawDef, visiting);
+    }
+  }
+
+  // 4. Inherited default declaration from nearest ancestor.
+  if (!(result is Some<StyleValue>) && inherits && parent != null) {
+    if (let (true, inhDef) = parent.effectiveDefault.get(pid)) {
+      result = some(inhDef);
+    }
+  }
+
+  visiting.delete(pid);
+  return result;
+}
+
+function cloneValueMap(src: HashMap<u32, StyleValue>) {
+  let out = new HashMap<u32, StyleValue>();
+  for (let k in src.keys()) {
+    out[k] = src[k];
+  }
+  return out;
+}
+
+function resolveNodeAndSubtree(node: LogicalNode, ops: GrowableArray<RenderOp>): boolean {
+  let ownOrdinary = new HashMap<u32, StyleValue>();
+  let ownDefault = new HashMap<u32, StyleValue>();
+
+  // 1. Own widget interior `reach: scope` stylesheets (outermost -> innermost).
+  let ownScopes = new GrowableArray<ScopeAttachment>();
+  collectInteriorScopeSheets(node, ownScopes);
+  for (let sa in ownScopes) {
+    applySheetRules(node, sa.attachNode, sa.sheet, ownOrdinary, ownDefault);
+  }
+
+  // 2. Own `reach: node` stylesheets.
+  for (let att in node.attachedSheets) {
+    if (att.reach == Reach.Node) {
+      if (let (true, def) = stylesheets.get(att.sheetId)) {
+        applySheetRules(node, node.id, def, ownOrdinary, ownDefault);
+      }
+    }
+  }
+
+  // 3. Own inline declarations (`reach: node`).
+  for (let d in node.inlineDecls) {
+    recordDeclaration(d, ownOrdinary, ownDefault);
+  }
+
+  // 4. Parent/owner widget's `reach: scope` stylesheets (for child widget outer nodes;
+  //    parent rules come after child rules so parent wins on the child's outer node).
+  let ownerScopes = new GrowableArray<ScopeAttachment>();
+  collectOwnerScopeSheets(node, ownerScopes);
+  for (let sa in ownerScopes) {
+    applySheetRules(node, sa.attachNode, sa.sheet, ownOrdinary, ownDefault);
+  }
+
+  node.ownOrdinary = ownOrdinary;
+  node.ownDefault = ownDefault;
+
+  // Build effective inheriting maps (share parent maps when node declares no inheriting props).
+  let parent = getNode(node.parent);
+  let parentOrd = parent?.effectiveOrdinary ?? new HashMap<u32, StyleValue>();
+  let parentDef = parent?.effectiveDefault ?? new HashMap<u32, StyleValue>();
+
+  var hasOwnInhOrd = false;
+  for (let pid in ownOrdinary.keys()) {
+    if (isInheritingPropId(pid)) {
+      hasOwnInhOrd = true;
+      break;
+    }
+  }
+  var hasOwnInhDef = false;
+  for (let pid in ownDefault.keys()) {
+    if (isInheritingPropId(pid)) {
+      hasOwnInhDef = true;
+      break;
+    }
+  }
+
+  if (hasOwnInhOrd) {
+    let nextOrd = cloneValueMap(parentOrd);
+    for (let pid in ownOrdinary.keys()) {
+      if (isInheritingPropId(pid)) {
+        let visiting: HashMap<u32, boolean> = { pid => true };
+        if (let Some { value } = evalDeclValue(node, pid, ownOrdinary[pid], visiting)) {
+          nextOrd[pid] = value;
+        }
+      }
+    }
+    node.effectiveOrdinary = nextOrd;
+  } else {
+    node.effectiveOrdinary = parentOrd;
+  }
+
+  if (hasOwnInhDef) {
+    let nextDef = cloneValueMap(parentDef);
+    for (let pid in ownDefault.keys()) {
+      if (isInheritingPropId(pid)) {
+        let visiting: HashMap<u32, boolean> = { pid => true };
+        if (let Some { value } = evalDeclValue(node, pid, ownDefault[pid], visiting)) {
+          nextDef[pid] = value;
+        }
+      }
+    }
+    node.effectiveDefault = nextDef;
+  } else {
+    node.effectiveDefault = parentDef;
+  }
+
+  // Materialize built-in render properties and emit minimal `RenderOp` diffs.
+  var changed = materializeBuiltins(node, ops);
+
+  // Recurse top-down to children.
+  for (var i = 0; i < node.children.length; i += 1) {
+    let c = getNode(node.children[i]);
+    if (c != null) {
+      if (resolveNodeAndSubtree(c, ops)) {
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+function getResolved(node: LogicalNode, pid: u32) {
+  let visiting = new HashMap<u32, boolean>();
+  return resolvePropIdOnNode(node, pid, visiting);
+}
+
+function materializeBuiltins(node: LogicalNode, ops: GrowableArray<RenderOp>): boolean {
+  if (node.isSlot || node.renderId == (0 as u32)) {
+    return false;
+  }
+
+  var changed = false;
+
+  // --- Box ---
+  let baseBox = node.ownBox;
+  let width: Length = if (let Some { value } = getResolved(node, BP_WIDTH)) {
+    if (value is StyleValueLength) { value.value } else { baseBox.width }
+  } else { baseBox.width };
+  let height: Length = if (let Some { value } = getResolved(node, BP_HEIGHT)) {
+    if (value is StyleValueLength) { value.value } else { baseBox.height }
+  } else { baseBox.height };
+  let grow: f32 = if (let Some { value } = getResolved(node, BP_GROW)) {
+    if (value is StyleValueNumber) { value.value } else { baseBox.grow }
+  } else { baseBox.grow };
+  let shrink: f32 = if (let Some { value } = getResolved(node, BP_SHRINK)) {
+    if (value is StyleValueNumber) { value.value } else { baseBox.shrink }
+  } else { baseBox.shrink };
+  let pTop: f32 = if (let Some { value } = getResolved(node, BP_PADDING_TOP)) {
+    if (value is StyleValueNumber) { value.value } else { baseBox.padding.top }
+  } else { baseBox.padding.top };
+  let pRight: f32 = if (let Some { value } = getResolved(node, BP_PADDING_RIGHT)) {
+    if (value is StyleValueNumber) { value.value } else { baseBox.padding.right }
+  } else { baseBox.padding.right };
+  let pBottom: f32 = if (let Some { value } = getResolved(node, BP_PADDING_BOTTOM)) {
+    if (value is StyleValueNumber) { value.value } else { baseBox.padding.bottom }
+  } else { baseBox.padding.bottom };
+  let pLeft: f32 = if (let Some { value } = getResolved(node, BP_PADDING_LEFT)) {
+    if (value is StyleValueNumber) { value.value } else { baseBox.padding.left }
+  } else { baseBox.padding.left };
+  let overX: Overflow = if (let Some { value } = getResolved(node, BP_OVERFLOW_X)) {
+    if (value is StyleValueKeyword) { decodeOverflow(value.value) } else { baseBox.overflowX }
+  } else { baseBox.overflowX };
+  let overY: Overflow = if (let Some { value } = getResolved(node, BP_OVERFLOW_Y)) {
+    if (value is StyleValueKeyword) { decodeOverflow(value.value) } else { baseBox.overflowY }
+  } else { baseBox.overflowY };
+
+  let nextBox = new Box(
+    width,
+    height,
+    grow,
+    shrink,
+    new Edges(pTop, pRight, pBottom, pLeft),
+    overX,
+    overY,
+  );
+  if (!boxEqual(nextBox, node.flushedBox)) {
+    node.flushedBox = nextBox;
+    ops.push(new RenderOpSetBox(new BoxOp(node.renderId, nextBox)));
+    changed = true;
+  }
+
+  // --- Layout ---
+  var nextLayout = node.layout;
+  if (node.layout is LayoutFlex) {
+    let f = (node.layout as LayoutFlex).value;
+    let axis = if (let Some { value } = getResolved(node, BP_AXIS)) {
+      if (value is StyleValueKeyword) { decodeAxis(value.value) } else { f.axis }
+    } else { f.axis };
+    let justify = if (let Some { value } = getResolved(node, BP_JUSTIFY)) {
+      if (value is StyleValueKeyword) { decodeJustify(value.value) } else { f.justifyContent }
+    } else { f.justifyContent };
+    let align = if (let Some { value } = getResolved(node, BP_ALIGN)) {
+      if (value is StyleValueKeyword) { decodeAlign(value.value) } else { f.alignItems }
+    } else { f.alignItems };
+    let gap = if (let Some { value } = getResolved(node, BP_GAP)) {
+      if (value is StyleValueNumber) { value.value } else { f.gap }
+    } else { f.gap };
+    nextLayout = new LayoutFlex(new Flex(axis, justify, align, gap));
+  } else if (node.layout is LayoutFlow) {
+    let fl = (node.layout as LayoutFlow).value;
+    let ta = if (let Some { value } = getResolved(node, BP_TEXT_ALIGN)) {
+      if (value is StyleValueKeyword) { decodeTextAlign(value.value) } else { fl.align }
+    } else { fl.align };
+    let lh: Option<f32> = if (let Some { value } = getResolved(node, BP_LINE_HEIGHT)) {
+      if (value is StyleValueNumber) { some(value.value) } else { fl.lineHeight }
+    } else { fl.lineHeight };
+    nextLayout = new LayoutFlow(new Flow(ta, lh));
+  }
+  if (!layoutEqual(nextLayout, node.flushedLayout)) {
+    node.flushedLayout = nextLayout;
+    ops.push(new RenderOpSetLayout(new LayoutOp(node.renderId, nextLayout)));
+    changed = true;
+  }
+
+  // --- Visual / Text Style ---
+  let legacyStyle = computeLegacyActiveStyle(node);
+  var nextStyle = legacyStyle;
+  if (legacyStyle is NodeStyleText) {
+    let tc = legacyStyle.value;
+    let baseTs = tc.style;
+    let fam = if (let Some { value } = getResolved(node, BP_TEXT_FAMILY)) {
+      if (value is StyleValueText) { value.value } else { baseTs.family }
+    } else { baseTs.family };
+    let sz = if (let Some { value } = getResolved(node, BP_TEXT_SIZE)) {
+      if (value is StyleValueNumber) { value.value } else { baseTs.size }
+    } else { baseTs.size };
+    let wt: u16 = if (let Some { value } = getResolved(node, BP_TEXT_WEIGHT)) {
+      if (value is StyleValueNumber) { (value.value as i32) as u16 } else { baseTs.weight }
+    } else { baseTs.weight };
+    let it = if (let Some { value } = getResolved(node, BP_TEXT_ITALIC)) {
+      if (value is StyleValueFlag) { value.value } else { baseTs.italic }
+    } else { baseTs.italic };
+    let col = if (let Some { value } = getResolved(node, BP_TEXT_COLOR)) {
+      if (value is StyleValueColor) { value.value } else { baseTs.color }
+    } else { baseTs.color };
+    let nextTs = new TextStyle(fam, sz, wt, it, col);
+    nextStyle = new NodeStyleText(new TextContent(tc.content, nextTs));
+  } else {
+    let bgRes = getResolved(node, BP_BACKGROUND);
+    let bcRes = getResolved(node, BP_BORDER_COLOR);
+    let bwRes = getResolved(node, BP_BORDER_WIDTH);
+    let crRes = getResolved(node, BP_CORNER_RADIUS);
+    let opRes = getResolved(node, BP_OPACITY);
+
+    let anyBoxOverride = (bgRes is Some<StyleValue>)
+      || (bcRes is Some<StyleValue>)
+      || (bwRes is Some<StyleValue>)
+      || (crRes is Some<StyleValue>)
+      || (opRes is Some<StyleValue>);
+
+    if (legacyStyle is NodeStyleFill || anyBoxOverride) {
+      let baseBs = if (legacyStyle is NodeStyleFill) {
+        legacyStyle.value
+      } else {
+        new BoxStyle(none, none, 0.0, 0.0, 1.0)
+      };
+      let bg: Option<Color> = if (let Some { value } = bgRes) {
+        if (value is StyleValueColor) { some(value.value) } else { baseBs.background }
+      } else { baseBs.background };
+      let bc: Option<Color> = if (let Some { value } = bcRes) {
+        if (value is StyleValueColor) { some(value.value) } else { baseBs.borderColor }
+      } else { baseBs.borderColor };
+      let bw = if (let Some { value } = bwRes) {
+        if (value is StyleValueNumber) { value.value } else { baseBs.borderWidth }
+      } else { baseBs.borderWidth };
+      let cr = if (let Some { value } = crRes) {
+        if (value is StyleValueNumber) { value.value } else { baseBs.cornerRadius }
+      } else { baseBs.cornerRadius };
+      let op = if (let Some { value } = opRes) {
+        if (value is StyleValueNumber) { value.value } else { baseBs.opacity }
+      } else { baseBs.opacity };
+      nextStyle = new NodeStyleFill(new BoxStyle(bg, bc, bw, cr, op));
+    }
+  }
+
+  if (!nodeStyleEqual(nextStyle, node.activeStyle)) {
+    let prevStyle = node.activeStyle;
+    node.activeStyle = nextStyle;
+    // Prefer `SetTextStyle` when only the `TextStyle` of a text node changed.
+    if (prevStyle is NodeStyleText && nextStyle is NodeStyleText) {
+      let pt = prevStyle.value;
+      let nt = nextStyle.value;
+      if (pt.content == nt.content && !textStyleEqual(pt.style, nt.style)) {
+        ops.push(new RenderOpSetTextStyle(new TextStyleOp(node.renderId, nt.style)));
+      } else {
+        ops.push(new RenderOpSetStyle(new StyleOp(node.renderId, nextStyle)));
+      }
+    } else {
+      ops.push(new RenderOpSetStyle(new StyleOp(node.renderId, nextStyle)));
+    }
+    changed = true;
+  }
+
+  // --- Cursor (inheriting; does not require a paint frame by itself) ---
+  let parentNode = getNode(node.parent);
+  let fallbackCursor = if (let Some { value } = node.ownCursor) {
+    value
+  } else {
+    parentNode?.resolvedCursor ?? Cursor.Default
+  };
+  let nextCursor = if (let Some { value } = getResolved(node, BP_CURSOR)) {
+    if (value is StyleValueKeyword) { decodeCursor(value.value) } else { fallbackCursor }
+  } else { fallbackCursor };
+  if (nextCursor != node.resolvedCursor) {
+    node.resolvedCursor = nextCursor;
+    ops.push(new RenderOpSetCursor(new CursorOp(node.renderId, nextCursor)));
+  }
+
+  // --- User-select (inheriting; does not require a paint frame by itself) ---
+  let fallbackUnsel = node.ownUnselectable || (parentNode?.resolvedUnselectable ?? false);
+  let nextUnsel = if (let Some { value } = getResolved(node, BP_USER_SELECT)) {
+    if (value is StyleValueKeyword) { value.value != (0 as u32) } else { fallbackUnsel }
+  } else { fallbackUnsel };
+  if (nextUnsel != node.resolvedUnselectable) {
+    node.resolvedUnselectable = nextUnsel;
+    ops.push(new RenderOpSetInteraction(new InteractionOp(
+      node.renderId,
+      node.focusable,
+      node.editable,
+      nextUnsel,
+    )));
+  }
+
+  return changed;
+}
+
+/** Query the current resolved value of `key` on `node` (including built-in fallbacks). */
+export function queryResolvedProperty(node: LogicalNode, key: StyleKey): Option<StyleValue> {
+  let pid = propertyIdOf(key);
+  if (pid == (0 as u32)) {
+    return none;
+  }
+  let resolved = getResolved(node, pid);
+  if (resolved is Some<StyleValue>) {
+    return resolved;
+  }
+  // Built-in fallbacks when no style-engine rule set them.
+  if (pid == BP_WIDTH) { return someVal(new StyleValueLength(node.flushedBox.width)); }
+  if (pid == BP_HEIGHT) { return someVal(new StyleValueLength(node.flushedBox.height)); }
+  if (pid == BP_GROW) { return someVal(new StyleValueNumber(node.flushedBox.grow)); }
+  if (pid == BP_SHRINK) { return someVal(new StyleValueNumber(node.flushedBox.shrink)); }
+  if (pid == BP_PADDING_TOP) { return someVal(new StyleValueNumber(node.flushedBox.padding.top)); }
+  if (pid == BP_PADDING_RIGHT) { return someVal(new StyleValueNumber(node.flushedBox.padding.right)); }
+  if (pid == BP_PADDING_BOTTOM) { return someVal(new StyleValueNumber(node.flushedBox.padding.bottom)); }
+  if (pid == BP_PADDING_LEFT) { return someVal(new StyleValueNumber(node.flushedBox.padding.left)); }
+  if (pid == BP_GAP && node.flushedLayout is LayoutFlex) {
+    return someVal(new StyleValueNumber((node.flushedLayout as LayoutFlex).value.gap));
+  }
+  if (pid == BP_CURSOR) {
+    return someVal(new StyleValueKeyword(encodeCursor(node.resolvedCursor)));
+  }
+  if (pid == BP_USER_SELECT) {
+    return someVal(new StyleValueKeyword(if (node.resolvedUnselectable) { 1 as u32 } else { 0 as u32 }));
+  }
+  if (node.activeStyle is NodeStyleFill) {
+    let bs = (node.activeStyle as NodeStyleFill).value;
+    if (pid == BP_BACKGROUND) {
+      if (let Some { value } = bs.background) { return someVal(new StyleValueColor(value)); }
+      return none;
+    }
+    if (pid == BP_BORDER_COLOR) {
+      if (let Some { value } = bs.borderColor) { return someVal(new StyleValueColor(value)); }
+      return none;
+    }
+    if (pid == BP_BORDER_WIDTH) { return someVal(new StyleValueNumber(bs.borderWidth)); }
+    if (pid == BP_CORNER_RADIUS) { return someVal(new StyleValueNumber(bs.cornerRadius)); }
+    if (pid == BP_OPACITY) { return someVal(new StyleValueNumber(bs.opacity)); }
+  }
+  if (node.activeStyle is NodeStyleText) {
+    let ts = (node.activeStyle as NodeStyleText).value.style;
+    if (pid == BP_TEXT_FAMILY) { return someVal(new StyleValueText(ts.family)); }
+    if (pid == BP_TEXT_SIZE) { return someVal(new StyleValueNumber(ts.size)); }
+    if (pid == BP_TEXT_WEIGHT) { return someVal(new StyleValueNumber(ts.weight as f32)); }
+    if (pid == BP_TEXT_ITALIC) { return someVal(new StyleValueFlag(ts.italic)); }
+    if (pid == BP_TEXT_COLOR) { return someVal(new StyleValueColor(ts.color)); }
+  }
+  if (pid == BP_TEXT_COLOR) { return someVal(new StyleValueColor(defaultColor)); }
+  if (pid == BP_TEXT_SIZE) { return someVal(new StyleValueNumber(16.0)); }
+  if (pid == BP_TEXT_FAMILY) { return someVal(new StyleValueText('system-ui')); }
+  if (pid == BP_TEXT_WEIGHT) { return someVal(new StyleValueNumber(400.0)); }
+  if (pid == BP_TEXT_ITALIC) { return someVal(new StyleValueFlag(false)); }
+  if (pid == BP_OPACITY) { return someVal(new StyleValueNumber(1.0)); }
+  if (pid == BP_BORDER_WIDTH || pid == BP_CORNER_RADIUS) { return someVal(new StyleValueNumber(0.0)); }
+  return none;
+}
+
+// ============================================================================
+// Condition & Property Watchers
+// ============================================================================
+
+final class ConditionWatcher {
+  id: u32;
+  nodeId: u32;
+  conditions: Array<Condition>;
+  root: u32;
+  var lastHolds: boolean;
+  new(this.id, this.nodeId, this.conditions, this.root, this.lastHolds);
+}
+
+final class PropertyWatcher {
+  id: u32;
+  nodeId: u32;
+  key: StyleKey;
+  var lastValue: Option<StyleValue>;
+  new(this.id, this.nodeId, this.key, this.lastValue);
+}
+
+let conditionWatchers = new HashMap<u32, ConditionWatcher>();
+let propertyWatchers = new HashMap<u32, PropertyWatcher>();
+let pendingWatcherUpdates = new GrowableArray<WatcherUpdate>();
+
+export function registerConditionWatcher(
+  node: LogicalNode,
+  watcherId: u32,
+  conditions: Array<Condition>,
+  root: u32,
+  ops: GrowableArray<RenderOp>,
+): boolean {
+  styleEngineActive = true;
+  let bits = conditionsWatchBits(conditions);
+  addWatchFlag(node.id, bits, ops);
+  let scopeRoot = scopeWidgetOf(node);
+  let holds = evalCondition(node, scopeRoot, conditions, root);
+  conditionWatchers[watcherId] = new ConditionWatcher(watcherId, node.id, conditions, root, holds);
+  return holds;
+}
+
+export function registerPropertyWatcher(
+  node: LogicalNode,
+  watcherId: u32,
+  key: StyleKey,
+): Option<StyleValue> {
+  styleEngineActive = true;
+  let val = queryResolvedProperty(node, key);
+  propertyWatchers[watcherId] = new PropertyWatcher(watcherId, node.id, key, val);
+  return val;
+}
+
+export function removeWatcher(watcherId: u32): void {
+  conditionWatchers.delete(watcherId);
+  propertyWatchers.delete(watcherId);
+}
+
+export function recordEndedWatchersForNode(nodeId: u32): void {
+  let droppedCond = new GrowableArray<u32>();
+  for (let wid in conditionWatchers.keys()) {
+    let w = conditionWatchers[wid];
+    if (w.nodeId == nodeId) {
+      droppedCond.push(wid);
+    }
+  }
+  for (let wid in droppedCond) {
+    conditionWatchers.delete(wid);
+    pendingWatcherUpdates.push(new WatcherUpdateEnded(wid));
+  }
+
+  let droppedProp = new GrowableArray<u32>();
+  for (let wid in propertyWatchers.keys()) {
+    let w = propertyWatchers[wid];
+    if (w.nodeId == nodeId) {
+      droppedProp.push(wid);
+    }
+  }
+  for (let wid in droppedProp) {
+    propertyWatchers.delete(wid);
+    pendingWatcherUpdates.push(new WatcherUpdateEnded(wid));
+  }
+}
+
+export function evaluateWatchers(): void {
+  for (let wid in conditionWatchers.keys()) {
+    let w = conditionWatchers[wid];
+    let n = getNode(w.nodeId);
+    if (n == null) {
+      continue;
+    }
+    let scopeRoot = scopeWidgetOf(n);
+    let holds = evalCondition(n, scopeRoot, w.conditions, w.root);
+    if (holds != w.lastHolds) {
+      w.lastHolds = holds;
+      pendingWatcherUpdates.push(new WatcherUpdateCondition(new ConditionUpdate(wid, holds)));
+    }
+  }
+
+  for (let wid in propertyWatchers.keys()) {
+    let w = propertyWatchers[wid];
+    let n = getNode(w.nodeId);
+    if (n == null) {
+      continue;
+    }
+    let val = queryResolvedProperty(n, w.key);
+    if (!optStyleValueEqual(val, w.lastValue)) {
+      w.lastValue = val;
+      pendingWatcherUpdates.push(new WatcherUpdateProperty(new PropertyUpdate(wid, val)));
+    }
+  }
+}
+
+export function drainWatcherUpdates(): Array<WatcherUpdate> {
+  let out = new GrowableArray<WatcherUpdate>();
+  for (let u in pendingWatcherUpdates) {
+    out.push(u);
+  }
+  pendingWatcherUpdates.clear();
+  return out;
+}
+
+// ============================================================================
+// Entrypoints Called by `main.zena`
+// ============================================================================
+
+/** Re-resolve the entire rooted tree (or detached node) and update watchers. */
+export function refreshStyleTree(ops: GrowableArray<RenderOp>): boolean {
+  if (!styleEngineActive) {
+    return false;
+  }
+  var changed = false;
+  let root = getNode(rootLogicalId);
+  if (root != null) {
+    changed = resolveNodeAndSubtree(root, ops);
+  }
+  evaluateWatchers();
+  return changed;
+}
+
+/** Re-resolve a single detached subtree (or the rooted tree if attached). */
+export function refreshFromNode(node: LogicalNode, ops: GrowableArray<RenderOp>): boolean {
+  if (!styleEngineActive) {
+    return false;
+  }
+  // If reachable from root, resolve from root so inherited maps stay consistent.
+  if (rootLogicalId != (0 as u32) && isAtOrBeneath(node.id, rootLogicalId)) {
+    return refreshStyleTree(ops);
+  }
+  let changed = resolveNodeAndSubtree(node, ops);
+  evaluateWatchers();
+  return changed;
+}
+
+/** Propagate watch bits from any ancestor scope stylesheets onto a newly added subtree. */
+export function applyInheritedScopeWatchBits(
+  node: LogicalNode,
+  ops: GrowableArray<RenderOp>,
+): void {
+  if (!styleEngineActive) {
+    return;
+  }
+  let scopes = new GrowableArray<ScopeAttachment>();
+  collectInteriorScopeSheets(node, scopes);
+  collectOwnerScopeSheets(node, scopes);
+  var bits = 0 as u32;
+  for (let sa in scopes) {
+    bits = bits | sheetWatchBits(sa.sheet);
+  }
+  for (let att in node.attachedSheets) {
+    if (let (true, def) = stylesheets.get(att.sheetId)) {
+      bits = bits | sheetWatchBits(def);
+    }
+  }
+  bits = bits | declsWatchBits(node.inlineDecls);
+  if (bits != (0 as u32)) {
+    addWatchFlag(node.id, bits, ops);
+  }
+}
+
+export function attachStylesheetToNode(
+  node: LogicalNode,
+  sheetId: u32,
+  reach: Reach,
+  ops: GrowableArray<RenderOp>,
+): boolean {
+  var sheetDef: StylesheetDef | null = null;
+  if (let (true, def) = stylesheets.get(sheetId)) {
+    sheetDef = def;
+  }
+  if (sheetDef == null) {
+    return false;
+  }
+  styleEngineActive = true;
+  // Replace reach if already attached, otherwise append.
+  var found = false;
+  for (var i = 0; i < node.attachedSheets.length; i += 1) {
+    if (node.attachedSheets[i].sheetId == sheetId) {
+      node.attachedSheets[i] = new AttachedSheet(sheetId, reach);
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    node.attachedSheets.push(new AttachedSheet(sheetId, reach));
+  }
+  let bits = sheetWatchBits(sheetDef);
+  propagateWatchBits(node, reach, bits, ops);
+  refreshFromNode(node, ops);
+  return true;
+}
+
+export function detachStylesheetFromNode(
+  node: LogicalNode,
+  sheetId: u32,
+  ops: GrowableArray<RenderOp>,
+): boolean {
+  let kept = new GrowableArray<AttachedSheet>();
+  var removed = false;
+  for (let att in node.attachedSheets) {
+    if (att.sheetId == sheetId) {
+      removed = true;
+    } else {
+      kept.push(att);
+    }
+  }
+  if (!removed) {
+    return false;
+  }
+  node.attachedSheets.clear();
+  for (let k in kept) {
+    node.attachedSheets.push(k);
+  }
+  refreshFromNode(node, ops);
+  return true;
+}

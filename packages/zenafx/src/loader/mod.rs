@@ -32,6 +32,7 @@
 pub mod link;
 pub mod listeners;
 pub mod platform;
+pub mod style;
 
 pub use platform::PlatformRuntime;
 
@@ -109,6 +110,8 @@ pub struct GuestScene {
     /// The host's end of each listener's stream, for counting what was
     /// written to them.
     listeners: Listeners,
+    /// Active condition and property watcher streams (`zenafx:host/style`).
+    watchers: style::Watchers,
     /// Shared with the host functions, which call it when the component
     /// writes the tree.
     wake: Arc<Mutex<Option<Wake>>>,
@@ -144,7 +147,7 @@ impl GuestScene {
     ) -> Result<Self> {
         let core = platform.core().clone();
         let state = UiHostState::new(platform);
-        let (platform, text, writes, entries, ready, wake, listeners) = (
+        let (platform, text, writes, entries, ready, wake, listeners, watchers) = (
             state.platform.clone(),
             state.text.clone(),
             state.writes.clone(),
@@ -152,6 +155,7 @@ impl GuestScene {
             state.ready.clone(),
             state.wake.clone(),
             state.listeners.clone(),
+            state.watchers.clone(),
         );
         let undelivered = Arc::new(AtomicU32::new(0));
 
@@ -210,6 +214,7 @@ impl GuestScene {
             deliveries: deliveries_tx,
             undelivered,
             listeners,
+            watchers,
             wake,
             clipboard: Box::new(Memory::default()),
         })
@@ -511,15 +516,16 @@ impl Scene for GuestScene {
             width: frame.width as f32,
             height: frame.height as f32,
         };
-        let (commands, owed) = self
-            .platform
-            .lock()
-            .unwrap()
-            .draw_with_owed(size)
-            .unwrap_or_else(|e| {
+        let (commands, owed, updates) = {
+            let mut rt = self.platform.lock().unwrap();
+            let (commands, owed) = rt.draw_with_owed(size).unwrap_or_else(|e| {
                 log::error!("platform draw failed: {e:?}");
                 (Vec::new(), Vec::new())
             });
+            let updates = rt.take_watcher_updates().unwrap_or_default();
+            (commands, owed, updates)
+        };
+        self.watchers.flush(updates);
         self.hand_over(owed);
         commands
     }
@@ -533,15 +539,16 @@ impl Scene for GuestScene {
     }
 
     fn pointer(&mut self, input: PointerInput) -> bool {
-        let (deliveries, restyled) = self
-            .platform
-            .lock()
-            .unwrap()
-            .pointer(input)
-            .unwrap_or_else(|e| {
+        let (deliveries, restyled, updates) = {
+            let mut rt = self.platform.lock().unwrap();
+            let (deliveries, restyled) = rt.pointer(input).unwrap_or_else(|e| {
                 log::error!("platform pointer failed: {e:?}");
                 (Vec::new(), false)
             });
+            let updates = rt.take_watcher_updates().unwrap_or_default();
+            (deliveries, restyled, updates)
+        };
+        self.watchers.flush(updates);
         self.hand_over(deliveries);
         restyled
     }

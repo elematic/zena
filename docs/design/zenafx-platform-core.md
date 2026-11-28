@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposal, with Steps A1–A3 implemented:
+Implemented (Track A Steps A1–A3 and Track B Style Engine):
 
 - **Step A1 (done):** `packages/zenafx/wit/deps/core/core.wit` defines the
   self-contained `zenafx:core@0.1.0` native-core WIT package (`render`), and
@@ -22,6 +22,12 @@ Proposal, with Steps A1–A3 implemented:
   an upgraded platform component independently of the native binary.
   (`packages/zenafx-render/src/scene.rs` remains temporarily for `zenafx-web`
   until the browser runtime migrates to `RenderCore` + `platform.wasm`.)
+- **Track B (done):** `packages/zenafx-platform/src/style.zena` implements the
+  declarative style engine from [zenafx-styles.md](./zenafx-styles.md) (built-in
+  and custom properties, unified inheritance and default priority, `use-prop`,
+  `use-fact`, scoped stylesheets with widget-boundary isolation, responsive
+  size/scroll/index facts, and reactive `watch-condition` / `watch-property`
+  streams) with zero changes required to `RenderCore` (`zenafx-render`).
 
 ## Overview
 

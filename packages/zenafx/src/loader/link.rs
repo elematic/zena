@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex};
 
 use super::listeners::{DeliveryRecord, HostReply, KeyDeliveryRecord, Listeners, Replies};
 use super::platform::PlatformRuntime;
+use super::style::{
+    Condition, Declaration, FactKind, PropertyDef, Reach, StyleKey, StylesheetDef, Watchers,
+};
 use crate::ui::events::{Phase, PointerKind, Scope};
 use crate::ui::scene::{Hole, TemplateRef, TextSelection};
 use crate::ui::surface::Wake;
@@ -67,6 +70,8 @@ pub struct UiHostState {
     pub wake: Arc<Mutex<Option<Wake>>>,
     /// The host's end of each stream `node.listen-pointer` handed out.
     pub listeners: Listeners,
+    /// Active condition and property watcher streams (`zenafx:host/style`).
+    pub watchers: Watchers,
     /// The replies the component holds and has not answered with yet.
     pub replies: Replies,
     /// `wasi:clocks`, which is what `zena:time`'s `sleep` parks on. A
@@ -98,6 +103,7 @@ impl UiHostState {
             ready: Arc::new(AtomicBool::new(false)),
             wake: Arc::new(Mutex::new(None)),
             listeners: Listeners::default(),
+            watchers: Watchers::default(),
             replies: Replies::default(),
             clocks: WasiClocksCtx::default(),
             table: ResourceTable::new(),
@@ -105,12 +111,17 @@ impl UiHostState {
     }
 
     /// What follows from the component having written the tree: the streams
-    /// of listeners whose nodes the write dropped are ended, and the window
-    /// is asked for a frame, if there is a window.
+    /// of listeners whose nodes the write dropped are ended, watcher updates
+    /// are delivered, and the window is asked for a frame, if there is a window.
     fn changed(&self) {
-        if let Ok(ended) = self.platform.lock().unwrap().take_ended_listeners() {
-            self.listeners.end(&ended);
-        }
+        let (ended, updates) = {
+            let mut rt = self.platform.lock().unwrap();
+            let ended = rt.take_ended_listeners().unwrap_or_default();
+            let updates = rt.take_watcher_updates().unwrap_or_default();
+            (ended, updates)
+        };
+        self.listeners.end(&ended);
+        self.watchers.flush(updates);
         if let Some(wake) = self.wake.lock().unwrap().as_ref() {
             wake();
         }
@@ -399,6 +410,205 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         |mut caller: StoreContextMut<'_, UiHostState>, (): ()| {
             caller.data_mut().ready.store(true, Ordering::Relaxed);
             Ok(())
+        },
+    )?;
+
+    let mut style = linker.instance("zenafx:host/style@0.1.0")?;
+    style.func_wrap(
+        "define-property",
+        |caller: StoreContextMut<'_, UiHostState>, (def,): (PropertyDef,)| {
+            let id = caller
+                .data()
+                .platform
+                .lock()
+                .unwrap()
+                .define_property(def)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            Ok((id,))
+        },
+    )?;
+    style.func_wrap(
+        "define-fact",
+        |caller: StoreContextMut<'_, UiHostState>, (kind,): (FactKind,)| {
+            let id = caller
+                .data()
+                .platform
+                .lock()
+                .unwrap()
+                .define_fact(kind)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            Ok((id,))
+        },
+    )?;
+    style.func_wrap(
+        "define-stylesheet",
+        |caller: StoreContextMut<'_, UiHostState>, (def,): (StylesheetDef,)| {
+            let data = caller.data();
+            data.platform
+                .lock()
+                .unwrap()
+                .define_stylesheet(def)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            data.changed();
+            Ok(())
+        },
+    )?;
+    style.func_wrap(
+        "attach-stylesheet",
+        |caller: StoreContextMut<'_, UiHostState>,
+         (node, target, sheet, reach): (Resource<HostNode>, u32, u32, Reach)| {
+            let data = caller.data();
+            let ok = data
+                .platform
+                .lock()
+                .unwrap()
+                .attach_stylesheet(node.rep(), target, sheet, reach)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            if ok {
+                data.changed();
+            }
+            Ok((ok,))
+        },
+    )?;
+    style.func_wrap(
+        "detach-stylesheet",
+        |caller: StoreContextMut<'_, UiHostState>,
+         (node, target, sheet): (Resource<HostNode>, u32, u32)| {
+            let data = caller.data();
+            let ok = data
+                .platform
+                .lock()
+                .unwrap()
+                .detach_stylesheet(node.rep(), target, sheet)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            if ok {
+                data.changed();
+            }
+            Ok((ok,))
+        },
+    )?;
+    style.func_wrap(
+        "set-flag",
+        |caller: StoreContextMut<'_, UiHostState>,
+         (node, target, key, value): (Resource<HostNode>, u32, u32, bool)| {
+            let data = caller.data();
+            let ok = data
+                .platform
+                .lock()
+                .unwrap()
+                .set_flag(node.rep(), target, key, value)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            if ok {
+                data.writes.fetch_add(1, Ordering::Relaxed);
+                data.changed();
+            }
+            Ok((ok,))
+        },
+    )?;
+    style.func_wrap(
+        "set-number",
+        |caller: StoreContextMut<'_, UiHostState>,
+         (node, target, key, value): (Resource<HostNode>, u32, u32, Option<f32>)| {
+            let data = caller.data();
+            let ok = data
+                .platform
+                .lock()
+                .unwrap()
+                .set_number(node.rep(), target, key, value)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            if ok {
+                data.writes.fetch_add(1, Ordering::Relaxed);
+                data.changed();
+            }
+            Ok((ok,))
+        },
+    )?;
+    style.func_wrap(
+        "set-declarations",
+        |caller: StoreContextMut<'_, UiHostState>,
+         (node, target, decls): (Resource<HostNode>, u32, Vec<Declaration>)| {
+            let data = caller.data();
+            let ok = data
+                .platform
+                .lock()
+                .unwrap()
+                .set_declarations(node.rep(), target, decls)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            if ok {
+                data.writes.fetch_add(1, Ordering::Relaxed);
+                data.changed();
+            }
+            Ok((ok,))
+        },
+    )?;
+    style.func_wrap(
+        "set-scope-owner",
+        |caller: StoreContextMut<'_, UiHostState>,
+         (node, owner): (Resource<HostNode>, Resource<HostNode>)| {
+            let data = caller.data();
+            let ok = data
+                .platform
+                .lock()
+                .unwrap()
+                .set_scope_owner(node.rep(), owner.rep())
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            if ok {
+                data.changed();
+            }
+            Ok((ok,))
+        },
+    )?;
+    style.func_wrap(
+        "resolved-property",
+        |caller: StoreContextMut<'_, UiHostState>,
+         (node, target, key): (Resource<HostNode>, u32, StyleKey)| {
+            let val = caller
+                .data()
+                .platform
+                .lock()
+                .unwrap()
+                .resolved_property(node.rep(), target, key)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            Ok((val,))
+        },
+    )?;
+    style.func_wrap(
+        "watch-condition",
+        |mut caller: StoreContextMut<'_, UiHostState>,
+         (node, target, conditions, root): (Resource<HostNode>, u32, Vec<Condition>, u32)| {
+            let data = caller.data_mut();
+            let platform = data.platform.clone();
+            let id = data.watchers.alloc_id();
+            let initial = platform
+                .lock()
+                .unwrap()
+                .watch_condition(node.rep(), target, id, conditions, root)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            match initial {
+                Some(holds) => {
+                    let stream = data.watchers.open_condition(id, platform, holds);
+                    Ok((StreamReader::new(&mut caller, stream)?,))
+                }
+                None => Err(wasmtime::Error::msg(format!(
+                    "a node has no position {target} to watch"
+                ))),
+            }
+        },
+    )?;
+    style.func_wrap(
+        "watch-property",
+        |mut caller: StoreContextMut<'_, UiHostState>,
+         (node, target, key): (Resource<HostNode>, u32, StyleKey)| {
+            let data = caller.data_mut();
+            let platform = data.platform.clone();
+            let id = data.watchers.alloc_id();
+            let initial = platform
+                .lock()
+                .unwrap()
+                .watch_property(node.rep(), target, id, key)
+                .map_err(|e| wasmtime::Error::msg(format!("{e:?}")))?;
+            let stream = data.watchers.open_property(id, platform, initial);
+            Ok((StreamReader::new(&mut caller, stream)?,))
         },
     )?;
 

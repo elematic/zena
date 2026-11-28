@@ -1,0 +1,193 @@
+/**
+ * End-to-end ZenaFX guest component exercising `zenafx:host/style@0.1.0`
+ * served by the Zena platform component (`platform.wasm`) over `RenderCore`.
+ *
+ * Demonstrates:
+ * - Custom inheriting properties (`accent`, `panel-width`) + `use-prop` / `use-fact(width)`
+ * - Scoped stylesheets (`Reach.Scope`) combining `hovered`, `pressed`, and custom `selected` flag
+ * - Responsive layout switching (`panel-width >= 600` -> horizontal row vs vertical column)
+ * - Live `watch-condition` stream updating a status text node only when crossing 600px
+ */
+import {
+  Axis, Justify, Align, Overflow, Color, Edges, Box, Flex, LayoutFlex,
+  LengthAuto, LengthPx, LengthPercent, TextStyle,
+} from 'zenafx:ui/style';
+import {
+  Node, NodeDef, NodeStyleNothing, NodeStyleText, TextContent,
+  Binding, BindingTarget, BindingValueContent, Hole, TemplateDef,
+  TemplateRefFresh, TemplateRefKnown, root, ready,
+} from 'zenafx:host/scene';
+import { PointerKind, Scope, Phase, Delivery } from 'zenafx:host/events';
+import {
+  ValueType, PropertyDef, FactKind, HostFact, BuiltinProperty,
+  StyleKeyHost, StyleKeyBuiltin, StyleKeyCustom,
+  StyleValueColor, StyleValueNumber, StyleValueKeyword, StyleValueUseProp,
+  StyleValueUseFact, Declaration, RangeTest, ConditionFlag, ConditionRange,
+  ConditionAll, Rule, Reach, StylesheetDef,
+  defineProperty, defineFact, defineStylesheet, attachStylesheet,
+  setFlag, setDeclarations, watchCondition,
+} from 'zenafx:host/style';
+import { Stream } from 'zena:stream';
+import { Disposable, some, none } from 'zena:core';
+
+let pageBg = new Color(0.97, 0.97, 0.99, 1.0);
+let accentCol = new Color(0.18, 0.42, 0.92, 1.0);
+let selectedCol = new Color(0.12, 0.72, 0.36, 1.0);
+let hoverBorder = new Color(0.95, 0.45, 0.10, 1.0);
+let ink = new Color(0.10, 0.11, 0.13, 1.0);
+
+let noEdges = new Edges(0.0, 0.0, 0.0, 0.0);
+let colLayout = new LayoutFlex(new Flex(Axis.Column, Justify.Start, Align.Start, 0.0));
+
+function plainBox(w: LengthPx | LengthPercent | LengthAuto, h: LengthPx | LengthPercent | LengthAuto, first: u32, count: u32) {
+  return new NodeDef(
+    new Box(w, h, 0.0, 0.0, noEdges, Overflow.Clip, Overflow.Clip),
+    colLayout,
+    new NodeStyleNothing(),
+    first,
+    count,
+    false,
+    none,
+    false,
+    false,
+    false,
+  );
+}
+
+function textNode(initial: String) {
+  return new NodeDef(
+    new Box(new LengthAuto(), new LengthAuto(), 0.0, 0.0, noEdges, Overflow.Clip, Overflow.Clip),
+    colLayout,
+    new NodeStyleText(new TextContent(initial, new TextStyle('system-ui', 16.0, 400 as u16, false, ink))),
+    0 as u32,
+    0 as u32,
+    false,
+    none,
+    false,
+    false,
+    false,
+  );
+}
+
+async function watchWide(
+  page: Node,
+  stream: Stream<boolean>,
+): Future<void> {
+  for await (let wide in stream) {
+    let label = if (wide) { 'Wide' } else { 'Narrow' };
+    page.render(
+      new TemplateRefKnown(1 as u32),
+      [new Hole(0 as u32, new BindingValueContent(label))],
+    );
+  }
+}
+
+async function listenToggle(
+  page: Node,
+  selectedKey: u32,
+  stream: Stream<Delivery>,
+): Future<void> {
+  var isSelected = false;
+  for await (let delivery in stream) {
+    isSelected = !isSelected;
+    setFlag(page, 3 as u32, selectedKey, isSelected);
+    if (let Some { value } = delivery.reply) {
+      value.stopPropagation();
+      value.[Disposable.dispose]();
+    }
+  }
+}
+
+export function main(): void {
+  let page = root();
+
+  // Tree inside page (breadth-first order: children of a node are contiguous):
+  // 0: root (100%x100%) -> [1: panel, 2: statusText]
+  // 1: panel (100% x auto) -> [3: tileA (120x48), 4: tileB (120x48)]
+  // 2: statusText ("Narrow" / "Wide" updated via `watchCondition`)
+  // 3: tileA (clickable toggle setting `selected`)
+  // 4: tileB
+  let tpl = new TemplateDef(
+    1 as u32,
+    [
+      plainBox(new LengthPercent(100.0), new LengthPercent(100.0), 1 as u32, 2 as u32),
+      plainBox(new LengthPercent(100.0), new LengthAuto(), 3 as u32, 2 as u32),
+      textNode('Narrow'),
+      plainBox(new LengthPx(120.0), new LengthPx(48.0), 0 as u32, 0 as u32),
+      plainBox(new LengthPx(120.0), new LengthPx(48.0), 0 as u32, 0 as u32),
+    ],
+    [new Binding(2 as u32, BindingTarget.Content)],
+    [],
+  );
+  page.render(new TemplateRefFresh(tpl), []);
+
+  let accent = defineProperty(new PropertyDef(ValueType.Color, true));
+  let panelWidth = defineProperty(new PropertyDef(ValueType.Number, true));
+  let fTile = defineFact(FactKind.Flag);
+  let fSelected = defineFact(FactKind.Flag);
+
+  // Root publishes theme `accent` and live `panel-width: fact(width)`.
+  setDeclarations(page, 0 as u32, [
+    new Declaration(new StyleKeyBuiltin(BuiltinProperty.Background), new StyleValueColor(pageBg), false),
+    new Declaration(new StyleKeyCustom(accent), new StyleValueColor(accentCol), false),
+    new Declaration(new StyleKeyCustom(panelWidth), new StyleValueUseFact(new StyleKeyHost(HostFact.Width)), false),
+  ]);
+
+  // Scoped stylesheet for tiles:
+  // - default fill uses inherited `accent`
+  // - `tile && hovered` adds an orange 2px border
+  // - `tile && selected` changes background to green (combining with hovered border!)
+  let tileSheet = new StylesheetDef(
+    1 as u32,
+    [
+      new ConditionFlag(new StyleKeyCustom(fTile)),
+      new ConditionFlag(new StyleKeyHost(HostFact.Hovered)),
+      new ConditionAll([0 as u32, 1 as u32]),
+      new ConditionFlag(new StyleKeyCustom(fSelected)),
+      new ConditionAll([0 as u32, 3 as u32]),
+    ],
+    [
+      new Rule(some(0 as u32), [
+        new Declaration(new StyleKeyBuiltin(BuiltinProperty.Background), new StyleValueUseProp(new StyleKeyCustom(accent)), false),
+      ]),
+      new Rule(some(2 as u32), [
+        new Declaration(new StyleKeyBuiltin(BuiltinProperty.BorderColor), new StyleValueColor(hoverBorder), false),
+        new Declaration(new StyleKeyBuiltin(BuiltinProperty.BorderWidth), new StyleValueNumber(2.0), false),
+      ]),
+      new Rule(some(4 as u32), [
+        new Declaration(new StyleKeyBuiltin(BuiltinProperty.Background), new StyleValueColor(selectedCol), false),
+      ]),
+    ],
+  );
+  defineStylesheet(tileSheet);
+  attachStylesheet(page, 0 as u32, 1 as u32, Reach.Scope);
+  setFlag(page, 3 as u32, fTile, true);
+  setFlag(page, 4 as u32, fTile, true);
+
+  // Responsive stylesheet on panel (node 1): horizontal row when `panel-width >= 600`.
+  let wideCond = new ConditionRange(
+    new RangeTest(new StyleKeyCustom(panelWidth), some(600.0 as f32), true, none, false),
+  );
+  let responsiveSheet = new StylesheetDef(
+    2 as u32,
+    [wideCond],
+    [
+      new Rule(some(0 as u32), [
+        new Declaration(new StyleKeyBuiltin(BuiltinProperty.Axis), new StyleValueKeyword(0 as u32), false),
+        new Declaration(new StyleKeyBuiltin(BuiltinProperty.Gap), new StyleValueNumber(16.0), false),
+      ]),
+    ],
+  );
+  defineStylesheet(responsiveSheet);
+  attachStylesheet(page, 1 as u32, 2 as u32, Reach.Node);
+
+  // Watch `panel-width >= 600` on panel (node 1) to update statusText.
+  let wideStream = watchCondition(page, 1 as u32, [wideCond], 0 as u32);
+  watchWide(page, wideStream);
+
+  // Click tileA (node 3) to toggle `selected`.
+  let clicks = page.listenPointer(3 as u32, PointerKind.Down, Scope.Subtree, Phase.Bubble);
+  listenToggle(page, fSelected, clicks);
+
+  ready();
+}
