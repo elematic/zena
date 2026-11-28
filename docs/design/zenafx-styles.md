@@ -2,15 +2,37 @@
 
 ## Status
 
-Proposal. Two pieces are built today:
+In progress. Three pieces are built today:
 
-- The host's list of state styles described under [Styles today](#styles-today),
-  which the rule system below would replace.
+- The legacy list of state styles described under [Styles today](#styles-today),
+  retained for backward compatibility while existing example widgets migrate.
 - Step 1 of the guest [Authoring surface](#authoring-surface): untagged node
   literal builders in the compiler, unified `Style` / `When` / `Rule` /
   `Stylesheet` builders and the `Condition` algebra with flat post-order
   serialization in `examples/zenafx/style.zena` and `examples/zenafx/ui.zena`,
   and the updated `@ui` example widgets.
+- **Platform style engine (Track B, built in `packages/zenafx-platform/src/style.zena`):**
+  built-in and custom properties (`define-property`, `define-fact`), unified
+  5-step resolution (ordinary declarations, inheritance across slots/widget
+  boundaries, default priority, `use-prop`, `use-fact`, cycle safety),
+  declarative flat post-order conditions (`flag`, `range`, `under`, `within`,
+  `all`, `any`, `negate`), standalone scoped stylesheets with widget-boundary
+  isolation (`reach: node | scope`, `set-scope-owner`), automatic `watch-flags`
+  derivation into `RenderCore` (`hovered`, `pressed`, `focused`, `size`,
+  `scroll`), slot `index` facts, and reactive `watch-condition` / `watch-property`
+  streams exposed on `zenafx:platform/runtime@0.1.0` and
+  `zenafx:host/style@0.1.0` (tested in `packages/zenafx/tests/styles.rs` and
+  `examples/zenafx/styles/`).
+
+- **Guest `@ui` + style builder integration (built in `examples/zenafx/style.zena` and `examples/zenafx/ui.zena`):**
+  all 12 ZenaFX examples (`button`, `counter`, `cursors`, `directives`,
+  `disclosure`, `input`, `richtext`, `scroll`, `selection`, `split`, `styles`,
+  `widgets`) build with `@ui`, `Style`, `When`, `Rule`, and `Stylesheet` on top
+  of `zenafx:host/style@0.1.0` with zero legacy `state-style` records.
+
+Remaining work: Step 2 isolated window-component functions over
+`borrow<style-node>` ([isolated-functions.md](./isolated-functions.md)) and
+removing the legacy `state-style` compatibility path once `zenafx-web` migrates.
 
 The rest of this document asks for nine platform-protocol decisions:
 

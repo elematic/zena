@@ -903,6 +903,148 @@ package zenafx:host@0.1.0 {
     ready: func();
   }
 
+  /// Properties, facts, conditions, scoped stylesheets, and reactive watchers
+  /// served by the ZenaFX platform component (`docs/design/zenafx-styles.md`).
+  interface style {
+    use zenafx:ui/style@0.1.0.{color, length};
+    use scene.{node};
+
+    enum value-type {
+      flag,
+      number,
+      length,
+      color,
+      keyword,
+      text,
+    }
+
+    record property-def {
+      kind: value-type,
+      inherits: bool,
+    }
+
+    enum fact-kind {
+      flag,
+      number,
+    }
+
+    enum host-fact {
+      text,
+      box,
+      hovered,
+      pressed,
+      focused,
+      width,
+      height,
+      scroll-x,
+      scroll-y,
+      scroll-range-x,
+      scroll-range-y,
+      index,
+    }
+
+    enum builtin-property {
+      width,
+      height,
+      grow,
+      shrink,
+      padding-top,
+      padding-right,
+      padding-bottom,
+      padding-left,
+      overflow-x,
+      overflow-y,
+      axis,
+      justify,
+      align,
+      gap,
+      text-align,
+      line-height,
+      background,
+      border-color,
+      border-width,
+      corner-radius,
+      opacity,
+      text-family,
+      text-size,
+      text-weight,
+      text-italic,
+      text-color,
+      cursor,
+      user-select,
+    }
+
+    variant style-key {
+      host(host-fact),
+      builtin(builtin-property),
+      custom(u32),
+    }
+
+    variant style-value {
+      flag(bool),
+      number(f32),
+      length(length),
+      color(color),
+      keyword(u32),
+      text(string),
+      use-prop(style-key),
+      use-fact(style-key),
+    }
+
+    record declaration {
+      property: style-key,
+      value: style-value,
+      is-default: bool,
+    }
+
+    record range-test {
+      key: style-key,
+      min: option<f32>,
+      min-inclusive: bool,
+      max: option<f32>,
+      max-inclusive: bool,
+    }
+
+    variant condition {
+      flag(style-key),
+      range(range-test),
+      under(u32),
+      within(u32),
+      all(list<u32>),
+      any(list<u32>),
+      negate(u32),
+    }
+
+    record rule {
+      when: option<u32>,
+      then: list<declaration>,
+    }
+
+    enum reach {
+      node,
+      scope,
+    }
+
+    record stylesheet-def {
+      id: u32,
+      conditions: list<condition>,
+      rules: list<rule>,
+    }
+
+    define-property: func(def: property-def) -> u32;
+    define-fact: func(kind: fact-kind) -> u32;
+    define-stylesheet: func(def: stylesheet-def);
+    attach-stylesheet: func(target-node: borrow<node>, target: u32, stylesheet: u32, reach: reach) -> bool;
+    detach-stylesheet: func(target-node: borrow<node>, target: u32, stylesheet: u32) -> bool;
+    set-flag: func(target-node: borrow<node>, target: u32, key: u32, value: bool) -> bool;
+    set-number: func(target-node: borrow<node>, target: u32, key: u32, value: option<f32>) -> bool;
+    set-declarations: func(target-node: borrow<node>, target: u32, decls: list<declaration>) -> bool;
+    set-scope-owner: func(target-node: borrow<node>, owner: borrow<node>) -> bool;
+    resolved-property: func(target-node: borrow<node>, target: u32, key: style-key) -> option<style-value>;
+    watch-condition: func(target-node: borrow<node>, target: u32, conditions: list<condition>, root: u32) -> stream<bool>;
+    watch-property: func(target-node: borrow<node>, target: u32, key: style-key) -> stream<option<style-value>>;
+  }
+
   /// How a component is started.
   ///
   /// One function and no types: a component builds its own tree through

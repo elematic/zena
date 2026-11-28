@@ -2,31 +2,59 @@
  * Every cursor, each over a tile of its own.
  *
  * A node names the cursor to show while the pointer is over it, as one of
- * CSS's `cursor` keywords. The platform draws the cursor: the host tells the
- * window which of the platform's cursors to show when the node under the
- * pointer changes, and no handler here hears the pointer at all.
- *
- * The page is one template. Its tiles are made in a loop, one for each
- * keyword, in the order the interface lists them.
+ * CSS's `cursor` keywords. The platform draws the cursor, and hover styling
+ * runs entirely in the platform style engine (`zenafx:host/style`).
  */
-import { Color, BoxStyle, TextStyle, Edges, Axis, Justify, Align, LengthPx } from 'zenafx:ui/style';
-import { StateStyle, State, RestyleFill, Cursor } from 'zenafx:host/scene';
-import { Rendering, Widget, Template, shows, runApp } from '../framework.zena';
-import { Box, box, text, full, flatten } from '../widgets/widget.zena';
-import { some, none } from 'zena:core';
-import { div } from 'zena:math';
+import {
+  ui, Widget, Box, Text, TemplateResult,
+  Style, When, hovered,
+  Axis, Justify, Align, Cursor,
+  rgb, px, full, runApp,
+} from '../ui.zena';
 
-let page = new Color(0.97, 0.97, 0.98, 1.0);
-let ink = new Color(0.10, 0.11, 0.13, 1.0);
-let paper = new Color(1.0, 1.0, 1.0, 1.0);
-let edge = new Color(0.80, 0.83, 0.89, 1.0);
-let lit = new Color(0.92, 0.95, 1.0, 1.0);
+let pageBg = rgb(0.97, 0.97, 0.98);
+let ink = rgb(0.10, 0.11, 0.13);
+let paper = rgb(1.0, 1.0, 1.0);
+let edge = rgb(0.80, 0.83, 0.89);
+let lit = rgb(0.92, 0.95, 1.0);
 
-let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
-let tileStyle = new BoxStyle(some(paper), some(edge), 1.0, 6.0, 1.0);
-let hoveredStyle = new BoxStyle(some(lit), some(edge), 1.0, 6.0, 1.0);
-let titleText = new TextStyle('system-ui', 20.0, 700 as u16, false, ink);
-let nameText = new TextStyle('system-ui', 13.0, 500 as u16, false, ink);
+let pageStyle = Style {
+  background: pageBg
+  justify: Justify.Center
+  align: Align.Center
+  gap: 8.0
+  padding: { all: 16.0 }
+  width: full
+  height: full
+};
+
+let rowStyle = Style {
+  axis: Axis.Row
+  gap: 8.0
+};
+
+let titleStyle = Style { fontSize: 20.0 fontWeight: 700 color: ink };
+let nameStyle = Style { fontSize: 13.0 fontWeight: 500 color: ink };
+
+let baseTileStyle = Style {
+  background: paper
+  borderColor: edge
+  borderWidth: 1.0
+  cornerRadius: 6.0
+  justify: Justify.Center
+  align: Align.Center
+  width: px(112.0)
+  height: px(52.0)
+
+  When(hovered) { background: lit }
+};
+
+function tileStyle(cursor: Cursor) {
+  return Style {
+    ...baseTileStyle
+    cursor: cursor
+  };
+}
 
 /** A cursor and the keyword CSS has for it. */
 class Kind(name: String, cursor: Cursor) {}
@@ -72,62 +100,59 @@ let kinds = [
 /** How many tiles go in a row. */
 let across = 6;
 
-/** A tile: a box that names one cursor, and says which. */
-function tile(kind: Kind) {
-  return box({style: tileStyle, justify: Justify.Center, align: Align.Center,
-              width: new LengthPx(112.0), height: new LengthPx(52.0),
-              cursor: kind.cursor}, [
-    text(kind.name, nameText),
-  ]);
+class Tile extends Widget {
+  #kind: Kind;
+
+  new(kind: Kind) : #kind = kind, super();
+
+  build(): TemplateResult {
+    return @ui Box {
+      style: tileStyle(this.#kind.cursor),
+      Text(this.#kind.name) { style: nameStyle }
+    };
+  }
 }
 
-/** The page's box tree: a title, and under it the tiles in rows. */
-function pageOf() {
-  let lines = new GrowableArray<Box>();
-  lines.push(text('Cursors', titleText));
-  var row = new GrowableArray<Box>();
+class Row extends Widget {
+  #tiles: Array<Widget>;
+
+  new(tiles: Array<Widget>) : #tiles = tiles, super();
+
+  build(): TemplateResult {
+    return @ui Box {
+      style: rowStyle,
+      $(this.#tiles)
+    };
+  }
+}
+
+function buildRows(): Array<Widget> {
+  let rows = new GrowableArray<Widget>();
+  var current = new GrowableArray<Widget>();
   for (let kind in kinds) {
-    row.push(tile(kind));
-    if (row.length == across) {
-      lines.push(box({axis: Axis.Row, gap: 8.0}, row));
-      row = new GrowableArray<Box>();
+    current.push(new Tile(kind));
+    if (current.length == across) {
+      rows.push(new Row(current));
+      current = new GrowableArray<Widget>();
     }
   }
-  if (row.length > 0) {
-    lines.push(box({axis: Axis.Row, gap: 8.0}, row));
+  if (current.length > 0) {
+    rows.push(new Row(current));
   }
-  return box({style: pageStyle, justify: Justify.Center, align: Align.Center, gap: 8.0,
-              padding: new Edges(16.0, 16.0, 16.0, 16.0), width: full, height: full}, lines);
+  return rows;
 }
-
-/**
- * A state style for each tile while the pointer is over it, so the tile under
- * the pointer can be seen as well as its cursor.
- *
- * A template's nodes are listed level by level: the page, then the title and
- * the rows, then every tile, then every tile's name. So the tiles start after
- * the page, the title and the rows.
- */
-function stateStylesOf(): Array<StateStyle> {
-  let rows = div(kinds.length + across - 1, across);
-  let first = 2 + rows;
-  let styles = new GrowableArray<StateStyle>();
-  for (let index in 0..kinds.length) {
-    let at = (first + index) as u32;
-    styles.push(new StateStyle(at, State.Hovered, at, new RestyleFill(hoveredStyle)));
-  }
-  return styles;
-}
-
-let pageTemplate = new Template(flatten(pageOf()), [], stateStylesOf());
 
 class Page extends Widget {
-  build(): Rendering {
-    return shows(pageTemplate, []);
+  build(): TemplateResult {
+    let rows = buildRows();
+    return @ui Box {
+      style: pageStyle,
+      Text('Cursors') { style: titleStyle }
+      $(rows)
+    };
   }
 }
 
-/** The component's entry: build the widget tree and show it. */
 export function main(): void {
   runApp(new Page());
 }

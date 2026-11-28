@@ -3,225 +3,58 @@
  *
  * Implements the logical UI scene graph above the minimal Rust native core
  * (`zenafx:core/render@0.1.0`): templates, bindings, holes, slots (flattened
- * into concrete render-tree child lists), detached nodes, resolved built-in
- * inheritance (`cursor`, `unselectable`), stopgap `state-style` restyling,
- * and logical pointer/keyboard event routing.
+ * into concrete render-tree child lists), detached nodes, the full property /
+ * fact / condition / stylesheet engine (`style.zena`), legacy `state-style`
+ * compatibility, and logical pointer/keyboard event routing.
  */
 import {
-  Box, BoxStyle, Color, Cursor, Edges, Flex, Layout, LayoutFlex, LayoutFlow,
-  LengthAuto, NodeStyle, NodeStyleNothing, NodeStyleFill, NodeStyleText,
-  Overflow, Axis, Justify, Align, Rect, TextContent, TextSelection, TextStyle,
-  WatchFlags, watchFlagsHovered, watchFlagsPressed, watchFlagsFocused,
-  RenderNodeDef, CreateOp, ChildrenOp, BoxOp, LayoutOp, StyleOp, ContentOp,
-  TextStyleOp, CursorOp, InteractionOp, WatchedOp,
+  Cursor, LayoutFlex, LayoutFlow, NodeStyleFill, NodeStyleText,
+  TextContent, TextSelection, WatchFlags,
+  CreateOp, BoxOp, LayoutOp, StyleOp, ContentOp, TextStyleOp, CursorOp,
+  InteractionOp, WatchedOp,
   RenderOp, RenderOpCreate, RenderOpRemove, RenderOpSetRoot,
-  RenderOpSetChildren, RenderOpSetBox, RenderOpSetLayout, RenderOpSetStyle,
-  RenderOpSetContent, RenderOpSetTextStyle, RenderOpSetCursor,
-  RenderOpSetInteraction, RenderOpSetWatched,
+  RenderOpSetBox, RenderOpSetLayout, RenderOpSetStyle, RenderOpSetContent,
+  RenderOpSetTextStyle, RenderOpSetCursor, RenderOpSetInteraction,
+  RenderOpSetWatched,
   CoreEvent, CoreEventHoverTarget, CoreEventPressTarget, CoreEventFocusTarget,
-  apply, selection as coreSelection, select as coreSelect, bounds as coreBounds,
+  CoreEventSizesChanged, CoreEventScrollChanged,
+  selection as coreSelection, select as coreSelect,
 } from 'zenafx:core/render';
 import {
-  NodeDef, BindingTarget, Binding, BindingValue, BindingValueContent,
-  BindingValueStyle, BindingValueTextStyle, BindingValueBox, BindingValueLayout,
-  Hole, State, Restyle, RestyleFill, RestyleText, StateStyle, TemplateDef,
-  TemplateRef, TemplateRefKnown, TemplateRefFresh,
-  PointerKind, Scope, Phase, PointerEvent, Call, Delivery,
+  BindingValueContent, BindingValueStyle, BindingValueTextStyle,
+  BindingValueBox, BindingValueLayout,
+  Condition, Declaration, FactKind, Hole, NodeDef, Phase, PointerEvent,
+  PointerKind, PropertyDef, Reach, Scope, StyleKey, StyleValue, StylesheetDef,
+  TemplateDef, TemplateRef, TemplateRefKnown, TemplateRefFresh,
+  Call, Delivery, WatcherUpdate,
 } from 'zenafx:platform/runtime';
 import { GrowableArray, HashMap } from 'zena:collections';
 import { Option, Some, some, none } from 'zena:core';
+import {
+  Interior, LogicalNode, ResolvedStateOverride, PointerListenerReg,
+  KeyListenerReg, rootLogicalId, hoveredLogical, pressedLogical,
+  focusedLogical, lastHoverLogical, nodes, renderToLogical, templates,
+  listenerOwner, endedListeners, styledNodes,
+  setHoveredLogical, setPressedLogical, setFocusedLogical,
+  setLastHoverLogical, setRootLogicalId,
+  allocLogicalId, allocRenderId, getNode, resolveTarget, logicalForRender,
+  logicalForRenderId, flushOps, makeRenderDef, nearestRenderLogical,
+  isAtOrBeneath, stateBit, addWatchFlag, computeLegacyActiveStyle,
+  emitFlatChildren, localCoords, copyU32Array, nodeStyleEqual,
+} from './tree.zena';
+import {
+  styleEngineActive, markStyleEngineActive, definePropertyDef, defineFactKind,
+  defineStylesheetDef, declsWatchBits, attachStylesheetToNode,
+  detachStylesheetFromNode, refreshStyleTree, refreshFromNode,
+  applyInheritedScopeWatchBits, queryResolvedProperty,
+  registerConditionWatcher, registerPropertyWatcher, removeWatcher,
+  recordEndedWatchersForNode, drainWatcherUpdates,
+} from './style.zena';
 
 // ============================================================================
-// Internal Data Structures
+// Internal Helpers
 // ============================================================================
 
-let defaultBox = new Box(
-  new LengthAuto(),
-  new LengthAuto(),
-  0.0,
-  1.0,
-  new Edges(0.0, 0.0, 0.0, 0.0),
-  Overflow.Clip,
-  Overflow.Clip,
-);
-
-let defaultLayout: Layout = new LayoutFlex(
-  new Flex(Axis.Column, Justify.Start, Align.Start, 0.0),
-);
-
-final class Interior {
-  templateId: u32;
-  /** Logical node IDs parallel to `TemplateDef.nodes`. `nodes[0]` is self. */
-  nodes: FixedArray<u32>;
-  new(this.templateId, this.nodes);
-}
-
-final class ResolvedStateOverride {
-  when: State;
-  /** Logical node ID whose state is tested. */
-  ofNode: u32;
-  style: Restyle;
-  new(this.when, this.ofNode, this.style);
-}
-
-final class PointerListenerReg {
-  id: u32;
-  kind: PointerKind;
-  inScope: Scope;
-  at: Phase;
-  new(this.id, this.kind, this.inScope, this.at);
-}
-
-final class KeyListenerReg {
-  id: u32;
-  at: Phase;
-  new(this.id, this.at);
-}
-
-final class LogicalNode {
-  id: u32;
-  /** Render ID in `zenafx:core/render` (`0` for slot nodes, which have no render box). */
-  renderId: u32;
-  isSlot: boolean;
-  guestOwned: boolean;
-  /** Logical parent ID (`0` when root or detached). */
-  var parent: u32;
-  var children: GrowableArray<u32>;
-  var interior: Interior | null;
-
-  // Base (un-overridden) built-in properties
-  var ownBox: Box;
-  var layout: Layout;
-  var baseStyle: NodeStyle;
-  var ownCursor: Option<Cursor>;
-  var resolvedCursor: Cursor;
-  var focusable: boolean;
-  var editable: boolean;
-  var ownUnselectable: boolean;
-  var resolvedUnselectable: boolean;
-
-  // Stopgap state-style overrides and current active override
-  stateStyles: GrowableArray<ResolvedStateOverride>;
-  var activeStyle: NodeStyle;
-  var watchedFlags: u32;
-
-  // Registered event listeners on this logical node
-  var pointerListeners: GrowableArray<PointerListenerReg>;
-  var keyListeners: GrowableArray<KeyListenerReg>;
-
-  new(this.id, this.renderId, this.isSlot, this.guestOwned)
-    : parent = 0 as u32,
-      children = new GrowableArray<u32>(),
-      interior = null,
-      ownBox = defaultBox,
-      layout = defaultLayout,
-      baseStyle = new NodeStyleNothing(),
-      ownCursor = none,
-      resolvedCursor = Cursor.Default,
-      focusable = false,
-      editable = false,
-      ownUnselectable = false,
-      resolvedUnselectable = false,
-      stateStyles = new GrowableArray<ResolvedStateOverride>(),
-      activeStyle = new NodeStyleNothing(),
-      watchedFlags = 0 as u32,
-      pointerListeners = new GrowableArray<PointerListenerReg>(),
-      keyListeners = new GrowableArray<KeyListenerReg>();
-}
-
-// ============================================================================
-// Platform Singleton State
-// ============================================================================
-
-var nextLogicalId = 1 as u32;
-var nextRenderId = 1 as u32;
-var rootLogicalId = 0 as u32;
-
-let nodes = new HashMap<u32, LogicalNode>();
-let renderToLogical = new HashMap<u32, u32>();
-let templates = new HashMap<u32, TemplateDef>();
-let listenerOwner = new HashMap<u32, u32>();
-let endedListeners = new GrowableArray<u32>();
-
-/** Nodes that carry at least one `StateOverride`, for fast restyle checks. */
-let styledNodes = new GrowableArray<u32>();
-
-/** Current target logical node IDs tracked from `CoreEvent`s (`0` = none). */
-var hoveredLogical = 0 as u32;
-var pressedLogical = 0 as u32;
-var focusedLogical = 0 as u32;
-
-/** Last hovered logical path (for `enter`/`leave` delivery). */
-var lastHoverLogical = 0 as u32;
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-function allocLogicalId() {
-  let id = nextLogicalId;
-  nextLogicalId += 1 as u32;
-  return id;
-}
-
-function allocRenderId() {
-  let id = nextRenderId;
-  nextRenderId += 1 as u32;
-  return id;
-}
-
-function getNode(id: u32): LogicalNode | null {
-  if (id == (0 as u32)) {
-    return null;
-  }
-  if (let (true, found) = nodes.get(id)) {
-    return found;
-  }
-  return null;
-}
-
-function logicalForRender(rid: Option<u32>) {
-  if (rid is Some<u32>) {
-    if (let (true, found) = renderToLogical.get(rid.value)) {
-      return found;
-    }
-  }
-  return 0 as u32;
-}
-
-function flushOps(ops: GrowableArray<RenderOp>) {
-  if (ops.length > 0) {
-    apply(ops);
-  }
-}
-
-function makeRenderDef(node: LogicalNode) {
-  return new RenderNodeDef(
-    node.ownBox,
-    node.layout,
-    node.activeStyle,
-    node.resolvedCursor,
-    node.focusable,
-    node.editable,
-    node.resolvedUnselectable,
-    node.watchedFlags as WatchFlags,
-  );
-}
-
-/** Nearest non-slot logical ancestor (or self if not a slot). */
-function nearestRenderLogical(id: u32): LogicalNode | null {
-  var cur = getNode(id);
-  while (cur != null) {
-    let n = cur;
-    if (!n.isSlot && n.renderId != (0 as u32)) {
-      return n;
-    }
-    cur = getNode(n.parent);
-  }
-  return null;
-}
-
-/** Resolve inherited `cursor` and `unselectable` from logical parent. */
 function inheritedCursor(parentId: u32) {
   let p = getNode(parentId);
   return p?.resolvedCursor ?? Cursor.Default;
@@ -232,7 +65,7 @@ function inheritedUnselectable(parentId: u32): boolean {
   return p?.resolvedUnselectable ?? false;
 }
 
-function updateInherited(node: LogicalNode, ops: GrowableArray<RenderOp>): void {
+function updateLegacyInherited(node: LogicalNode, ops: GrowableArray<RenderOp>): void {
   let nextCursor = if (let Some { value } = node.ownCursor) {
     value
   } else {
@@ -261,154 +94,13 @@ function updateInherited(node: LogicalNode, ops: GrowableArray<RenderOp>): void 
     for (var i = 0; i < node.children.length; i += 1) {
       let c = getNode(node.children[i]);
       if (c != null) {
-        updateInherited(c, ops);
+        updateLegacyInherited(c, ops);
       }
     }
   }
 }
 
-/** Collect flattened concrete render IDs for all children of `node`, splicing slots. */
-function collectFlatRenderChildren(node: LogicalNode, out: GrowableArray<u32>): void {
-  for (var i = 0; i < node.children.length; i += 1) {
-    let c = getNode(node.children[i]);
-    if (c == null) {
-      continue;
-    }
-    let child = c;
-    if (child.isSlot) {
-      collectFlatRenderChildren(child, out);
-    } else if (child.renderId != (0 as u32)) {
-      out.push(child.renderId);
-    }
-  }
-}
-
-function emitFlatChildren(boxNode: LogicalNode, ops: GrowableArray<RenderOp>) {
-  if (boxNode.isSlot || boxNode.renderId == (0 as u32)) {
-    return;
-  }
-  let flat = new GrowableArray<u32>();
-  collectFlatRenderChildren(boxNode, flat);
-  ops.push(new RenderOpSetChildren(new ChildrenOp(boxNode.renderId, flat)));
-}
-
-function stateBit(s: State) {
-  if (s == State.Hovered) {
-    return watchFlagsHovered as u32;
-  }
-  if (s == State.Pressed) {
-    return watchFlagsPressed as u32;
-  }
-  return watchFlagsFocused as u32;
-}
-
-function addWatchFlag(targetId: u32, bit: u32, ops: GrowableArray<RenderOp>) {
-  // If `targetId` is a slot, attach the watch bit to its nearest non-slot
-  // render box (or its concrete children); attaching on the nearest render
-  // ancestor guarantees `RenderCore` notifies us whenever anything inside it
-  // is hovered/pressed/focused.
-  let renderNode = nearestRenderLogical(targetId);
-  if (renderNode == null) {
-    return;
-  }
-  let rn = renderNode;
-  let next = rn.watchedFlags | bit;
-  if (next != rn.watchedFlags) {
-    rn.watchedFlags = next;
-    ops.push(new RenderOpSetWatched(new WatchedOp(rn.renderId, next as WatchFlags)));
-  }
-}
-
-function isAtOrBeneath(leafId: u32, ancestorId: u32): boolean {
-  if (leafId == (0 as u32) || ancestorId == (0 as u32)) {
-    return false;
-  }
-  var cur = leafId;
-  while (cur != (0 as u32)) {
-    if (cur == ancestorId) {
-      return true;
-    }
-    let n = getNode(cur);
-    if (n == null) {
-      return false;
-    }
-    cur = n.parent;
-  }
-  return false;
-}
-
-function stateHolds(when: State, ofNode: u32) {
-  if (when == State.Hovered) {
-    return isAtOrBeneath(hoveredLogical, ofNode);
-  }
-  if (when == State.Pressed) {
-    return isAtOrBeneath(pressedLogical, ofNode);
-  }
-  return isAtOrBeneath(focusedLogical, ofNode);
-}
-
-function computeActiveStyle(node: LogicalNode): NodeStyle {
-  var i = node.stateStyles.length - 1;
-  while (i >= 0) {
-    let ov = node.stateStyles[i];
-    if (stateHolds(ov.when, ov.ofNode)) {
-      if (ov.style is RestyleFill) {
-        return new NodeStyleFill((ov.style as RestyleFill).value);
-      }
-      if (ov.style is RestyleText) {
-        let ts = (ov.style as RestyleText).value;
-        if (node.baseStyle is NodeStyleText) {
-          let tc = (node.baseStyle as NodeStyleText).value;
-          return new NodeStyleText(new TextContent(tc.content, ts));
-        }
-      }
-    }
-    i -= 1;
-  }
-  return node.baseStyle;
-}
-
-function colorEqual(a: Color, b: Color) {
-  return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
-}
-
-function optColorEqual(a: Option<Color>, b: Option<Color>) {
-  if (a is Some<Color> && b is Some<Color>) {
-    return colorEqual(a.value, b.value);
-  }
-  return !(a is Some<Color>) && !(b is Some<Color>);
-}
-
-function boxStyleEqual(a: BoxStyle, b: BoxStyle) {
-  return optColorEqual(a.background, b.background)
-    && optColorEqual(a.borderColor, b.borderColor)
-    && a.borderWidth == b.borderWidth
-    && a.cornerRadius == b.cornerRadius
-    && a.opacity == b.opacity;
-}
-
-function textStyleEqual(a: TextStyle, b: TextStyle) {
-  return a.family == b.family
-    && a.size == b.size
-    && a.weight == b.weight
-    && a.italic == b.italic
-    && colorEqual(a.color, b.color);
-}
-
-function nodeStyleEqual(a: NodeStyle, b: NodeStyle): boolean {
-  if (a is NodeStyleNothing && b is NodeStyleNothing) {
-    return true;
-  }
-  if (a is NodeStyleFill && b is NodeStyleFill) {
-    return boxStyleEqual(a.value, b.value);
-  }
-  if (a is NodeStyleText && b is NodeStyleText) {
-    return a.value.content == b.value.content && textStyleEqual(a.value.style, b.value.style);
-  }
-  return false;
-}
-
-function refreshStyledNodes(ops: GrowableArray<RenderOp>) {
+function refreshLegacyStyledNodes(ops: GrowableArray<RenderOp>) {
   var changed = false;
   let live = new GrowableArray<u32>();
   for (let id in styledNodes) {
@@ -424,14 +116,13 @@ function refreshStyledNodes(ops: GrowableArray<RenderOp>) {
     if (node.isSlot || node.renderId == (0 as u32)) {
       continue;
     }
-    let next = computeActiveStyle(node);
+    let next = computeLegacyActiveStyle(node);
     if (!nodeStyleEqual(next, node.activeStyle)) {
       node.activeStyle = next;
       ops.push(new RenderOpSetStyle(new StyleOp(node.renderId, next)));
       changed = true;
     }
   }
-  // Keep `styledNodes` compacted.
   styledNodes.clear();
   for (let id in live) {
     styledNodes.push(id);
@@ -463,6 +154,7 @@ function dropSubtree(id: u32, forceDropGuestOwned: boolean, ops: GrowableArray<R
   let node = n;
   if (node.guestOwned && !forceDropGuestOwned) {
     node.parent = 0 as u32;
+    node.slotIndex = -1;
     return;
   }
   let kids = node.children;
@@ -470,6 +162,7 @@ function dropSubtree(id: u32, forceDropGuestOwned: boolean, ops: GrowableArray<R
     dropSubtree(kids[i], false, ops);
   }
   recordEndedListeners(node);
+  recordEndedWatchersForNode(id);
   if (node.renderId != (0 as u32)) {
     renderToLogical.delete(node.renderId);
     ops.push(new RenderOpRemove(node.renderId));
@@ -496,7 +189,9 @@ function clearInterior(host: LogicalNode, ops: GrowableArray<RenderOp>) {
 
 function applyNodeDef(node: LogicalNode, def: NodeDef, ops: GrowableArray<RenderOp>) {
   node.ownBox = def.box;
+  node.flushedBox = def.box;
   node.layout = def.layout;
+  node.flushedLayout = def.layout;
   node.baseStyle = def.style;
   node.activeStyle = def.style;
   node.ownCursor = def.cursor;
@@ -511,8 +206,8 @@ function applyNodeDef(node: LogicalNode, def: NodeDef, ops: GrowableArray<Render
   node.resolvedUnselectable = def.unselectable || inheritedUnselectable(node.parent);
 
   if (!node.isSlot && node.renderId != (0 as u32)) {
-    ops.push(new RenderOpSetBox(new BoxOp(node.renderId, node.ownBox)));
-    ops.push(new RenderOpSetLayout(new LayoutOp(node.renderId, node.layout)));
+    ops.push(new RenderOpSetBox(new BoxOp(node.renderId, node.flushedBox)));
+    ops.push(new RenderOpSetLayout(new LayoutOp(node.renderId, node.flushedLayout)));
     ops.push(new RenderOpSetStyle(new StyleOp(node.renderId, node.activeStyle)));
     ops.push(new RenderOpSetCursor(new CursorOp(node.renderId, node.resolvedCursor)));
     ops.push(new RenderOpSetInteraction(new InteractionOp(
@@ -550,14 +245,14 @@ function applyHole(
       let old = (node.baseStyle as NodeStyleText).value;
       node.baseStyle = new NodeStyleText(new TextContent(text, old.style));
     }
-    node.activeStyle = computeActiveStyle(node);
+    node.activeStyle = computeLegacyActiveStyle(node);
     if (!node.isSlot && node.renderId != (0 as u32)) {
       ops.push(new RenderOpSetContent(new ContentOp(node.renderId, text)));
     }
   } else if (hole.value is BindingValueStyle) {
     let bs = (hole.value as BindingValueStyle).value;
     node.baseStyle = new NodeStyleFill(bs);
-    node.activeStyle = computeActiveStyle(node);
+    node.activeStyle = computeLegacyActiveStyle(node);
     if (!node.isSlot && node.renderId != (0 as u32)) {
       ops.push(new RenderOpSetStyle(new StyleOp(node.renderId, node.activeStyle)));
     }
@@ -567,23 +262,24 @@ function applyHole(
       let old = (node.baseStyle as NodeStyleText).value;
       node.baseStyle = new NodeStyleText(new TextContent(old.content, ts));
     }
-    node.activeStyle = computeActiveStyle(node);
+    node.activeStyle = computeLegacyActiveStyle(node);
     if (!node.isSlot && node.renderId != (0 as u32)) {
       ops.push(new RenderOpSetTextStyle(new TextStyleOp(node.renderId, ts)));
     }
   } else if (hole.value is BindingValueBox) {
     let bx = (hole.value as BindingValueBox).value;
     node.ownBox = bx;
+    node.flushedBox = bx;
     if (!node.isSlot && node.renderId != (0 as u32)) {
       ops.push(new RenderOpSetBox(new BoxOp(node.renderId, bx)));
     }
   } else if (hole.value is BindingValueLayout) {
     let lay = (hole.value as BindingValueLayout).value;
-    // Match `scene.rs`: only patch layout of the same kind (flex vs flow).
     let sameKind = (node.layout is LayoutFlex && lay is LayoutFlex)
       || (node.layout is LayoutFlow && lay is LayoutFlow);
     if (sameKind) {
       node.layout = lay;
+      node.flushedLayout = lay;
       if (!node.isSlot && node.renderId != (0 as u32)) {
         ops.push(new RenderOpSetLayout(new LayoutOp(node.renderId, lay)));
       }
@@ -630,28 +326,8 @@ function logicalPath(leafId: u32) {
   return out;
 }
 
-function localCoords(nodeId: u32, wx: f32, wy: f32): (f32, f32) {
-  let rn = nearestRenderLogical(nodeId);
-  if (rn != null) {
-    let b = coreBounds(rn.renderId);
-    if (b is Some<Rect>) {
-      let r = b.value;
-      return (wx - r.x, wy - r.y);
-    }
-  }
-  return (wx, wy);
-}
-
-function copyU32Array(xs: GrowableArray<u32>) {
-  let out = new GrowableArray<u32>();
-  for (var i = 0; i < xs.length; i += 1) {
-    out.push(xs[i]);
-  }
-  return out;
-}
-
 // ============================================================================
-// Exported `zenafx:platform/runtime` Functions
+// Exported `zenafx:platform/runtime` Functions — Scene & Events
 // ============================================================================
 
 export function root(): u32 {
@@ -663,7 +339,7 @@ export function root(): u32 {
   let node = new LogicalNode(id, rid, false, false);
   nodes[id] = node;
   renderToLogical[rid] = id;
-  rootLogicalId = id;
+  setRootLogicalId(id);
 
   let ops = new GrowableArray<RenderOp>();
   ops.push(new RenderOpCreate(new CreateOp(rid, makeRenderDef(node))));
@@ -707,6 +383,14 @@ export function dropNode(id: u32): boolean {
         }
       }
       parent.children = nextKids;
+      if (parent.isSlot) {
+        for (var i = 0; i < parent.children.length; i += 1) {
+          let c = getNode(parent.children[i]);
+          if (c != null) {
+            c.slotIndex = i;
+          }
+        }
+      }
       let boxAnc = nearestRenderLogical(parentId);
       if (boxAnc != null) {
         emitFlatChildren(boxAnc, ops);
@@ -714,6 +398,9 @@ export function dropNode(id: u32): boolean {
     }
   }
   dropSubtree(id, true, ops);
+  if (styleEngineActive) {
+    refreshStyleTree(ops);
+  }
   flushOps(ops);
   return true;
 }
@@ -748,10 +435,12 @@ export function render(id: u32, template: TemplateRef, holes: Array<Hole>): void
   let ops = new GrowableArray<RenderOp>();
   let existing = host.interior;
   if (existing != null && existing.templateId == tplId) {
-    // Patch existing interior in place, leaving slot content untouched.
     let intObj = existing;
     for (var i = 0; i < holes.length; i += 1) {
       applyHole(intObj, tplDef, holes[i], ops);
+    }
+    if (styleEngineActive) {
+      refreshFromNode(host, ops);
     }
     flushOps(ops);
     return;
@@ -764,15 +453,14 @@ export function render(id: u32, template: TemplateRef, holes: Array<Hole>): void
   let intNodes = new FixedArray<u32>(count, 0 as u32);
   intNodes[0] = host.id;
 
-  // Apply root def (node 0) onto host.
   applyNodeDef(host, tplDef.nodes[0], ops);
 
-  // Allocate logical (and render, for non-slot) nodes for interior 1..count.
   for (var i = 1; i < count; i += 1) {
     let def = tplDef.nodes[i];
     let lid = allocLogicalId();
     let rid = if (def.isSlot) { 0 as u32 } else { allocRenderId() };
     let child = new LogicalNode(lid, rid, def.isSlot, false);
+    child.interiorOwner = host.id;
     nodes[lid] = child;
     if (!def.isSlot) {
       renderToLogical[rid] = lid;
@@ -780,13 +468,14 @@ export function render(id: u32, template: TemplateRef, holes: Array<Hole>): void
     intNodes[i] = lid;
   }
 
-  // Wire logical parent/child edges and initialize properties in breadth-first order.
   for (var i = 0; i < count; i += 1) {
     let def = tplDef.nodes[i];
     let parent = getNode(intNodes[i]) as LogicalNode;
     if (i > 0) {
       parent.ownBox = def.box;
+      parent.flushedBox = def.box;
       parent.layout = def.layout;
+      parent.flushedLayout = def.layout;
       parent.baseStyle = def.style;
       parent.activeStyle = def.style;
       parent.ownCursor = def.cursor;
@@ -817,8 +506,6 @@ export function render(id: u32, template: TemplateRef, holes: Array<Hole>): void
     }
   }
 
-  // Emit flattened concrete render children for every non-slot node in interior
-  // (always for node 0 so rebuilding into a childless template clears old children).
   for (var i = 0; i < count; i += 1) {
     let n = getNode(intNodes[i]) as LogicalNode;
     if (!n.isSlot && (i == 0 || n.children.length > 0)) {
@@ -829,7 +516,6 @@ export function render(id: u32, template: TemplateRef, holes: Array<Hole>): void
   let interior = new Interior(tplId, intNodes);
   host.interior = interior;
 
-  // Register stopgap `state-styles` and set watch flags on the referenced nodes.
   for (let ss in tplDef.states) {
     let nIdx = ss.node as i32;
     let ofIdx = ss.of as i32;
@@ -844,9 +530,18 @@ export function render(id: u32, template: TemplateRef, holes: Array<Hole>): void
     }
   }
 
-  // Apply initial holes.
   for (var i = 0; i < holes.length; i += 1) {
     applyHole(interior, tplDef, holes[i], ops);
+  }
+
+  if (styleEngineActive) {
+    for (var i = 0; i < count; i += 1) {
+      let n = getNode(intNodes[i]);
+      if (n != null) {
+        applyInheritedScopeWatchBits(n, ops);
+      }
+    }
+    refreshFromNode(host, ops);
   }
 
   flushOps(ops);
@@ -865,30 +560,35 @@ export function content(id: u32, slot: u32, count: u32): Option<Array<u32>> {
   let ops = new GrowableArray<RenderOp>();
   let target = count as i32;
 
-  // Shrink if needed.
   while (slotNode.children.length > target) {
     let last = slotNode.children[slotNode.children.length - 1];
     slotNode.children.pop();
     dropSubtree(last, false, ops);
   }
 
-  // Grow if needed.
   while (slotNode.children.length < target) {
     let lid = allocLogicalId();
     let rid = allocRenderId();
     let child = new LogicalNode(lid, rid, false, false);
     child.parent = slotNode.id;
+    child.slotIndex = slotNode.children.length;
     child.resolvedCursor = slotNode.resolvedCursor;
     child.resolvedUnselectable = slotNode.resolvedUnselectable;
     nodes[lid] = child;
     renderToLogical[rid] = lid;
     slotNode.children.push(lid);
     ops.push(new RenderOpCreate(new CreateOp(rid, makeRenderDef(child))));
+    if (styleEngineActive) {
+      applyInheritedScopeWatchBits(child, ops);
+    }
   }
 
   let boxAnc = nearestRenderLogical(slotNode.parent);
   if (boxAnc != null) {
     emitFlatChildren(boxAnc, ops);
+  }
+  if (styleEngineActive) {
+    refreshFromNode(hostOpt, ops);
   }
   flushOps(ops);
 
@@ -907,7 +607,6 @@ export function setSlot(id: u32, slot: u32, children: Array<u32>): boolean {
   }
   let slotNode = slotOpt;
 
-  // Validate: no duplicates, every child exists, no ancestor cycles.
   let seen = new HashMap<u32, boolean>();
   for (let cid in children) {
     if (seen.has(cid)) {
@@ -925,14 +624,12 @@ export function setSlot(id: u32, slot: u32, children: Array<u32>): boolean {
 
   let ops = new GrowableArray<RenderOp>();
 
-  // Drop or detach previous children not present in the new list.
   for (let oldId in slotNode.children) {
     if (!seen.has(oldId)) {
       dropSubtree(oldId, false, ops);
     }
   }
 
-  // Detach any incoming child from a different previous parent.
   let dirtyParents = new GrowableArray<u32>();
   for (let cid in children) {
     let child = getNode(cid) as LogicalNode;
@@ -947,6 +644,14 @@ export function setSlot(id: u32, slot: u32, children: Array<u32>): boolean {
           }
         }
         pp.children = kept;
+        if (pp.isSlot) {
+          for (var k = 0; k < pp.children.length; k += 1) {
+            let sc = getNode(pp.children[k]);
+            if (sc != null) {
+              sc.slotIndex = k;
+            }
+          }
+        }
         dirtyParents.push(pp.id);
       }
     }
@@ -957,7 +662,12 @@ export function setSlot(id: u32, slot: u32, children: Array<u32>): boolean {
   for (var i = 0; i < children.length; i += 1) {
     slotNode.children.push(children[i]);
     let child = getNode(children[i]) as LogicalNode;
-    updateInherited(child, ops);
+    child.slotIndex = i;
+    if (styleEngineActive) {
+      applyInheritedScopeWatchBits(child, ops);
+    } else {
+      updateLegacyInherited(child, ops);
+    }
   }
 
   for (var i = 0; i < dirtyParents.length; i += 1) {
@@ -969,6 +679,9 @@ export function setSlot(id: u32, slot: u32, children: Array<u32>): boolean {
   let targetBox = nearestRenderLogical(slotNode.parent);
   if (targetBox != null) {
     emitFlatChildren(targetBox, ops);
+  }
+  if (styleEngineActive) {
+    refreshFromNode(hostOpt, ops);
   }
   flushOps(ops);
   return true;
@@ -1115,20 +828,54 @@ export function onCoreEvents(events: Array<CoreEvent>): boolean {
     if (ev is CoreEventHoverTarget) {
       let next = logicalForRender(ev.value);
       if (next != hoveredLogical) {
-        hoveredLogical = next;
+        setHoveredLogical(next);
         stateChanged = true;
       }
     } else if (ev is CoreEventPressTarget) {
       let next = logicalForRender(ev.value);
       if (next != pressedLogical) {
-        pressedLogical = next;
+        setPressedLogical(next);
         stateChanged = true;
       }
     } else if (ev is CoreEventFocusTarget) {
       let next = logicalForRender(ev.value);
       if (next != focusedLogical) {
-        focusedLogical = next;
+        setFocusedLogical(next);
         stateChanged = true;
+      }
+    } else if (ev is CoreEventSizesChanged) {
+      for (let ns in ev.value) {
+        let lid = logicalForRenderId(ns.id);
+        let n = getNode(lid);
+        if (n != null) {
+          if (!n.hasSize || n.measuredWidth != ns.width || n.measuredHeight != ns.height) {
+            n.hasSize = true;
+            n.measuredWidth = ns.width;
+            n.measuredHeight = ns.height;
+            stateChanged = true;
+          }
+        }
+      }
+    } else if (ev is CoreEventScrollChanged) {
+      for (let sc in ev.value) {
+        let lid = logicalForRenderId(sc.id);
+        let n = getNode(lid);
+        if (n != null) {
+          if (
+            !n.hasScroll
+            || n.scrollX != sc.scrollX
+            || n.scrollY != sc.scrollY
+            || n.scrollRangeX != sc.reachX
+            || n.scrollRangeY != sc.reachY
+          ) {
+            n.hasScroll = true;
+            n.scrollX = sc.scrollX;
+            n.scrollY = sc.scrollY;
+            n.scrollRangeX = sc.reachX;
+            n.scrollRangeY = sc.reachY;
+            stateChanged = true;
+          }
+        }
       }
     }
   }
@@ -1136,7 +883,11 @@ export function onCoreEvents(events: Array<CoreEvent>): boolean {
     return false;
   }
   let ops = new GrowableArray<RenderOp>();
-  let changed = refreshStyledNodes(ops);
+  let changed = if (styleEngineActive) {
+    refreshStyleTree(ops)
+  } else {
+    refreshLegacyStyledNodes(ops)
+  };
   flushOps(ops);
   return changed;
 }
@@ -1152,7 +903,6 @@ export function routePointer(
   let deliveries = new GrowableArray<Delivery>();
   let nextLogical = logicalForRender(target);
 
-  // Emit `leave` / `enter` when the logical target changes.
   if (nextLogical != lastHoverLogical) {
     let oldPath = logicalPath(lastHoverLogical);
     let newPath = logicalPath(nextLogical);
@@ -1166,7 +916,6 @@ export function routePointer(
     }
 
     let crossingCalls = new GrowableArray<Call>();
-    // Leave from deepest old node up to common ancestor.
     var i = oldPath.length - 1;
     while (i >= common) {
       let nid = oldPath[i];
@@ -1186,7 +935,6 @@ export function routePointer(
       }
       i -= 1;
     }
-    // Enter from common ancestor down to deepest new node.
     for (var j = common; j < newPath.length; j += 1) {
       let nid = newPath[j];
       let n = getNode(nid);
@@ -1207,18 +955,16 @@ export function routePointer(
     if (crossingCalls.length > 0) {
       deliveries.push(new Delivery(crossingCalls, false));
     }
-    lastHoverLogical = nextLogical;
+    setLastHoverLogical(nextLogical);
   }
 
   if (kind == PointerKind.Enter || kind == PointerKind.Leave || nextLogical == (0 as u32)) {
     return deliveries;
   }
 
-  // Route `down` / `up` / `move` along intercept (root -> target) then bubble (target -> root).
   let path = logicalPath(nextLogical);
   let calls = new GrowableArray<Call>();
 
-  // Intercept phase
   for (let nid in path) {
     let n = getNode(nid);
     if (n == null) {
@@ -1238,7 +984,6 @@ export function routePointer(
     }
   }
 
-  // Bubble phase
   var j = path.length - 1;
   while (j >= 0) {
     let nid = path[j];
@@ -1308,4 +1053,178 @@ export function captureTarget(listenerId: u32): Option<u32> {
     }
   }
   return none;
+}
+
+// ============================================================================
+// Exported `zenafx:platform/runtime` Functions — Style Engine
+// ============================================================================
+
+export function defineProperty(def: PropertyDef): u32 {
+  return definePropertyDef(def);
+}
+
+export function defineFact(kind: FactKind): u32 {
+  return defineFactKind(kind);
+}
+
+export function defineStylesheet(def: StylesheetDef): void {
+  defineStylesheetDef(def);
+  let ops = new GrowableArray<RenderOp>();
+  refreshStyleTree(ops);
+  flushOps(ops);
+}
+
+export function attachStylesheet(
+  node: u32,
+  target: u32,
+  stylesheet: u32,
+  reach: Reach,
+): boolean {
+  let tn = resolveTarget(node, target);
+  if (tn == null) {
+    return false;
+  }
+  let ops = new GrowableArray<RenderOp>();
+  let ok = attachStylesheetToNode(tn, stylesheet, reach, ops);
+  flushOps(ops);
+  return ok;
+}
+
+export function detachStylesheet(
+  node: u32,
+  target: u32,
+  stylesheet: u32,
+): boolean {
+  let tn = resolveTarget(node, target);
+  if (tn == null) {
+    return false;
+  }
+  let ops = new GrowableArray<RenderOp>();
+  let ok = detachStylesheetFromNode(tn, stylesheet, ops);
+  flushOps(ops);
+  return ok;
+}
+
+export function setFlag(node: u32, target: u32, key: u32, value: boolean): boolean {
+  let tn = resolveTarget(node, target);
+  if (tn == null) {
+    return false;
+  }
+  markStyleEngineActive();
+  if (value) {
+    tn.flags[key] = true;
+  } else {
+    tn.flags.delete(key);
+  }
+  let ops = new GrowableArray<RenderOp>();
+  refreshFromNode(tn, ops);
+  flushOps(ops);
+  return true;
+}
+
+export function setNumber(node: u32, target: u32, key: u32, value: Option<f32>): boolean {
+  let tn = resolveTarget(node, target);
+  if (tn == null) {
+    return false;
+  }
+  markStyleEngineActive();
+  if (let Some { value as n } = value) {
+    tn.numbers[key] = n;
+  } else {
+    tn.numbers.delete(key);
+  }
+  let ops = new GrowableArray<RenderOp>();
+  refreshFromNode(tn, ops);
+  flushOps(ops);
+  return true;
+}
+
+export function setDeclarations(
+  node: u32,
+  target: u32,
+  decls: Array<Declaration>,
+): boolean {
+  let tn = resolveTarget(node, target);
+  if (tn == null) {
+    return false;
+  }
+  markStyleEngineActive();
+  let copy = new GrowableArray<Declaration>();
+  for (let d in decls) {
+    copy.push(d);
+  }
+  tn.inlineDecls = copy;
+  let ops = new GrowableArray<RenderOp>();
+  let bits = declsWatchBits(decls);
+  addWatchFlag(tn.id, bits, ops);
+  refreshFromNode(tn, ops);
+  flushOps(ops);
+  return true;
+}
+
+export function setScopeOwner(node: u32, owner: u32): boolean {
+  let tn = getNode(node);
+  if (tn == null) {
+    return false;
+  }
+  if (owner != (0 as u32) && getNode(owner) == null) {
+    return false;
+  }
+  markStyleEngineActive();
+  tn.scopeOwner = owner;
+  let ops = new GrowableArray<RenderOp>();
+  applyInheritedScopeWatchBits(tn, ops);
+  refreshFromNode(tn, ops);
+  flushOps(ops);
+  return true;
+}
+
+export function resolvedProperty(
+  node: u32,
+  target: u32,
+  key: StyleKey,
+): Option<StyleValue> {
+  let tn = resolveTarget(node, target);
+  if (tn == null) {
+    return none;
+  }
+  return queryResolvedProperty(tn, key);
+}
+
+export function watchCondition(
+  node: u32,
+  target: u32,
+  watcherId: u32,
+  conditions: Array<Condition>,
+  root: u32,
+): Option<boolean> {
+  let tn = resolveTarget(node, target);
+  if (tn == null) {
+    return none;
+  }
+  let ops = new GrowableArray<RenderOp>();
+  let holds = registerConditionWatcher(tn, watcherId, conditions, root, ops);
+  flushOps(ops);
+  return some(holds);
+}
+
+export function watchProperty(
+  node: u32,
+  target: u32,
+  watcherId: u32,
+  key: StyleKey,
+): Option<StyleValue> {
+  let tn = resolveTarget(node, target);
+  if (tn == null) {
+    return none;
+  }
+  return registerPropertyWatcher(tn, watcherId, key);
+}
+
+export function unwatch(watcherId: u32): void {
+  removeWatcher(watcherId);
+}
+
+export function takeWatcherUpdates(): Array<WatcherUpdate> {
+  return drainWatcherUpdates();
 }

@@ -1,0 +1,575 @@
+/**
+ * Shared logical scene graph state and helpers for the ZenaFX platform component.
+ */
+import {
+  Box, BoxStyle, Color, Cursor, Edges, Flex, Flow, Layout, LayoutFlex, LayoutFlow,
+  Length, LengthAuto, LengthPx, LengthPercent, NodeStyle, NodeStyleNothing,
+  NodeStyleFill, NodeStyleText, Overflow, Axis, Justify, Align, TextAlign,
+  Rect, TextContent, TextStyle, WatchFlags,
+  watchFlagsHovered, watchFlagsPressed, watchFlagsFocused,
+  RenderNodeDef, ChildrenOp, WatchedOp, RenderOp, RenderOpSetChildren,
+  RenderOpSetWatched, apply, bounds as coreBounds,
+} from 'zenafx:core/render';
+import {
+  Declaration, Reach, Restyle, RestyleFill, RestyleText, State,
+  StyleValue, StyleValueFlag, StyleValueNumber, StyleValueLength,
+  StyleValueColor, StyleValueKeyword, StyleValueText,
+  TemplateDef, PointerKind, Scope, Phase,
+} from 'zenafx:platform/runtime';
+import { GrowableArray, HashMap } from 'zena:collections';
+import { Option, Some, none } from 'zena:core';
+
+export let defaultBox = new Box(
+  new LengthAuto(),
+  new LengthAuto(),
+  0.0,
+  1.0,
+  new Edges(0.0, 0.0, 0.0, 0.0),
+  Overflow.Clip,
+  Overflow.Clip,
+);
+
+export let defaultLayout: Layout = new LayoutFlex(
+  new Flex(Axis.Column, Justify.Start, Align.Start, 0.0),
+);
+
+export let defaultColor = new Color(0.0, 0.0, 0.0, 1.0);
+
+export final class Interior {
+  templateId: u32;
+  /** Logical node IDs parallel to `TemplateDef.nodes`. `nodes[0]` is self. */
+  nodes: FixedArray<u32>;
+  new(this.templateId, this.nodes);
+}
+
+export final class ResolvedStateOverride {
+  when: State;
+  /** Logical node ID whose state is tested. */
+  ofNode: u32;
+  style: Restyle;
+  new(this.when, this.ofNode, this.style);
+}
+
+export final class PointerListenerReg {
+  id: u32;
+  kind: PointerKind;
+  inScope: Scope;
+  at: Phase;
+  new(this.id, this.kind, this.inScope, this.at);
+}
+
+export final class KeyListenerReg {
+  id: u32;
+  at: Phase;
+  new(this.id, this.at);
+}
+
+export final class AttachedSheet {
+  sheetId: u32;
+  reach: Reach;
+  new(this.sheetId, this.reach);
+}
+
+export final class LogicalNode {
+  id: u32;
+  /** Render ID in `zenafx:core/render` (`0` for slot nodes, which have no render box). */
+  renderId: u32;
+  isSlot: boolean;
+  guestOwned: boolean;
+  /** Logical parent ID (`0` when root or detached). */
+  var parent: u32;
+  /** Owning widget root ID if this node was created as an interior child of a template (`0` for widget roots / detached). */
+  var interiorOwner: u32;
+  /** Explicit scope owner widget ID for content projected into another widget's slot (`0` = default parent interior owner). */
+  var scopeOwner: u32;
+  /** Index within parent slot (`-1` if not a slot child). */
+  var slotIndex: i32;
+  var children: GrowableArray<u32>;
+  var interior: Interior | null;
+
+  // Base (un-overridden) built-in properties from `NodeDef` / legacy holes
+  var ownBox: Box;
+  var layout: Layout;
+  var baseStyle: NodeStyle;
+  var ownCursor: Option<Cursor>;
+  var focusable: boolean;
+  var editable: boolean;
+  var ownUnselectable: boolean;
+
+  // Last values flushed to `zenafx:core/render`
+  var flushedBox: Box;
+  var flushedLayout: Layout;
+  var activeStyle: NodeStyle;
+  var resolvedCursor: Cursor;
+  var resolvedUnselectable: boolean;
+  var watchedFlags: u32;
+
+  // Legacy stopgap state-style overrides
+  stateStyles: GrowableArray<ResolvedStateOverride>;
+
+  // Style engine per-node state (`docs/design/zenafx-styles.md`)
+  flags: HashMap<u32, boolean>;
+  numbers: HashMap<u32, f32>;
+  attachedSheets: GrowableArray<AttachedSheet>;
+  var inlineDecls: GrowableArray<Declaration>;
+
+  // Live host measured facts from `CoreEvent`s
+  var hasSize: boolean;
+  var measuredWidth: f32;
+  var measuredHeight: f32;
+  var hasScroll: boolean;
+  var scrollX: f32;
+  var scrollY: f32;
+  var scrollRangeX: f32;
+  var scrollRangeY: f32;
+
+  // Resolved style-engine property tables (computed top-down)
+  var ownOrdinary: HashMap<u32, StyleValue>;
+  var ownDefault: HashMap<u32, StyleValue>;
+  /** Inheriting ordinary values in force at this node (shared with parent when unchanged). */
+  var effectiveOrdinary: HashMap<u32, StyleValue>;
+  /** Inheriting default values in force at this node (shared with parent when unchanged). */
+  var effectiveDefault: HashMap<u32, StyleValue>;
+
+  // Registered event listeners on this logical node
+  var pointerListeners: GrowableArray<PointerListenerReg>;
+  var keyListeners: GrowableArray<KeyListenerReg>;
+
+  new(this.id, this.renderId, this.isSlot, this.guestOwned)
+    : parent = 0 as u32,
+      interiorOwner = 0 as u32,
+      scopeOwner = 0 as u32,
+      slotIndex = -1,
+      children = new GrowableArray<u32>(),
+      interior = null,
+      ownBox = defaultBox,
+      layout = defaultLayout,
+      baseStyle = new NodeStyleNothing(),
+      ownCursor = none,
+      focusable = false,
+      editable = false,
+      ownUnselectable = false,
+      flushedBox = defaultBox,
+      flushedLayout = defaultLayout,
+      activeStyle = new NodeStyleNothing(),
+      resolvedCursor = Cursor.Default,
+      resolvedUnselectable = false,
+      watchedFlags = 0 as u32,
+      stateStyles = new GrowableArray<ResolvedStateOverride>(),
+      flags = new HashMap<u32, boolean>(),
+      numbers = new HashMap<u32, f32>(),
+      attachedSheets = new GrowableArray<AttachedSheet>(),
+      inlineDecls = new GrowableArray<Declaration>(),
+      hasSize = false,
+      measuredWidth = 0.0,
+      measuredHeight = 0.0,
+      hasScroll = false,
+      scrollX = 0.0,
+      scrollY = 0.0,
+      scrollRangeX = 0.0,
+      scrollRangeY = 0.0,
+      ownOrdinary = new HashMap<u32, StyleValue>(),
+      ownDefault = new HashMap<u32, StyleValue>(),
+      effectiveOrdinary = new HashMap<u32, StyleValue>(),
+      effectiveDefault = new HashMap<u32, StyleValue>(),
+      pointerListeners = new GrowableArray<PointerListenerReg>(),
+      keyListeners = new GrowableArray<KeyListenerReg>();
+}
+
+// ============================================================================
+// Platform Singleton State
+// ============================================================================
+
+export var nextLogicalId = 1 as u32;
+export var nextRenderId = 1 as u32;
+export var rootLogicalId = 0 as u32;
+
+export let nodes = new HashMap<u32, LogicalNode>();
+export let renderToLogical = new HashMap<u32, u32>();
+export let templates = new HashMap<u32, TemplateDef>();
+export let listenerOwner = new HashMap<u32, u32>();
+export let endedListeners = new GrowableArray<u32>();
+
+/** Nodes that carry at least one legacy `StateOverride`, for fast restyle checks. */
+export let styledNodes = new GrowableArray<u32>();
+
+/** Current target logical node IDs tracked from `CoreEvent`s (`0` = none). */
+export var hoveredLogical = 0 as u32;
+export var pressedLogical = 0 as u32;
+export var focusedLogical = 0 as u32;
+
+/** Last hovered logical path (for `enter`/`leave` delivery). */
+export var lastHoverLogical = 0 as u32;
+
+export function setHoveredLogical(id: u32) {
+  hoveredLogical = id;
+}
+
+export function setPressedLogical(id: u32) {
+  pressedLogical = id;
+}
+
+export function setFocusedLogical(id: u32) {
+  focusedLogical = id;
+}
+
+export function setLastHoverLogical(id: u32) {
+  lastHoverLogical = id;
+}
+
+export function setRootLogicalId(id: u32) {
+  rootLogicalId = id;
+}
+
+// ============================================================================
+// Shared Tree & Equality Helpers
+// ============================================================================
+
+export function allocLogicalId() {
+  let id = nextLogicalId;
+  nextLogicalId += 1 as u32;
+  return id;
+}
+
+export function allocRenderId() {
+  let id = nextRenderId;
+  nextRenderId += 1 as u32;
+  return id;
+}
+
+export function getNode(id: u32): LogicalNode | null {
+  if (id == (0 as u32)) {
+    return null;
+  }
+  if (let (true, found) = nodes.get(id)) {
+    return found;
+  }
+  return null;
+}
+
+export function resolveTarget(hostId: u32, target: u32): LogicalNode | null {
+  let host = getNode(hostId);
+  if (host == null) {
+    return null;
+  }
+  if (target == (0 as u32)) {
+    return host;
+  }
+  let interior = host.interior;
+  if (interior == null) {
+    return null;
+  }
+  let idx = target as i32;
+  if (idx < 0 || idx >= interior.nodes.length) {
+    return null;
+  }
+  return getNode(interior.nodes[idx]);
+}
+
+export function logicalForRender(rid: Option<u32>) {
+  if (rid is Some<u32>) {
+    if (let (true, found) = renderToLogical.get(rid.value)) {
+      return found;
+    }
+  }
+  return 0 as u32;
+}
+
+export function logicalForRenderId(rid: u32) {
+  if (let (true, found) = renderToLogical.get(rid)) {
+    return found;
+  }
+  return 0 as u32;
+}
+
+export function flushOps(ops: GrowableArray<RenderOp>) {
+  if (ops.length > 0) {
+    apply(ops);
+  }
+}
+
+export function makeRenderDef(node: LogicalNode) {
+  return new RenderNodeDef(
+    node.flushedBox,
+    node.flushedLayout,
+    node.activeStyle,
+    node.resolvedCursor,
+    node.focusable,
+    node.editable,
+    node.resolvedUnselectable,
+    node.watchedFlags as WatchFlags,
+  );
+}
+
+/** Nearest non-slot logical ancestor (or self if not a slot). */
+export function nearestRenderLogical(id: u32): LogicalNode | null {
+  var cur = getNode(id);
+  while (cur != null) {
+    let n = cur;
+    if (!n.isSlot && n.renderId != (0 as u32)) {
+      return n;
+    }
+    cur = getNode(n.parent);
+  }
+  return null;
+}
+
+/** Nearest non-slot logical ancestor strictly above `node`. */
+export function effectiveParent(node: LogicalNode): LogicalNode | null {
+  var cur = getNode(node.parent);
+  while (cur != null) {
+    let n = cur;
+    if (!n.isSlot) {
+      return n;
+    }
+    cur = getNode(n.parent);
+  }
+  return null;
+}
+
+export function isAtOrBeneath(leafId: u32, ancestorId: u32): boolean {
+  if (leafId == (0 as u32) || ancestorId == (0 as u32)) {
+    return false;
+  }
+  var cur = leafId;
+  while (cur != (0 as u32)) {
+    if (cur == ancestorId) {
+      return true;
+    }
+    let n = getNode(cur);
+    if (n == null) {
+      return false;
+    }
+    cur = n.parent;
+  }
+  return false;
+}
+
+export function stateBit(s: State) {
+  if (s == State.Hovered) {
+    return watchFlagsHovered as u32;
+  }
+  if (s == State.Pressed) {
+    return watchFlagsPressed as u32;
+  }
+  return watchFlagsFocused as u32;
+}
+
+export function addWatchFlag(targetId: u32, bit: u32, ops: GrowableArray<RenderOp>) {
+  if (bit == (0 as u32)) {
+    return;
+  }
+  let renderNode = nearestRenderLogical(targetId);
+  if (renderNode == null) {
+    return;
+  }
+  let rn = renderNode;
+  let next = rn.watchedFlags | bit;
+  if (next != rn.watchedFlags) {
+    rn.watchedFlags = next;
+    ops.push(new RenderOpSetWatched(new WatchedOp(rn.renderId, next as WatchFlags)));
+  }
+}
+
+export function stateHolds(when: State, ofNode: u32) {
+  if (when == State.Hovered) {
+    return isAtOrBeneath(hoveredLogical, ofNode);
+  }
+  if (when == State.Pressed) {
+    return isAtOrBeneath(pressedLogical, ofNode);
+  }
+  return isAtOrBeneath(focusedLogical, ofNode);
+}
+
+export function computeLegacyActiveStyle(node: LogicalNode): NodeStyle {
+  var i = node.stateStyles.length - 1;
+  while (i >= 0) {
+    let ov = node.stateStyles[i];
+    if (stateHolds(ov.when, ov.ofNode)) {
+      if (ov.style is RestyleFill) {
+        return new NodeStyleFill((ov.style as RestyleFill).value);
+      }
+      if (ov.style is RestyleText) {
+        let ts = (ov.style as RestyleText).value;
+        if (node.baseStyle is NodeStyleText) {
+          let tc = (node.baseStyle as NodeStyleText).value;
+          return new NodeStyleText(new TextContent(tc.content, ts));
+        }
+      }
+    }
+    i -= 1;
+  }
+  return node.baseStyle;
+}
+
+/** Collect flattened concrete render IDs for all children of `node`, splicing slots. */
+export function collectFlatRenderChildren(node: LogicalNode, out: GrowableArray<u32>): void {
+  for (var i = 0; i < node.children.length; i += 1) {
+    let c = getNode(node.children[i]);
+    if (c == null) {
+      continue;
+    }
+    let child = c;
+    if (child.isSlot) {
+      collectFlatRenderChildren(child, out);
+    } else if (child.renderId != (0 as u32)) {
+      out.push(child.renderId);
+    }
+  }
+}
+
+export function emitFlatChildren(boxNode: LogicalNode, ops: GrowableArray<RenderOp>) {
+  if (boxNode.isSlot || boxNode.renderId == (0 as u32)) {
+    return;
+  }
+  let flat = new GrowableArray<u32>();
+  collectFlatRenderChildren(boxNode, flat);
+  ops.push(new RenderOpSetChildren(new ChildrenOp(boxNode.renderId, flat)));
+}
+
+export function localCoords(nodeId: u32, wx: f32, wy: f32): (f32, f32) {
+  let rn = nearestRenderLogical(nodeId);
+  if (rn != null) {
+    let b = coreBounds(rn.renderId);
+    if (b is Some<Rect>) {
+      let r = b.value;
+      return (wx - r.x, wy - r.y);
+    }
+  }
+  return (wx, wy);
+}
+
+export function copyU32Array(xs: GrowableArray<u32>) {
+  let out = new GrowableArray<u32>();
+  for (var i = 0; i < xs.length; i += 1) {
+    out.push(xs[i]);
+  }
+  return out;
+}
+
+// ============================================================================
+// Value Equality Helpers
+// ============================================================================
+
+export function colorEqual(a: Color, b: Color) {
+  return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
+export function optColorEqual(a: Option<Color>, b: Option<Color>) {
+  if (a is Some<Color> && b is Some<Color>) {
+    return colorEqual(a.value, b.value);
+  }
+  return !(a is Some<Color>) && !(b is Some<Color>);
+}
+
+export function optF32Equal(a: Option<f32>, b: Option<f32>) {
+  if (a is Some<f32> && b is Some<f32>) {
+    return a.value == b.value;
+  }
+  return !(a is Some<f32>) && !(b is Some<f32>);
+}
+
+export function lengthEqual(a: Length, b: Length): boolean {
+  if (a is LengthAuto && b is LengthAuto) {
+    return true;
+  }
+  if (a is LengthPx && b is LengthPx) {
+    return a.value == b.value;
+  }
+  if (a is LengthPercent && b is LengthPercent) {
+    return a.value == b.value;
+  }
+  return false;
+}
+
+export function edgesEqual(a: Edges, b: Edges) {
+  return a.top == b.top
+    && a.right == b.right
+    && a.bottom == b.bottom
+    && a.left == b.left;
+}
+
+export function boxEqual(a: Box, b: Box) {
+  return lengthEqual(a.width, b.width)
+    && lengthEqual(a.height, b.height)
+    && a.grow == b.grow
+    && a.shrink == b.shrink
+    && edgesEqual(a.padding, b.padding)
+    && a.overflowX == b.overflowX
+    && a.overflowY == b.overflowY;
+}
+
+export function layoutEqual(a: Layout, b: Layout): boolean {
+  if (a is LayoutFlex && b is LayoutFlex) {
+    let fa = a.value;
+    let fb = b.value;
+    return fa.axis == fb.axis
+      && fa.justifyContent == fb.justifyContent
+      && fa.alignItems == fb.alignItems
+      && fa.gap == fb.gap;
+  }
+  if (a is LayoutFlow && b is LayoutFlow) {
+    let fa = a.value;
+    let fb = b.value;
+    return fa.align == fb.align && optF32Equal(fa.lineHeight, fb.lineHeight);
+  }
+  return false;
+}
+
+export function boxStyleEqual(a: BoxStyle, b: BoxStyle) {
+  return optColorEqual(a.background, b.background)
+    && optColorEqual(a.borderColor, b.borderColor)
+    && a.borderWidth == b.borderWidth
+    && a.cornerRadius == b.cornerRadius
+    && a.opacity == b.opacity;
+}
+
+export function textStyleEqual(a: TextStyle, b: TextStyle) {
+  return a.family == b.family
+    && a.size == b.size
+    && a.weight == b.weight
+    && a.italic == b.italic
+    && colorEqual(a.color, b.color);
+}
+
+export function nodeStyleEqual(a: NodeStyle, b: NodeStyle): boolean {
+  if (a is NodeStyleNothing && b is NodeStyleNothing) {
+    return true;
+  }
+  if (a is NodeStyleFill && b is NodeStyleFill) {
+    return boxStyleEqual(a.value, b.value);
+  }
+  if (a is NodeStyleText && b is NodeStyleText) {
+    return a.value.content == b.value.content && textStyleEqual(a.value.style, b.value.style);
+  }
+  return false;
+}
+
+export function styleValueEqual(a: StyleValue, b: StyleValue): boolean {
+  if (a is StyleValueFlag && b is StyleValueFlag) {
+    return a.value == b.value;
+  }
+  if (a is StyleValueNumber && b is StyleValueNumber) {
+    return a.value == b.value;
+  }
+  if (a is StyleValueLength && b is StyleValueLength) {
+    return lengthEqual(a.value, b.value);
+  }
+  if (a is StyleValueColor && b is StyleValueColor) {
+    return colorEqual(a.value, b.value);
+  }
+  if (a is StyleValueKeyword && b is StyleValueKeyword) {
+    return a.value == b.value;
+  }
+  if (a is StyleValueText && b is StyleValueText) {
+    return a.value == b.value;
+  }
+  return false;
+}
+
+export function optStyleValueEqual(a: Option<StyleValue>, b: Option<StyleValue>): boolean {
+  if (a is Some<StyleValue> && b is Some<StyleValue>) {
+    return styleValueEqual(a.value, b.value);
+  }
+  return !(a is Some<StyleValue>) && !(b is Some<StyleValue>);
+}

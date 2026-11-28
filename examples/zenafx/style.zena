@@ -1,19 +1,35 @@
 /**
  * Unified, immutable ZenaFX style builders, typed custom properties,
- * condition algebra, and flat condition serializer
- * (Step 1 of `docs/design/zenafx-styles.md#authoring-surface`).
+ * condition algebra, and WIT `zenafx:host/style@0.1.0` lowering.
  *
  * `Style`, `When`, `Rule`, and `Stylesheet` opt into untagged node-literal
  * syntax explicitly via `new [Builder.construct]` and `static [Builder.entry]`,
  * constructing immutable values in a single constructor call with zero mutable
  * fields or setter boilerplate.
+ *
+ * Custom properties (`PropertyKey<T>`), custom facts (`FlagKey`, `NumberKey`),
+ * and stylesheets (`Style`, `Stylesheet`) lazily register themselves once with
+ * the Zena platform component (`zenafx:host/style@0.1.0`) and cache their host
+ * IDs so every instance shares the same definitions.
  */
 import {
   Axis, Justify, Align, Overflow, TextAlign, Color, Length, Edges,
   BoxStyle, TextStyle, LengthAuto, LengthPx, LengthPercent,
 } from 'zenafx:ui/style';
-import { Cursor, State } from 'zenafx:host/scene';
-import { Builder, some, none } from 'zena:core';
+import { Cursor } from 'zenafx:host/scene';
+import {
+  ValueType, PropertyDef, FactKind, HostFact, BuiltinProperty,
+  StyleKey, StyleKeyHost, StyleKeyBuiltin, StyleKeyCustom,
+  StyleValue, StyleValueFlag, StyleValueNumber, StyleValueLength,
+  StyleValueColor, StyleValueKeyword, StyleValueText,
+  StyleValueUseProp, StyleValueUseFact,
+  Declaration, RangeTest, Condition as WitCondition,
+  ConditionFlag, ConditionRange, ConditionUnder, ConditionWithin,
+  ConditionAll, ConditionAny, ConditionNegate,
+  Rule as WitRule, StylesheetDef,
+  defineProperty, defineFact, defineStylesheet,
+} from 'zenafx:host/style';
+import { Builder, Option, Some, some, none } from 'zena:core';
 
 /** Edge insets (padding) in pixels: `all`, `x`/`y`, and per-side overrides. */
 export type Insets = {
@@ -92,6 +108,13 @@ let defaultInk = new Color(0.0, 0.0, 0.0, 1.0);
 let emptyCustomDecls = new GrowableArray<CustomDecl>();
 let emptyCondRules = new GrowableArray<CompiledRule>();
 
+var nextStylesheetId = 1 as u32;
+function allocStylesheetId() {
+  let id = nextStylesheetId;
+  nextStylesheetId += 1 as u32;
+  return id;
+}
+
 // ---------------------------------------------------------------------------
 // Custom property keys and heterogeneous `key => value` declarations
 // ---------------------------------------------------------------------------
@@ -105,86 +128,223 @@ export sealed class PropertyValue {
   case PropText(value: String)
 }
 
-/** Typed capability key for an application-defined style property. */
+/** Typed capability key for a custom or built-in style property. */
 export final class PropertyKey<T> {
   name: String;
   inherits: boolean;
+  valueType: ValueType;
+  builtin: Option<BuiltinProperty>;
   wrap: (value: T) => PropertyValue;
+  var #hostId: u32 = 0 as u32;
 
-  new(this.name, this.inherits, this.wrap);
+  new(
+    this.name,
+    this.inherits,
+    this.valueType,
+    this.wrap,
+    this.builtin = none,
+  );
+
+  /** Register with `zenafx:host/style` once and return the wire `StyleKey`. */
+  hostKey(): StyleKey {
+    if (let Some { value } = this.builtin) {
+      return new StyleKeyBuiltin(value);
+    }
+    if (this.#hostId == (0 as u32)) {
+      this.#hostId = defineProperty(new PropertyDef(this.valueType, this.inherits));
+    }
+    return new StyleKeyCustom(this.#hostId);
+  }
 }
 
 export function colorProperty(name: String, inherits: boolean = true): PropertyKey<Color> {
-  return new PropertyKey<Color>(name, inherits, (v: Color) => new PropColor(v));
+  return new PropertyKey<Color>(name, inherits, ValueType.Color, (v: Color) => new PropColor(v));
 }
 
 export function numberProperty(name: String, inherits: boolean = false): PropertyKey<f32> {
-  return new PropertyKey<f32>(name, inherits, (v: f32) => new PropNumber(v));
+  return new PropertyKey<f32>(name, inherits, ValueType.Number, (v: f32) => new PropNumber(v));
 }
 
 export function lengthProperty(name: String, inherits: boolean = false): PropertyKey<Length> {
-  return new PropertyKey<Length>(name, inherits, (v: Length) => new PropLength(v));
+  return new PropertyKey<Length>(name, inherits, ValueType.Length, (v: Length) => new PropLength(v));
 }
 
 export function flagProperty(name: String, inherits: boolean = false): PropertyKey<boolean> {
-  return new PropertyKey<boolean>(name, inherits, (v: boolean) => new PropFlag(v));
+  return new PropertyKey<boolean>(name, inherits, ValueType.Flag, (v: boolean) => new PropFlag(v));
 }
 
 export function stringProperty(name: String, inherits: boolean = false): PropertyKey<String> {
-  return new PropertyKey<String>(name, inherits, (v: String) => new PropText(v));
+  return new PropertyKey<String>(name, inherits, ValueType.Text, (v: String) => new PropText(v));
 }
 
-/** One custom `propertyKey => value` declaration. */
-export final class CustomDecl {
-  name: String;
-  inherits: boolean;
-  value: PropertyValue;
+// Built-in property keys usable on the left-hand side of `key => fromProp(...)`.
+export let backgroundProp = new PropertyKey<Color>('background', false, ValueType.Color, (v: Color) => new PropColor(v), some(BuiltinProperty.Background));
+export let borderColorProp = new PropertyKey<Color>('border-color', false, ValueType.Color, (v: Color) => new PropColor(v), some(BuiltinProperty.BorderColor));
+export let textColorProp = new PropertyKey<Color>('text-color', true, ValueType.Color, (v: Color) => new PropColor(v), some(BuiltinProperty.TextColor));
+export let borderWidthProp = new PropertyKey<f32>('border-width', false, ValueType.Number, (v: f32) => new PropNumber(v), some(BuiltinProperty.BorderWidth));
+export let cornerRadiusProp = new PropertyKey<f32>('corner-radius', false, ValueType.Number, (v: f32) => new PropNumber(v), some(BuiltinProperty.CornerRadius));
+export let textSizeProp = new PropertyKey<f32>('text-size', true, ValueType.Number, (v: f32) => new PropNumber(v), some(BuiltinProperty.TextSize));
+export let gapProp = new PropertyKey<f32>('gap', false, ValueType.Number, (v: f32) => new PropNumber(v), some(BuiltinProperty.Gap));
+export let widthProp = new PropertyKey<Length>('width', false, ValueType.Length, (v: Length) => new PropLength(v), some(BuiltinProperty.Width));
+export let heightProp = new PropertyKey<Length>('height', false, ValueType.Length, (v: Length) => new PropLength(v), some(BuiltinProperty.Height));
 
-  new(this.name, this.inherits, this.value);
+/** Declare `dst` to read another property `src` of the same type (`use-prop`). */
+export function useProp<T>(
+  dst: PropertyKey<T>,
+  src: PropertyKey<T>,
+  isDefault: boolean = false,
+): CustomDecl {
+  return new CustomDecl(() => dst.hostKey(), () => new StyleValueUseProp(src.hostKey()), isDefault);
+}
+
+/** Declare numeric property `dst` to read live numeric fact `src` (`use-fact`). */
+export function useFact(
+  dst: PropertyKey<f32>,
+  src: NumberKey,
+  isDefault: boolean = false,
+): CustomDecl {
+  return new CustomDecl(() => dst.hostKey(), () => new StyleValueUseFact(src.hostKey()), isDefault);
+}
+
+/** Declare boolean property `dst` to read live flag fact `src` (`use-fact`). */
+export function useFlagFact(
+  dst: PropertyKey<boolean>,
+  src: FlagKey,
+  isDefault: boolean = false,
+): CustomDecl {
+  return new CustomDecl(() => dst.hostKey(), () => new StyleValueUseFact(src.hostKey()), isDefault);
+}
+
+/** Declare a default literal value (`is-default: true`) for property `key`. */
+export function setDefault<T>(key: PropertyKey<T>, value: T): CustomDecl {
+  let wrapped = key.wrap(value);
+  return new CustomDecl(() => key.hostKey(), () => propValueToWit(wrapped), true);
+}
+
+function propValueToWit(v: PropertyValue): StyleValue {
+  return match (v) {
+    case PropColor { value }: new StyleValueColor(value)
+    case PropNumber { value }: new StyleValueNumber(value)
+    case PropLength { value }: new StyleValueLength(value)
+    case PropFlag { value }: new StyleValueFlag(value)
+    case PropText { value }: new StyleValueText(value)
+  };
+}
+
+/** One custom or `useProp`/`useFact`/`setDefault` property declaration. */
+export final class CustomDecl {
+  key: () => StyleKey;
+  toValue: () => StyleValue;
+  isDefault: boolean;
+
+  new(this.key, this.toValue, this.isDefault = false);
+
+  toWit(): Declaration {
+    return new Declaration(this.key(), this.toValue(), this.isDefault);
+  }
 }
 
 function makeCustomDecl<T>(key: PropertyKey<T>, value: T) {
-  return new CustomDecl(key.name, key.inherits, key.wrap(value));
+  let wrapped = key.wrap(value);
+  return new CustomDecl(() => key.hostKey(), () => propValueToWit(wrapped), false);
 }
 
 // ---------------------------------------------------------------------------
-// Keys and condition algebra (Step 1 API; target of future `@style`/`@cond`)
+// Keys and condition algebra
 // ---------------------------------------------------------------------------
 
 /** Identity of a boolean fact or tag tested by style conditions. */
 export final class FlagKey {
   name: String;
-  hostState: Option<State>;
+  hostFact: Option<HostFact>;
+  var #hostId: u32 = 0 as u32;
 
-  new(this.name, this.hostState = none);
+  new(this.name, this.hostFact = none);
+
+  /** Register custom flag fact with `zenafx:host/style` once and return its ID (`0` for host facts). */
+  factId(): u32 {
+    if (this.hostFact is Some<HostFact>) {
+      return 0 as u32;
+    }
+    if (this.#hostId == (0 as u32)) {
+      this.#hostId = defineFact(FactKind.Flag);
+    }
+    return this.#hostId;
+  }
+
+  /** Return the wire `StyleKey` for conditions and `use-fact`. */
+  hostKey(): StyleKey {
+    if (let Some { value } = this.hostFact) {
+      return new StyleKeyHost(value);
+    }
+    return new StyleKeyCustom(this.factId());
+  }
 }
 
 /** Identity of a numeric fact or inheriting numeric property. */
 export final class NumberKey {
   name: String;
+  hostFact: Option<HostFact>;
+  propRef: PropertyKey<f32> | null;
+  var #hostId: u32 = 0 as u32;
 
-  new(this.name);
+  new(this.name, this.hostFact = none, this.propRef = null);
+
+  factId(): u32 {
+    if (this.hostFact is Some<HostFact> || this.propRef != null) {
+      return 0 as u32;
+    }
+    if (this.#hostId == (0 as u32)) {
+      this.#hostId = defineFact(FactKind.Number);
+    }
+    return this.#hostId;
+  }
+
+  hostKey(): StyleKey {
+    if (let Some { value } = this.hostFact) {
+      return new StyleKeyHost(value);
+    }
+    let pr = this.propRef;
+    if (pr != null) {
+      return pr.hostKey();
+    }
+    return new StyleKeyCustom(this.factId());
+  }
 }
 
-/** Built-in host interaction states. */
-export let hovered = new FlagKey('hovered', some(State.Hovered));
-export let pressed = new FlagKey('pressed', some(State.Pressed));
-export let focused = new FlagKey('focused', some(State.Focused));
+/** Built-in host interaction and kind flags. */
+export let hovered = new FlagKey('hovered', some(HostFact.Hovered));
+export let pressed = new FlagKey('pressed', some(HostFact.Pressed));
+export let focused = new FlagKey('focused', some(HostFact.Focused));
+export let isText = new FlagKey('text', some(HostFact.Text));
+export let isBox = new FlagKey('box', some(HostFact.Box));
 
 /** Built-in host measured numeric facts. */
-export let nodeWidth = new NumberKey('width');
-export let nodeHeight = new NumberKey('height');
-export let scrollX = new NumberKey('scroll-x');
-export let scrollY = new NumberKey('scroll-y');
+export let nodeWidth = new NumberKey('width', some(HostFact.Width));
+export let nodeHeight = new NumberKey('height', some(HostFact.Height));
+export let scrollX = new NumberKey('scroll-x', some(HostFact.ScrollX));
+export let scrollY = new NumberKey('scroll-y', some(HostFact.ScrollY));
+export let scrollRangeX = new NumberKey('scroll-range-x', some(HostFact.ScrollRangeX));
+export let scrollRangeY = new NumberKey('scroll-range-y', some(HostFact.ScrollRangeY));
+export let slotIndex = new NumberKey('index', some(HostFact.Index));
 
 /** Create a unique application-owned flag/tag key. */
 export function flagKey(name: String): FlagKey {
   return new FlagKey(name, none);
 }
 
-/** Create a unique application-owned numeric key. */
+/** Create a unique application-owned numeric fact key. */
 export function numberKey(name: String): NumberKey {
-  return new NumberKey(name);
+  return new NumberKey(name, none);
+}
+
+export type NumberInput = NumberKey | PropertyKey<f32>;
+
+function toNumberKey(input: NumberInput) {
+  if (input is NumberKey) {
+    return input;
+  }
+  return new NumberKey(input.name, none, input);
 }
 
 /**
@@ -261,28 +421,28 @@ export function condNot(input: CondInput): Condition {
 }
 
 /** Numeric range test `key >= value`. */
-export function condGte(key: NumberKey, value: f32): Condition {
-  return new CondRange(key, some(value), true, none, false);
+export function condGte(key: NumberInput, value: f32): Condition {
+  return new CondRange(toNumberKey(key), some(value), true, none, false);
 }
 
 /** Numeric range test `key > value`. */
-export function condGt(key: NumberKey, value: f32): Condition {
-  return new CondRange(key, some(value), false, none, false);
+export function condGt(key: NumberInput, value: f32): Condition {
+  return new CondRange(toNumberKey(key), some(value), false, none, false);
 }
 
 /** Numeric range test `key <= value`. */
-export function condLte(key: NumberKey, value: f32): Condition {
-  return new CondRange(key, none, false, some(value), true);
+export function condLte(key: NumberInput, value: f32): Condition {
+  return new CondRange(toNumberKey(key), none, false, some(value), true);
 }
 
 /** Numeric range test `key < value`. */
-export function condLt(key: NumberKey, value: f32): Condition {
-  return new CondRange(key, none, false, some(value), false);
+export function condLt(key: NumberInput, value: f32): Condition {
+  return new CondRange(toNumberKey(key), none, false, some(value), false);
 }
 
 /** Numeric range test `min <= key < max`. */
-export function condBetween(key: NumberKey, min: f32, max: f32): Condition {
-  return new CondRange(key, some(min), true, some(max), false);
+export function condBetween(key: NumberInput, min: f32, max: f32): Condition {
+  return new CondRange(toNumberKey(key), some(min), true, some(max), false);
 }
 
 /** Direct-parent combinator (`parent > child`). */
@@ -299,14 +459,14 @@ export function within(ancestor: CondInput): Condition {
 export function all(parts: Array<CondInput>): Condition { return condAll(parts); }
 export function any(parts: Array<CondInput>): Condition { return condAny(parts); }
 export function not(input: CondInput): Condition { return condNot(input); }
-export function gte(key: NumberKey, value: f32): Condition { return condGte(key, value); }
-export function gt(key: NumberKey, value: f32): Condition { return condGt(key, value); }
-export function lte(key: NumberKey, value: f32): Condition { return condLte(key, value); }
-export function lt(key: NumberKey, value: f32): Condition { return condLt(key, value); }
-export function between(key: NumberKey, min: f32, max: f32): Condition { return condBetween(key, min, max); }
+export function gte(key: NumberInput, value: f32): Condition { return condGte(key, value); }
+export function gt(key: NumberInput, value: f32): Condition { return condGt(key, value); }
+export function lte(key: NumberInput, value: f32): Condition { return condLte(key, value); }
+export function lt(key: NumberInput, value: f32): Condition { return condLt(key, value); }
+export function between(key: NumberInput, min: f32, max: f32): Condition { return condBetween(key, min, max); }
 
 // ---------------------------------------------------------------------------
-// Flat post-order condition serialization (WIT wire format)
+// Flat post-order condition & declaration serialization to `zenafx:host/style`
 // ---------------------------------------------------------------------------
 
 /** One entry in a flat post-order condition table ready for WIT transfer. */
@@ -421,17 +581,218 @@ export function flattenRules(rules: Array<CompiledRule>): FlatRuleSet {
   return new FlatRuleSet(conditions, flatRules);
 }
 
+/** Compile a single `Condition` into a WIT condition table + root index (for `watchCondition`). */
+export function compileWitCondition(cond: CondInput): (Array<WitCondition>, u32) {
+  let flat = new GrowableArray<FlatCondition>();
+  let root = appendCondition(flat, toCondition(cond));
+  let witConds = new GrowableArray<WitCondition>();
+  for (let fc in flat) {
+    witConds.push(flatConditionToWit(fc));
+  }
+  return (witConds, root);
+}
+
+function flatConditionToWit(fc: FlatCondition): WitCondition {
+  return match (fc) {
+    case FlatFlag { key }: new ConditionFlag(key.hostKey())
+    case FlatRange { key, min, minInclusive, max, maxInclusive }:
+      new ConditionRange(new RangeTest(key.hostKey(), min, minInclusive, max, maxInclusive))
+    case FlatUnder { index }: new ConditionUnder(index)
+    case FlatWithin { index }: new ConditionWithin(index)
+    case FlatAll { indices }: new ConditionAll(indices)
+    case FlatAny { indices }: new ConditionAny(indices)
+    case FlatNot { index }: new ConditionNegate(index)
+  };
+}
+
+function encodeOverflow(ov: Overflow) {
+  if (ov == Overflow.Hidden) { return 1 as u32; }
+  if (ov == Overflow.Scroll) { return 2 as u32; }
+  return 0 as u32;
+}
+
+function encodeAxis(a: Axis) {
+  if (a == Axis.Row) { return 0 as u32; }
+  return 1 as u32;
+}
+
+function encodeJustify(j: Justify) {
+  if (j == Justify.Center) { return 1 as u32; }
+  if (j == Justify.End) { return 2 as u32; }
+  if (j == Justify.SpaceBetween) { return 3 as u32; }
+  return 0 as u32;
+}
+
+function encodeAlign(a: Align) {
+  if (a == Align.Center) { return 1 as u32; }
+  if (a == Align.End) { return 2 as u32; }
+  if (a == Align.Stretch) { return 3 as u32; }
+  return 0 as u32;
+}
+
+function encodeTextAlign(a: TextAlign) {
+  if (a == TextAlign.Center) { return 1 as u32; }
+  if (a == TextAlign.End) { return 2 as u32; }
+  if (a == TextAlign.Justify) { return 3 as u32; }
+  return 0 as u32;
+}
+
+export function encodeCursor(c: Cursor) {
+  if (c == Cursor.ContextMenu) { return 1 as u32; }
+  if (c == Cursor.Help) { return 2 as u32; }
+  if (c == Cursor.Pointer) { return 3 as u32; }
+  if (c == Cursor.Progress) { return 4 as u32; }
+  if (c == Cursor.Wait) { return 5 as u32; }
+  if (c == Cursor.Cell) { return 6 as u32; }
+  if (c == Cursor.Crosshair) { return 7 as u32; }
+  if (c == Cursor.Text) { return 8 as u32; }
+  if (c == Cursor.VerticalText) { return 9 as u32; }
+  if (c == Cursor.Alias) { return 10 as u32; }
+  if (c == Cursor.Copy) { return 11 as u32; }
+  if (c == Cursor.Move) { return 12 as u32; }
+  if (c == Cursor.NoDrop) { return 13 as u32; }
+  if (c == Cursor.NotAllowed) { return 14 as u32; }
+  if (c == Cursor.Grab) { return 15 as u32; }
+  if (c == Cursor.Grabbing) { return 16 as u32; }
+  if (c == Cursor.EResize) { return 17 as u32; }
+  if (c == Cursor.NResize) { return 18 as u32; }
+  if (c == Cursor.NeResize) { return 19 as u32; }
+  if (c == Cursor.NwResize) { return 20 as u32; }
+  if (c == Cursor.SResize) { return 21 as u32; }
+  if (c == Cursor.SeResize) { return 22 as u32; }
+  if (c == Cursor.SwResize) { return 23 as u32; }
+  if (c == Cursor.WResize) { return 24 as u32; }
+  if (c == Cursor.EwResize) { return 25 as u32; }
+  if (c == Cursor.NsResize) { return 26 as u32; }
+  if (c == Cursor.NeswResize) { return 27 as u32; }
+  if (c == Cursor.NwseResize) { return 28 as u32; }
+  if (c == Cursor.ColResize) { return 29 as u32; }
+  if (c == Cursor.RowResize) { return 30 as u32; }
+  if (c == Cursor.AllScroll) { return 31 as u32; }
+  if (c == Cursor.ZoomIn) { return 32 as u32; }
+  if (c == Cursor.ZoomOut) { return 33 as u32; }
+  return 0 as u32;
+}
+
+/** Convert sparse `StyleProps` and `CustomDecl`s into WIT `Declaration` records. */
+export function stylePropsToDeclarations(
+  s: StyleProps,
+  custom: Array<CustomDecl>,
+): GrowableArray<Declaration> {
+  let out = new GrowableArray<Declaration>();
+  if (let {width} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.Width), new StyleValueLength(width), false));
+  }
+  if (let {height} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.Height), new StyleValueLength(height), false));
+  }
+  if (let {grow} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.Grow), new StyleValueNumber(grow), false));
+  }
+  if (let {shrink} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.Shrink), new StyleValueNumber(shrink), false));
+  }
+  if (let {padding} = s) {
+    let e = resolveInsets(padding);
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.PaddingTop), new StyleValueNumber(e.top), false));
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.PaddingRight), new StyleValueNumber(e.right), false));
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.PaddingBottom), new StyleValueNumber(e.bottom), false));
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.PaddingLeft), new StyleValueNumber(e.left), false));
+  }
+  if (let {overflow} = s) {
+    let ov = encodeOverflow(overflow);
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.OverflowX), new StyleValueKeyword(ov), false));
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.OverflowY), new StyleValueKeyword(ov), false));
+  }
+  if (let {overflowX} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.OverflowX), new StyleValueKeyword(encodeOverflow(overflowX)), false));
+  }
+  if (let {overflowY} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.OverflowY), new StyleValueKeyword(encodeOverflow(overflowY)), false));
+  }
+  if (let {axis} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.Axis), new StyleValueKeyword(encodeAxis(axis)), false));
+  }
+  if (let {justify} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.Justify), new StyleValueKeyword(encodeJustify(justify)), false));
+  }
+  if (let {align} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.Align), new StyleValueKeyword(encodeAlign(align)), false));
+  }
+  if (let {gap} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.Gap), new StyleValueNumber(gap), false));
+  }
+  if (let {textAlign} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.TextAlign), new StyleValueKeyword(encodeTextAlign(textAlign)), false));
+  }
+  if (let {lineHeight} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.LineHeight), new StyleValueNumber(lineHeight), false));
+  }
+  if (let {background} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.Background), new StyleValueColor(background), false));
+  }
+  if (let {borderColor} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.BorderColor), new StyleValueColor(borderColor), false));
+  }
+  if (let {borderWidth} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.BorderWidth), new StyleValueNumber(borderWidth), false));
+  }
+  if (let {cornerRadius} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.CornerRadius), new StyleValueNumber(cornerRadius), false));
+  }
+  if (let {opacity} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.Opacity), new StyleValueNumber(opacity), false));
+  }
+  if (let {fontFamily} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.TextFamily), new StyleValueText(fontFamily), false));
+  }
+  if (let {fontSize} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.TextSize), new StyleValueNumber(fontSize), false));
+  }
+  if (let {fontWeight} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.TextWeight), new StyleValueNumber(fontWeight as f32), false));
+  }
+  if (let {italic} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.TextItalic), new StyleValueFlag(italic), false));
+  }
+  if (let {color} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.TextColor), new StyleValueColor(color), false));
+  }
+  if (let {cursor} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.Cursor), new StyleValueKeyword(encodeCursor(cursor)), false));
+  }
+  if (let {unselectable} = s) {
+    out.push(new Declaration(new StyleKeyBuiltin(BuiltinProperty.UserSelect), new StyleValueKeyword(if (unselectable) { 1 as u32 } else { 0 as u32 }), false));
+  }
+  for (let c in custom) {
+    out.push(c.toWit());
+  }
+  return out;
+}
+
+function registerFlatRuleSet(flat: FlatRuleSet) {
+  let id = allocStylesheetId();
+  let witConds = new GrowableArray<WitCondition>();
+  for (let fc in flat.conditions) {
+    witConds.push(flatConditionToWit(fc));
+  }
+  let witRules = new GrowableArray<WitRule>();
+  for (let fr in flat.rules) {
+    let decls = stylePropsToDeclarations(fr.decls, fr.custom);
+    if (decls.length > 0) {
+      witRules.push(new WitRule(fr.when, decls));
+    }
+  }
+  defineStylesheet(new StylesheetDef(id, witConds, witRules));
+  return id;
+}
+
 // ---------------------------------------------------------------------------
 // Immutable node-literal builders: `When`, `Style`, `Rule`, `Stylesheet`
 // ---------------------------------------------------------------------------
 
 /**
  * Immutable conditional override block inside `Style { ... }` or `Rule(...) { ... }`.
- *
- * ```zena
- * When(hovered) { background: hoveredBg }
- * When(all([selected, not(disabled)])) { color: accent  surface => activeBg }
- * ```
  */
 export final class When {
   condition: Condition;
@@ -450,10 +811,25 @@ export final class When {
     desc: {
       props?: StyleProps,
       entries?: Array<CustomDecl>,
+      children?: Array<CustomDecl>,
     },
   ) : condition = toCondition(when),
       decls = desc.props ?? {},
-      custom = desc.entries ?? emptyCustomDecls;
+      custom = concatDecls(desc.entries ?? null, desc.children ?? null);
+}
+
+function concatDecls(
+  a: Array<CustomDecl> | null = null,
+  b: Array<CustomDecl> | null = null,
+) {
+  let out = new GrowableArray<CustomDecl>();
+  if (a != null) {
+    for (let x in a) { out.push(x); }
+  }
+  if (b != null) {
+    for (let x in b) { out.push(x); }
+  }
+  return out;
 }
 
 /**
@@ -469,6 +845,7 @@ export final class Style {
   decls: StyleProps;
   custom: GrowableArray<CustomDecl>;
   condRules: GrowableArray<CompiledRule>;
+  var #hostSheetId: u32 = 0 as u32;
 
   static [Builder.entry]<T>(key: PropertyKey<T>, value: T): CustomDecl {
     return makeCustomDecl(key, value);
@@ -485,11 +862,38 @@ export final class Style {
       spreads?: Array<Style>,
       props?: StyleProps,
       entries?: Array<CustomDecl>,
-      children?: Array<When>,
+      children?: Array<When | CustomDecl>,
     },
   ) : decls = mergeSpreadDecls(desc.spreads ?? null, desc.props ?? {}),
-      custom = mergeSpreadCustom(desc.spreads ?? null, desc.entries ?? null),
-      condRules = mergeSpreadRules(desc.spreads ?? null, desc.children ?? null);
+      custom = mergeSpreadCustomFromChildren(desc.spreads ?? null, desc.entries ?? null, desc.children ?? null),
+      condRules = mergeSpreadRulesFromChildren(desc.spreads ?? null, desc.children ?? null);
+
+  /** Whether this style carries custom declarations or conditional `When(...)` rules. */
+  hasHostRules(): boolean {
+    return this.custom.length > 0 || this.condRules.length > 0;
+  }
+
+  /**
+   * Lazily register a `zenafx:host/style` stylesheet for this `Style`'s custom
+   * declarations and conditional `When(...)` rules (base `StyleProps` already
+   * live in `NodeDef`), returning its cached stylesheet ID (`0` if none).
+   */
+  ensureHostSheetId(): u32 {
+    if (!this.hasHostRules()) {
+      return 0 as u32;
+    }
+    if (this.#hostSheetId == (0 as u32)) {
+      let rules = new GrowableArray<CompiledRule>();
+      if (this.custom.length > 0) {
+        rules.push(new CompiledRule(none, {}, this.custom));
+      }
+      for (let r in this.condRules) {
+        rules.push(r);
+      }
+      this.#hostSheetId = registerFlatRuleSet(flattenRules(rules));
+    }
+    return this.#hostSheetId;
+  }
 
   /** Ordered rules: unconditional base rule followed by conditional rules. */
   compiledRules(): GrowableArray<CompiledRule> {
@@ -520,9 +924,10 @@ function mergeSpreadDecls(
   return { ...out, ...props };
 }
 
-function mergeSpreadCustom(
+function mergeSpreadCustomFromChildren(
   spreads: Array<Style> | null = null,
   entries: Array<CustomDecl> | null = null,
+  children: Array<When | CustomDecl> | null = null,
 ) {
   let out = new GrowableArray<CustomDecl>();
   if (spreads != null) {
@@ -537,12 +942,19 @@ function mergeSpreadCustom(
       out.push(e);
     }
   }
+  if (children != null) {
+    for (let ch in children) {
+      if (ch is CustomDecl) {
+        out.push(ch);
+      }
+    }
+  }
   return out;
 }
 
-function mergeSpreadRules(
+function mergeSpreadRulesFromChildren(
   spreads: Array<Style> | null = null,
-  children: Array<When> | null = null,
+  children: Array<When | CustomDecl> | null = null,
 ) {
   let out = new GrowableArray<CompiledRule>();
   if (spreads != null) {
@@ -553,8 +965,38 @@ function mergeSpreadRules(
     }
   }
   if (children != null) {
-    for (let w in children) {
-      out.push(new CompiledRule(some(w.condition), w.decls, w.custom));
+    for (let ch in children) {
+      if (ch is When) {
+        out.push(new CompiledRule(some(ch.condition), ch.decls, ch.custom));
+      }
+    }
+  }
+  return out;
+}
+
+function mergeRuleCustom(
+  spreads: Array<Style> | null = null,
+  entries: Array<CustomDecl> | null = null,
+  children: Array<Rule | When | CustomDecl> | null = null,
+) {
+  let out = new GrowableArray<CustomDecl>();
+  if (spreads != null) {
+    for (let item in spreads) {
+      for (let c in item.custom) {
+        out.push(c);
+      }
+    }
+  }
+  if (entries != null) {
+    for (let e in entries) {
+      out.push(e);
+    }
+  }
+  if (children != null) {
+    for (let ch in children) {
+      if (ch is CustomDecl) {
+        out.push(ch);
+      }
     }
   }
   return out;
@@ -581,11 +1023,11 @@ export final class Rule {
       spreads?: Array<Style>,
       props?: StyleProps,
       entries?: Array<CustomDecl>,
-      children?: Array<Rule | When>,
+      children?: Array<Rule | When | CustomDecl>,
     },
   ) : condition = toCondition(when),
       decls = mergeSpreadDecls(desc.spreads ?? null, desc.props ?? {}),
-      custom = mergeSpreadCustom(desc.spreads ?? null, desc.entries ?? null),
+      custom = mergeRuleCustom(desc.spreads ?? null, desc.entries ?? null, desc.children ?? null),
       children = collectRuleChildren(desc.spreads ?? null, desc.children ?? null);
 
   _collectInto(prefix: Option<Condition>, out: GrowableArray<CompiledRule>): void {
@@ -608,7 +1050,7 @@ export final class Rule {
 
 function collectRuleChildren(
   spreads: Array<Style> | null = null,
-  children: Array<Rule | When> | null = null,
+  children: Array<Rule | When | CustomDecl> | null = null,
 ) {
   let out = new GrowableArray<Rule | When>();
   if (spreads != null) {
@@ -622,7 +1064,11 @@ function collectRuleChildren(
   }
   if (children != null) {
     for (let ch in children) {
-      out.push(ch);
+      if (ch is Rule) {
+        out.push(ch);
+      } else if (ch is When) {
+        out.push(ch);
+      }
     }
   }
   return out;
@@ -631,6 +1077,7 @@ function collectRuleChildren(
 /** Immutable scoped collection of rules (`reach: scope`), supporting `...spread` and nested `Rule`s. */
 export final class Stylesheet {
   rules: GrowableArray<CompiledRule>;
+  var #hostSheetId: u32 = 0 as u32;
 
   new [Builder.construct](
     desc: {
@@ -645,6 +1092,14 @@ export final class Stylesheet {
 
   flatten(): FlatRuleSet {
     return flattenRules(this.rules);
+  }
+
+  /** Lazily register this stylesheet with `zenafx:host/style` once and return its cached ID. */
+  ensureHostId(): u32 {
+    if (this.#hostSheetId == (0 as u32)) {
+      this.#hostSheetId = registerFlatRuleSet(this.flatten());
+    }
+    return this.#hostSheetId;
   }
 }
 
@@ -672,7 +1127,7 @@ function collectSheetRules(
 export type StyleInput = Style | StyleProps | Array<Style>;
 
 // ---------------------------------------------------------------------------
-// Lowering helpers to today's WIT `OwnBox`, `BoxStyle`, `TextStyle`
+// Base `NodeDef` lowering helpers (`OwnBox`, `BoxStyle`, `TextStyle`)
 // ---------------------------------------------------------------------------
 
 export function resolveInsets(insets: Insets): Edges {
@@ -708,18 +1163,6 @@ export function resolveBoxStyle(s: StyleProps): BoxStyle {
   );
 }
 
-export function mergeBoxOverride(base: BoxStyle, over: StyleProps): BoxStyle {
-  let bg: Option<Color> = if (let {background} = over) { some(background) } else { base.background };
-  let border: Option<Color> = if (let {borderColor} = over) { some(borderColor) } else { base.borderColor };
-  return new BoxStyle(
-    bg,
-    border,
-    over.borderWidth ?? base.borderWidth,
-    over.cornerRadius ?? base.cornerRadius,
-    over.opacity ?? base.opacity,
-  );
-}
-
 export function resolveTextStyle(s: StyleProps): TextStyle {
   return new TextStyle(
     s.fontFamily ?? 'system-ui',
@@ -727,17 +1170,6 @@ export function resolveTextStyle(s: StyleProps): TextStyle {
     (s.fontWeight ?? 400) as u16,
     s.italic ?? false,
     s.color ?? defaultInk,
-  );
-}
-
-export function mergeTextOverride(base: TextStyle, over: StyleProps): TextStyle {
-  let weight: u16 = if (let {fontWeight} = over) { fontWeight as u16 } else { base.weight };
-  return new TextStyle(
-    over.fontFamily ?? base.family,
-    over.fontSize ?? base.size,
-    weight,
-    over.italic ?? base.italic,
-    over.color ?? base.color,
   );
 }
 

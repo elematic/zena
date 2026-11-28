@@ -1,118 +1,80 @@
 /**
- * A one-line text field: what HTML's `<input type="text">` is, with far less
- * in it.
+ * A one-line text field built with `@ui` and the platform style engine.
  *
- * The text is here, and so is what each key does to it, in `Editing`. The
- * selection is the host's. A window has one selection, as it has one focus,
- * and in a text field the host does everything the pointer does to it: a
- * press puts the caret where it landed, a drag selects, a second press takes a
- * word and a third the whole field. The host draws the caret and the
- * highlight, and scrolls the field to keep the caret in sight. None of that
- * calls this widget, which has no pointer listener at all.
- *
- * What is left for the widget is the keyboard. For each key it asks the host
- * where the selection is, works out the text and the selection the key leads
- * to, writes the text and tells the host where the caret now is.
- *
- * The template is a box and two text nodes. The box can have the focus, hides
- * the text that does not fit, and is a row, so its text is laid out on one
- * line at its full width and never wrapped. Node 1 is the text a person edits,
- * which it tells the host with `editable`. Node 2 is the placeholder, which
- * says something only while node 1 is empty.
- *
- * The clipboard is the host's too. It copies what is selected when Control
- * with `c` or `x` goes down, so cutting is deleting the selection here. Pasted
- * text arrives as the text of a key named `Paste`, and is inserted as typed
- * text is.
- *
- * Not here: undo, text from an input method, and a caret that blinks.
+ * The text lives in a reactive `@signal`, keyboard edits query/update the
+ * host's selection via `selectionAt` / `selectAt`, and hover/focus ring styles
+ * run entirely in `zenafx:host/style`.
  */
-import { Color, BoxStyle, TextStyle, Edges, Axis, Align, Overflow } from 'zenafx:ui/style';
-import { Binding, BindingTarget, BindingValueContent, StateStyle, State, RestyleFill,
-         Cursor } from 'zenafx:host/scene';
 import { KeyEvent } from 'zenafx:host/events';
-import { Rendering, Widget, Template, KeyListener, KeyAnswer } from '../framework.zena';
-import { box, text, flatten } from '../widgets/widget.zena';
+import {
+  ui, Widget, Box, Text, TemplateResult, KeyAnswer,
+  Style, When, hovered, focused,
+  Axis, Align, Overflow, Cursor, rgb,
+} from '../ui.zena';
+import { signal } from 'zena:signals';
 import { Editing, oneLine } from './editing.zena';
-import { some } from 'zena:core';
 
-let ink = new Color(0.10, 0.11, 0.13, 1.0);
-let faint = new Color(0.56, 0.59, 0.65, 1.0);
-let paper = new Color(1.0, 1.0, 1.0, 1.0);
-let edge = new Color(0.78, 0.81, 0.87, 1.0);
-let hoveredEdge = new Color(0.58, 0.62, 0.70, 1.0);
-let ring = new Color(0.20, 0.38, 0.86, 1.0);
+let ink = rgb(0.10, 0.11, 0.13);
+let faint = rgb(0.56, 0.59, 0.65);
+let paper = rgb(1.0, 1.0, 1.0);
+let edge = rgb(0.78, 0.81, 0.87);
+let hoveredEdge = rgb(0.58, 0.62, 0.70);
+let ring = rgb(0.20, 0.38, 0.86);
 
-let fieldStyle = new BoxStyle(some(paper), some(edge), 1.0, 6.0, 1.0);
-let hoveredStyle = new BoxStyle(some(paper), some(hoveredEdge), 1.0, 6.0, 1.0);
-/** The field with the focus: a heavier edge in another colour, as a ring. */
-let focusedStyle = new BoxStyle(some(paper), some(ring), 2.0, 6.0, 1.0);
-let valueText = new TextStyle('system-ui', 16.0, 400 as u16, false, ink);
-/** What the field says when it is empty. */
-let placeholderText = new TextStyle('system-ui', 16.0, 400 as u16, false, faint);
+let fieldStyle = Style {
+  background: paper
+  borderColor: edge
+  borderWidth: 1.0
+  cornerRadius: 6.0
+  axis: Axis.Row
+  align: Align.Center
+  padding: { y: 9.0, x: 12.0 }
+  overflowX: Overflow.Hidden
+  cursor: Cursor.Text
 
-/** Where the text a person edits is in the template. */
+  When(hovered) { borderColor: hoveredEdge }
+  When(focused) { borderColor: ring  borderWidth: 2.0 }
+};
+
+let valueStyle = Style { fontSize: 16.0 fontWeight: 400 color: ink shrink: 0.0 };
+let placeholderStyle = Style { fontSize: 16.0 fontWeight: 400 color: faint shrink: 0.0 unselectable: true };
+
+/** BFS position of the editable `Text` child inside `TextInput`'s template. */
 let edited: u32 = 1;
-
-/**
- * Node 0 is the field's box, node 1 the text a person edits and node 2 the
- * placeholder. Two holes: what each of the two says.
- *
- * `shrink: 0.0` keeps the text at its full width when that is more than the
- * box has, which is what makes the box scroll and not the text wrap. The box
- * says `hidden`: it scrolls as the host moves it to follow the caret, and
- * never with the wheel.
- */
-let inputTemplate = new Template(
-  flatten(box({style: fieldStyle, axis: Axis.Row, align: Align.Center,
-               padding: new Edges(9.0, 12.0, 9.0, 12.0), overflowX: Overflow.Hidden,
-               cursor: Cursor.Text, focusable: true}, [
-    text('', valueText, {shrink: 0.0, editable: true}),
-    // The placeholder is a hint and not text to select or copy.
-    text('', placeholderText, {shrink: 0.0, unselectable: true}),
-  ])),
-  [new Binding(edited, BindingTarget.Content),
-   new Binding(2 as u32, BindingTarget.Content)],
-  [new StateStyle(0 as u32, State.Hovered, 0 as u32, new RestyleFill(hoveredStyle)),
-   new StateStyle(0 as u32, State.Focused, 0 as u32, new RestyleFill(focusedStyle))],
-);
 
 /** A one-line text field. */
 export class TextInput extends Widget {
-  /** What the field shows, faintly, while it is empty. */
   #placeholder: String;
-  /** Told the text each time it changes. */
   #onChange: (text: String) => void;
-  /** Told the text when Enter is pressed. */
   #onSubmit: (text: String) => void;
-  var #text: String;
+  @signal var #text: String;
 
-  new(placeholder: String, onChange: (text: String) => void,
-      onSubmit: (text: String) => void, value: String = '')
-      : #placeholder = placeholder, #onChange = onChange, #onSubmit = onSubmit,
-        #text = value, super();
+  new(
+    placeholder: String,
+    onChange: (text: String) => void,
+    onSubmit: (text: String) => void,
+    value: String = '',
+  ) : #placeholder = placeholder,
+      #onChange = onChange,
+      #onSubmit = onSubmit,
+      #text = value,
+      super();
 
-  /** The text in the field. */
   value: String {
-    get {
-      return this.#text;
-    }
+    get { return this.#text; }
   }
 
-  build(): Rendering {
-    return new Rendering(inputTemplate,
-      [new BindingValueContent(this.#text),
-       new BindingValueContent(if (this.#text.isEmpty) this.#placeholder else '')],
-      [],
-      [],
-      [new KeyListener((event) => this.#key(event))]);
+  build(): TemplateResult {
+    return @ui Box {
+      style: fieldStyle,
+      focusable: true,
+      onKey: (event) => this.#key(event),
+
+      Text($(this.#text)) { editable: true, style: valueStyle }
+      Text($(if (this.#text.isEmpty) { this.#placeholder } else { '' })) { style: placeholderStyle }
+    };
   }
 
-  /**
-   * The text and the selection as they are now. The selection is the host's,
-   * so it is asked for. When it is somewhere else in the window, a key edits
-   * at the end of the text.
-   */
   #editing(): Editing {
     let end = this.#text.utf8.length;
     return match (this.selectionAt(edited)) {
@@ -133,27 +95,31 @@ export class TextInput extends Widget {
     let before = this.#editing();
     var next: Editing | null = null;
     if (let Some {value} = event.text) {
-      // Typed text is a character. Pasted text arrives the same way and can
-      // be many lines, which a field of one line puts on one.
-      next = before.pressed({key: event.key, typed: oneLine(value), shift: held.shift,
-                             control: held.control, alt: held.alt, meta: held.meta});
+      next = before.pressed({
+        key: event.key,
+        typed: oneLine(value),
+        shift: held.shift,
+        control: held.control,
+        alt: held.alt,
+        meta: held.meta,
+      });
     } else {
-      next = before.pressed({key: event.key, shift: held.shift,
-                             control: held.control, alt: held.alt, meta: held.meta});
+      next = before.pressed({
+        key: event.key,
+        shift: held.shift,
+        control: held.control,
+        alt: held.alt,
+        meta: held.meta,
+      });
     }
-    // A key the editing has no use for goes on: `Tab` to the host, which
-    // moves the focus with it.
     if (next == null) {
       return KeyAnswer.Pass;
     }
-    // The text first, so that the places the selection is then put at are
-    // places in the text the host has.
     if (next.text != before.text) {
       this.#text = next.text;
-      this.refresh();
       this.#onChange(next.text);
     }
-    this.select(edited, next.anchor, next.focus);
+    this.selectAt(edited, next.anchor, next.focus);
     return KeyAnswer.Used;
   }
 }

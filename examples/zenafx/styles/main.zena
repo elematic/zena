@@ -1,0 +1,89 @@
+/**
+ * End-to-end `@ui` ZenaFX guest component exercising the full platform style
+ * engine (`zenafx:host/style@0.1.0`) through `Style`, `Stylesheet`, `Rule`,
+ * `When`, `colorProperty`, `numberProperty`, `useProp`, `useFact`, reactive
+ * `tags`, and `watchCondition`.
+ */
+import {
+  ui, Widget, Box, Text, TemplateResult,
+  Style, Stylesheet, Rule, When,
+  colorProperty, numberProperty, backgroundProp,
+  useProp, useFact, flagKey,
+  hovered, nodeWidth, gte,
+  Axis, rgb, px, full, runApp,
+} from '../ui.zena';
+import { signal } from 'zena:signals';
+
+let pageBg = rgb(0.97, 0.97, 0.99);
+let accentCol = rgb(0.18, 0.42, 0.92);
+let selectedCol = rgb(0.12, 0.72, 0.36);
+let hoverBorder = rgb(0.95, 0.45, 0.10);
+let ink = rgb(0.10, 0.11, 0.13);
+
+let accent = colorProperty('accent', true);
+let panelWidth = numberProperty('panel-width', true);
+let tile = flagKey('tile');
+let selected = flagKey('selected');
+let wideCond = gte(panelWidth, 600.0);
+
+let rootStyle = Style {
+  background: pageBg
+  width: full
+  height: full
+  accent => accentCol
+  useFact(panelWidth, nodeWidth)
+};
+
+let tileSheet = Stylesheet {
+  Rule(tile) {
+    useProp(backgroundProp, accent)
+
+    When(hovered) { borderColor: hoverBorder  borderWidth: 2.0 }
+    When(selected) { background: selectedCol }
+  }
+};
+
+let panelStyle = Style {
+  width: full
+
+  When(wideCond) { axis: Axis.Row  gap: 16.0 }
+};
+
+let tileSize = Style { width: px(120.0) height: px(48.0) shrink: 0.0 };
+let statusStyle = Style { fontSize: 16.0 color: ink };
+
+class Page extends Widget {
+  @signal var #selected: boolean = false;
+  @signal var #status: String = 'Narrow';
+
+  build(): TemplateResult {
+    let result = @ui Box {
+      style: rootStyle,
+      sheet: tileSheet,
+
+      Box {
+        style: panelStyle,
+
+        Box {
+          style: tileSize,
+          tags: $(if (this.#selected) { [tile, selected] } else { [tile] }),
+          onDown: () => { this.#selected = !this.#selected; }
+        }
+        Box {
+          style: tileSize,
+          tags: [tile]
+        }
+      }
+      Text($(this.#status)) { style: statusStyle }
+    };
+    // BFS position 1 is the panel box.
+    result.watchCondition(1 as u32, wideCond, (wide) => {
+      this.#status = if (wide) { 'Wide' } else { 'Narrow' };
+    });
+    return result;
+  }
+}
+
+export function main(): void {
+  runApp(new Page());
+}
