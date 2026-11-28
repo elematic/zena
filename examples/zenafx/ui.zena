@@ -21,29 +21,34 @@
  */
 import {
   Box as OwnBox, Flex, Flow as FlowLayout, Layout, LayoutFlex, LayoutFlow,
-  TextAlign, Edges, Axis, Justify, Align, Length, BoxStyle, TextStyle,
-  LengthAuto, Overflow, Color,
+  TextAlign, Edges, Axis, Justify, Align, Length, LengthPx, LengthPercent,
+  BoxStyle, TextStyle, LengthAuto, Overflow, Color,
 } from 'zenafx:ui/style';
 import {
   Node, NodeDef, NodeStyle, NodeStyleNothing, NodeStyleFill, NodeStyleText,
-  TextContent, Binding, BindingTarget, BindingValue, BindingValueContent,
-  BindingValueStyle, BindingValueTextStyle, BindingValueBox, BindingValueLayout,
-  Hole, State, Restyle, RestyleFill, RestyleText, StateStyle, Cursor, createNode,
+  TextContent, TextSelection, Binding, BindingTarget, BindingValue,
+  BindingValueContent, BindingValueStyle, BindingValueTextStyle,
+  BindingValueBox, BindingValueLayout, Hole, Cursor, createNode,
 } from 'zenafx:host/scene';
-import { PointerKind, PointerEvent, KeyEvent } from 'zenafx:host/events';
+import { PointerKind, PointerEvent, KeyEvent, Scope } from 'zenafx:host/events';
+import {
+  BuiltinProperty, Declaration, Reach, StyleKeyBuiltin, StyleValueKeyword,
+  attachStylesheet, detachStylesheet, setDeclarations, setFlag,
+  watchCondition as hostWatchCondition,
+} from 'zenafx:host/style';
 import { Effect, hasSources, untrack } from 'zena:signals';
 import { HashMap } from 'zena:collections';
-import { Disposable, Hashable, some, none } from 'zena:core';
+import { Stream } from 'zena:stream';
+import { Disposable, Hashable, Option, Some, some, none } from 'zena:core';
 import {
   Template, WidgetBase, Mountable, Listener, KeyListener,
   Answer, KeyAnswer, Handler, KeyHandler, projectChildren,
   startPointerListener, startKeyListener, runApp,
 } from './framework.zena';
 import {
-  Style, StyleProps, StyleInput, CompiledRule, CondFlag,
-  auto, noPadding, resolveInsets, hasVisualBoxProps,
-  resolveBoxStyle, mergeBoxOverride, resolveTextStyle, mergeTextOverride,
-  normalizeStyle,
+  Style, Stylesheet, StyleProps, StyleInput, FlagKey, CondInput,
+  auto, noPadding, resolveInsets, hasVisualBoxProps, encodeCursor,
+  resolveBoxStyle, resolveTextStyle, normalizeStyle, compileWitCondition,
 } from './style.zena';
 
 export { runApp, Answer, KeyAnswer } from './framework.zena';
@@ -54,15 +59,28 @@ export {
   Style, When, Rule, Stylesheet, CompiledRule,
   PropertyKey, PropertyValue, CustomDecl,
   colorProperty, numberProperty, lengthProperty, flagProperty, stringProperty,
-  FlagKey, NumberKey, Condition, CondInput,
+  backgroundProp, borderColorProp, textColorProp, borderWidthProp,
+  cornerRadiusProp, textSizeProp, gapProp, widthProp, heightProp,
+  useProp, useFact, useFlagFact, setDefault,
+  FlagKey, NumberKey, NumberInput, Condition, CondInput,
   FlatCondition, FlatRule, FlatRuleSet,
-  hovered, pressed, focused, nodeWidth, nodeHeight, scrollX, scrollY,
+  hovered, pressed, focused, isText, isBox,
+  nodeWidth, nodeHeight, scrollX, scrollY, scrollRangeX, scrollRangeY, slotIndex,
   flagKey, numberKey, toCondition,
   all, any, not, gte, gt, lte, lt, between, under, within,
   condAll, condAny, condNot, condGte, condGt, condLte, condLt, condBetween,
-  flattenRules,
+  flattenRules, compileWitCondition,
   rgb, rgba, px, pct, auto, full, noPadding,
 } from './style.zena';
+
+async function pumpConditionWatcher(
+  stream: Stream<boolean>,
+  onChange: (holds: boolean) => void,
+): Future<void> {
+  for await (let holds in stream) {
+    onChange(holds);
+  }
+}
 
 /**
  * Base class for signal-driven `@ui` widgets.
@@ -115,61 +133,37 @@ export abstract class Widget extends WidgetBase {
       mounted.resume();
     }
   }
+
+  /** Where the window's selection sits in editable text at BFS position `target`. */
+  selectionAt(target: u32): (boolean, i32, i32) {
+    let node = this.#node;
+    if (node != null) {
+      if (let Some { value } = node.selection(target)) {
+        return (true, value.anchor as i32, value.focus as i32);
+      }
+    }
+    return (false, 0, 0);
+  }
+
+  /** Put the window's selection in editable text at BFS position `target`. */
+  selectAt(target: u32, anchor: i32, focus: i32): void {
+    let node = this.#node;
+    if (node != null) {
+      node.select(target, new TextSelection(anchor as u32, focus as u32));
+    }
+  }
+
+  /** Watch a condition on BFS position `target` and invoke `onChange` on transitions. */
+  watchCondition(target: u32, cond: CondInput, onChange: (holds: boolean) => void): void {
+    let mounted = this.#mounted;
+    if (mounted != null) {
+      mounted.watchCondition(target, cond, onChange);
+    }
+  }
 }
 
 let defaultInk = new Color(0.0, 0.0, 0.0, 1.0);
 let defaultTextStyle = new TextStyle('system-ui', 16.0, 400 as u16, false, defaultInk);
-
-final class MergedHostState {
-  state: State;
-  decls: StyleProps;
-
-  new(this.state, this.decls);
-}
-
-function collectHostStates(rules: GrowableArray<CompiledRule>) {
-  var hov: StyleProps = {};
-  var prs: StyleProps = {};
-  var foc: StyleProps = {};
-  let order = new GrowableArray<State>();
-
-  let recordOrder = (st: State) => {
-    var i = 0;
-    while (i < order.length) {
-      if (order[i] == st) {
-        return;
-      }
-      i += 1;
-    }
-    order.push(st);
-  };
-
-  for (let r in rules) {
-    if (let Some {value as cond} = r.when) {
-      if (cond is CondFlag) {
-        if (let Some {value as st} = cond.key.hostState) {
-          recordOrder(st);
-          match (st) {
-            case State.Hovered: { hov = { ...hov, ...r.decls }; }
-            case State.Pressed: { prs = { ...prs, ...r.decls }; }
-            case State.Focused: { foc = { ...foc, ...r.decls }; }
-          }
-        }
-      }
-    }
-  }
-
-  let out = new GrowableArray<MergedHostState>();
-  for (let st in order) {
-    let decls = match (st) {
-      case State.Hovered: hov
-      case State.Pressed: prs
-      case State.Focused: foc
-    };
-    out.push(new MergedHostState(st, decls));
-  }
-  return out;
-}
 
 /**
  * Stateful guest directive instance owned by a `SlotPart`.
@@ -645,11 +639,33 @@ export function repeat<T, K extends Hashable>(
   return new RepeatResult<T, K>(items, keyFn, renderFn);
 }
 
-final class PendingState {
-  when: State;
-  style: Restyle;
+final class StaticNodeStyle {
+  bfsNode: u32;
+  style: Style;
 
-  new(this.when, this.style);
+  new(this.bfsNode, this.style);
+}
+
+final class StaticScopeSheet {
+  bfsNode: u32;
+  sheet: Stylesheet;
+
+  new(this.bfsNode, this.sheet);
+}
+
+final class StaticTag {
+  bfsNode: u32;
+  key: FlagKey;
+
+  new(this.bfsNode, this.key);
+}
+
+final class PendingWatcher {
+  target: u32;
+  cond: CondInput;
+  onChange: (holds: boolean) => void;
+
+  new(this.target, this.cond, this.onChange);
 }
 
 final class NodeBindings {
@@ -668,6 +684,87 @@ final class DynamicSlotEntry {
   new(this.bfsSlot, this.fn);
 }
 
+function colorEq(a: Color, b: Color) {
+  return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
+function optColorEq(a: Option<Color>, b: Option<Color>) {
+  if (a is Some<Color> && b is Some<Color>) {
+    return colorEq(a.value, b.value);
+  }
+  return !(a is Some<Color>) && !(b is Some<Color>);
+}
+
+function optF32Eq(a: Option<f32>, b: Option<f32>) {
+  if (a is Some<f32> && b is Some<f32>) {
+    return a.value == b.value;
+  }
+  return !(a is Some<f32>) && !(b is Some<f32>);
+}
+
+function lengthEq(a: Length, b: Length): boolean {
+  if (a is LengthAuto && b is LengthAuto) { return true; }
+  if (a is LengthPx && b is LengthPx) { return a.value == b.value; }
+  if (a is LengthPercent && b is LengthPercent) { return a.value == b.value; }
+  return false;
+}
+
+function bindingValueEqual(a: BindingValue, b: BindingValue): boolean {
+  if (a is BindingValueContent && b is BindingValueContent) {
+    return a.value == b.value;
+  }
+  if (a is BindingValueStyle && b is BindingValueStyle) {
+    let sa = a.value;
+    let sb = b.value;
+    return optColorEq(sa.background, sb.background)
+      && optColorEq(sa.borderColor, sb.borderColor)
+      && sa.borderWidth == sb.borderWidth
+      && sa.cornerRadius == sb.cornerRadius
+      && sa.opacity == sb.opacity;
+  }
+  if (a is BindingValueTextStyle && b is BindingValueTextStyle) {
+    let ta = a.value;
+    let tb = b.value;
+    return ta.family == tb.family
+      && ta.size == tb.size
+      && ta.weight == tb.weight
+      && ta.italic == tb.italic
+      && colorEq(ta.color, tb.color);
+  }
+  if (a is BindingValueBox && b is BindingValueBox) {
+    let ba = a.value;
+    let bb = b.value;
+    return lengthEq(ba.width, bb.width)
+      && lengthEq(ba.height, bb.height)
+      && ba.grow == bb.grow
+      && ba.shrink == bb.shrink
+      && ba.padding.top == bb.padding.top
+      && ba.padding.right == bb.padding.right
+      && ba.padding.bottom == bb.padding.bottom
+      && ba.padding.left == bb.padding.left
+      && ba.overflowX == bb.overflowX
+      && ba.overflowY == bb.overflowY;
+  }
+  if (a is BindingValueLayout && b is BindingValueLayout) {
+    let la = a.value;
+    let lb = b.value;
+    if (la is LayoutFlex && lb is LayoutFlex) {
+      let fa = la.value;
+      let fb = lb.value;
+      return fa.axis == fb.axis
+        && fa.justifyContent == fb.justifyContent
+        && fa.alignItems == fb.alignItems
+        && fa.gap == fb.gap;
+    }
+    if (la is LayoutFlow && lb is LayoutFlow) {
+      let fa = la.value;
+      let fb = lb.value;
+      return fa.align == fb.align && optF32Eq(fa.lineHeight, fb.lineHeight);
+    }
+  }
+  return false;
+}
+
 /**
  * A flattened, cached ZenaFX template paired with pre-order-to-BFS lookup
  * tables so per-instance patching can address nodes and slots by source order.
@@ -679,6 +776,9 @@ export final class CompiledTemplate {
   projectionSlot: i32;
   nodeBindings: GrowableArray<NodeBindings>;
   initialNodes: GrowableArray<NodeDef>;
+  staticNodeStyles: GrowableArray<StaticNodeStyle>;
+  staticScopeSheets: GrowableArray<StaticScopeSheet>;
+  staticTags: GrowableArray<StaticTag>;
 
   new(
     this.template,
@@ -687,6 +787,9 @@ export final class CompiledTemplate {
     this.projectionSlot,
     this.nodeBindings,
     this.initialNodes,
+    this.staticNodeStyles,
+    this.staticScopeSheets,
+    this.staticTags,
   );
 
   instantiate(): TemplateResult {
@@ -723,6 +826,7 @@ export final class TemplateResult implements Mountable {
   compiled: CompiledTemplate;
   var #node: Node | null = null;
   var #mounting: boolean = true;
+  var #batchDepth: i32 = 0;
   var #pendingHoles = new GrowableArray<Hole>();
   #lastSent = new HashMap<i32, BindingValue>();
   var #reactThunks = new GrowableArray<() => void>();
@@ -735,7 +839,163 @@ export final class TemplateResult implements Mountable {
   var #slotParts = new GrowableArray<SlotPart>();
   var #mountedSlots = new HashMap<i32, GrowableArray<Mountable>>();
 
+  // Style engine per-instance state (`zenafx:host/style@0.1.0`)
+  #dynamicNodeStyles = new HashMap<i32, Style>();
+  #attachedDynamicNodeSheets = new HashMap<i32, u32>();
+  #dynamicDecls = new HashMap<i32, GrowableArray<Declaration>>();
+  #dynamicScopeSheets = new HashMap<i32, Stylesheet | null>();
+  #attachedDynamicScopeSheets = new HashMap<i32, u32>();
+  #dynamicTags = new HashMap<i32, Array<FlagKey>>();
+  #activeDynamicFlags = new HashMap<i32, GrowableArray<u32>>();
+  #watchers = new GrowableArray<PendingWatcher>();
+
   new(this.compiled);
+
+  /** Coalesce multiple `writeBinding` calls into a single `node.render` call. */
+  beginBatch(): void {
+    this.#batchDepth += 1;
+  }
+
+  endBatch(): void {
+    if (this.#batchDepth > 0) {
+      this.#batchDepth -= 1;
+    }
+    if (!this.#mounting && this.#batchDepth == 0 && this.#pendingHoles.length > 0) {
+      let node = this.#node;
+      if (node != null) {
+        node.render(this.compiled.template.reference(), this.#pendingHoles);
+      }
+      this.#pendingHoles = new GrowableArray<Hole>();
+    }
+  }
+
+  /** Set or update a dynamic node-level `Style` (attaching its rules/custom props). */
+  setDynamicNodeStyle(bfsNode: i32, style: Style): void {
+    this.#dynamicNodeStyles[bfsNode] = style;
+    let node = this.#node;
+    if (!this.#mounting && node != null) {
+      this.#syncDynamicNodeStyle(node, bfsNode, style);
+    }
+  }
+
+  /** Set or update dynamic inline declarations (`cursor`, `user-select`, etc.) on `bfsNode`. */
+  setDynamicDecls(bfsNode: i32, decls: GrowableArray<Declaration>): void {
+    this.#dynamicDecls[bfsNode] = decls;
+    let node = this.#node;
+    if (!this.#mounting && node != null) {
+      setDeclarations(node, bfsNode as u32, decls);
+    }
+  }
+
+  /** Set or update a dynamic scoped `Stylesheet` on `bfsNode`. */
+  setDynamicScopeSheet(bfsNode: i32, sheet: Stylesheet | null): void {
+    this.#dynamicScopeSheets[bfsNode] = sheet;
+    let node = this.#node;
+    if (!this.#mounting && node != null) {
+      this.#syncDynamicScopeSheet(node, bfsNode, sheet);
+    }
+  }
+
+  /** Set or update dynamic `FlagKey` tags on `bfsNode`, diffing against prior flags. */
+  setDynamicTags(bfsNode: i32, tags: Array<FlagKey>): void {
+    this.#dynamicTags[bfsNode] = tags;
+    let node = this.#node;
+    if (!this.#mounting && node != null) {
+      this.#syncDynamicTags(node, bfsNode, tags);
+    }
+  }
+
+  /** Watch a condition on `target` (starts immediately if mounted, or on mount). */
+  watchCondition(target: u32, cond: CondInput, onChange: (holds: boolean) => void): void {
+    let node = this.#node;
+    if (!this.#mounting && node != null) {
+      let (witConds, root) = compileWitCondition(cond);
+      let stream = hostWatchCondition(node, target, witConds, root);
+      pumpConditionWatcher(stream, onChange);
+      return;
+    }
+    this.#watchers.push(new PendingWatcher(target, cond, onChange));
+  }
+
+  #syncDynamicNodeStyle(node: Node, bfsNode: i32, style: Style): void {
+    let nextId = style.ensureHostSheetId();
+    var prevId = 0 as u32;
+    if (let (true, existing) = this.#attachedDynamicNodeSheets.get(bfsNode)) {
+      prevId = existing;
+    }
+    if (prevId == nextId) {
+      return;
+    }
+    if (prevId != (0 as u32)) {
+      detachStylesheet(node, bfsNode as u32, prevId);
+      this.#attachedDynamicNodeSheets.delete(bfsNode);
+    }
+    if (nextId != (0 as u32)) {
+      attachStylesheet(node, bfsNode as u32, nextId, Reach.Node);
+      this.#attachedDynamicNodeSheets[bfsNode] = nextId;
+    }
+  }
+
+  #syncDynamicScopeSheet(node: Node, bfsNode: i32, sheet: Stylesheet | null): void {
+    let nextId = if (sheet != null) { sheet.ensureHostId() } else { 0 as u32 };
+    var prevId = 0 as u32;
+    if (let (true, existing) = this.#attachedDynamicScopeSheets.get(bfsNode)) {
+      prevId = existing;
+    }
+    if (prevId == nextId) {
+      return;
+    }
+    if (prevId != (0 as u32)) {
+      detachStylesheet(node, bfsNode as u32, prevId);
+      this.#attachedDynamicScopeSheets.delete(bfsNode);
+    }
+    if (nextId != (0 as u32)) {
+      attachStylesheet(node, bfsNode as u32, nextId, Reach.Scope);
+      this.#attachedDynamicScopeSheets[bfsNode] = nextId;
+    }
+  }
+
+  #syncDynamicTags(node: Node, bfsNode: i32, tags: Array<FlagKey>): void {
+    let nextIds = new GrowableArray<u32>();
+    for (let fk in tags) {
+      let fid = fk.factId();
+      if (fid != (0 as u32)) {
+        nextIds.push(fid);
+      }
+    }
+    let prevIds = if (let (true, p) = this.#activeDynamicFlags.get(bfsNode)) {
+      p
+    } else {
+      new GrowableArray<u32>()
+    };
+    // Clear flags no longer present.
+    for (let oldId in prevIds) {
+      var stillPresent = false;
+      for (let nid in nextIds) {
+        if (nid == oldId) {
+          stillPresent = true;
+          break;
+        }
+      }
+      if (!stillPresent) {
+        setFlag(node, bfsNode as u32, oldId, false);
+      }
+    }
+    // Set newly added flags.
+    for (let nid in nextIds) {
+      var alreadySet = false;
+      for (let oldId in prevIds) {
+        if (oldId == nid) {
+          alreadySet = true;
+          break;
+        }
+      }
+      if (!alreadySet) {
+        setFlag(node, bfsNode as u32, nid, true);
+      }
+    }
+    this.#activeDynamicFlags[bfsNode] = nextIds;
+  }
 
   /** Register a reactive thunk to run inside an `Effect` on mount. */
   react(fn: () => void): void {
@@ -782,13 +1042,13 @@ export final class TemplateResult implements Mountable {
       return;
     }
     if (let (true, prev) = this.#lastSent.get(bindingIdx)) {
-      if (prev == value) {
+      if (bindingValueEqual(prev, value)) {
         return;
       }
     }
     this.#lastSent[bindingIdx] = value;
 
-    if (this.#mounting) {
+    if (this.#mounting || this.#batchDepth > 0) {
       let targetId = bindingIdx as u32;
       var i = 0;
       while (i < this.#pendingHoles.length) {
@@ -826,6 +1086,47 @@ export final class TemplateResult implements Mountable {
     node.render(this.compiled.template.reference(), this.#pendingHoles);
     this.#pendingHoles = new GrowableArray<Hole>();
     this.#mounting = false;
+
+    // Attach static style-engine stylesheets & tags from the compiled template.
+    for (let entry in this.compiled.staticNodeStyles) {
+      let sid = entry.style.ensureHostSheetId();
+      if (sid != (0 as u32)) {
+        attachStylesheet(node, entry.bfsNode, sid, Reach.Node);
+      }
+    }
+    for (let entry in this.compiled.staticScopeSheets) {
+      let sid = entry.sheet.ensureHostId();
+      if (sid != (0 as u32)) {
+        attachStylesheet(node, entry.bfsNode, sid, Reach.Scope);
+      }
+    }
+    for (let entry in this.compiled.staticTags) {
+      let fid = entry.key.factId();
+      if (fid != (0 as u32)) {
+        setFlag(node, entry.bfsNode, fid, true);
+      }
+    }
+
+    // Flush any dynamic stylesheets/tags recorded during initial instantiation.
+    for (let bfsNode in this.#dynamicNodeStyles.keys()) {
+      this.#syncDynamicNodeStyle(node, bfsNode, this.#dynamicNodeStyles[bfsNode]);
+    }
+    for (let bfsNode in this.#dynamicDecls.keys()) {
+      setDeclarations(node, bfsNode as u32, this.#dynamicDecls[bfsNode]);
+    }
+    for (let bfsNode in this.#dynamicScopeSheets.keys()) {
+      this.#syncDynamicScopeSheet(node, bfsNode, this.#dynamicScopeSheets[bfsNode]);
+    }
+    for (let bfsNode in this.#dynamicTags.keys()) {
+      this.#syncDynamicTags(node, bfsNode, this.#dynamicTags[bfsNode]);
+    }
+
+    // Start registered condition watchers.
+    for (let w in this.#watchers) {
+      let (witConds, root) = compileWitCondition(w.cond);
+      let stream = hostWatchCondition(node, w.target, witConds, root);
+      pumpConditionWatcher(stream, w.onChange);
+    }
 
     for (let listener in this.#listeners) {
       startPointerListener(node, listener);
@@ -977,6 +1278,13 @@ function makeMoveListener(handler: (event: PointerEvent) => void, pos: u32) {
   }, pos);
 }
 
+function makeCapturedMoveListener(handler: (event: PointerEvent) => void, pos: u32) {
+  return new Listener(PointerKind.Move, (event) => {
+    handler(event);
+    return Answer.StopPropagation;
+  }, pos, Scope.Captured);
+}
+
 /**
  * Base class for host element builders (`Box`, `Flow`, `Text`, `Slot`).
  *
@@ -1023,7 +1331,9 @@ export class HostElement {
   var _boundBox: boolean = false;
   var _boundLayout: boolean = false;
 
-  var _states = new GrowableArray<PendingState>();
+  var _nodeStyleRule: Style | null = null;
+  var _scopedSheet: Stylesheet | null = null;
+  var _staticTags: Array<FlagKey> = [];
   _children = new GrowableArray<HostElement>();
 
   /** Non-null when this object is a Phase 2 per-instance patcher. */
@@ -1127,13 +1437,16 @@ export class HostElement {
       this._textStyle = textStyle;
       let target = this._patchTarget;
       if (target != null) {
+        target.beginBatch();
         target.writeBinding(this._bfsNodeIndex, BindingTarget.Box, new BindingValueBox(this._ownBox()));
         target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueTextStyle(textStyle));
-      } else {
-        this._states = new GrowableArray<PendingState>();
-        for (let entry in collectHostStates(resolved.condRules)) {
-          this._states.push(new PendingState(entry.state, new RestyleText(mergeTextOverride(textStyle, entry.decls))));
+        target.endBatch();
+        this._syncDynamicInteractionProps(target, s);
+        if (resolved.hasHostRules()) {
+          target.setDynamicNodeStyle(this._bfsNodeIndex, resolved);
         }
+      } else {
+        this._nodeStyleRule = if (resolved.hasHostRules()) { resolved } else { null };
       }
       return;
     }
@@ -1152,14 +1465,38 @@ export class HostElement {
     this._boxStyle = if (hasVisualBoxProps(s)) { some(boxStyle) } else { none };
     let target = this._patchTarget;
     if (target != null) {
+      target.beginBatch();
       target.writeBinding(this._bfsNodeIndex, BindingTarget.Box, new BindingValueBox(this._ownBox()));
       target.writeBinding(this._bfsNodeIndex, BindingTarget.Layout, new BindingValueLayout(this._layout()));
       target.writeBinding(this._bfsNodeIndex, BindingTarget.Style, new BindingValueStyle(boxStyle));
-    } else {
-      this._states = new GrowableArray<PendingState>();
-      for (let entry in collectHostStates(resolved.condRules)) {
-        this._states.push(new PendingState(entry.state, new RestyleFill(mergeBoxOverride(boxStyle, entry.decls))));
+      target.endBatch();
+      this._syncDynamicInteractionProps(target, s);
+      if (resolved.hasHostRules()) {
+        target.setDynamicNodeStyle(this._bfsNodeIndex, resolved);
       }
+    } else {
+      this._nodeStyleRule = if (resolved.hasHostRules()) { resolved } else { null };
+    }
+  }
+
+  _syncDynamicInteractionProps(target: TemplateResult, s: StyleProps): void {
+    let decls = new GrowableArray<Declaration>();
+    if (let {cursor} = s) {
+      decls.push(new Declaration(
+        new StyleKeyBuiltin(BuiltinProperty.Cursor),
+        new StyleValueKeyword(encodeCursor(cursor)),
+        false,
+      ));
+    }
+    if (let {unselectable} = s) {
+      decls.push(new Declaration(
+        new StyleKeyBuiltin(BuiltinProperty.UserSelect),
+        new StyleValueKeyword(if (unselectable) { 1 as u32 } else { 0 as u32 }),
+        false,
+      ));
+    }
+    if (decls.length > 0) {
+      target.setDynamicDecls(this._bfsNodeIndex, decls);
     }
   }
 
@@ -1167,6 +1504,30 @@ export class HostElement {
   style: StyleInput {
     get { return this._style; }
     set(v) { this._applyStyle(v); }
+  }
+
+  /** Attach a scoped `Stylesheet` (`Reach.Scope`) to this node's subtree. */
+  sheet: Stylesheet | null {
+    get { return this._scopedSheet; }
+    set(v) {
+      this._scopedSheet = v;
+      let target = this._patchTarget;
+      if (target != null) {
+        target.setDynamicScopeSheet(this._bfsNodeIndex, v);
+      }
+    }
+  }
+
+  /** Set custom boolean `FlagKey` facts/tags on this node (static or reactive). */
+  tags: Array<FlagKey> {
+    get { return this._staticTags; }
+    set(v) {
+      this._staticTags = v;
+      let target = this._patchTarget;
+      if (target != null) {
+        target.setDynamicTags(this._bfsNodeIndex, v);
+      }
+    }
   }
 
   /** Behavioral node capability: whether this node can receive keyboard focus. */
@@ -1200,6 +1561,15 @@ export class HostElement {
       let target = this._patchTarget;
       if (target != null) {
         target.addListener(makeMoveListener(handler, this._bfsNodeIndex as u32));
+      }
+    }
+  }
+  onCapturedMove: (event: PointerEvent) => void {
+    get { return (event: PointerEvent) => {}; }
+    set(handler) {
+      let target = this._patchTarget;
+      if (target != null) {
+        target.addListener(makeCapturedMoveListener(handler, this._bfsNodeIndex as u32));
       }
     }
   }
@@ -1383,11 +1753,12 @@ export final class UiTag {
       i += 1;
     }
 
-    // 3. Build NodeDefs, Bindings, StateStyles, and slot numbering (matching
-    //    `scene.rs`: slots are `order[1..]` with `isSlot == true`).
+    // 3. Build NodeDefs, Bindings, style-engine attachments, and slot numbering.
     let nodes = new GrowableArray<NodeDef>();
     let bindings = new GrowableArray<Binding>();
-    let states = new GrowableArray<StateStyle>();
+    let staticNodeStyles = new GrowableArray<StaticNodeStyle>();
+    let staticScopeSheets = new GrowableArray<StaticScopeSheet>();
+    let staticTags = new GrowableArray<StaticTag>();
     let nodeBindings = new GrowableArray<NodeBindings>();
     let bfsSlotOrder = new GrowableArray<HostElement>();
     var projectionSlot = -1;
@@ -1431,8 +1802,16 @@ export final class UiTag {
       }
       nodeBindings.push(new NodeBindings(bContent, bStyle, bBox, bLayout));
 
-      for (let st in el._states) {
-        states.push(new StateStyle(n as u32, st.when, n as u32, st.style));
+      let nodeRule = el._nodeStyleRule;
+      if (nodeRule != null) {
+        staticNodeStyles.push(new StaticNodeStyle(n as u32, nodeRule));
+      }
+      let scopeSheet = el._scopedSheet;
+      if (scopeSheet != null) {
+        staticScopeSheets.push(new StaticScopeSheet(n as u32, scopeSheet));
+      }
+      for (let fk in el._staticTags) {
+        staticTags.push(new StaticTag(n as u32, fk));
       }
 
       if (n > 0 && el._isSlot) {
@@ -1475,7 +1854,7 @@ export final class UiTag {
       preToBfsSlot.push(found);
     }
 
-    let tpl = new Template(nodes, bindings, states);
+    let tpl = new Template(nodes, bindings, []);
     return new CompiledTemplate(
       tpl,
       preToBfsNode,
@@ -1483,6 +1862,9 @@ export final class UiTag {
       projectionSlot,
       nodeBindings,
       nodes,
+      staticNodeStyles,
+      staticScopeSheets,
+      staticTags,
     );
   }
 }

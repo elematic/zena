@@ -24,9 +24,15 @@ In progress. Three pieces are built today:
   `zenafx:host/style@0.1.0` (tested in `packages/zenafx/tests/styles.rs` and
   `examples/zenafx/styles/`).
 
+- **Guest `@ui` + style builder integration (built in `examples/zenafx/style.zena` and `examples/zenafx/ui.zena`):**
+  all 12 ZenaFX examples (`button`, `counter`, `cursors`, `directives`,
+  `disclosure`, `input`, `richtext`, `scroll`, `selection`, `split`, `styles`,
+  `widgets`) build with `@ui`, `Style`, `When`, `Rule`, and `Stylesheet` on top
+  of `zenafx:host/style@0.1.0` with zero legacy `state-style` records.
+
 Remaining work: Step 2 isolated window-component functions over
 `borrow<style-node>` ([isolated-functions.md](./isolated-functions.md)) and
-migrating existing `@ui` examples off legacy `state-style` records.
+removing the legacy `state-style` compatibility path once `zenafx-web` migrates.
 
 The rest of this document asks for nine platform-protocol decisions:
 

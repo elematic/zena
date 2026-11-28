@@ -1,146 +1,99 @@
 /**
  * A page of text that can be selected and copied, a button whose label
  * cannot, and a field to paste into.
- *
- * Nothing here is about selecting or the clipboard. The host keeps the
- * window's selection and does everything the pointer does to it: a drag
- * selects from one text to another, a second press takes a word and a third a
- * paragraph. It copies what is selected when Control with `c` goes down, and
- * pasting reaches the field as a key that types the pasted text. No handler in
- * this file hears any of that.
- *
- * The one thing the page says is what to leave out. The button's label is
- * not text to select: a press on it is a press, and what was selected before
- * stays selected.
  */
-import { Color, BoxStyle, TextStyle, Edges, Justify, Align, LengthPx } from 'zenafx:ui/style';
-import { Binding, BindingTarget, BindingValueContent, StateStyle, State, RestyleFill,
-         Cursor } from 'zenafx:host/scene';
-import { PointerKind } from 'zenafx:host/events';
-import { Rendering, Widget, Template, shows, holds, on, runApp } from '../framework.zena';
-import { box, slot, text, full, flatten, template } from '../widgets/widget.zena';
+import {
+  ui, Widget, Box, Text, TemplateResult,
+  Style, When, hovered, pressed,
+  Justify, Align, Cursor, rgb, px, full, runApp,
+} from '../ui.zena';
+import { signal } from 'zena:signals';
 import { TextInput } from '../input/text-input.zena';
-import { some, none } from 'zena:core';
 
-let page = new Color(0.97, 0.97, 0.98, 1.0);
-let ink = new Color(0.10, 0.11, 0.13, 1.0);
-let muted = new Color(0.36, 0.39, 0.46, 1.0);
-let white = new Color(1.0, 1.0, 1.0, 1.0);
-let accent = new Color(0.20, 0.38, 0.86, 1.0);
-let accentHovered = new Color(0.26, 0.45, 0.93, 1.0);
-let accentPressed = new Color(0.15, 0.30, 0.72, 1.0);
+let pageBg = rgb(0.97, 0.97, 0.98);
+let ink = rgb(0.10, 0.11, 0.13);
+let muted = rgb(0.36, 0.39, 0.46);
+let white = rgb(1.0, 1.0, 1.0);
+let accent = rgb(0.20, 0.38, 0.86);
+let accentHovered = rgb(0.26, 0.45, 0.93);
+let accentPressed = rgb(0.15, 0.30, 0.72);
 
-let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
-let buttonStyle = new BoxStyle(some(accent), none, 0.0, 6.0, 1.0);
-let hoveredStyle = new BoxStyle(some(accentHovered), none, 0.0, 6.0, 1.0);
-let pressedStyle = new BoxStyle(some(accentPressed), none, 0.0, 6.0, 1.0);
+let pageStyle = Style {
+  background: pageBg
+  justify: Justify.Center
+  align: Align.Center
+  width: full
+  height: full
+};
 
-let titleText = new TextStyle('system-ui', 22.0, 700 as u16, false, ink);
-let bodyText = new TextStyle('system-ui', 16.0, 400 as u16, false, ink);
-let noteText = new TextStyle('system-ui', 13.0, 600 as u16, false, muted);
-let buttonText = new TextStyle('system-ui', 15.0, 600 as u16, false, white);
+let columnStyle = Style {
+  align: Align.Stretch
+  gap: 14.0
+  width: px(460.0)
+};
 
-/** Some text in one style: a title, a paragraph or a note. */
-class Words extends Widget {
-  #template: Template;
-  var #says: String;
+let buttonStyle = Style {
+  background: accent
+  cornerRadius: 6.0
+  justify: Justify.Center
+  align: Align.Center
+  padding: { y: 9.0, x: 18.0 }
+  cursor: Cursor.Pointer
+  unselectable: true
 
-  new(template: Template, says: String) : #template = template, #says = says, super();
+  When(hovered) { background: accentHovered }
+  When(pressed) { background: accentPressed }
+};
 
-  say(says: String): void {
-    this.#says = says;
-    this.refresh();
-  }
+let titleStyle = Style { fontSize: 22.0 fontWeight: 700 color: ink };
+let bodyStyle = Style { fontSize: 16.0 fontWeight: 400 color: ink };
+let noteStyle = Style { fontSize: 13.0 fontWeight: 600 color: muted };
+let buttonTextStyle = Style { fontSize: 15.0 fontWeight: 600 color: white };
 
-  build(): Rendering {
-    return shows(this.#template, [new BindingValueContent(this.#says)]);
-  }
-}
-
-function wordsIn(style: TextStyle) {
-  return template(text('', style), [new Binding(0 as u32, BindingTarget.Content)]);
-}
-
-let titleTemplate = wordsIn(titleText);
-let bodyTemplate = wordsIn(bodyText);
-let noteTemplate = wordsIn(noteText);
-
-/**
- * A button: node 0 its box and node 1 its label.
- *
- * The box says the pointer cannot select its text, and that leaves out the
- * label in it too.
- */
-let buttonTemplate = template(
-  box({style: buttonStyle, justify: Justify.Center, align: Align.Center,
-       padding: new Edges(9.0, 18.0, 9.0, 18.0), cursor: Cursor.Pointer,
-       unselectable: true}, [
-    text('', buttonText),
-  ]),
-  [new Binding(1 as u32, BindingTarget.Content)],
-  [new StateStyle(0 as u32, State.Hovered, 0 as u32, new RestyleFill(hoveredStyle)),
-   new StateStyle(0 as u32, State.Pressed, 0 as u32, new RestyleFill(pressedStyle))],
-);
-
-/** A button that counts its presses on its label. */
 class Counter extends Widget {
-  var #count = 0;
+  @signal var #count: i32 = 0;
 
-  build(): Rendering {
-    return shows(buttonTemplate, [new BindingValueContent(`Pressed ${this.#count} times`)])
-      .hearing([
-        on(PointerKind.Down, () => {
-          this.#count += 1;
-          this.refresh();
-        })
-      ]);
+  build(): TemplateResult {
+    return @ui Box {
+      style: buttonStyle,
+      onDown: () => { this.#count += 1; },
+      Text($(`Pressed ${this.#count} times`)) { style: buttonTextStyle }
+    };
   }
 }
-
-/**
- * The page: its own box, a column 460 wide in the middle of it, and one slot
- * in the column for everything else. The column stretches what is in it, so
- * a paragraph is as wide as the column and wraps there.
- */
-let pageTemplate = template(
-  box({style: pageStyle, justify: Justify.Center, align: Align.Center,
-       width: full, height: full}, [
-    box({align: Align.Stretch, gap: 14.0, width: new LengthPx(460.0)}, [slot()]),
-  ]),
-  [],
-);
 
 class Page extends Widget {
-  /** Made on the first render. See the same field in `counter/main.zena`. */
-  var #content: Array<Widget> | null = null;
+  @signal var #echo: String = 'The field is empty.';
 
-  build(): Rendering {
-    var content = this.#content;
-    if (content == null) {
-      let echo = new Words(noteTemplate, 'The field is empty.');
-      let made: Array<Widget> = [
-        new Words(titleTemplate, 'Select any of this'),
-        new Words(bodyTemplate,
+  build(): TemplateResult {
+    return @ui Box {
+      style: pageStyle,
+      Box {
+        style: columnStyle,
+        Text('Select any of this') { style: titleStyle }
+        Text(
           'Text in a ZenaFX window can be selected, as it can on a web page. ' +
-          'Drag across it, or press twice on a word and three times for a paragraph.'),
-        new Words(bodyTemplate,
+          'Drag across it, or press twice on a word and three times for a paragraph.',
+        ) { style: bodyStyle }
+        Text(
           'Control with C copies what is selected, to paste anywhere. ' +
-          'The component that drew this text is told none of it.'),
-        new Counter(),
-        new Words(noteTemplate, 'Paste here'),
-        new TextInput('Control with V pastes', (said) => {
-          echo.say(if (said.isEmpty) 'The field is empty.' else `The field says: ${said}`);
-        }, (said) => {}),
-        echo
-      ];
-      this.#content = made;
-      content = made;
-    }
-    return holds(pageTemplate, [content]);
+          'The component that drew this text is told none of it.',
+        ) { style: bodyStyle }
+        Counter {}
+        Text('Paste here') { style: noteStyle }
+        TextInput(
+          'Control with V pastes',
+          (said) => {
+            this.#echo = if (said.isEmpty) { 'The field is empty.' } else { `The field says: ${said}` };
+          },
+          (said) => {},
+        )
+        Text($(this.#echo)) { style: noteStyle }
+      }
+    };
   }
 }
 
-/** The component's entry: build the widget tree and show it. */
 export function main(): void {
   runApp(new Page());
 }
